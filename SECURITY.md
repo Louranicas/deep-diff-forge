@@ -506,10 +506,24 @@ bounded form.** What it holds to:
   cannot be searched: a relative path is taken from the hook's own directory and a `..`
   after a link from where the link leads; where that cannot be done, every tree may be
   the one). A session directory that was removed is asked about at the nearest directory
-  above it that is there. A `GIT_CEILING_DIRECTORIES` in the session's environment is
-  emptied for the hooks' Git calls; a directory on another file system mounted inside a
-  linked tree is, with `GIT_DISCOVERY_ACROSS_FILESYSTEM` unset, in no repository to Git
-  (the README states it).
+  above it that is there, a relative one after it is taken from the hook's own directory:
+  where the session is, is found one way for every use of it. What Git answers must hold
+  the session's directory: a `core.worktree` that points Git at another directory makes
+  the stop UNJUDGED, and nothing of the tree is forgotten. The caller's
+  `GIT_CEILING_DIRECTORIES` is kept without the entries at or under one of the project's
+  trees: a ceiling hides nothing of the project, and a repository the user hides above it
+  stays hidden. Where Git stops at a file-system boundary (`GIT_DISCOVERY_ACROSS_FILESYSTEM`
+  unset) that a linked tree of the project lies across, the stop is UNJUDGED with Git's
+  words, never "no repository".
+- **What blocked in a tree is not forgotten while its directory stands.** A linked tree
+  the repository no longer lists (both records removed, or its `.git` file removed and
+  `git worktree prune`) was forgotten at the next stop, and Git places its directory in no
+  repository: the stop from inside it was silent with credentials there. The state
+  (schema `v10`) records the top level of each linked tree it remembers a failure of; while
+  that directory stands the tree is named at every stop and a stop from inside it is
+  UNJUDGED. It is forgotten when the directory is gone, or when it is a tree again and the
+  judge's own reading finds it clean. A `v9` state is read with no tree recorded and
+  written back as `v10`.
 - **A repository the hooks cannot list the commits of is still judged for what is not
   committed.** With more than 256 working trees (or a million named commits) the commits
   that were there when a session begins cannot be listed. The start recorded nothing
@@ -623,7 +637,8 @@ bounded form.** What it holds to:
   read. The reflogs are read with `git rev-list --walk-reflogs`, which prints ids alone: a
   user's `log.showSignature` made every session one that could not be recorded. A state file
   that is there and is not a state the hooks can read (a link, another kind of file, too
-  large, another schema, a project that is not whole) is never read as "no state", and a
+  large, another schema than `v10` or the `v9` before it, a project that is not whole) is
+  never read as "no state", and a
   list that is missing, is a link, or is not the text the state names by its SHA-256 and
   length is never read as another list: the stop is UNJUDGED with the reason and nothing is
   recorded over either. Before, a block with thousands of violations wrote a state the next

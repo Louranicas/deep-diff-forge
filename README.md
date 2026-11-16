@@ -772,11 +772,39 @@ project and not judged at every stop while it is true, as stated above):
   forgets nothing because a tree is no longer listed (a tree the judge's own reading finds
   clean is forgotten, as at every stop). No stop is silent because of where its directory
   lies.
-- The hooks' Git calls have no `GIT_CEILING_DIRECTORIES`: a ceiling in the session's
-  environment does not hide the tree its directory is in. `GIT_DISCOVERY_ACROSS_FILESYSTEM`
-  is as the session has it. Unset, Git stops at a file system boundary: a directory on
-  another file system mounted inside a linked tree is in no repository to Git, so that
-  tree is not judged from there and is named as one the session's directory is not in.
+- Where the session's directory is, is found one way, first, for every use of it: a
+  relative directory is taken from the hook's own directory, and then, like an absolute
+  one, the nearest directory of its path that is there is the one asked about (a part
+  that was removed, or that names a file, is passed over). When the hook's own directory
+  cannot be had, or a part of the path cannot be looked at, the stop is UNJUDGED and the
+  trees the directory may be in are named so.
+- What Git answers must hold the session's directory. Where Git names as the working tree
+  a directory that does not contain it (a `core.worktree` in a linked tree's own
+  configuration), the stop is UNJUDGED with words that say so, and nothing is forgotten;
+  what is read of another tree counts as that tree's only when Git names that tree there.
+- The hooks keep the caller's `GIT_CEILING_DIRECTORIES`, without each entry that lies at
+  or under one of the project's working trees: a ceiling inside a tree does not hide it,
+  and a repository the user hides with a ceiling above the project (a home directory's)
+  stays hidden. The project itself is found with the caller's ceiling as it is, so a
+  session that begins below a ceiling that hides its repository has no project there.
+- `GIT_DISCOVERY_ACROSS_FILESYSTEM` is as the session has it. Unset, Git stops at a file
+  system boundary (a mount, or a btrfs subvolume, which one unprivileged command makes):
+  where a linked tree of the project lies across the boundary Git stopped at, the stop is
+  UNJUDGED with Git's words and that tree is one the session's directory may be in. A
+  boundary no linked tree lies across is Git's "no repository", as before (on many systems
+  every directory under `/var` is below one).
+- A linked tree a failure is remembered of stays remembered while its directory stands,
+  also when the repository no longer lists it (its `.git` file and administrative
+  directory removed, or its `.git` file removed and `git worktree prune`): every stop names
+  it ("… is no longer a working tree of this repository; what blocked there stands until
+  the directory is gone or it is a tree again"), and a stop made from inside it is
+  UNJUDGED. It is forgotten when its directory is gone (the ordinary `git worktree
+  remove`), or when it is a tree again and the judge's own reading finds that tree clean.
+  For this the session's state (schema `deep-diff-forge.hook-state.v10`) records the top
+  level of each linked tree it remembers a failure of; a state of the schema before (`v9`)
+  is read with no tree recorded and written back in the new one. A path that is not UTF-8
+  or is longer than 16 KiB, and the paths past 256 KiB in all, are not recorded: such a tree
+  is forgotten when it is no longer listed, as before.
 - The order of a stop, and its time. One limit: 45 seconds for everything, of which 4 are
   kept for remembering and saying, and 6 more for looking at the submodules and the other
   working trees when the project has any. So the judging has 41 seconds, or 35.

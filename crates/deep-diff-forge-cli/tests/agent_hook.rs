@@ -8066,6 +8066,383 @@ fn a_ceiling_in_the_environment_does_not_hide_the_tree() {
     assert_eq!(shown(&log), ["linked.rs"]);
 }
 
+/// A linked tree of `root` at `tree` on the branch `branch`.
+fn linked_tree(root: &Path, tree: &Path, branch: &str) {
+    git(
+        root,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            branch,
+            tree.to_str().unwrap(),
+        ],
+    );
+}
+
+/// What a stop of `session` from the relative directory `cwd` decides, the hook started in
+/// `here`.
+fn stop_from_relative(cwd: &str, here: &Path, session: &str, judge: &Path) -> Value {
+    let (code, stdout, stderr) = hook_in(
+        "stop",
+        &["--judge", judge.to_str().unwrap()],
+        &input("Stop", Path::new(cwd), session, false),
+        |command| {
+            command.current_dir(here);
+        },
+    );
+    assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
+    if stdout.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_str(&stdout).unwrap()
+    }
+}
+
+/// The state file of the one session of this test, read.
+fn the_state() -> Value {
+    let state = states_in(&sessions());
+    assert_eq!(state.len(), 1, "{state:?}");
+    serde_json::from_str(&std::fs::read_to_string(&state[0]).unwrap()).unwrap()
+}
+
+/// Review V4 round 22, VD4R22-M-1, as reproduced: the session's directory is given as a
+/// relative path, `../linked/build/gone`, of a directory that was removed. A relative path was
+/// not walked up: "nothing of it is there" was taken as "adds nothing" before it was anchored.
+/// With the linked tree whole, the tree was not judged and was named as one "the session's
+/// directory is not in"; with its two records removed as well, the stop printed nothing and
+/// forgot what had blocked there. A relative path is anchored at the hook's own directory and
+/// walked up as an absolute one is; a path that names a file is walked past too (fourteenth
+/// independent review of the hooks, suspected).
+#[test]
+fn a_relative_directory_that_was_removed_is_anchored_and_walked_up() {
+    let scratch = Scratch::new("hook-relative-gone");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    let linked = scratch.join("linked");
+    linked_tree(&root, &linked, "side");
+    start(&root, "s");
+    secret(&linked, "linked.rs");
+    blocked(&stop_from(&linked, "s", &script));
+    std::fs::create_dir_all(linked.join("build/gone")).unwrap();
+    std::fs::remove_dir_all(linked.join("build")).unwrap();
+    for said in [
+        stop_from_relative("../linked/build/gone", &root, "s", &script),
+        stop_from(&linked.join("linked.rs"), "s", &script),
+        stop_from(&linked.join("linked.rs/deeper"), "s", &script),
+    ] {
+        let said = allowed(&said);
+        assert!(
+            said.starts_with("deep-diff-forge: FAIL STANDS. ")
+                && !said.contains("the session's directory is not in it"),
+            "{said}"
+        );
+    }
+    // the linked tree was judged from each of them
+    assert_eq!(shown(&log), ["linked.rs"; 4]);
+
+    // its two records removed: UNJUDGED, nothing forgotten, the new key put to no judge
+    let before = remembered_lines();
+    remove_both_records(&linked);
+    secret(&linked, "second.rs");
+    let said = allowed(&stop_from_relative(
+        "../linked/build/gone",
+        &root,
+        "s",
+        &script,
+    ))
+    .to_owned();
+    assert!(
+        said.starts_with("deep-diff-forge: UNJUDGED. ")
+            && said.contains("is no longer a working tree of this repository"),
+        "{said}"
+    );
+    assert_eq!(remembered_lines(), before);
+    assert!(
+        !shown(&log).iter().any(|names| names.contains("second.rs")),
+        "{:?}",
+        shown(&log)
+    );
+}
+
+/// Fourteenth independent review of the hooks, HR14-L-4, as reproduced: `core.worktree` in a
+/// linked tree's own configuration points Git at the project's top. From the tree, Git said
+/// it was the project: the stop printed nothing with a second key in the tree, and what had
+/// blocked there was forgotten, here and at a stop from the project (the judge's reader read
+/// the project through the redirect). What Git answers must hold the session's directory,
+/// and what is read of another tree is that tree's only when Git names it there.
+#[test]
+fn a_tree_git_is_pointed_away_from_is_unjudged_and_keeps_what_blocked_there() {
+    let scratch = Scratch::new("hook-core-worktree");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    let linked = scratch.join("linked");
+    linked_tree(&root, &linked, "side");
+    start(&root, "s");
+    secret(&linked, "first.rs");
+    blocked(&stop_from(&linked, "s", &script));
+    let before = remembered_lines();
+    git(&root, &["config", "extensions.worktreeConfig", "true"]);
+    git(
+        &linked,
+        &[
+            "config",
+            "--worktree",
+            "core.worktree",
+            root.to_str().unwrap(),
+        ],
+    );
+    secret(&linked, "second.rs");
+    let said = allowed(&stop_from(&linked, "s", &script)).to_owned();
+    assert!(
+        said.starts_with("deep-diff-forge: UNJUDGED. ")
+            && said.contains("Git names as the working tree a directory that does not contain the session's directory"),
+        "{said}"
+    );
+    assert_eq!(remembered_lines(), before);
+    let from_project = allowed(&stop_from(&root, "s", &script)).to_owned();
+    assert!(
+        from_project.contains("which is not this tree")
+            || from_project.contains("(it could not be looked at)"),
+        "{from_project}"
+    );
+    assert_eq!(remembered_lines(), before);
+    assert!(
+        !shown(&log).iter().any(|names| names.contains("second.rs")),
+        "{:?}",
+        shown(&log)
+    );
+}
+
+/// Fourteenth independent review of the hooks, HR14-L-3, as reproduced with a btrfs
+/// subvolume; here with a file system mounted in a linked tree in a mount namespace of the
+/// test's own. Git does not cross the boundary while `GIT_DISCOVERY_ACROSS_FILESYSTEM` is not
+/// set and says "not a git repository": the tree was not judged from there and was named as
+/// one "the session's directory is not in". The stop is UNJUDGED with Git's words, and the
+/// tree "may be in it". Where no user and mount namespace can be made the case is passed.
+#[test]
+fn a_boundary_inside_a_linked_tree_is_not_taken_for_no_repository() {
+    let scratch = Scratch::new("hook-boundary");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    let linked = scratch.join("linked");
+    linked_tree(&root, &linked, "side");
+    let vol = linked.join("vol");
+    std::fs::create_dir(&vol).unwrap();
+    start(&root, "s");
+    secret(&linked, "first.rs");
+    blocked(&stop_from(&linked, "s", &script));
+    let before = remembered_lines();
+    let probe = Command::new("unshare")
+        .args(["-r", "-m", "true"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    if !probe.is_ok_and(|status| status.success()) {
+        eprintln!("no user and mount namespace here: the case is passed");
+        return;
+    }
+    let mut command = Command::new("unshare");
+    command
+        .args(["-r", "-m", "sh", "-c"])
+        .arg(r#"mount -t tmpfs none "$1" && mkdir "$1/sub" && shift && exec "$@""#)
+        .arg("sh")
+        .arg(&vol)
+        .arg(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .args(["agent", "hook", "stop", "--client", "claude", "--judge"])
+        .arg(&script)
+        .envs(ISOLATE)
+        .env("HOME", home())
+        .env_remove("XDG_STATE_HOME")
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("CLAUDE_PROJECT_DIR")
+        .env_remove("GIT_DISCOVERY_ACROSS_FILESYSTEM")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            input("Stop", &vol.join("sub"), "s", false)
+                .to_string()
+                .as_bytes(),
+        )
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(
+        (
+            out.status.code(),
+            String::from_utf8(out.stderr).unwrap().as_str()
+        ),
+        (Some(0), ""),
+        "{stdout}"
+    );
+    let said: Value = serde_json::from_str(&stdout).unwrap();
+    let said = allowed(&said);
+    assert!(
+        said.starts_with("deep-diff-forge: UNJUDGED. ")
+            && said.contains("Git stopped at a file-system boundary")
+            && said.contains(
+                "/linked\" of this project, and whether it is in that tree could not be found out at this stop"
+            )
+            && !said.contains("the session's directory is not in it"),
+        "{said}"
+    );
+    assert_eq!(remembered_lines(), before);
+    assert_eq!(shown(&log), ["first.rs"]);
+}
+
+/// Fourteenth independent review of the hooks, HR14-L-1, as reproduced: round 22 emptied
+/// `GIT_CEILING_DIRECTORIES` for every Git call of the hooks, and a repository the user hides
+/// with a ceiling (a home directory's) was found. A session below it, in no repository to
+/// the user's Git, took it for its project; a stop of a session with a real project, made
+/// from below it, named it as "another repository". The project is found with the caller's
+/// ceiling; once it is known only the entries that hide a part of one of its trees are left
+/// out (the ceiling test above still holds).
+#[test]
+fn a_repository_the_user_hides_with_a_ceiling_stays_hidden() {
+    let scratch = Scratch::new("hook-ceiling-hidden");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    let hidden = scratch.join("hidden");
+    std::fs::create_dir_all(hidden.join("notes/today")).unwrap();
+    git(&hidden, &["init", "--quiet"]);
+    std::fs::write(hidden.join(".bashrc"), "export A=1\n").unwrap();
+    git(&hidden, &["add", "--all"]);
+    git(&hidden, &["commit", "--quiet", "-m", "dotfiles"]);
+    std::fs::write(hidden.join(".bashrc"), "export A=2\nSECRET\n").unwrap();
+    let below = hidden.join("notes/today");
+    let with_ceiling = |event: &str, extra: &[&str], session: &str| {
+        let name = match event {
+            "session-start" => "SessionStart",
+            "post-tool" => "PostToolUse",
+            _ => "Stop",
+        };
+        let (code, stdout, stderr) = hook_in(
+            event,
+            extra,
+            &input(name, &below, session, false),
+            |command| {
+                command.env("GIT_CEILING_DIRECTORIES", &hidden);
+            },
+        );
+        assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
+        stdout
+    };
+    let judge = ["--judge", script.to_str().unwrap()];
+    // a session that begins below the hidden repository has no project
+    for (event, extra) in [
+        ("session-start", &judge[..]),
+        ("post-tool", &[][..]),
+        ("stop", &judge[..]),
+    ] {
+        assert_eq!(with_ceiling(event, extra, "below"), "", "{event}");
+    }
+    // a session with a project says nothing of the hidden repository
+    start(&root, "s");
+    assert_eq!(with_ceiling("stop", &judge, "s"), "");
+    assert_eq!(shown(&log), Vec::<String>::new());
+}
+
+/// Fourteenth independent review of the hooks, HR14-L-2, as reproduced: a linked tree beside
+/// the project whose `.git` file and administrative directory were removed (or its `.git`
+/// file, and then `git worktree prune`, which a stop advises). Git places its directory in no
+/// repository, so the stop from inside it printed nothing with a second key there, and what
+/// had blocked there was forgotten. The state records the top level of a tree it remembers
+/// something of: while that directory stands the tree is named at every stop and a stop from
+/// inside it is UNJUDGED; it is forgotten when the directory is gone, or when it is a tree
+/// again and the judge's own reading finds it clean.
+#[test]
+fn a_tree_no_longer_listed_stands_while_its_directory_does() {
+    let scratch = Scratch::new("hook-unlisted-stands");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    let (both, pruned) = (scratch.join("both"), scratch.join("pruned"));
+    linked_tree(&root, &both, "both");
+    linked_tree(&root, &pruned, "pruned");
+    start(&root, "s");
+    secret(&both, "first.rs");
+    blocked(&stop_from(&both, "s", &script));
+    secret(&pruned, "first.rs");
+    blocked(&stop_from(&pruned, "s", &script));
+    let before = remembered_lines();
+    let recorded = the_state()["trees"].as_object().unwrap().len();
+    assert_eq!(recorded, 2, "{}", the_state());
+
+    remove_both_records(&both);
+    std::fs::remove_file(pruned.join(".git")).unwrap();
+    git(&root, &["worktree", "prune"]);
+    for tree in [&both, &pruned] {
+        secret(tree, "second.rs");
+        let said = allowed(&stop_from(tree, "s", &script)).to_owned();
+        assert!(
+            said.starts_with("deep-diff-forge: UNJUDGED. ")
+                && said.contains("is no longer a working tree of this repository"),
+            "{said}"
+        );
+        assert_eq!(remembered_lines(), before);
+    }
+    let from_project = allowed(&stop_from(&root, "s", &script)).to_owned();
+    assert!(
+        from_project.contains("no longer a working tree"),
+        "{from_project}"
+    );
+    assert_eq!(remembered_lines(), before);
+    assert!(
+        !shown(&log).iter().any(|names| names.contains("second.rs")),
+        "{:?}",
+        shown(&log)
+    );
+
+    // `both` is gone: what blocked there is forgotten
+    std::fs::remove_dir_all(&both).unwrap();
+    let _ = stop_from(&root, "s", &script);
+    let left = remembered_lines();
+    assert!(left.len() < before.len() && !left.is_empty(), "{left:?}");
+    // `pruned` is a tree again, made in its emptied directory: forgotten when the judge's
+    // reading finds it clean
+    for entry in std::fs::read_dir(&pruned).unwrap() {
+        std::fs::remove_file(entry.unwrap().path()).unwrap();
+    }
+    let _ = stop_from(&root, "s", &script);
+    assert_eq!(remembered_lines(), left, "an emptied directory stands");
+    linked_tree(&root, &pruned, "again");
+    let _ = stop_from(&root, "s", &script);
+    assert_eq!(remembered_lines(), Vec::<String>::new());
+    assert_eq!(the_state()["trees"], json!({}));
+}
+
+/// Round 23: a state of the schema before (v9) is read, and written back in the new one. It
+/// records no tree, so a tree no longer listed is forgotten as before.
+#[test]
+fn a_state_of_the_schema_before_is_read_and_written_anew() {
+    let scratch = Scratch::new("hook-state-v9");
+    let root = repository(&scratch);
+    let (script, _) = reading_judge(&scratch);
+    let linked = scratch.join("linked");
+    linked_tree(&root, &linked, "side");
+    start(&root, "s");
+    secret(&linked, "first.rs");
+    blocked(&stop_from(&linked, "s", &script));
+    assert_ne!(remembered_lines(), Vec::<String>::new());
+    let file = states_in(&sessions()).remove(0);
+    let mut state = the_state();
+    assert_eq!(state["schema"], "deep-diff-forge.hook-state.v10");
+    state["schema"] = json!("deep-diff-forge.hook-state.v9");
+    state.as_object_mut().unwrap().remove("trees");
+    std::fs::write(&file, state.to_string()).unwrap();
+    remove_both_records(&linked);
+    assert_eq!(stop_from(&root, "s", &script), Value::Null);
+    assert_eq!(remembered_lines(), Vec::<String>::new());
+    assert_eq!(the_state()["schema"], "deep-diff-forge.hook-state.v10");
+}
+
 /// Twelfth independent review of the hooks, HR12-L-4, as reproduced: the session's
 /// directory is under a directory of a linked tree that cannot be searched (mode 000). The
 /// stop is rightly UNJUDGED with the operating system's words, but the directory, which
@@ -8185,14 +8562,20 @@ fn a_directory_that_is_gone_is_in_the_tree_it_was_in() {
             && !stands.contains("the session's directory is not in it"),
         "{stands}"
     );
-    // a directory that is gone in the project's own tree, and one nothing of which is
+    // a directory that is gone in the project's own tree, and a relative one that is not
+    // there, taken from the hook's own directory (in no repository) and walked up from
     // there: the project is judged as before, and the linked tree is one the session is
     // not in
     for (n, cwd) in [root.join("gone/deep"), PathBuf::from("nowhere/at/all")]
         .into_iter()
         .enumerate()
     {
-        let said = allowed(&stop_from(&cwd, "s", &script)).to_owned();
+        let said = if cwd.is_absolute() {
+            stop_from(&cwd, "s", &script)
+        } else {
+            stop_from_relative(cwd.to_str().unwrap(), scratch.path(), "s", &script)
+        };
+        let said = allowed(&said).to_owned();
         assert!(
             !said.contains("could not be found out"),
             "{}: {said}",

@@ -747,6 +747,68 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     Git's directories to be quiet say that it is UNJUDGED, with the project judged.
   - *State.* Schema unchanged (`v9`).
 
+- **Round 22 of Vesper's review (NO-GO) and a fourteenth independent review of the hooks
+  (GO-WITH-FIXES): four rules in place of special cases.** Every finding since round 19 had
+  one shape: the hook believed an answer about where the session's directory is (from Git,
+  from the path, from the listing of working trees) and forgot, or said nothing.
+  - *Where the session is, is found one way, first (VD4R22-M-1, medium).* A relative
+    directory that was removed (`../linked/build/gone`) was "nothing there" before it was
+    anchored: the linked tree it was under was not judged and was named as one the
+    session's directory is not in; with that tree's two records removed as well, the stop
+    printed nothing and forgot what had blocked there. One function now anchors a relative
+    path at the hook's own directory and walks the path up to its nearest directory that
+    is there, as for an absolute one, passing a part that names a file (a `cwd` that named a
+    file was "gone": suspected by the fourteenth review). The hook's own directory that
+    cannot be had, or a part that cannot be looked at, makes the stop UNJUDGED, every tree
+    it may be in named so.
+  - *Git's answer must hold the session's directory (HR14-L-4).* A `core.worktree` in a
+    linked tree's own configuration pointed at the project made Git say the tree was the
+    project: the stop from it printed nothing with a second key in it, and what had blocked
+    there was forgotten, also at a stop from the project, whose reading of the tree read the
+    project. Where Git names a tree that does not contain the directory, the stop is
+    UNJUDGED ("Git names as the working tree a directory that does not contain the
+    session's directory"); what is read of another tree is that tree's only when Git names
+    it there.
+  - *A file-system boundary across a linked tree is not "no repository" (HR14-L-3).* A btrfs
+    subvolume made inside a linked tree (one unprivileged command), or a mount, made Git
+    stop at the boundary: the tree was named as one the session's directory is not in.
+    Where the mount point Git names lies at or under a linked tree's top, the stop is
+    UNJUDGED with Git's words and that tree may be the one. Where none does, it is "no
+    repository" as before: on this kind of host `/var` is a mount point, and every directory
+    under it that is in no repository carries Git's boundary words.
+    `GIT_DISCOVERY_ACROSS_FILESYSTEM` is still left as the session has it.
+  - *A ceiling hides nothing of the project, and nothing else is shown (HR14-L-1).* Round 22
+    emptied `GIT_CEILING_DIRECTORIES` for every Git call, and a repository the user hides
+    with a ceiling (a home directory's) was found: a session below it took it for its
+    project, with an UNJUDGED line at each stop and a second's read of the whole home at
+    each tool call. The project is found with the caller's ceiling as it is; once it is
+    known, the caller's ceiling is kept without the entries at or under one of the project's
+    trees (main and linked, compared as they are on disk). A ceiling inside a tree still
+    does not hide it. What follows, and is meant: a session that begins below a ceiling
+    that hides its repository has no project, as before round 22.
+  - *What blocked in a tree is not forgotten while its directory stands (HR14-L-2; Vesper's
+    case 2).* A linked tree beside the project whose two records were removed, or whose
+    `.git` file was removed and then `git worktree prune` run, is placed by Git in no
+    repository: the stop from inside it printed nothing with a second key there, and the
+    tree was forgotten because it was no longer listed. A tree that is no longer listed and
+    whose directory stands is now named at every stop ("… is no longer a working tree of
+    this repository; what blocked there stands until the directory is gone or it is a tree
+    again"), and a stop from inside it is UNJUDGED. It is forgotten when its directory is
+    gone, or when it is a tree again and the judge's own reading finds that tree clean; a
+    directory that cannot be looked at keeps it, named so.
+  - *Tests.* Each finding has a test that fails on `8959ca8`: the relative directory that
+    was removed, with the tree whole and with its records removed; a `cwd` that names a
+    file; `core.worktree` pointed at the project; a file system mounted in a linked tree (in
+    a user and mount namespace of the test's own, passed where none can be made); a
+    repository hidden by a ceiling; a tree with both records removed and one pruned, then
+    its directory removed, and one made a tree again; a `v9` state read and written anew.
+  - *State.* Schema `deep-diff-forge.hook-state.v10`: it records the top level of each
+    linked tree it remembers a failure of (`trees`), which is how a tree no longer listed is
+    known to be gone. A `v9` state is read with no tree recorded and written back as `v10`
+    (refusing it would make every stop of a session running across the upgrade UNJUDGED);
+    its trees no longer listed are forgotten as before. A path that is not UTF-8 or is
+    longer than 16 KiB, and the paths past 256 KiB in all, are not recorded.
+
 ### Changed
 
 - Path and shape weights are stated once, in `RiskSignal::weight`, and the scorer reads
