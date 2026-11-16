@@ -432,23 +432,24 @@ fn half_moves_and_unchanged_modes_are_judged_as_git_judges_them() {
             "diff --git a/x b/y\nsimilarity index 100%\nrename from x\nrename to y\n",
             FileStatus::Renamed,
         ),
-        (
-            "diff --git a/x b/x\nrename to y\n--- a/x\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n",
-            FileStatus::Renamed,
-        ),
-        (
-            "diff --git a/x b/x\ncopy to y\n--- a/x\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n",
-            FileStatus::Copied,
-        ),
-        (
-            "diff --git a/x b/x\nold mode 100644\nnew mode 100744\n",
-            FileStatus::ModeChanged,
-        ),
-        (
-            "diff --git a/x b/x\nold mode 100644\nnew mode 100664\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n",
-            FileStatus::Modified,
-        ),
     ];
+    // Git reads these, and its diff writes none of them (a move header alone, a mode it
+    // canonicalises): refused (`CONFORMANCE.md`); 0.8.4 read them.
+    for patch in [
+        "diff --git a/x b/x\nrename to y\n--- a/x\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n",
+        "diff --git a/x b/x\ncopy to y\n--- a/x\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n",
+        "diff --git a/x b/x\nold mode 100644\nnew mode 100744\n",
+        "diff --git a/x b/x\nold mode 100644\nnew mode 100664\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n",
+    ] {
+        assert!(git_accepts(&root, patch), "git refuses {patch:?}");
+        assert!(
+            matches!(
+                parse(patch),
+                Err(deep_diff_forge_patch::PatchParseError::HeaderNotWrittenByGit { .. })
+            ),
+            "ddf: {patch:?}"
+        );
+    }
     for (patch, status) in accepted {
         assert!(git_accepts(&root, patch), "git refuses {patch:?}");
         let files = parse(patch).unwrap();
