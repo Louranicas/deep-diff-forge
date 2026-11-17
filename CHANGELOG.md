@@ -25,6 +25,35 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   Rust hunk's tokens as well as from the rule tables. A binary creation keeps `new_file` with
   the weights of the vocabulary (0.8.4's rule). Measured: the hooks' verify runs 5 to 10 give
   the decisions of the reviewed binary, step for step; the corpus gives the same figures.
+  - *The sections of one path that Git applies in order are one file (IR7-H-2; a miss of
+    0.8.4 and of every release before it, fixed here).* The signals line was to be merged only
+    once it stood on 0.8.4's refusal of a path named by more than one section, and the parser
+    of 0.8.4 refuses that except where Git applies the sections one after the other: a change
+    in place after a section that wrote the path, and a new file after a deleted file (which
+    begins the file again). Measured at integration: a call cut between a creation and a change
+    in place of the same path (`opt.unwrap` and `();`), and a spawn after the end of a string
+    that the first section opens, were not found in the forms create then change, change then
+    change, and delete, create, change, by this tree, by the signals line and by release 0.8.4
+    (which misses the spawn the same way, as 0.8.3 does); written as one section they are.
+    Plain `git apply` writes the joined text in every form. Now such sections are also read as
+    one file, a copy of the first with the hunks of all of them in patch order, by every
+    reading, those that join hunks among them (the joins of the signals; for a run that begins
+    with a creation, 0.8.4's carried reading); each section's own reading stays, and what the
+    joined reading finds is reported on the section that holds its line. A run spends its whole
+    new side from the patch's 256 KiB, in patch order, and is read so only when it fits and
+    has no line longer than 512 bytes. All twelve measured forms now find what their
+    one-section form finds, and so does a rename followed by a change in place of the new path.
+    Still read apart: a run past the bound; a later section whose hunks have old lines, where
+    the joins of one file do not join it; a section read as the only file of its patch
+    (`file_evidence`); the earlier sections of the old path of a rename or a copy (Git reads its
+    source as before the patch). The seventh review's two corpus items for it moved from
+    declared misses to expected: precision 179 of 205, recall 179 of 260.
+- **The agent hooks on the same tree.** `agent/loop` (`ef6afdf`) is merged after it. The hooks
+  are as reviewed; the signal vocabulary has the five integrity labels (facts and remedies
+  written at the merge, "since" 0.9.0), and the sides of a label are read from the reader of a
+  Rust hunk's tokens as well as from the rule tables. A binary creation keeps `new_file` with
+  the weights of the vocabulary (0.8.4's rule). Measured: the hooks' verify runs 5 to 10 give
+  the decisions of the reviewed binary, step for step; the corpus gives the same figures.
   - *A second section for one path (IR7-H-2) is open.* The signals line was to be merged only
     once it stood on 0.8.4's refusal of a path named by more than one section. The parser of
     0.8.4 refuses that except where Git applies the sections one after the other: a change in
