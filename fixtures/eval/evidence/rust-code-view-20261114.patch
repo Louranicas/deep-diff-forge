@@ -1,0 +1,58 @@
+diff --git a/src/net.rs b/src/net.rs
+--- a/src/net.rs
++++ b/src/net.rs
+@@ -1,2 +1,7 @@
+ pub fn sync(u: &str, x: Option<u32>) -> u32 {
++    /* /* */ // */ let _ = reqwest::blocking::get(u);
++    /* /* */ // */ std::process::Command::new("sh").arg("-c").arg(u).status().ok();
++    /* /* */ // */ let v = x.unwrap();
++    /* a /* b */ " */ todo!();
++    /* //* */ // */ let w = Result::unwrap(Ok::<u32, ()>(v));
+ }
+diff --git a/src/table.rs b/src/table.rs
+new file mode 100644
+--- /dev/null
++++ b/src/table.rs
+@@ -0,0 +1,21 @@
++pub const TABLE: (char, char, &str) = ('\x41','"', "/*");
++
++pub fn first(v: &[u32]) -> u32 {
++    let unchecked = unsafe { *v.as_ptr() };
++    let n: Option<u32> = v.first().copied();
++    n.unwrap() + n.expect("no") + unchecked
++}
++
++pub fn later() -> u32 {
++    todo!()
++}
++
++#[cfg(test)]
++mod tests {
++    #[test]
++    #[ignore]
++    fn skipped() {
++        assert!(true);
++        assert_eq!(super::first(&[1]), 1);
++    }
++}
+diff --git a/src/escapes.rs b/src/escapes.rs
+--- a/src/escapes.rs
++++ b/src/escapes.rs
+@@ -1,2 +1,5 @@
+ pub fn width(c: char, p: *const u32) -> u32 {
++    if matches!(c, '\u{1F600}'|'"') { return "/*".len() as u32; }
++    let n = unsafe { *p };
++    n + u32::from(b'\xff'|b'"')
+ }
+diff --git a/src/piled.rs b/src/piled.rs
+new file mode 100644
+--- /dev/null
++++ b/src/piled.rs
+@@ -0,0 +1,7 @@
++pub const A: &str = "
++/*"; pub const B: &str = r##"
++/*
++ /*
++/*
++"##; pub fn f() { unsafe { run() } }
++unsafe fn run() { std::process::Command::new("true").status().ok(); }

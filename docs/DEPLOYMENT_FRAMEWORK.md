@@ -22,7 +22,7 @@ The framework is designed for:
 
 ## Status 2026-10-28 (0.3.0), rechecked 2026-11-01
 
-- Workspace version 0.8.3, released as the signed tag `v0.8.3` (2026-11-11 UTC), the latest tag. 14 crates under `crates/`
+- Workspace version 0.8.4, a release once the signed tag `v0.8.4` exists (no GitHub release; published as a signed tag on GitLab, Gitea and Forgejo; binaries built locally for Linux x86_64); the tag before it is `v0.8.3` (2026-11-11 UTC). 14 crates under `crates/`
   (core, patch, projection, pipeline, syntax, graph, agent, tui, cluster,
   learning, daemon, review, sdk, cli); edition 2024, MSRV 1.88, toolchain
   1.99.1. Internal edges: [`crate-edges.txt`](crate-edges.txt).
@@ -145,7 +145,8 @@ flowchart TB
 The codebase is at L9 (learning): every engine layer L0-L8 is implemented plus
 the L9 local-only learning loop. `v0.1.0` and `v0.2.0` were tagged and released
 to GitHub (binary + checksums via `release.yml`) and both git remotes. `0.2.1`
-was never tagged; 0.8.3 is tagged `v0.8.3` (2026-11-11 UTC), the latest tag. crates.io is on hold by owner
+was never tagged; 0.8.3 is tagged `v0.8.3` (2026-11-11 UTC), the tag before 0.8.4; 0.8.4 is a
+release once `v0.8.4` exists. crates.io is on hold by owner
 decision: the `publish` job runs only when the repository variable
 `DDF_CRATES_IO` is `open`, and a configured `CARGO_REGISTRY_TOKEN` does not lift
 the hold (corrected 2026-10-28; the earlier text said a token alone would
@@ -206,7 +207,7 @@ Every recipe in the `justfile` (checked 2026-10-28):
 | `just gate-release` | `gate-feature` + `docs`. |
 | `just ci` | Runs `scripts/ci_local.sh`: step-for-step replica of the `secrets`, `msrv`, `gate` and `supply-chain` CI jobs (checked by `crates/deep-diff-forge-cli/tests/ci_replica.rs`). Not the Podman evidence job or diff mutation. |
 | `just publish-dry-run` | `cargo publish --dry-run` for the core and learning crates. |
-| `just release-tag <version>` | Check version and clean tree, run `gate-release`, tag `v<version>`, push the tag to the `github` and `gitlab` remotes. |
+| `just release-tag <version>` | Check version and that `git status --porcelain` prints nothing, before and after the gate (ignored files and `HEAD` are not checked: see the release procedure in `docs/RELEASE_AND_PUBLICATION.md`, Tag And Push), refuse a remote whose URL names github.com, run `gate-release`, sign `v<version>`, push the tag to the `gitlab`, `gitea` and `forgejo` remotes. |
 | `just zellij-observe` | Optional Zellij session observation. |
 | `just habitat-observe` | Optional habitat/factory status and wiring observation. |
 | `just doctor` | `status` + `hooks-status` + `contracts` + optional external observation. |

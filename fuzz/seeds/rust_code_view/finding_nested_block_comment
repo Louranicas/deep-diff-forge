@@ -1,0 +1,9 @@
+pub fn sync(u: &str) -> u32 {
+    /* /* */ // */ let n = u.len() as u32 + 41;
+    /* /* */ // */ return n;
+}
+fn main() { println!("{}", sync("x")); }
+pub fn fetch(u: &str) {
+    /* /* */ // */ let _ = reqwest::blocking::get(u);
+    /* /* */ // */ std::process::Command::new("sh").arg("-c").arg(u).status().ok();
+}

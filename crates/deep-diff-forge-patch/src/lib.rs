@@ -139,10 +139,29 @@ pub enum PatchParseError {
     /// A file section from which `git apply` reads no patch: a `diff --git` line with no
     /// extended header or hunk after it (Git: not a header), or a traditional `---`/`+++` pair
     /// with no hunk (Git: "No valid patches"). A Git section of `---`/`+++` alone is refused
-    /// too, since the model could not render it back. The line is the section's first.
+    /// too, since the model could not render it back. So is a Git section with no hunk, no
+    /// binary marker and no change in its headers, such as an `index` line alone (Git: "patch
+    /// with only garbage"). The line is the section's first.
     SectionWithoutPatch {
         /// 1-based line number where the section began.
         line_number: usize,
+    },
+    /// One path is written or removed by more than one file section, in a way `git apply` does
+    /// not carry out as the sequence the review would show. Git applies a patch as a set: every
+    /// removal first, every creation after, and a rename or copy reads its source as it was
+    /// before the patch. So "modify `x`", then "delete `x`" leaves `x` in place with the
+    /// modified content. Two shapes are read, because Git can apply them in order when their
+    /// hunks apply: a change in place after a section that wrote the path, and `new file` after
+    /// `deleted file` for one path (a change of type). A single section that renames a path to
+    /// itself removes and writes it, and is refused too (`same_section`).
+    PathInSeveralSections {
+        /// 1-based line number where the later of the two sections began (the section itself,
+        /// with `same_section`).
+        line_number: usize,
+        /// The path, as the review would show it.
+        path: String,
+        /// The section at `line_number` renames `path` to itself, so it removes and writes it.
+        same_section: bool,
     },
     /// A header line (a path, mode or hunk header the parser reads meaning from) that is not
     /// UTF-8. Decoded lossily, the value it names would be a substitute: `caf\xe9` and
@@ -212,6 +231,7 @@ impl PatchParseError {
             | Self::MisplacedHunk { .. }
             | Self::HunkWithoutChange { .. }
             | Self::SectionWithoutPatch { .. }
+            | Self::PathInSeveralSections { .. }
             | Self::MalformedHunkHeader { .. }
             | Self::BodyLineOutsideHunk { .. }
             | Self::TruncatedHunk { .. }
@@ -244,7 +264,7 @@ impl std::fmt::Display for PatchParseError {
             ),
             Self::InconsistentHeader { line_number } => write!(
                 f,
-                "contradictory file headers ending at line {line_number} (a new or deleted file without /dev/null, a repeated mode, or a move that is both a rename and a copy)"
+                "contradictory file headers ending at line {line_number} (a new or deleted file without /dev/null, /dev/null on both sides, a repeated mode, or a move that is both a rename and a copy)"
             ),
             Self::UnterminatedLine { line_number } => write!(
                 f,
@@ -274,7 +294,23 @@ impl std::fmt::Display for PatchParseError {
             ),
             Self::SectionWithoutPatch { line_number } => write!(
                 f,
-                "the file section beginning at line {line_number} holds nothing git apply reads as a patch (no extended header, no hunk)"
+                "the file section beginning at line {line_number} holds nothing git apply reads as a patch (no hunk, no binary marker, and no rename, copy, creation, deletion or mode change in its headers)"
+            ),
+            Self::PathInSeveralSections {
+                line_number,
+                path,
+                same_section: true,
+            } => write!(
+                f,
+                "the file section beginning at line {line_number} renames {} to itself, removing and writing one path in one section, which no tool writes",
+                Excerpt(path)
+            ),
+            Self::PathInSeveralSections {
+                line_number, path, ..
+            } => write!(
+                f,
+                "the file section beginning at line {line_number} writes or removes {}, which an earlier section also writes or removes; git apply does not apply such sections one after the other",
+                Excerpt(path)
             ),
             Self::LossyHeader { line_number } => write!(
                 f,

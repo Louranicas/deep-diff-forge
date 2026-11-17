@@ -4,7 +4,7 @@ The command-line front door to **Deep-Diff-Forge**, a deterministic code-review
 engine for diffs. It parses a unified or Git patch into a reviewable model,
 ranks the files by review risk, and never changes the patch it shows you.
 
-This crate builds the `deep-diff-forge` binary (version 0.8.3). It is a local,
+This crate builds the `deep-diff-forge` binary (version 0.8.4). It is a local,
 single-user tool for Linux and macOS
 ([supported platforms](https://github.com/Louranicas/deep-diff-forge#supported-platforms)).
 
@@ -17,7 +17,8 @@ crates.io publication is on hold until the project is production-hardened, so
   ship `deep-diff-forge-<tag>-<target>.tar.gz` archives with `.sha256` files
   for `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin` and
   `x86_64-apple-darwin`, and `aarch64-unknown-linux-gnu` since v0.6.0.
-  Published releases: v0.1.0 to v0.8.3 (latest: v0.8.3, 2026-11-11 UTC).
+  Published GitHub releases: v0.1.0 to v0.8.3 (latest: v0.8.3, 2026-11-11 UTC). 0.8.4 has
+  none: once the signed tag `v0.8.4` exists it is published as a signed tag on GitLab, Gitea and Forgejo; binaries built locally for Linux x86_64.
 - **From source** (Rust 1.88 or newer):
 
   ```bash

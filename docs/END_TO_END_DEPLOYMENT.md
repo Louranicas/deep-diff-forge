@@ -24,9 +24,10 @@ The gate sequence below is the design. What runs today:
 - Gate 4's snapshot directories (`fixtures/expected/...`) do not exist. The
   fixtures today are `fixtures/patch/*.patch` (with `fixtures/patch/regressions/`),
   `fixtures/council/` and, since 0.5.0, the labelled corpus `fixtures/eval/`
-  (34 cases since 0.6.0); fuzz seeds live in `fuzz/seeds/`.
+  (34 cases since 0.6.0, 35 with `evidence/rust-code-view-20261114` since 0.8.4); fuzz seeds live in `fuzz/seeds/`.
 - Gate 8 has no tooling; nothing writes `reports/releases/`.
-- 0.8.3 is tagged `v0.8.3` (2026-11-11 UTC), the latest release. Published releases: `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`, `v0.8.0`, `v0.8.1`, `v0.8.2`, `v0.8.3`. crates.io
+- 0.8.3 is tagged `v0.8.3` (2026-11-11 UTC), the release before 0.8.4; 0.8.4 is a release once
+  `v0.8.4` exists (no GitHub release). Published releases: `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`, `v0.8.0`, `v0.8.1`, `v0.8.2`, `v0.8.3`. crates.io
   is on hold (`DDF_CRATES_IO`).
 - The local remote-tracking refs (last fetch, 2026-10-28) show GitLab `main` at
   `2f03f40`, the same commit as GitHub `main`; the 2026-10-26 instruction not to
@@ -246,20 +247,23 @@ weekly campaign (`campaign.yml`) runs it for 600 s that way (measured 2026-10-30
 
 ### Gate 7: Publish
 
-Publishing order:
+Publishing order from 0.8.4 (GitLab is the repository of record; nothing goes to GitHub):
 
-1. Commit release changes.
-2. Tag `vX.Y.Z`.
-3. Push to GitHub.
-4. Push to GitLab when credentials/project exist.
-5. Create release assets.
-6. Publish crates only after release artifacts pass smoke.
+1. Merge the release changes to GitLab `main`.
+2. In a dedicated, freshly cloned release worktree, run `just release-tag X.Y.Z`: it gates,
+   signs the tag and pushes it to the `gitlab`, `gitea` and `forgejo` remotes.
+3. Build the release from the tag (`just release-local-build`), sign its `SHA256SUMS`, and
+   attach the files to the tag's release on GitLab.
+4. Publish crates only after release artifacts pass smoke (on hold).
 
-`main` changes only through a merged pull request, and GitLab `main` is fast-forwarded to
-GitHub's. The tag is the owner's act, and one recipe validates and pushes it to both remotes:
+Up to 0.8.3 the order was: commit, tag, push to GitHub, push to GitLab, release assets made by
+`release.yml` at GitHub, crates; `main` changed only through a merged pull request on GitHub,
+and GitLab `main` was fast-forwarded to GitHub's. From 0.8.4 GitLab `main` moves on its own and
+GitHub's stays at 0.8.3. The tag is the owner's act, under the procedure in
+[Tag And Push](RELEASE_AND_PUBLICATION.md#tag-and-push):
 
 ```bash
-just release-tag X.Y.Z   # version check, clean tree, gate-release, then push vX.Y.Z to origin and gitlab
+just release-tag X.Y.Z   # version check, git status --porcelain empty, gate-release, then push vX.Y.Z to gitlab, gitea and forgejo
 ```
 
 Current status (2026-10-26, kept as written; see the 2026-10-28 status at the

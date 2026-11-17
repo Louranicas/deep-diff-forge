@@ -1947,7 +1947,7 @@ mod tests {
                 "refused: 0 files in input (--require-files)"
             )
         );
-        let header = call(r#"{"method":"diff.compute","params":{"patch":"diff --git a/x b/x\nindex 1..2 100644\n","require_hunks":true}}"#, &e).unwrap_err();
+        let header = call(r#"{"method":"diff.compute","params":{"patch":"diff --git a/x b/x\nold mode 100644\nnew mode 100755\n","require_hunks":true}}"#, &e).unwrap_err();
         assert_eq!(
             (header.code, header.message.as_str()),
             (

@@ -55,7 +55,7 @@ checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
 name = "deep-diff-forge-agent"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "deep-diff-forge-core",
  "serde_json",
@@ -63,11 +63,11 @@ dependencies = [
 
 [[package]]
 name = "deep-diff-forge-core"
-version = "0.8.3"
+version = "0.8.4"
 
 [[package]]
 name = "deep-diff-forge-daemon"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "deep-diff-forge-agent",
  "deep-diff-forge-core",
@@ -92,26 +92,27 @@ dependencies = [
  "deep-diff-forge-review",
  "deep-diff-forge-syntax",
  "libfuzzer-sys",
+ "ra-ap-rustc_lexer",
  "serde_json",
 ]
 
 [[package]]
 name = "deep-diff-forge-graph"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "deep-diff-forge-core",
 ]
 
 [[package]]
 name = "deep-diff-forge-patch"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "deep-diff-forge-core",
 ]
 
 [[package]]
 name = "deep-diff-forge-review"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "deep-diff-forge-core",
  "nix",
@@ -121,7 +122,7 @@ dependencies = [
 
 [[package]]
 name = "deep-diff-forge-syntax"
-version = "0.8.3"
+version = "0.8.4"
 dependencies = [
  "deep-diff-forge-core",
  "tree-sitter",
@@ -273,6 +274,17 @@ name = "r-efi"
 version = "5.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
+
+[[package]]
+name = "ra-ap-rustc_lexer"
+version = "0.184.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1ee6759a85212aad34e041fca34642a27e4a0b9b4dd74154fbed844823f4cfa"
+dependencies = [
+ "memchr",
+ "unicode-ident",
+ "unicode-properties",
+]
 
 [[package]]
 name = "regex"
@@ -436,9 +448,15 @@ dependencies = [
 
 [[package]]
 name = "unicode-ident"
-version = "1.0.24"
+version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
+
+[[package]]
+name = "unicode-properties"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "993ad287eb20e8ba755312801cfe1413e0f25d604075863acaddca10b04c1833"
 
 [[package]]
 name = "wasip2"

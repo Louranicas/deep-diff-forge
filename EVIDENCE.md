@@ -1320,3 +1320,110 @@ Dates here are UTC unless marked. The tag was signed at 16:39Z on 2026-11-11, wh
     - `index 1111111..2222222 160000` over a one-line hunk on an existing regular file: `git apply --check` refuses it (`wrong type`); v0.8.2 showed the file modified. v0.8.3 refuses it (`invalid file mode at line 7`).
   - **Controls.** A plain new file, a binary change with its `index` line, and a new submodule (`new file mode 160000` with a `Subproject commit` line) are accepted by both versions and read as Git reads them.
 - **Not measured here.** v0.8.3 as released has had no independent rescore. F1 of the same rescore (a binary body Git finds corrupt is shown as applied), F4 and F5 are not fixed in 0.8.3 ([CHANGELOG](CHANGELOG.md), Known limits). The patches were compared with Git's `--numstat --summary` and, for one, `--check`; no patch was applied to a working tree for this section. The macOS and arm64 archives were checked by checksum and attestation only, not run.
+
+## 0.8.4 release commit (2026-11-16)
+
+Dates here are UTC. 0.8.4 is built and published without GitHub: no workflow runs for it, and
+its build and checks are the local ones below ([local release](docs/RELEASE_AND_PUBLICATION.md#local-release-from-084)).
+
+- **Inputs.**
+  - The independent rescore of the released v0.8.3 (2026-11-12, 67/100) found G1 and G2 (high):
+    a `Files … differ` line after an `index` line, and one path in several sections, each
+    reviewed otherwise than `git apply` writes it ([DDF-2026-001](docs/advisories/DDF-2026-001.md)).
+    Rust code hidden from the code view by a nested block comment, a character literal with a
+    long escape, or a comment an earlier hunk of a created file opened was found on 2026-11-14
+    ([DDF-2026-002](docs/advisories/DDF-2026-002.md)).
+  - The code view fix (`07f4fd2`) was merged into `release/0.8.4` at `566daa2` and the version
+    set to 0.8.4 at `69064ca`; the local release tool and the advisories (`8f6cbc2`, new files
+    only), the documents (`14e3ad2`) and one review round follow. Two independent reviewers
+    read `69064ca` (2026-11-16): both GO-WITH-FIXES, and neither found a patch 0.8.4 accepts
+    that `git apply` writes otherwise than the review shows. The round (`b8712e6`, then the
+    documents `1c00c62`) applies the rulings on their findings: a binary section that creates
+    or deletes a file carries `new_file` or `deleted_file` (R84-M-1, medium: without it such a
+    file ranked below 0.8.3), `--help` and `deploy release` no longer claim GitHub (R84-L-3), a
+    rename of a path to itself has its own message (R84-L-5), a test of one path spelled two
+    ways, and narrowed wording. The same reviewers re-read `1c00c62` (2026-11-17): one NO-GO
+    (VR84B-M-1: the signals were also read from `/dev/null` in the binary line's names, which
+    Git does not read, so an in-place change could carry them; VR84B-M-2: `release-tag`'s
+    clean-tree check did not see untracked files) and one GO-WITH-FIXES (the same signal
+    finding as a low, an archive member check, wording). The closing fix (`a1caf4e`, then the
+    documents of this commit) removes the name reading (a binary section carries `new_file` or
+    `deleted_file` only with a `new file mode` or `deleted file mode` header), makes
+    `release-tag` refuse any `git status --porcelain` output before and after the gate, makes
+    `verify` refuse an archive whose members are not exactly the five it packs, and fixes the
+    wording. The same reviewers re-read `363755e` (2026-11-17): one GO with lows, one NO-GO on
+    two claims of the `release-tag` recipe (VR84C-M-1: `git status --porcelain` does not see
+    ignored files, which Cargo can read; VR84C-M-2: the recipe does not compare `HEAD` before
+    and after the gate). The documents of this commit narrow those claims and state the release
+    worktree procedure; nothing under `crates/` or `scripts/` changed after `363755e`. `fuzz/`
+    and `fixtures/` did not change after `69064ca`.
+- **Gate.** `scripts/ci_local.sh` passed every one of its 32 steps on `69064ca` (09:47:25Z to
+  09:49:53Z), on `14e3ad2`, on `1c00c62`, on `363755e` (18:02:52Z to 18:04:43Z), and on the
+  candidate of this commit, whose tree differs only in this section (19:40:15Z to 19:42:22Z): `steps failed: 0`, and the tree unchanged after it. `cargo
+  test --workspace` counts 2,013 passed and 4 ignored (the banner's count; 2,008 before the
+  first review round, 2,011 after it).
+- **Control.** In a scratch clone at `v0.8.3` (`a74bf91`) with 0.8.4's
+  `tests/git_differential.rs`, 7 tests fail: four for G1, two for G2 and one for L1 (a
+  traditional diff with `/dev/null` on both sides). The file names an error variant v0.8.3 lacks,
+  so one assertion on that variant was weakened to `Err(_)` in the scratch copy, a change that can
+  only make tests pass. The other 12 tests of the file, shapes that stay reviewed, pass there.
+  For the review round, in a scratch clone at `14e3ad2` with its new tests: the binary-creation
+  test fails at its floor check (a score of 5 where v0.8.3 gives 6), the rename-to-itself test
+  on the message, and two `deploy release` tests on `pending`; the test of one path spelled two
+  ways passes there, as it holds what `14e3ad2` already does. For the closing fix, in a scratch
+  clone at `1c00c62` with its new tests: the test of the binary line's names fails on each of its seven
+  cases (each carries `new_file` or `deleted_file` there, scores 5 and 6); the test of the
+  `release-tag` recipe fails (no status check); and `test_release_local.sh`'s new case fails:
+  `verify` passes the archive with a second `./D/deep-diff-forge`, while its other 14 lines
+  pass.
+- **Comparison.** Over 5,831 patches (the review corpora of the code view fix), the binary of
+  `07f4fd2` that both reviewers passed and the 0.8.4 binary of `69064ca` (`lost.py --strict`):
+  lost 0, gained 0, 275 refused by both, and 3 refused by 0.8.4 only, each a file created by one
+  section and renamed away by the next (`PathInSeveralSections`, the G2 rule). The ranked JSON
+  answers are byte-identical on the other 5,828. After the closing fix, over 6,301 patches (the
+  same 5,831, the first round's reproductions and interaction cases, binary creations and
+  deletions written each way, and both second-round reviewers' reproductions and generated
+  cases), each row of a ranking matched to the row of the same path and status (and, where
+  G1 changed a section's status to `binary_changed`, to the row of the same path):
+  - against the published v0.8.3 binary: no row lower, and no signal or listed item missing;
+    215 sections changed status, each to `binary_changed` (G1), none lower; 20 refused by 0.8.4
+    only, all exit 4: 12 renames of a path to itself, 7 G2 shapes (`PathInSeveralSections`)
+    and 1 `index`-only section (G1). (`lost.py`, which pairs two sections of one path by rank
+    position, still counts two interaction cases in which a created section now ranks above
+    the other section of its path; matched by status, nothing is lower.)
+  - against the binary of `69064ca`: nothing lower, refusal differs 0, and 349 rows gain, each a
+    `binary_changed` section that gains `new_file` (+2; 261) or `deleted_file` (+3; 88) and has
+    the header of that signal.
+  - against the binary of `1c00c62`: 90 rows lose `new_file` (33), `deleted_file` (55) or both
+    (2), each by that weight and each in a section without the header of the signal it lost
+    (the name reading the closing fix removes); nothing else differs.
+- **Local build** (`scripts/release_local.sh build`, on the candidate of this commit,
+  19:27:09Z to 19:28:07Z, in the `fedora-toolbox-44` toolbox; Rust 1.99.1, LLD 23.1.1, glibc 2.43 on the
+  build machine). Two fresh exports at two paths built with
+  `cargo build --release --locked -p deep-diff-forge-cli --target x86_64-unknown-linux-gnu`
+  gave one binary, SHA-256
+  `0c93b3edb0cde6f37c9d06bf3ed5ced6c9c2d43b9f52ae4d39e4e37b2707087f` (both builds, and the same on `363755e`; `7bfc281c…` before the first review round, `33917d57…` after it). It prints
+  `deep-diff-forge 0.8.4`, produces a review document, and requires at most `GLIBC_2.34`
+  (`GLIBC_2.39` only as the weak `pidfd_spawnp` and `pidfd_getpid`). It holds no build path, and
+  it holds the registry source path under `CARGO_HOME` (`~/.cargo` of the build account). The
+  archive, `SHA256SUMS` and receipt hashes of the release are those of the owner's build of the
+  tag: an archive carries its commit's time and `README.md`, so this commit cannot hold its own.
+- **Self-test.** `scripts/test_release_local.sh` on the candidate (19:27:09Z to 19:29:12Z): all
+  cases passed. A good build and its verify pass; a changed archive byte fails verify, with the
+  checksums as built and recomputed; a checksum signature by another key fails; a tag that is not
+  the workspace version is refused by build and verify; `github.com` in an argument, an
+  environment variable or the `gitlab` remote's URL is refused; a commit whose binary differs
+  between two builds writes nothing; an archive that also holds `./D/deep-diff-forge`, with its
+  checksums recomputed and signed by the good key, fails verify.
+- **Signers.** `v0.8.3` verifies against `.github/release_allowed_signers` through
+  `scripts/verify_release_tag.sh` (good signature, commit on `gitlab/main`), as it does against
+  `.github/allowed_signers`. In the same line form, a scratch key's signature in the namespace
+  `deep-diff-forge-release-sha256sums` verifies, and one made in namespace `git` does not.
+- **Pending (the owner's steps).** The merge, the signed tag `v0.8.4` on GitLab, Gitea and
+  Forgejo, the release build of the tag, the signature of its `SHA256SUMS`, and publishing the
+  files. None had happened when this section was written.
+- **Not measured here.** 0.8.4 has had no independent rescore. The binary was run only on the
+  build machine (glibc 2.43), not on an older system. No binary was built for
+  `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin` or `aarch64-apple-darwin`. G3, F1, F4 and
+  F5 are open ([SECURITY.md](SECURITY.md#residual-risks-and-non-goals) for G3 and F1; the
+  0.8.3 Known limits of the [CHANGELOG](CHANGELOG.md) for F1, F4 and F5).

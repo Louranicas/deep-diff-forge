@@ -1,7 +1,7 @@
 // DDF review route: DDF-R12, DDF-R13. Status and remaining work are recorded in the linked ledger; this comment does not claim delivery.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-graph--src--risk
-use crate::evidence::{Evidence, EvidenceSignal, file_evidence};
+use crate::evidence::{CarriedShares, Evidence, EvidenceSignal, Share, file_evidence_marked};
 use deep_diff_forge_core::{FileStatus, PatchLineKind, ReviewFile};
 
 /// A deterministic, explainable reason a file is ranked where it is.
@@ -9,9 +9,9 @@ use deep_diff_forge_core::{FileStatus, PatchLineKind, ReviewFile};
 pub enum RiskSignal {
     /// Touches a likely public API surface (`lib.rs`, `mod.rs`, an `api/` path).
     PublicApiSurface,
-    /// A newly added file.
+    /// A newly added file (for a binary section, one with a `new file mode` header).
     NewFile,
-    /// A deleted file.
+    /// A deleted file (for a binary section, one with a `deleted file mode` header).
     DeletedFile,
     /// A binary change (no reviewable text).
     BinaryChange,
@@ -74,6 +74,8 @@ pub const MANY_HUNKS: usize = 5;
 /// is chosen by whoever wrote the patch, so it may lower a file's priority but never hide
 /// it: before, a new `src/generated/x.rs` that spawned a process scored 0 and ranked below
 /// a one-line README edit.
+///
+/// `file` is read as the only file of its patch, as by [`assess_file`].
 #[must_use]
 pub fn score_file(file: &ReviewFile) -> (u32, Vec<RiskSignal>) {
     let assessment = assess_file(file);
@@ -94,10 +96,29 @@ pub struct Assessment {
 /// Code evidence adds each signal's weight once per file. A path cannot hide code: evidence
 /// keeps its weight on a generated or vendored path, and on a test path it counts half
 /// (rounded up), except a removed test, which counts in full.
+///
+/// `file` is read as the only file of its patch ([`crate::evidence::file_evidence`]);
+/// [`crate::rank`] reads each file of a patch with its share of the patch's carried reading.
 #[must_use]
 pub fn assess_file(file: &ReviewFile) -> Assessment {
+    assess_file_marked(file, Share::Own).0
+}
+
+/// Not part of the API, and may change: [`assess_file`] of `file` read with its share of its
+/// patch's carried reading, `file` being the file at `index` of the files `shares` was made
+/// from. The outline of a patch scores its files so.
+#[doc(hidden)]
+#[must_use]
+pub fn assess_file_in_patch(file: &ReviewFile, shares: &CarriedShares, index: usize) -> Assessment {
+    assess_file_marked(file, shares.share(index)).0
+}
+
+/// [`assess_file`], with the hunks read together that `share` says, and beside its evidence,
+/// item for item, whether the reading every release up to 0.8.3 had finds the item: what the
+/// bounded list of a ranked file goes by.
+pub(crate) fn assess_file_marked(file: &ReviewFile, share: Share) -> (Assessment, Vec<bool>) {
     let (path_score, mut signals) = score_path_and_shape(file);
-    let evidence = file_evidence(file);
+    let (evidence, released) = file_evidence_marked(file, share);
     let test = is_test(&file.path);
     let mut score = path_score;
     for signal in EvidenceSignal::ALL {
@@ -110,11 +131,14 @@ pub fn assess_file(file: &ReviewFile) -> Assessment {
             };
         }
     }
-    Assessment {
-        score,
-        signals,
-        evidence,
-    }
+    (
+        Assessment {
+            score,
+            signals,
+            evidence,
+        },
+        released,
+    )
 }
 
 /// The score and signals from everything but code evidence.
@@ -232,11 +256,36 @@ fn mode_weight(file: &ReviewFile, signals: &mut Vec<RiskSignal>) -> u32 {
 }
 
 /// The weight of a file's status (added, deleted, binary), recording its signal.
+///
+/// A binary section with a `new file mode` header also carries `new_file`, and one with a
+/// `deleted file mode` header `deleted_file`, with the weights of a text file; its status stays
+/// `binary_changed`. These are the headers Git acts on: with one, `git apply` creates or deletes
+/// the file, or refuses when the path's state disagrees. The names on the binary line are not
+/// read: Git does not read them either (review of 0.8.4, R84B-L-1, VR84B-M-1). 0.8.3 read
+/// `Files /dev/null and b/x differ` under `new file mode` as `added`, and without this such a
+/// creation ranked below 0.8.3 once the line became a binary marker (R84-M-1).
 fn status_weight(file: &ReviewFile, signals: &mut Vec<RiskSignal>) -> u32 {
     let (signal, weight) = match file.status {
         FileStatus::Added => (RiskSignal::NewFile, 2),
         FileStatus::Deleted => (RiskSignal::DeletedFile, 3),
-        FileStatus::BinaryChanged => (RiskSignal::BinaryChange, 1),
+        FileStatus::BinaryChanged => {
+            let says = |header: &str| {
+                file.patch_twin
+                    .metadata
+                    .iter()
+                    .any(|m| m.starts_with(header))
+            };
+            let mut weight = 1;
+            if says("new file mode ") {
+                signals.push(RiskSignal::NewFile);
+                weight += 2;
+            }
+            if says("deleted file mode ") {
+                signals.push(RiskSignal::DeletedFile);
+                weight += 3;
+            }
+            (RiskSignal::BinaryChange, weight)
+        }
         _ => return 0,
     };
     signals.push(signal);
@@ -690,6 +739,187 @@ mod tests {
         );
         let (_, signals) = score_file(&f);
         assert!(signals.contains(&RiskSignal::BinaryChange));
+    }
+
+    /// Review of 0.8.4, R84-M-1: 0.8.3 read `Files … differ` as no marker, so a creation or
+    /// deletion written with it ranked as `added` or `deleted`. Read as a binary marker (G1), it
+    /// lost `new_file`/`deleted_file` and scored below 0.8.3 (6 to 5, 4 to 3, 4 to 2). A binary
+    /// section with a `new file mode` or `deleted file mode` header keeps that signal and its
+    /// weight; its status stays `binary_changed`. The scores of the published v0.8.3 binary are
+    /// beside each case.
+    #[test]
+    fn a_binary_creation_or_deletion_keeps_new_file_or_deleted_file() {
+        use RiskSignal::{
+            BinaryChange, DeletedFile, ExecutableBit, GeneratedOrVendored, NewFile, TestOnly,
+        };
+        const NULL: &str = "0000000000000000000000000000000000000000";
+        const BLOB: &str = "545a1639dc6dea3534198996319dd2847b002e4a";
+        let section = |path: &str, headers: &str, marker: &str| {
+            file(&format!(
+                "diff --git a/{path} b/{path}\n{headers}\n{marker}\n"
+            ))
+        };
+        let new = |path: &str, mode: &str, marker: &str| {
+            section(
+                path,
+                &format!("new file mode {mode}\nindex {NULL}..{BLOB}"),
+                marker,
+            )
+        };
+        for (f, v083, expected) in [
+            (
+                new("n", "100755", "Files /dev/null and b/n differ"),
+                6,
+                (7, vec![NewFile, BinaryChange, ExecutableBit]),
+            ),
+            (
+                new(
+                    "src/run.sh",
+                    "100755",
+                    "Files /dev/null and b/src/run.sh differ",
+                ),
+                6,
+                (7, vec![NewFile, BinaryChange, ExecutableBit]),
+            ),
+            (
+                new(
+                    "build.rs",
+                    "100644",
+                    "Files /dev/null and b/build.rs differ",
+                ),
+                4,
+                (5, vec![NewFile, BinaryChange]),
+            ),
+            (
+                new("x", "100644", "Binary files /dev/null and b/x differ"),
+                3,
+                (5, vec![NewFile, BinaryChange]),
+            ),
+            (
+                section(
+                    "tests/a.rs",
+                    &format!("deleted file mode 100644\nindex {BLOB}..{NULL}"),
+                    "Files a/tests/a.rs and /dev/null differ",
+                ),
+                4,
+                (5, vec![TestOnly, DeletedFile, BinaryChange]),
+            ),
+        ] {
+            assert_eq!(
+                f.status,
+                FileStatus::BinaryChanged,
+                "{:?}",
+                f.patch_twin.metadata
+            );
+            let scored = score_file(&f);
+            assert!(scored.0 >= v083, "{:?}", f.patch_twin.metadata);
+            assert_eq!(scored, expected, "{:?}", f.patch_twin.metadata);
+        }
+        // A binary change in place carries neither.
+        let changed = section(
+            "p.png",
+            "index 1111111..2222222 100644",
+            "Binary files a/p.png and b/p.png differ",
+        );
+        assert_eq!(score_file(&changed), (3, vec![BinaryChange]));
+        // A generated path keeps them too.
+        assert_eq!(
+            score_file(&new(
+                "vendor/x",
+                "100644",
+                "Files /dev/null and b/vendor/x differ"
+            )),
+            (4, vec![GeneratedOrVendored, NewFile, BinaryChange])
+        );
+    }
+
+    /// Review of 0.8.4, R84B-L-1 and VR84B-M-1: the names on the binary line are not read, as
+    /// Git does not read them. With no mode header, `/dev/null` among those names, which an
+    /// in-place change of a path named `foo and /dev/null` or a crafted line can show, carries
+    /// neither `new_file` nor `deleted_file`; the score is still at least the published
+    /// v0.8.3's (beside each case). Every case is checked, and every one that differs is reported.
+    #[test]
+    fn the_names_on_a_binary_line_give_neither_new_file_nor_deleted_file() {
+        use RiskSignal::BinaryChange;
+        const NULL: &str = "0000000000000000000000000000000000000000";
+        const BLOB: &str = "545a1639dc6dea3534198996319dd2847b002e4a";
+        let section = |path: &str, headers: &str, marker: &str| {
+            file(&format!(
+                "diff --git a/{path} b/{path}\n{headers}\n{marker}\n"
+            ))
+        };
+        let wrong: Vec<_> = [
+            (
+                section(
+                    "x",
+                    &format!("index {NULL}..{BLOB}"),
+                    "Files /dev/null and b/x differ",
+                ),
+                2,
+            ),
+            (
+                section(
+                    "x",
+                    "index 545a163..0000000",
+                    "Binary files a/x and /dev/null differ",
+                ),
+                3,
+            ),
+            // The second reviewer's (VR84B-M-1): an in-place section whose marker names spoof.
+            (
+                section(
+                    "x",
+                    "index 1111111..2222222 100644",
+                    "Files /dev/null and spoof and b/x differ",
+                ),
+                2,
+            ),
+            (
+                section(
+                    "x",
+                    "index 1111111..2222222 100644",
+                    "Files a/x and spoof and /dev/null differ",
+                ),
+                2,
+            ),
+            // The first reviewer's (R84B-L-1): Git's own diff of an in-place change to the path
+            // `foo and /dev/null`, a full `index` to the null id, and a full `index` from the
+            // empty blob, each with no mode header.
+            (
+                section(
+                    "foo and /dev/null",
+                    "index 8352675..1592e5c 100644",
+                    "Binary files a/foo and /dev/null and b/foo and /dev/null differ",
+                ),
+                3,
+            ),
+            (
+                section(
+                    "x",
+                    &format!("index {BLOB}..{NULL}"),
+                    "Binary files a/x and /dev/null differ",
+                ),
+                3,
+            ),
+            (
+                section(
+                    "x",
+                    &format!("index e69de29bb2d1d6434b8b29ae775ad8c2e48c5391..{BLOB} 100644"),
+                    "Binary files /dev/null and b/x differ",
+                ),
+                3,
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(f, v083)| {
+            let scored = score_file(&f);
+            (f.status != FileStatus::BinaryChanged
+                || scored.0 < v083
+                || scored != (3, vec![BinaryChange]))
+                .then(|| (f.patch_twin.metadata.clone(), scored))
+        })
+        .collect();
+        assert!(wrong.is_empty(), "{wrong:#?}");
     }
 
     #[test]

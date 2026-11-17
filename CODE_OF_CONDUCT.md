@@ -46,7 +46,7 @@ This applies in every project space:
 
 If you experience or witness unacceptable behaviour, contact the maintainer privately through
 the [maintainer's GitHub profile](https://github.com/Louranicas). For anything that is also a
-security matter, use a [private security advisory](https://github.com/Louranicas/deep-diff-forge/security/advisories/new).
+security matter, open a [confidential issue on GitLab](https://gitlab.com/lukeomahoney/deep-diff-forge/-/issues/new) (tick *This issue is confidential*).
 Reports are handled promptly and confidentially. The maintainer follows the Covenant's
 [enforcement guidelines](https://www.contributor-covenant.org/version/2/1/code_of_conduct/#enforcement-guidelines),
 which escalate from a private correction to a permanent ban.

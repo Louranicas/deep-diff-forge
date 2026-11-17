@@ -1,0 +1,9 @@
+﻿unsafe fn after_a_byte_order_mark() {}
+const S: &str = "a\
+ b"; // comment
+const T: char = '"';
+/* crlf 
+ /* nested */ */ unsafe { f() }
+const U: char = '
+'; const V: &str = r"
+"; unsafe { g() }
