@@ -223,7 +223,14 @@ fn patched(old: &[u8], file: &ReviewFile) -> Option<Vec<u8>> {
     let old: Vec<&[u8]> = old.split_inclusive(|&b| b == b'\n').collect();
     let (mut at, mut out) = (0, Vec::new());
     for hunk in &file.patch_twin.hunks {
-        let start = (hunk.old_start.unwrap_or(0) as usize).saturating_sub(1);
+        // A hunk with no old lines inserts after line `old_start` (`-U0`); any other starts at it.
+        let old_lines = hunk
+            .lines
+            .iter()
+            .filter(|l| l.kind != PatchLineKind::Added)
+            .count();
+        let start =
+            (hunk.old_start.unwrap_or(0) as usize).saturating_sub(usize::from(old_lines > 0));
         while at < start && at < old.len() {
             out.extend_from_slice(old[at]);
             at += 1;

@@ -324,10 +324,16 @@ fn header_mutants(header: &str) -> Vec<String> {
 #[test]
 fn no_hunk_header_mutant_hides_a_file_from_the_review() {
     let scratch = Scratch::new("mutants");
-    // Control: the unmutated header is a hunk of `x` to both readers, so `evil` is read as
-    // removed and added lines of `x` and no file is hidden.
+    // Control: the unmutated header is a hunk of `x` to Git, so `evil` is read as removed and
+    // added lines of `x` and no file is hidden. DDF refuses it whole: that hunk has no trailing
+    // context and another follows it, so Git places it elsewhere (`HunkPlacedElsewhere`).
     let control = format!("{VISIBLE}@@ -1,1 +1,1 @@\n{HIDDEN}");
-    assert!(reads_as_git_does(scratch.0.path(), control.as_bytes()));
+    let git = git_numstat(scratch.0.path(), control.as_bytes()).expect("git reads the control");
+    assert!(git.iter().all(|(_, path)| path == b"x"), "{git:?}");
+    assert!(matches!(
+        parse_decoded(&decode(control.as_bytes()), ParseOptions::default()),
+        Err(PatchParseError::HunkPlacedElsewhere { .. })
+    ));
     // The finding itself: Git writes `evil` from this patch, DDF must not accept it.
     let finding = format!("{VISIBLE}@@-1,1 +1,1 @@\n{HIDDEN}");
     let git = git_numstat(scratch.0.path(), finding.as_bytes()).expect("git applies the finding");
@@ -777,8 +783,8 @@ fn no_name_carries_over_from_a_bare_header_and_no_mode_overrides_a_new_file_mode
 #[test]
 fn hunks_follow_their_file_header_or_the_previous_hunk() {
     let scratch = Scratch::new("placement");
-    let hunk = "@@ -1 +1 @@\n-a\n+b\n";
-    let later = "@@ -3 +3 @@\n-c\n+d\n";
+    let hunk = "@@ -1,2 +1,2 @@\n-a\n+b\n c\n";
+    let later = "@@ -3,2 +3,2 @@\n-c\n+d\n e\n";
     let git_refuses = [
         format!("--- a/x\n+++ b/x\n\n{hunk}"),
         format!("--- a/x\n+++ b/x\ngarbage\n{hunk}"),
@@ -806,10 +812,6 @@ fn hunks_follow_their_file_header_or_the_previous_hunk() {
         format!("diff --git a/x b/x\n--- a/x\n+++ b/x\n{hunk}{later}"),
         format!("diff --git a/x b/x\nindex 1..2 100644\n--- a/x\n+++ b/x\n{hunk}"),
         format!("diff --git a/x b/x\nold mode 100644\nnew mode 100755\n--- a/x\n+++ b/x\n{hunk}"),
-        // A hunk may follow the `\ No newline` marker that ends the previous one (here it
-        // ends the new side, and the next hunk only removes).
-        "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n\\ No newline at end of file\n@@ -3 +2,0 @@\n-c\n"
-            .to_owned(),
         format!("--- a/x\n+++ b/x\n{hunk}--- a/y\n+++ b/y\n{hunk}"),
     ];
     for patch in &git_accepts {
@@ -818,6 +820,15 @@ fn hunks_follow_their_file_header_or_the_previous_hunk() {
             "ddf refused {patch:?}"
         );
     }
+    // Git reads a hunk after the `\ No newline` marker that ends the previous one's new side;
+    // that hunk has no trailing context and another follows, so Git places it at the end of the
+    // file, or refuses: DDF refuses it (`HunkPlacedElsewhere`).
+    let marker = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n\\ No newline at end of file\n@@ -3 +2,0 @@\n-c\n";
+    assert!(git_numstat(scratch.0.path(), marker.as_bytes()).is_some());
+    assert!(matches!(
+        parse_decoded(&decode(marker.as_bytes()), ParseOptions::default()),
+        Err(PatchParseError::HunkPlacedElsewhere { .. })
+    ));
     // Git also reads a first hunk straight after the extended header, with no `---`/`+++`;
     // no Git writes one, so it is refused (`CONFORMANCE.md`, row `hunk-header`).
     for headers in ["index 1..2 100644\n", "old mode 100644\nnew mode 100755\n"] {

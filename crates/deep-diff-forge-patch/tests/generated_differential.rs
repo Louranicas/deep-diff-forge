@@ -26,7 +26,7 @@
 
 mod support;
 
-use deep_diff_forge_patch::{ParseOptions, decode, parse_decoded};
+use deep_diff_forge_patch::{ParseOptions, PatchParseError, decode, parse_decoded};
 use std::collections::BTreeMap;
 use support::{Repo, Tree, agree, regular, reviewed_tree};
 
@@ -71,6 +71,7 @@ fn before() -> Tree {
         ("y", b"y\n"),
         ("e", b""),
         ("d/x", b"dx\n"),
+        ("m", b"[prod]\nallow = false\n[test]\nallow = false\n"),
     ]
     .into_iter()
     .map(|(path, content)| (path.to_owned(), regular(content)))
@@ -78,16 +79,18 @@ fn before() -> Tree {
 }
 
 /// The blobs of the object store, named in the sections as `@OLD@` (`a`), `@NEW@` (`stored`),
-/// `@Y@`, `@E@` (empty), `@T@` (`y` with no line feed, a symlink's target) and `@DX@`; `…7@` is
+/// `@Y@`, `@E@` (empty), `@T@` (`y` with no line feed, a symlink's target), `@DX@` and `@M@` (two
+/// sections, for hunks with little context); `…7@` is
 /// the seven-digit abbreviation, `@ZERO@` the null id and `@SUB@` a submodule's commit id, each
 /// as long as the repository's ids (SHA-1 or SHA-256).
-const BLOBS: [(&str, &[u8]); 6] = [
+const BLOBS: [(&str, &[u8]); 7] = [
     ("OLD", b"a\n"),
     ("NEW", b"stored\n"),
     ("Y", b"y\n"),
     ("E", b""),
     ("T", b"y"),
     ("DX", b"dx\n"),
+    ("M", b"[prod]\nallow = false\n[test]\nallow = false\n"),
 ];
 
 /// Sections Git writes for changes to `before()`, as `git diff` writes them (a change of type is
@@ -126,6 +129,19 @@ const WRITTEN: &[&str] = &[
     "diff --git a/d/x b/d/x\nindex @DX7@..@NEW7@ 100644\n--- a/d/x\n+++ b/d/x\n@@ -1 +1 @@\n-dx\n+stored\n",
     "diff --git a/d/x b/r\nsimilarity index 100%\nrename from d/x\nrename to r\n",
     "diff --git a/d/x b/c\nsimilarity index 100%\ncopy from d/x\ncopy to c\n",
+    // Hunks with little context, as `git diff -U0` and `-U1` write them, that Git places where
+    // they say: the whole file, or context on the side Git does not anchor.
+    "diff --git a/m b/m\nindex @M7@..@NEW7@ 100644\n--- a/m\n+++ b/m\n@@ -1,2 +1,2 @@\n-[prod]\n+[stage]\n allow = false\n",
+    "diff --git a/m b/m\nindex @M7@..@NEW7@ 100644\n--- a/m\n+++ b/m\n@@ -1,3 +1,3 @@\n [prod]\n-allow = false\n+allow = true\n [test]\n",
+    "diff --git a/m b/m\nindex @M7@..@NEW7@ 100644\n--- a/m\n+++ b/m\n@@ -3,2 +3,2 @@\n [test]\n-allow = false\n+allow = true\n",
+    "diff --git a/m b/m\nindex @M7@..@NEW7@ 100644\n--- a/m\n+++ b/m\n@@ -1,4 +1,4 @@\n-[prod]\n+[stage]\n allow = false\n [test]\n-allow = false\n+allow = true\n",
+];
+
+/// Sections `git diff -U0` writes that plain `git apply` places at the end of the file, not
+/// where their headers say: refused (`HunkPlacedElsewhere`), though Git writes them.
+const WRITTEN_U0: &[&str] = &[
+    "diff --git a/m b/m\nindex @M7@..@NEW7@ 100644\n--- a/m\n+++ b/m\n@@ -2 +2 @@\n-allow = false\n+allow = true\n",
+    "diff --git a/m b/m\nindex @M7@..@NEW7@ 100644\n--- a/m\n+++ b/m\n@@ -2,0 +3 @@\n+x = 1\n",
 ];
 
 /// Header lines of other rows, put into a section by the `insert` move.
@@ -406,10 +422,14 @@ struct Generated {
     text: String,
     moves: Vec<&'static str>,
     written: bool,
+    /// One of its sections is from [`WRITTEN_U0`].
+    unanchored: bool,
 }
 
 fn generate(rng: &mut Rng) -> Generated {
-    let groups: Vec<&str> = (0..=rng.below(3)).map(|_| *rng.pick(WRITTEN)).collect();
+    let pool: Vec<&str> = WRITTEN.iter().chain(WRITTEN_U0).copied().collect();
+    let groups: Vec<&str> = (0..=rng.below(3)).map(|_| *rng.pick(&pool)).collect();
+    let unanchored = groups.iter().any(|g| WRITTEN_U0.contains(g));
     let mut paths: Vec<String> = Vec::new();
     let mut distinct = true;
     for group in &groups {
@@ -435,6 +455,7 @@ fn generate(rng: &mut Rng) -> Generated {
         text,
         written: moves.is_empty() && distinct,
         moves,
+        unanchored,
     }
 }
 
@@ -456,6 +477,9 @@ struct Tally {
     /// DDF reads, Git refuses to read: a section shaped as `git diff --no-index` writes a binary
     /// or mode-only pair of two files (the stated limit of `CONFORMANCE.md`, row `diff-git`).
     no_index: usize,
+    /// Git applies, DDF refuses by design: a `git diff -U0` hunk Git places elsewhere than its
+    /// header says ([`WRITTEN_U0`], `HunkPlacedElsewhere`).
+    unanchored: usize,
     failures: Vec<String>,
 }
 
@@ -559,7 +583,10 @@ fn run(seeds: &[u64], tag: &str, format: &str) -> Tally {
                             .git_only
                             .entry(format!("{reason} after {:?}", generated.moves))
                             .or_default() += 1;
-                        if generated.written {
+                        let by_design = generated.unanchored
+                            && matches!(e, PatchParseError::HunkPlacedElsewhere { .. });
+                        tally.unanchored += usize::from(generated.written && by_design);
+                        if generated.written && !by_design {
                             tally
                                 .failures
                                 .push(format!("DDF refuses what Git writes ({e}): {case}"));
@@ -598,6 +625,7 @@ fn every_generated_patch_ddf_reads_is_applied_by_git_as_reviewed() {
         total.abbreviated_binary += tally.abbreviated_binary;
         total.submodule_diff += tally.submodule_diff;
         total.refused_whole += tally.refused_whole;
+        total.unanchored += tally.unanchored;
         for (shape, n) in tally.git_only {
             *total.git_only.entry(shape).or_default() += n;
         }
@@ -616,6 +644,10 @@ fn every_generated_patch_ddf_reads_is_applied_by_git_as_reviewed() {
         "  DDF reads, git apply refuses whole and writes nothing: abbreviated binary ids {}, --submodule=diff {}, --no-index pairs (Git cannot read them) {}, other {}",
         total.abbreviated_binary, total.submodule_diff, total.no_index, total.refused_whole,
     );
+    eprintln!(
+        "  Git writes, git apply places elsewhere, DDF refuses by design: -U0 hunks {}",
+        total.unanchored
+    );
     for failure in total.failures.iter().take(40) {
         eprintln!("  FAIL {}", failure.lines().next().unwrap_or_default());
     }
@@ -630,6 +662,7 @@ fn every_generated_patch_ddf_reads_is_applied_by_git_as_reviewed() {
         total.abbreviated_binary > 0,
         "no abbreviated binary diff was generated"
     );
+    assert!(total.unanchored > 0, "no -U0 hunk was generated");
     assert!(
         total.applied_as_read * 4 >= total.patches,
         "only {} of {} patches were read and applied",

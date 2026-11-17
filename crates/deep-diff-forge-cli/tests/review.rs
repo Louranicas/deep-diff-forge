@@ -189,7 +189,7 @@ fn the_notes_panel_wraps_a_long_warning() {
 #[test]
 fn a_patch_naming_a_path_twice_is_refused() {
     let one = "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-a\n+b\n";
-    let other = "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -9 +9 @@\n-c\n+d\n";
+    let other = "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -9,2 +9,2 @@\n-c\n+d\n ctx\n";
     let (code, stdout, stderr) = run(&["review", "--probe"], &format!("{one}{other}"));
     assert_eq!(code, 4, "{stderr}");
     assert!(stdout.is_empty(), "{stdout}");

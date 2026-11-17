@@ -68,13 +68,15 @@ impl Seen {
     }
 }
 
-/// The tree before every case: `x` holds `a`, `y` holds `y`, `e` is empty, `d/x` holds `dx`.
+/// The tree before every case: `x` holds `a`, `y` holds `y`, `e` is empty, `d/x` holds `dx`, and
+/// `m` has two sections with one line in common.
 fn before() -> Tree {
     [
         ("x", &b"a\n"[..]),
         ("y", b"y\n"),
         ("e", b""),
         ("d/x", b"dx\n"),
+        ("m", b"[prod]\nallow = false\n[test]\nallow = false\n"),
     ]
     .into_iter()
     .map(|(path, content)| (path.to_owned(), regular(content)))
@@ -668,6 +670,250 @@ fn row_no_line_feed() {
     let s = see(&r, &format!("{X}old mode 100644\nnew mode 100755"));
     s.git_writes_nothing();
     s.refused(|e| matches!(e, PatchParseError::UnterminatedLine { .. }));
+}
+
+const M: &str = "diff --git a/m b/m\nindex 1111111..2222222 100644\n--- a/m\n+++ b/m\n";
+
+#[test]
+fn row_hunk_placement() {
+    let r = rig("hunk-placement");
+    let refused = |s: &Seen| {
+        s.refused(|e| matches!(e, PatchParseError::HunkPlacedElsewhere { .. }));
+    };
+    // `git diff -U0`: a hunk with no context, past line 1. Git places it at the end of the file
+    // (`match_end`): line 4 changes, where the review showed line 2 (S3B-H-1).
+    let s = see(
+        &r,
+        &format!("{M}@@ -2 +2 @@\n-allow = false\n+allow = true\n"),
+    );
+    assert_eq!(
+        s.git_tree()["m"],
+        file("[prod]\nallow = false\n[test]\nallow = true\n", false)
+    );
+    refused(&s);
+    // An insertion with no context: Git appends it at the end of the file.
+    let s = see(&r, &format!("{M}@@ -2,0 +3 @@\n+x = 1\n"));
+    assert_eq!(
+        s.git_tree()["m"],
+        file(
+            "[prod]\nallow = false\n[test]\nallow = false\nx = 1\n",
+            false
+        )
+    );
+    refused(&s);
+    // A hunk after one with no trailing context, which no Git writes.
+    let s = see(
+        &r,
+        &format!(
+            "{M}@@ -1 +1 @@\n-[prod]\n+[stage]\n@@ -3,2 +3,2 @@\n [test]\n-allow = false\n+allow = true\n"
+        ),
+    );
+    refused(&s);
+    // At line 1 Git anchors a hunk with no context at both ends: on a longer file it refuses
+    // the whole patch. Read; C1 allows the refusal.
+    let s = see(&r, &format!("{M}@@ -1 +1 @@\n-[prod]\n+[stage]\n"));
+    assert_eq!(s.status(), ("m".into(), FileStatus::Modified));
+    s.git_writes_nothing();
+    // The same for an insertion after line 1 (`u0-insert-after-line1`, `git diff -U0`): its old
+    // side is empty, so Git would place it only in an empty file. Read; Git refuses it whole.
+    let s = see(&r, &format!("{M}@@ -1,0 +2 @@\n+x = 1\n"));
+    assert_eq!(s.status(), ("m".into(), FileStatus::Modified));
+    s.git_writes_nothing();
+    // A creation whose hunks all start at line 0, a hunk layout no Git writes: read, as 0.8.4
+    // read it, because Git places none of it elsewhere. It writes the first hunk into the empty
+    // file, then cannot anchor the second at line 0 and refuses the patch while checking it
+    // (`see` holds `git apply --check` to the apply, and the tree to the one before).
+    let s = see(
+        &r,
+        "diff --git a/n b/n\nnew file mode 100644\n--- /dev/null\n+++ b/n\n@@ -0,0 +1 @@\n+one\n@@ -0,0 +2 @@\n+two\n",
+    );
+    assert_eq!(s.status(), ("n".into(), FileStatus::Added));
+    assert!(s.reading.is_some(), "Git reads it");
+    s.git_writes_nothing();
+    // `-U0` of a change to every line: one hunk, the whole file. Read, and written exactly.
+    let s = see(
+        &r,
+        &format!(
+            "{M}@@ -1,4 +1,2 @@\n-[prod]\n-allow = false\n-[test]\n-allow = false\n+[stage]\n+allow = true\n"
+        ),
+    );
+    assert_eq!(s.git_tree()["m"], file("[stage]\nallow = true\n", false));
+    // A last hunk with leading context only is what Git writes at the end of its base: read.
+    let s = see(
+        &r,
+        &format!("{M}@@ -3,2 +3,2 @@\n [test]\n-allow = false\n+allow = true\n"),
+    );
+    assert_eq!(s.status(), ("m".into(), FileStatus::Modified));
+    // With context on both sides the header's line is the place: read, and written there.
+    let s = see(
+        &r,
+        &format!("{M}@@ -1,3 +1,3 @@\n [prod]\n-allow = false\n+allow = true\n [test]\n"),
+    );
+    assert_eq!(
+        s.git_tree()["m"],
+        file("[prod]\nallow = true\n[test]\nallow = false\n", false)
+    );
+}
+
+/// Patches `git apply` fails to write after it has begun, or writes otherwise than the review
+/// shows (S3B-M-1). Each is refused. Git deletes `x` and then fails on an empty or overlong
+/// target and on a path that is a file and a directory; it writes a target with a NUL cut at
+/// the NUL.
+#[test]
+fn shapes_git_fails_to_write_are_refused() {
+    let r = rig("write-fails");
+    let delete_x = "diff --git a/x b/x\ndeleted file mode 100644\nindex 1111111..0000000\n--- a/x\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n";
+    let cannot = |patch: &str| {
+        let patch = patch
+            .replace("@NEW@", &r.ids[1])
+            .replace("@ZERO@", &"0".repeat(r.ids[1].len()));
+        let ddf = parse_decoded(&decode(patch.as_bytes()), ParseOptions::default());
+        assert!(
+            matches!(ddf, Err(PatchParseError::GitCannotWrite { .. })),
+            "{patch:?}: {ddf:?}"
+        );
+        r.apply_outcome(&before(), patch.as_bytes())
+    };
+    let symlink = |target: &str| {
+        format!(
+            "{delete_x}diff --git a/s b/s\nnew file mode 120000\nindex 0000000..1234567\n--- /dev/null\n+++ b/s\n@@ -0,0 +1 @@\n+{target}\n\\ No newline at end of file\n"
+        )
+    };
+    // A new symlink with no content: an empty target. Git has deleted `x` when it fails.
+    let (applied, _, after) = cannot(&format!(
+        "{delete_x}diff --git a/s b/s\nnew file mode 120000\nindex 0000000..e69de29\n"
+    ));
+    assert!(!applied && !after.contains_key("x"), "{after:?}");
+    let (applied, _, after) = cannot(&symlink(&"a".repeat(5000)));
+    assert!(!applied && !after.contains_key("x"), "{after:?}");
+    // A NUL: Git writes the link to `ab`, where the review showed `ab\0cd`.
+    let (applied, _, after) = cannot(&symlink("ab\0cd"));
+    assert!(applied, "{after:?}");
+    // A symlink in a binary body, whose target DDF cannot read.
+    cannot(&format!(
+        "{delete_x}diff --git a/s b/s\nnew file mode 120000\nindex @ZERO@..@NEW@\nBinary files /dev/null and b/s differ\n"
+    ));
+    // One path as a file and as the directory of another: Git writes `a`, then fails.
+    let (applied, _, after) = cannot(
+        "diff --git a/a b/a\nnew file mode 100644\nindex 0000000..1234567\n--- /dev/null\n+++ b/a\n@@ -0,0 +1 @@\n+a\ndiff --git a/a/b b/a/b\nnew file mode 100644\nindex 0000000..1234567\n--- /dev/null\n+++ b/a/b\n@@ -0,0 +1 @@\n+b\n",
+    );
+    assert!(!applied && after.contains_key("a"), "{after:?}");
+    let (applied, _, _) = cannot(&format!(
+        "{X}index 1111111..2222222 100644\n{HUNK}diff --git a/x/b b/x/b\nnew file mode 100644\nindex 0000000..1234567\n--- /dev/null\n+++ b/x/b\n@@ -0,0 +1 @@\n+b\n"
+    ));
+    assert!(!applied);
+    // A copy keeps its source as a file: Git cannot write a path under it, nor a file where its
+    // directory is. It has deleted `x` when it fails.
+    let copy = |from: &str| format!("similarity index 100%\ncopy from {from}\ncopy to c\n");
+    let new = |path: &str| {
+        format!(
+            "diff --git a/{path} b/{path}\nnew file mode 100644\nindex 0000000..1234567\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1 @@\n+b\n"
+        )
+    };
+    for patch in [
+        format!("{delete_x}diff --git a/y b/c\n{}{}", copy("y"), new("y/b")),
+        format!(
+            "{delete_x}{}diff --git a/d/x b/c\n{}",
+            new("d"),
+            copy("d/x")
+        ),
+    ] {
+        let (applied, _, after) = cannot(&patch);
+        assert!(!applied && !after.contains_key("x"), "{after:?}");
+    }
+    // Git-written (`git diff -C --find-copies-harder`): `y` copied and renamed away, and `y/b`
+    // created. The rename removes `y` first, so Git writes it all: read, and written as reviewed.
+    let s = see(
+        &r,
+        &format!(
+            "{}diff --git a/y b/c\n{}diff --git a/y b/r\nsimilarity index 100%\nrename from y\nrename to r\n",
+            new("y/b"),
+            copy("y")
+        ),
+    );
+    assert_eq!(s.git_tree()["y/b"], file("b\n", false));
+    assert_eq!(s.read().len(), 3);
+}
+
+/// `git diff -w` (or `-b`, `-I`, `--ignore-blank-lines`, a textconv driver) of a rename, a copy
+/// or a mode change whose edits it hides: Git writes the header with `index` and no body, and
+/// `git apply` makes the move or the mode change alone (S3B-M-2; 0.8.4 read them, `19a4cc6` and
+/// `905e885` refused them). Each file has its own content, so Git pairs each with its source.
+#[test]
+fn git_written_moves_and_mode_changes_with_no_body_are_read() {
+    let r = Repo::with_format("ws-shapes", &[], "sha1");
+    let text = |name: &str| format!("{name}\n  two\n    three\nfour\nfive\nsix\n");
+    let in_repo = |name: &str| r.root().join(name);
+    let exec = |name: &str, on: bool| {
+        std::fs::set_permissions(
+            in_repo(name),
+            std::os::unix::fs::PermissionsExt::from_mode(if on { 0o755 } else { 0o644 }),
+        )
+        .unwrap();
+    };
+    // (source, result, executable after): a rename, a rename with a mode change, two copies
+    // (one with a mode change) and a mode change alone.
+    let cases = [
+        ("mv", "moved", false),
+        ("both", "both2", true),
+        ("src", "copy", false),
+        ("srcx", "copyx", true),
+        ("run.sh", "run.sh", true),
+    ];
+    for (from, _, _) in cases {
+        std::fs::write(in_repo(from), text(from)).unwrap();
+        exec(from, false);
+    }
+    commit(&r, ".", "base");
+    for (from, to, x) in cases {
+        let g = |args: &[&str]| assert!(r.git(args).status.success(), "{args:?}");
+        if from != to && !from.starts_with("src") {
+            g(&["mv", from, to]);
+        }
+        std::fs::write(in_repo(to), text(from).replace("  ", "\t")).unwrap();
+        exec(to, x);
+    }
+    commit(&r, ".", "moves");
+    let patch = r
+        .git(&[
+            "diff",
+            "-w",
+            "-M",
+            "-C",
+            "--find-copies-harder",
+            "HEAD~1",
+            "HEAD",
+        ])
+        .stdout;
+    let shown = String::from_utf8_lossy(&patch).into_owned();
+    assert!(!shown.contains("@@"), "{shown}");
+    let files = parse_decoded(&decode(&patch), ParseOptions::default())
+        .unwrap_or_else(|e| panic!("DDF refuses Git's own -w diff: {e}\n{shown}"));
+    let mut statuses: Vec<_> = files.iter().map(|f| (f.path.clone(), f.status)).collect();
+    statuses.sort_by(|a, b| a.0.cmp(&b.0));
+    let want = [
+        ("both2", FileStatus::Renamed),
+        ("copy", FileStatus::Copied),
+        ("copyx", FileStatus::Copied),
+        ("moved", FileStatus::Renamed),
+        ("run.sh", FileStatus::ModeChanged),
+    ];
+    assert_eq!(statuses, want.map(|(p, s)| (p.to_owned(), s)), "{shown}");
+    assert!(r.git(&["checkout", "-q", "HEAD~1"]).status.success());
+    let name = r.root().join(".git/ws.patch");
+    std::fs::write(&name, &patch).unwrap();
+    assert!(r.git(&["apply", name.to_str().unwrap()]).status.success());
+    for (from, to, x) in cases {
+        assert_eq!(
+            std::fs::read_to_string(in_repo(to)).unwrap(),
+            text(from),
+            "{to}"
+        );
+        let mode = std::os::unix::fs::PermissionsExt::mode(
+            &std::fs::metadata(in_repo(to)).unwrap().permissions(),
+        );
+        assert_eq!(mode & 0o100 != 0, x, "{to}");
+    }
 }
 
 /// Git with an identity, for the commits the presentations below are written from.
