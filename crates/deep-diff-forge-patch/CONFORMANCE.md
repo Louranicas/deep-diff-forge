@@ -9,18 +9,44 @@ header shapes Git's own diff writes, and it refuses the others
 
 ## What is promised
 
-For every patch DDF accepts, a plain `git apply` in Git's default configuration does one of
-two things:
+For every patch DDF accepts, a plain `git apply` in Git's default configuration, on the tree
+the patch was made from, does one of two things:
 
-- it writes exactly the paths, types, modes and contents the review shows; or
-- it refuses the whole patch and writes nothing.
+- it writes exactly the paths, types, modes and contents (as Git stores them) the review
+  shows; or
+- it refuses the whole patch while checking it, and writes nothing.
 
 A review never shows one change while Git writes another. It may show a change that never
 lands, because DDF reads a diff without the tree it applies to: a hunk that does not fit the
 file, or a file that already exists, makes Git refuse the whole patch.
 
-"Git writes it" is not the same as "`git apply` accepts it". Git's own diff writes three
-presentations that DDF reads, as 0.8.4 did, and that `git apply` refuses whole:
+To keep that, DDF refuses what Git would place or write otherwise than the review shows:
+
+- **A hunk Git places by an anchor its header does not set** (`HunkPlacedElsewhere`). Plain
+  `git apply` must place a hunk with no trailing context at the end of the file, and one at old
+  line 0 or 1 at its start, or refuse the patch (`apply_one_fragment`, `apply.c` 3146–3173:
+  without `-C` it tries no other place). A hunk with no context past line 1 then lands at the
+  end of the file, and a hunk after one with no trailing context cannot be where it says.
+  `git diff -U0` writes such hunks: Git-written, and refused (`git apply --unidiff-zero` is
+  their reader). DDF's own `git diff` passes `-U3`, whatever `diff.context` says. A hunk with
+  no context at line 1 is read: Git writes it only when it is the whole file, and else refuses
+  the patch (`git diff -U0` writes one for an insertion after line 1; Git refuses it whole).
+- **Read though no Git writes it: a creation whose hunks all start at line 0.** The accept-list
+  is about header shapes; this is a layout of hunks. Git writes the first hunk into the empty
+  file, then cannot anchor the second at line 0 (`match_beginning` with `match_end` wants an
+  empty file) and refuses the whole patch while checking it, writing nothing. Nothing is placed
+  elsewhere, so C1 holds through its second outcome, and the reading 0.8.4 gave a created file's
+  later hunks stays reachable. A creation's later hunk at any other line is refused as above.
+- **What `git apply` fails to write once it has begun** (`GitCannotWrite`). It removes what the
+  patch deletes, then writes (`write_out_results`). It fails on a symlink whose target is
+  empty, holds a NUL or is longer than 4,095 bytes, and on one path that is both a file and the
+  directory of another: two paths the patch writes, or a copy's source, which the patch keeps
+  as a file unless a section removes it, and a path written under it or at its directory. A
+  symlink in a binary body has a target DDF cannot read. These are refused.
+
+"Git writes it" is not the same as "`git apply` accepts it". C1 allows any refusal of the whole
+patch. Among those, the generated differential counts three presentations Git's own diff
+writes, which DDF reads as 0.8.4 did:
 
 - **A binary marker with abbreviated ids.** A plain `git diff` of a binary file writes
   `Binary files … differ` after an `index` line with abbreviated ids. `apply_binary` wants full
@@ -34,14 +60,25 @@ presentations that DDF reads, as 0.8.4 did, and that `git apply` refuses whole:
   `---`/`+++`, rename or copy header. `git diff --no-index` of two binary files, or of two that
   differ only in mode, writes such halves. Git names no file ("lacks filename information").
 
-`tests/conformance.rs` asserts each of the three against real Git output. In each case Git
-refuses the whole patch and the tree is unchanged. The generated differential counts each one
-apart and fails on anything else Git refuses to read.
+The list is not exhaustive. Options that change what is shown also write patches Git refuses
+whole: `-D`/`--irreversible-delete` ("removal patch leaves file contents"), textconv output, and
+`-w`, `-b` or `-I` output whose context no longer fits. `tests/conformance.rs` asserts each of
+the three against real Git output: Git refuses the whole patch and the tree is unchanged. The
+generated differential counts each one apart and fails on anything else Git refuses to read.
 
 Limits of the promise:
 
 - `git apply --reject`, which applies a patch in part, is outside it.
-- So is a non-default configuration. With `core.fileMode=false`, and without `--index`, Git
+- **A failure while writing that the patch does not determine** (permissions, a full disk, a
+  file-system limit) can leave the tree half-written: Git has removed what the patch deletes
+  before it writes. That is Git's behaviour, not a reading of the patch.
+- **Another tree.** On a tree other than the patch's base, Git places a hunk wherever its lines
+  are found nearest the header's line ("offset"), which can be another place the review does not
+  show. The `@@` section text is the patch's own claim.
+- **Attributes in the target tree.** `.gitattributes` there (`eol`, `ident`,
+  `working-tree-encoding`) makes `git apply` write the work-tree form, not the bytes Git stores
+  and the review shows.
+- **A non-default configuration.** With `core.fileMode=false`, and without `--index`, Git
   writes the mode an `index` line names: `check_preimage`, `apply.c` 3919–3937, takes the old
   mode from the patch when it does not trust the executable bit. Leaving the `index` line out
   then changes the mode written (independent review of S3a, S3A-L-2). The patch does not carry
@@ -89,16 +126,20 @@ The body comes last, from `builtin_diff`:
 - `---`/`+++` and hunks;
 - `Binary files … differ` (3945, 3969);
 - `GIT binary patch` (1580, with `--binary`);
-- nothing at all: an empty file, a pure rename or copy, or a mode change.
+- nothing at all: an empty file, a pure rename or copy, or a mode change;
+- `index` and nothing after it, when `-w`, `-b`, `-I`, `--ignore-blank-lines` or a textconv
+  driver hides every hunk of a rename, copy or mode change: the header is still written
+  (`must_show_header`).
 
 A change of type, such as a file that becomes a symlink, is written as a deletion followed by
 a creation (`run_diff` 5017).
 
-These are 37 header shapes in all:
+These are 42 header shapes in all:
 
 - 4 shapes create a file;
 - 4 shapes delete one;
 - 5 shapes have no `index` line and no body;
+- 5 shapes have an `index` line and no body (a rename, copy or mode change under `-w`);
 - 24 shapes have an `index` line and a body.
 
 They are the `GIT_WRITES` list in `src/parser.rs`. A section is read only if its headers are one
@@ -114,7 +155,8 @@ In Git's default configuration, none of these lines changes what `git apply` wri
 DDF's own rendering of a traditional diff has no `index` line. Its rendering of a rename that
 it found from the names has no `similarity index` line.
 
-Measured on 2026-11-16 with Git 2.56.1. The patches came from `git diff` (plain, `-M -C -B`,
+Measured on 2026-11-16 with Git 2.56.1, and counted again on 2026-11-18 from the same patch
+files (the same numbers). The patches came from `git diff` (plain, `-M -C -B`,
 `--binary`, and more for the third repository), `git format-patch --stdout` and `git log -p
 --first-parent`, run for every commit of each repository:
 
@@ -125,8 +167,10 @@ Measured on 2026-11-16 with Git 2.56.1. The patches came from `git diff` (plain,
 | A scratch repository built to give every row (symlinks, submodules, executables, empty and binary files, renames and copies with edits and mode changes, type changes, rewrites, quoted names) | 55 | 866 | 1,071 | 37 |
 
 Every shape the first two repositories gave is among the scratch repository's 37. The 37 are
-exactly the shapes the reading of `diff.c` above predicts. No line differed from the forms in
-the table below.
+exactly the shapes the reading of `diff.c` above predicts for these option sets. The five with
+`index` and no body come from `-w` and the like; an independent sweep found them (227 patches,
+S3B-M-2), and a test reads them from real `git diff -w` output. No line differed from the forms
+in the table below.
 
 The traditional form (`---`/`+++` with no `diff --git`) is not written by Git, but by
 `diff -u`. It is read as before, under the rules of its row.
@@ -152,6 +196,7 @@ The traditional form (`---`/`+++` with no `diff --git`) is not written by Git, b
 | `old-name` | `--- P` (in a Git section) | Checks the old name against the one already known, or sets it (`gitdiff_oldname` 988, `gitdiff_verify_name` 941). | Checked again; a different name: "inconsistent old filename". | A name that differs, or `/dev/null` beside a known name. | Before the first hunk (`emit_rewrite_diff` 1874, and the first hunk of a text diff). | Read and checked as Git checks it. A second pair was refused. A pair with no hunk after it was read in a new or deleted file. | Same, and only as the last header before the hunks, with a hunk after it (Git writes an empty file as `new file mode` and `index`). |
 | `new-name` | `+++ P` (in a Git section) | As `---`, for the new name (`gitdiff_newname` 997). | As `---`. | As `---`. | Right after `---`. | As `---`. | As `---`. |
 | `hunk-header` | `@@ -a,b +c,d @@` | Ends the header (`gitdiff_hdrend` 922). The hunks are read from here (`parse_single_patch` 1924). | Each hunk follows the last. | A hunk that changes nothing (`parse_fragment` 1772). A hunk with no header before it: "patch fragment without header" (1633). | Only after `---`/`+++`. | Read. A first hunk with no `---`/`+++` before it was read. | Read only after `---`/`+++`. |
+| `hunk-placement` | A hunk's place: `@@ -a,b +c,d @@` and its context lines | With no trailing context the hunk's old lines must end the file (`match_end`); at old line 0 or 1 they must start it (`match_beginning`); with neither, Git takes the place nearest line `c` where they are found (`find_pos`). An anchored hunk that does not match there fails: Git tries elsewhere only under `-C` (`apply_one_fragment` 3146–3173). | Each hunk in turn, on the file as the hunks before it left it. | A hunk whose lines are not found at its anchor, or nowhere. | At the default (`-U3`), a hunk lacks trailing context only at the end of the file, and leading context only at its start. `git diff -U0` writes hunks with no context. | Read. A `-U0` hunk was shown at its header's line, and Git placed it at the end of the file (S3B-H-1). | A hunk with no context past line 1, and a hunk after one with no trailing context (except a creation's hunks at line 0, after which Git refuses the patch), are refused (`HunkPlacedElsewhere`). A hunk at line 1 with no context is read: Git writes it only when it is the whole file, and else refuses the patch. |
 | `other-line` | Any other line | Ends the header (`gitdiff_unrecognized` 1159). The patch is whatever the headers so far say. | Not applicable. | "patch with only garbage" if no hunk, no binary line and no change in the headers (2344). | Not inside a header (a blank line or the next commit comes after a section). | The header ended there; a later header or hunk was refused. | Same. |
 | `git-binary-patch` | `GIT binary patch` | A binary patch. `literal`/`delta` hunks follow (`parse_chunk` 2302, `parse_binary` 2154). | Not applicable. | Not exactly this line: no binary patch. No `literal`/`delta` line after it: "unrecognized binary patch" (2181). | With `--binary` (1580). | Read, as a marker ending the header. With a carriage return it was read too. | Only as the last line of a shape Git writes. With a carriage return it is refused. |
 | `binary-files` | `Binary files A and B differ` | A binary section; Git writes the blob of the `index` line, or empties the file for a null id (`parse_chunk` 2319, `apply_binary` 3299). | Not applicable. | A line ending in a carriage return is not the marker. | For a binary file without `--binary` (3945, 3969). | Read. With a carriage return it was read as the marker too, so `old mode`/`new mode`, `index`, then the line was reviewed as a binary change while Git changed only the mode. | Only as the last line of a shape Git writes. With a carriage return it is refused. |

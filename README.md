@@ -153,12 +153,15 @@ Each fails with exit 4. None is quietly turned into a plausible-looking model.
 
 A `diff --git` section is read only if its header lines are one of the shapes Git's own diff
 writes (`crates/deep-diff-forge-patch/CONFORMANCE.md`). What that promises: for every patch DDF
-accepts, a plain `git apply` in Git's default configuration either writes exactly the paths and
-contents the review shows, or refuses the whole patch and writes nothing. DDF reads a diff
-without the tree it applies to, so a review can show a change that never lands, but never one
-that lands otherwise. "Git writes it" is not "`git apply` accepts it": a plain `git diff` of a
-binary file, a `--submodule=diff` envelope and a `--no-index` pair of binary files are read, and
-`git apply` refuses each whole.
+accepts, a plain `git apply` in Git's default configuration, on the tree the patch was made
+from, either writes exactly the paths and contents (as Git stores them) the review shows, or
+refuses the whole patch while checking it and writes nothing. DDF reads a diff without the tree
+it applies to, so a review can show a change that never lands, but never one that lands
+otherwise. To keep that, it refuses a hunk Git would place where its header does not say
+(`git diff -U0` output) and a patch Git would fail to write halfway
+(`crates/deep-diff-forge-patch/CONFORMANCE.md` has the limits). "Git writes it" is not
+"`git apply` accepts it": a plain `git diff` of a binary file, a `--submodule=diff` envelope and
+a `--no-index` pair of binary files are read, and `git apply` refuses each whole.
 
 ## How it works
 

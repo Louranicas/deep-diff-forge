@@ -11,13 +11,14 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - **A `diff --git` section is read only if its headers are a shape Git's own diff writes**
   (plan of record S3.1 to S3.3). Five independent assessments in a row, of v0.8.0 to v0.8.3,
   each found one more header shape that DDF read one way and `git apply` wrote another, and
-  each was fixed case by case. The parser now holds a list of the 37 header shapes
-  `builtin_diff` and `fill_metainfo` write (Git 2.56's `diff.c`). The 37 are:
+  each was fixed case by case. The parser now holds a list of the 42 header shapes
+  `builtin_diff` and `fill_metainfo` write (Git 2.56's `diff.c`). The 42 are:
   - a file created or deleted;
   - a mode change;
   - a rename or copy, with or without an edit;
   - a rewrite under `-B`;
-  - a text body, a binary body or none.
+  - a text body, a binary body, an `index` line alone (a rename, copy or mode change whose
+    edits `-w`, `-b`, `-I` or a textconv driver hides), or none.
 
   A section whose headers are not one of them is refused (exit 4, new error
   `HeaderNotWrittenByGit`, naming the line and why). A `similarity index`, `dissimilarity index`
@@ -29,29 +30,62 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
   Every refusal 0.8.4 made stays, with its reason.
   - *What is promised (C1):* for every patch DDF accepts, a plain `git apply` in Git's default
-    configuration either writes exactly the paths and contents the review shows, or refuses
-    the whole patch and writes nothing. "Git writes it" is not "`git apply` accepts it". Three
-    presentations Git's own diff writes are read, as 0.8.4 read them, and `git apply` refuses
-    them whole:
+    configuration, on the tree the patch was made from, either writes exactly the paths and
+    contents (as Git stores them) the review shows, or refuses the whole patch while checking
+    it and writes nothing. To keep that, two kinds of patch are refused:
+    - a hunk Git places by an anchor its header does not set (`HunkPlacedElsewhere`): a hunk
+      with no context past line 1, which plain `git apply` places at the end of the file, and
+      a hunk after one with no trailing context. Plain `git apply` tries no other place
+      (`apply_one_fragment`). `git diff -U0` writes such hunks; Git-written, and refused
+      (`git apply --unidiff-zero` reads them). DDF's own `git diff` passes `-U3`, whatever
+      `diff.context` says. A hunk with no context at line 1 is read: Git writes it only when it
+      is the whole file, and else refuses the patch;
+    - what `git apply` fails to write after it has removed what the patch deletes
+      (`GitCannotWrite`): a symlink whose target is empty, holds a NUL, is longer than 4,095
+      bytes or is in a binary body, and one path that is both a file and the directory of
+      another (two paths the patch writes, or a copy's source the patch keeps and a path
+      written under it or at its directory).
+
+    One hunk layout no Git writes is read: a creation whose hunks all start at line 0. Git
+    writes the first hunk into the empty file and refuses the whole patch at the second, while
+    checking it, so nothing is placed elsewhere; the reading 0.8.4 gave a created file's later
+    hunks stays reachable (`CONFORMANCE.md`). A creation's later hunk at any other line is
+    refused.
+
+    "Git writes it" is not "`git apply` accepts it", and C1 allows any whole refusal. The
+    generated differential counts three presentations Git's own diff writes, which DDF reads
+    as 0.8.4 did and `git apply` refuses whole:
     - a binary marker with abbreviated ids (a plain `git diff` of a binary file);
     - the inner section of a `git diff --submodule=diff` envelope;
     - `diff --git` halves Git cannot split, as `git diff --no-index` writes for two binary
       files.
 
-    Each is tested against real Git output. Outside the promise: `git apply --reject`, and a
-    non-default configuration. With `core.fileMode=false`, Git writes the mode an `index` line
-    names, so leaving that line out changes the mode written (`CONFORMANCE.md`).
+    Each is tested against real Git output. The list is not exhaustive: `-D`, textconv and
+    `-w` output can also be refused whole. Outside the promise:
+    - `git apply --reject`;
+    - a failure while writing that the patch does not determine (permissions, a full disk),
+      which can leave the tree half-written;
+    - another tree, where Git places a hunk at an offset;
+    - attributes in the target tree (`eol`, `ident`, `working-tree-encoding`);
+    - a non-default configuration: with `core.fileMode=false`, Git writes the mode an `index`
+      line names, so leaving that line out changes the mode written (`CONFORMANCE.md`).
   - *Measured:* every commit was diffed as `git diff`, `git diff -M -C -B`,
     `git diff --binary`, `git format-patch --stdout` and `git log -p --first-parent`, over:
     - this repository: 892 commits on all refs, 4,457 patches, 57,038 `diff --git` sections;
     - forge-warden's `hub.git`: 772 commits, 3,857 patches, 29,301 sections;
     - a scratch repository built to give every row, with nine more option sets: 55 commits,
       866 patches, 1,071 sections, all 37 shapes;
-    - 646 windows of 2 to 5 commits from both histories.
+    - 646 windows of 2 to 5 commits from both histories;
+    - the scratch repository again under `git diff -U0` and `-U0 -M -C` (108 patches), and
+      under `-w`, `-b` and `--ignore-blank-lines` (162 patches).
 
-    No patch that 0.8.4 read is refused, and none is refused as `HeaderNotWrittenByGit`. The
-    refusals that remain are 0.8.4's own: a `format-patch` message line that begins `-`, the
-    byte budget, the line budget, a `-- ` signature after a binary body, and one path in
+    Against 0.8.4, 25 patches are newly refused, all `git diff -U0` output of the same five
+    commits of the scratch repository and its earlier versions (`HunkPlacedElsewhere`); none is
+    refused as `HeaderNotWrittenByGit` or `GitCannotWrite`. The 227 patches of an independent
+    sweep that the first S3a build refused (`-w` and the like with a move or a mode change) are
+    all read.
+    The refusals that remain are 0.8.4's own: a `format-patch` message line that begins `-`,
+    the byte budget, the line budget, a `-- ` signature after a binary body, and one path in
     several sections.
   - *Newly refused, each read by Git and never written by it:*
     - `Files … differ`, which 0.8.4 read as `Binary files … differ`;
@@ -63,6 +97,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
       `copy from` before `similarity index`);
     - modes such as `100664` or `100600`, `index` ids that are not hex, and scores over 100
       or without `%`.
+
+    Also newly refused, though Git writes them: `git diff -U0` hunks, which plain `git apply`
+    places elsewhere, and the patches `git apply` fails to write (both above).
   - *Found while building it:* a binary marker that ends in a carriage return
     (`Binary files … differ\r`, `GIT binary patch\r`) is no marker to Git, which compares the
     line feed. After `old mode`/`new mode` and `index`, Git applied only the mode change,
@@ -87,34 +124,41 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     fixed seeds. Each is one to three sections Git writes, with up to three near-miss moves.
     Half the threads use SHA-1 repositories and half SHA-256. DDF reads each patch, and a real
     `git apply` applies it in a repository whose object store holds every blob an `index` line
-    names (40 s idle, 56 s under load, on the build machine). DDF read 8,669. Git applied
-    6,926 of those, each to exactly the tree the review describes. A binary section with a full
-    id is held to the blob it names. Every other patch DDF read, Git refused whole, writing
-    nothing:
-    - 1,130 binary markers with abbreviated ids;
-    - 58 `--no-index` pairs;
-    - 555 others whose hunks or files do not fit the tree.
+    names (27 s on the build machine, beside other builds). Its sections include hunks with
+    one line of context and with none, as `git diff -U1` and `-U0` write them. DDF read 8,252.
+    Git applied 6,272 of those, each to exactly the tree the review describes. A binary section
+    with a full id is held to the blob it names. Every other patch DDF read, Git refused whole,
+    writing nothing:
+    - 936 binary markers with abbreviated ids;
+    - 47 `--no-index` pairs;
+    - 997 others whose hunks or files do not fit the tree;
     - none of the `--submodule=diff` envelope, which the generator does not write; the test
       of real Git output covers it.
+
+    296 patches with a `-U0` hunk Git places at the end of the file were refused, as designed.
 
     Any patch DDF read that Git refuses to read, outside the named presentations, fails the
     test, as does any that Git applies otherwise than the review shows.
     `DDF_DIFFERENTIAL_SEEDS=N` runs seeds 1 to N.
 
-    The oracle does not prove two things: the bytes of a binary section whose id is abbreviated
-    or whose new blob is not in the store, and where Git places a hunk it finds at an offset.
+    The oracle does not prove three things: the bytes of a binary section whose id is
+    abbreviated or whose new blob is not in the store, where Git places a hunk it finds at an
+    offset on another tree, and a write Git fails at (the generator writes no symlink Git cannot
+    write; `shapes_git_fails_to_write_are_refused` runs those against real Git).
 
     Parser changes that earlier rescores found, each put back in a scratch clone, make the test
-    fail on the fixed seeds when the accept-list is turned off:
-    - `Files … differ` read as text again (G1): 53 failures, the first at seed 8;
-    - a bare header's name carried over (F3): 668 failures, the first at seed 8;
-    - `new mode` after `new file mode` accepted (F2): 5 failures, the first at seed 12.
+    fail on the 64 seeds when the accept-list is turned off:
+    - `Files … differ` read as text again (G1): 57 failures, the first at seed 16;
+    - a bare header's name carried over (F3): 596 failures, the first at seed 8;
+    - `new mode` after `new file mode` accepted (F2): 6 failures, the first at seed 24.
 
     With the accept-list on, the list itself refuses the F3 and F2 shapes. G1 still fails the
-    test (20 failures): `new file mode` and `index` followed by an unread line is a shape Git
+    test (50 failures): `new file mode` and `index` followed by an unread line is a shape Git
     writes. A binary marker ending in a carriage return read again, with the list on, fails it
-    12 times (the first at seed 8): the binary oracle sees the blob the review names where Git
-    changed only the mode.
+    26 times (the first at seed 16): the binary oracle sees the blob the review names where Git
+    changed only the mode. The placement rule turned off (S3B-H-1) fails it 773 times (the
+    first at seed 8): Git writes the `-U0` hunk at the end of the file. The empty-symlink rule
+    turned off fails the conformance test, not the differential.
 - **`CONFORMANCE.md`** (in the patch crate) is the table of what Git reads. It has one row for
   each header line `apply.c` recognises, and one for the traditional form. Each row says what
   Git sets from the line, which line wins when it is repeated, what Git refuses, whether Git's
@@ -124,8 +168,15 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Changed
 
-- `PatchParseError` has a new variant, `HeaderNotWrittenByGit { line_number, header, reason }`
-  (the enum is `#[non_exhaustive]`).
+- `PatchParseError` has three new variants (the enum is `#[non_exhaustive]`):
+  `HeaderNotWrittenByGit { line_number, header, reason }`,
+  `HunkPlacedElsewhere { line_number, reason }` and `GitCannotWrite { line_number, reason }`.
+- DDF's own `git diff` (Git selections and file pairs) passes `-U3`, so `diff.context` in the
+  user's configuration cannot change the capture.
+- The benchmark's generated patch ends each hunk with a line of context, as Git writes it (a
+  hunk with none, followed by another, is now refused). The inputs of `parse_seal`,
+  `rank_with_evidence`, `outline_page`, `findings_by_address` and `daemon_parallel` are
+  re-pinned, so `scripts/bench_compare.py` does not compare them with earlier runs.
 - A rename DDF finds from the `---`/`+++` names, with no rename header, now records its
   `rename from`/`rename to` before the `index` line, where Git writes them, so that DDF's
   rendering is a shape Git writes. Before, they came after it.
