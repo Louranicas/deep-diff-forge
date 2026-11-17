@@ -15,11 +15,12 @@ pub mod lexical;
 mod rank;
 mod risk;
 mod rust_tokens;
+mod vocabulary;
 
 pub use evidence::{
     Basis, EVIDENCE_BASIS, Evidence, EvidenceSignal, FileKinds, HunkLabels, MAX_EVIDENCE_PER_FILE,
     Side, file_evidence, file_evidence_released, file_walks, hunk_signals, hunk_signals_alone,
-    joined_hunks, view_lines_peak,
+    joined_hunks, signal_sides, view_lines_peak,
 };
 #[doc(hidden)]
 pub use evidence::{CarriedShares, carried_bytes_on_this_thread, hunk_signals_in_patch};
@@ -28,6 +29,10 @@ pub use rank::{RankedFile, rank, sort_ranked};
 pub use risk::assess_file_in_patch;
 pub use risk::{
     Assessment, LARGE_CHANGE_LINES, MANY_HUNKS, RiskSignal, assess_file, change_counts, score_file,
+};
+pub use vocabulary::{
+    NativeLint, NotAccepted, PATH_BASIS, PATH_SIGNALS, Remedy, SignalClass, SignalFacts,
+    SignalKind, facts, remedy, signal_named, vocabulary,
 };
 
 #[cfg(test)]

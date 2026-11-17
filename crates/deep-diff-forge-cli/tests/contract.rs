@@ -10,7 +10,20 @@ use std::process::{Command, Stdio};
 const PATCH: &str = "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new\n";
 
 fn run(args: &[&str], stdin: &str) -> (i32, String, String) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"));
+    // The agent hooks and the gate keep a session's state in the user's state directory. A test
+    // must never write there: these runs get a home of their own, and no project is named to
+    // them. (Found 2026-11-14: `every_documented_option_is_admitted` ran three stop hooks and the
+    // gate with the developer's own `HOME` and left `~/.local/state/deep-diff-forge/hooks`.)
+    if args.first() == Some(&"agent") {
+        let home = std::env::temp_dir().join(format!("ddf-contract-home-{}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        command
+            .env("HOME", &home)
+            .env_remove("XDG_STATE_HOME")
+            .env_remove("CLAUDE_PROJECT_DIR");
+    }
+    let mut child = command
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -113,6 +126,87 @@ fn explain_and_schema_answer_from_the_registry() {
     assert_eq!(code, 0);
     let schema: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(schema["properties"]["schema"]["const"], "ddf.result.v1");
+}
+
+#[test]
+fn schema_signals_and_explain_signal_answer_from_the_vocabulary() {
+    let (code, stdout, _) = run(&["schema", "signals"], "");
+    assert_eq!(code, 0);
+    let doc: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(doc["schema"], "deep-diff-forge.signals.v0");
+    // 21 labels, and the five integrity labels since the merge with them
+    assert_eq!(doc["signals"].as_array().unwrap().len(), 26);
+    let (code, stdout, _) = run(&["explain", "signal", "test_removed"], "");
+    assert_eq!(code, 0);
+    assert!(
+        stdout.starts_with("test_removed (integrity, direct, weight 3): "),
+        "{stdout}"
+    );
+    let (code, stdout, _) = run(&["explain", "signal", "test_removed", "--json"], "");
+    assert_eq!(code, 0);
+    let doc: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(doc["schema"], "deep-diff-forge.signal-explain.v0");
+    let (code, stdout, stderr) = run(&["explain", "signal", "no_such_signal"], "");
+    assert_eq!((code, stdout.as_str()), (2, ""));
+    assert!(
+        stderr.contains("unknown signal: no_such_signal"),
+        "{stderr}"
+    );
+    let (code, _, stderr) = run(&["schema", "other"], "");
+    assert_eq!(code, 2);
+    assert!(stderr.contains("(result|exit-codes|signals)"), "{stderr}");
+}
+
+/// The README's two signal tables name every label of the vocabulary, and each row's score is
+/// the weight the scorer uses: one source of truth, and the document is held to it.
+#[test]
+fn readme_signal_tables_match_the_vocabulary() {
+    let readme =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md")).unwrap();
+    let start = readme.find("| Signal | When | Score |").unwrap();
+    let section = &readme[start..];
+    let section = &section[..section.find("\nLanguages come from the extension").unwrap()];
+    let (code, stdout, _) = run(&["schema", "signals"], "");
+    assert_eq!(code, 0);
+    let doc: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let weights: std::collections::BTreeMap<&str, u64> = doc["signals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| (s["label"].as_str().unwrap(), s["weight"].as_u64().unwrap()))
+        .collect();
+    let mut seen = std::collections::BTreeSet::new();
+    for row in section.lines().filter(|l| l.starts_with("| `")) {
+        let row = row.trim().trim_start_matches("| ").trim_end_matches(" |");
+        let first = row.split(" | ").next().unwrap();
+        let last = row.rsplit(" | ").next().unwrap();
+        let labels: Vec<&str> = first
+            .split('`')
+            .skip(1)
+            .step_by(2)
+            .filter(|word| weights.contains_key(word))
+            .collect();
+        assert!(!labels.is_empty(), "no known label in {first:?}");
+        // A row of one signal has one score cell, whatever it says: a signal that adds nothing
+        // explains itself there in words.
+        let scores: Vec<&str> = if labels.len() == 1 {
+            vec![last]
+        } else {
+            last.split('\u{b7}').map(str::trim).collect()
+        };
+        assert_eq!(labels.len(), scores.len(), "{row}");
+        for (label, score) in labels.iter().zip(&scores) {
+            let weight = weights[label];
+            if weight == 0 {
+                assert!(!score.starts_with('+'), "{label}: {score}");
+            } else {
+                assert_eq!(*score, format!("+{weight}"), "{label}");
+            }
+            assert!(seen.insert(*label), "{label} is in two rows");
+        }
+    }
+    let all: std::collections::BTreeSet<&str> = weights.keys().copied().collect();
+    assert_eq!(seen, all, "the README tables and the vocabulary differ");
 }
 
 /// The README's exit-code tables and the binary's registry name the same codes, and each README
@@ -546,6 +640,35 @@ fn patch_option_rows<'a>(
         ),
         ("--allow-repo", vec!["rpc", "--allow-repo", repo]),
         ("--client", vec!["agent", "setup", "--client", "codex"]),
+        (
+            "--hooks",
+            vec!["agent", "setup", "--client", "claude", "--hooks"],
+        ),
+        ("--gate", vec!["agent", "doctor", "--gate"]),
+        (
+            "--judge",
+            vec![
+                "agent", "hook", "stop", "--client", "claude", "--judge", "x",
+            ],
+        ),
+        (
+            "--policy",
+            vec![
+                "agent", "hook", "stop", "--client", "claude", "--policy", "x",
+            ],
+        ),
+        (
+            "--ranker-dir",
+            vec![
+                "agent",
+                "hook",
+                "stop",
+                "--client",
+                "claude",
+                "--ranker-dir",
+                "x",
+            ],
+        ),
         ("--jsonl", vec!["--stdin-patch", "--jsonl"]),
         ("--rank", vec!["--stdin-patch", "--rank"]),
         ("--cluster", vec!["--stdin-patch", "--cluster"]),

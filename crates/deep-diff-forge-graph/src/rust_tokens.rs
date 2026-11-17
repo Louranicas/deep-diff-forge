@@ -925,6 +925,13 @@ const READ: [EvidenceSignal; 8] = [
     EvidenceSignal::PanicPathAdded,
 ];
 
+/// Whether the reader looks for `signal` on the side of a hunk that `old_side` names: on the
+/// old side for a removed test ([`read_old`]), on the new side for the others it gives
+/// ([`read_new`]). For the vocabulary's sides of a signal (`crate::evidence::signal_sides`).
+pub(crate) fn reads(signal: EvidenceSignal, old_side: bool) -> bool {
+    READ.contains(&signal) && ((signal == EvidenceSignal::TestRemoved) == old_side)
+}
+
 /// What one line holds: for each of [`READ`], the basis and the hint of the constructs of that
 /// signal found on it so far, taken together.
 type OnLine = [Option<(Basis, bool)>; READ.len()];

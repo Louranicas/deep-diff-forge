@@ -164,8 +164,8 @@ use std::process::Command;
 /// only) and two declared false positives, both a writer's (a seventeenth nested `cfg_attr`
 /// list with no `ignore`, taken to hold a skip; `mut <Command>::new` in a discarding macro).
 /// Both floors fell, on purpose: what was found is declared.
-/// Measured 2026-11-18 on the integrated tree (release 0.8.4 with the integrity signals; the
-/// reading of 0.8.4 united with theirs): the same 55 cases and the same figures, precision 177
+/// Measured 2026-11-18 on the integrated tree (release 0.8.4 with the integrity signals, the
+/// reading of 0.8.4 united with theirs, and the agent hooks): the same 55 cases and the same figures, precision 177
 /// of 203, recall 177 of 260. The 0.8.4 case `evidence/rust-code-view-20261114` is the signals
 /// line's, with fourteen expected items.
 const RANKING_PAIRS_FLOOR: u64 = 800_000;

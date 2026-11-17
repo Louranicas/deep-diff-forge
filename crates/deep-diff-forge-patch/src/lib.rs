@@ -26,6 +26,7 @@ mod decode;
 mod git_acquire;
 mod git_raw;
 mod guards;
+mod judge_patch;
 mod parser;
 mod paths;
 mod render;
@@ -43,6 +44,12 @@ pub use git_raw::{
     GitAcquireError, GitChange, GitChangeKind, GitChangeOrigin, GitPath, StructuredDiff,
 };
 pub use guards::{InputGuards, has_reviewable_hunks};
+pub use judge_patch::{
+    CommitAndParent, HeadState, JudgePatch, JudgePatchError, NAMED_COMMITS_CAP, Named, RefTips,
+    Worktree, commit_patch, commits_beyond, dirty_submodules, file_at_commit, has_commits_beyond,
+    has_uncommitted_changes, head_contains, head_state, judge_patch, merge_base, named_commits,
+    ref_tips, staged_patch, worktrees,
+};
 pub use parser::{ParseOptions, parse, parse_decoded, parse_with};
 pub use render::{old_path, render_unified};
 pub use sealed::{ReviewError, SealedReview};
