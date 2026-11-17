@@ -38,9 +38,9 @@ errors, and reliable concurrency.
 - **Testing:** unit, fixture, contract, integration and fuzz levels exist, and since 0.5.0 a
   labelled evaluation corpus (`fixtures/eval`, scored by `eval`; 11 cases in 0.5.0, 34
   since 0.6.0, 35 with `evidence/rust-code-view-20261114` in 0.8.4, 55 with the cases of the
-  integrity signals). Fuzz targets (13): `patch_parser`, `review_json`, `daemon_protocol`, `agent_annotation`, `council_report`,
+  integrity signals). Fuzz targets (15): `patch_parser`, `review_json`, `daemon_protocol`, `agent_annotation`, `council_report`,
   `stdio_mcp`, `stdio_rpc`, `structural_soundness`, `findings_verify`, `evidence_scan`,
-  `rust_tokens`, `rust_code_view`, `rust_hunk_places`
+  `rust_tokens`, `rust_code_view`, `rust_hunk_places`, `hook_input`, `judge_patch`
   (`fuzz/Cargo.toml`). CI runs diff-scoped
   cargo-mutants on each pull request's changed lines.
 - **First milestone below:** steps 1 to 5 are done; step 6 (loom fixture) is withdrawn with

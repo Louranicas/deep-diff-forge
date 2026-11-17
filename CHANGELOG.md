@@ -64,6 +64,37 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     delete-create-change; written as one section they are (`panic_path_added`,
     `process_spawn`). Plain `git apply` writes the joined text in every shape. Release 0.8.4
     misses the same. A decision is pending.
+- **A long word costs its length, not its square (FINDING-5; in every release up to 0.8.4).**
+  The JavaScript and TypeScript scanner asks at every byte after a word byte whether the word
+  is one after which an expression starts (`return`, `typeof`, `instanceof`, ...), and it
+  walked back over the whole word each time: one added line of a 200,000-letter word took
+  18 s to rank in v0.8.3 and 35 s with the readings of this tree. It now reads at most eleven
+  bytes back (the longest keyword and one more), which gives the same answer for every text;
+  the same word ranks in 0.01 s. The secret rule had the same shape: a credential prefix that
+  repeats inside its own run (`xAKIAAKIA…`, `xoxb-a` repeated) was walked to the run's end at
+  each repeat (6 s for 200 KB in this tree, 3 s in v0.8.3, 33.5 s for 400 KB of `xoxb-a`); it
+  now reads at most the length its test needs, with the same answer, and those lines rank in
+  0.00 s.
+  - *The released reading is the floor, and here the whole answer.* The walk of 0.8.3 is kept
+    for the tests: the two keyword readings agree at every prefix of every keyword (with up to
+    two more word bytes before it, after each kind of byte) and of 4,000 generated lines; the
+    scanner gives the same views and states both ways over 3,000 generated lines and every
+    keyword before a string, a template and a regex; 1,500 generated JavaScript and
+    TypeScript hunks and two-hunk creations give the same evidence, item for item, and the
+    same ranking both ways; the secret rule answers as 0.8.3's on 20,000 generated lines. A
+    test holds each of the four long-word lines under one second of the thread's CPU time.
+  - *Measured:* `lost3.py` over 6,110 patches finds no difference at all from the previous
+    build of this tree (no item lost or gained, no refusal changed); the 51 cost inputs take
+    64.44 s against 64.58 s.
+- **Two fuzz targets for the agent hooks (fifteen in all).** `hook_input` reads any bytes as
+  the JSON a client gives `agent hook <event>` (the CLI's own `hook` module): an input is read
+  only when it is an object naming the event, a session and a directory, and anything else is
+  refused with the hooks' own message ("did not run", nothing judged; UNJUDGED and "not a
+  pass" for a stop). `judge_patch` makes the patch the hooks give the judge from a working
+  tree that the fuzzer edits (files written, deleted or made executable, any bytes in names
+  and contents, real Git): the parser reads it as the hooks do, or refuses it, and when it
+  reads it, it reads exactly the paths the edits changed, each once. Five minutes each, no
+  crash: `hook_input` 4,046,034 runs, `judge_patch` 8,102.
 
 ### Added
 

@@ -27,8 +27,8 @@ era) no longer holds. How the standard is enforced today:
 - **Fuzz smoke:** every target in `fuzz/Cargo.toml`
   (`patch_parser`, `review_json`, `daemon_protocol`, `agent_annotation`,
   `council_report`, `stdio_mcp`, `stdio_rpc`, `structural_soundness`,
-  `findings_verify`, `evidence_scan`, `rust_tokens`, `rust_code_view`, `rust_hunk_places`;
-  `stdio_invariants.rs` is a shared module)
+  `findings_verify`, `evidence_scan`, `rust_tokens`, `rust_code_view`, `rust_hunk_places`,
+  `hook_input`, `judge_patch`: fifteen; `stdio_invariants.rs` is a shared module)
   runs for 10 s per pull request; CI fails if a declared target is not in the
   run list. Crash inputs become fixtures under
   `fixtures/patch/regressions/`. `rust_code_view` has an oracle: the compiler's own lexer
@@ -129,6 +129,20 @@ era) no longer holds. How the standard is enforced today:
   rule is lexical (any `mut` straight before the `<`, so `&raw mut` and `mut` in a macro's
   discarded tokens are a writer's false items: VD3R19-L-1, IR12-L-3).
   The fuzz targets are unchanged in this round.
+  In 0.9.0 two targets were added for the agent hooks. `hook_input` reads any bytes as the
+  JSON a client gives `agent hook <event>`, through the CLI's own `hook` module, for each
+  of the three events: an input is read only when this target's own reading finds an
+  object that names the event, a session and a directory (and then with the same values),
+  and every other input, bytes that are not UTF-8 included, is refused with the hooks' own
+  message: a JSON object with `systemMessage` alone, saying nothing was judged, and for a
+  stop UNJUDGED and "not a pass". `judge_patch` edits a working tree with real Git (one
+  base repository per process, put back before every input; files written, deleted or made
+  executable, any bytes in names and contents, Git's own files left out) and calls
+  `judge_patch`: the patch is read as the hooks read it (`SealedReview` with no guards) or
+  refused with an error, and when it is read, its paths are exactly the paths the edits
+  changed, each once. Five minutes each on 2026-11-18, no crash: `hook_input` 4,046,034
+  runs, `judge_patch` 8,102 (about 26 a second: each runs Git several times). Seeds:
+  `fuzz/seeds/hook_input` (4), `fuzz/seeds/judge_patch` (5).
 - **Sandbox refusal controls:** the rootless-Podman planted-breach suite
   (`crates/deep-diff-forge-cli/tests/council_sandbox.rs`, 12 probes) runs on
   every pull request.

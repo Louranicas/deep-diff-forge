@@ -1738,13 +1738,17 @@ The engine is hardened against:
 - hidden-content patches;
 - attacks on the daemon's transport and filesystem.
 
-Thirteen fuzz targets cover the parser, review JSON, daemon protocol, agent annotations, council
+Fifteen fuzz targets cover the parser, review JSON, daemon protocol, agent annotations, council
 reports, the MCP and `rpc` stdio servers, the soundness of the structural diff's
 "formatting only" verdict, agent-findings verification, the code-evidence scanner, the
 reader of a Rust hunk's tokens (every item on a line the change made, and the same signals
 however a construct is spread over lines), where a Rust hunk stands and how it starts (the
-same change written in other ways Git accepts loses no item), and the Rust code views against
-the compiler's own lexer (no byte of a token that is code is blank). See
+same change written in other ways Git accepts loses no item), the Rust code views against
+the compiler's own lexer (no byte of a token that is code is blank), the JSON a client gives
+the agent hooks (`hook_input`: an input the hook cannot read is refused with the hooks' own
+"did not run" message, UNJUDGED for a stop, never a pass), and the patch the hooks make of a
+working tree (`judge_patch`, with real Git: the parser reads exactly the paths the edits
+changed, or refuses the patch). See
 [`SECURITY.md`](SECURITY.md) for the threat model.
 
 ## Review council and evidence gates
