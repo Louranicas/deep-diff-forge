@@ -222,6 +222,9 @@ const DIFF_ARGS: &[&str] = &[
     "--raw",
     "-z",
     "--patch",
+    // Three lines of context whatever `diff.context` says: a hunk with none is placed by `git
+    // apply` at the end of the file, and the parser refuses it (S3B-H-1).
+    "-U3",
     "--binary",
     "--full-index",
     "--no-abbrev",
@@ -798,6 +801,7 @@ const FILE_PAIR_DIFF_ARGS: &[&str] = &[
     "--no-ext-diff",
     "--no-color",
     "--patch",
+    "-U3",
     "--binary",
     "--full-index",
     "--no-textconv",

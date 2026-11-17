@@ -337,9 +337,11 @@ mod tests {
 
     #[test]
     fn multi_hunk_rows_accumulate() {
-        let input = "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-a\n+A\n@@ -9,1 +9,1 @@\n-b\n+B\n";
+        let input =
+            "--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n+A\n ctx\n@@ -9,2 +9,2 @@\n-b\n+B\n ctx\n";
         let r = rows(input);
-        assert_eq!(r.len(), 2);
+        // A paired change and a line of context in each hunk.
+        assert_eq!(r.len(), 4);
     }
 
     #[test]

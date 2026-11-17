@@ -250,9 +250,11 @@ mod tests {
 
     #[test]
     fn multi_hunk_rows_concatenate() {
-        let input = "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-a\n+A\n@@ -9,1 +9,1 @@\n-b\n+B\n";
+        let input =
+            "--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n+A\n ctx\n@@ -9,2 +9,2 @@\n-b\n+B\n ctx\n";
         let files = parse(input).unwrap();
-        assert_eq!(inline_rows(&files[0]).len(), 4);
+        // Two changed lines and one line of context in each hunk.
+        assert_eq!(inline_rows(&files[0]).len(), 6);
     }
 
     #[test]
@@ -354,7 +356,8 @@ mod tests {
         assert!(!noted("a", "b"));
         // Past line 9999 the text starts at column 16, where a tab is eight spaces wide.
         let at = |old: &str, new: &str| {
-            let input = format!("--- a/x\n+++ b/x\n@@ -10000 +10000 @@\n-{old}\n+{new}\n");
+            let input =
+                format!("--- a/x\n+++ b/x\n@@ -10000,2 +10000,2 @@\n-{old}\n+{new}\n ctx\n");
             render_inline(&parse(&input).unwrap()).contains(crate::notes::RENDERS_ALIKE)
         };
         assert!(at("\techo", "        echo"));

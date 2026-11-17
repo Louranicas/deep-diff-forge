@@ -428,7 +428,7 @@ mod tests {
     /// form. The digests were checked with `sha256sum` (see `core`'s `hunk_tests`).
     #[test]
     fn a_two_file_review_renders_exactly() {
-        let input: &[u8] = b"--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n a\n-b\xff\n+c\n@@ -9 +9 @@\n-d\n+e\n\\ No newline at end of file\n--- a/y\n+++ b/y\n@@ -1 +1 @@\n-f\n+g\n";
+        let input: &[u8] = b"--- a/x\n+++ b/x\n@@ -1,3 +1,3 @@\n a\n-b\xff\n+c\n ctx\n@@ -8,2 +8,2 @@\n ctx\n-d\n+e\n\\ No newline at end of file\n--- a/y\n+++ b/y\n@@ -1 +1 @@\n-f\n+g\n";
         let files =
             crate::parse_decoded(&crate::decode(input), crate::ParseOptions::default()).unwrap();
         assert_eq!(to_json(&files), GOLDEN);
@@ -447,27 +447,29 @@ mod tests {
           "id": 0,
           "old_start": 1,
           "new_start": 1,
-          "old_lines": 2,
-          "new_lines": 2,
+          "old_lines": 3,
+          "new_lines": 3,
           "section": null,
-          "address": "0c375da08797b82b19dd327cab03bc6650c0302582bcdcdfb9c94df3105e95f7",
-          "body_sha256": "4caeae8856c37e6b778101e2f34a6d29c258afb11decccac072ccb482eee2a70",
+          "address": "d8cfa6bf7891df82a5009dfa11ebc22f0bbf02f9c133d62bd451f519f394a9e6",
+          "body_sha256": "ee85ef2811bdab5f52652ac4654b632bec2c9d194588f4f3425257a9feb1351d",
           "lines": [
             {"kind": "context", "old_line": 1, "new_line": 1, "text": "a"},
             {"kind": "removed", "old_line": 2, "new_line": null, "text": "b�", "lossy": true},
-            {"kind": "added", "old_line": null, "new_line": 2, "text": "c"}
+            {"kind": "added", "old_line": null, "new_line": 2, "text": "c"},
+            {"kind": "context", "old_line": 3, "new_line": 3, "text": "ctx"}
           ]
         },
         {
           "id": 1,
-          "old_start": 9,
-          "new_start": 9,
-          "old_lines": 1,
-          "new_lines": 1,
+          "old_start": 8,
+          "new_start": 8,
+          "old_lines": 2,
+          "new_lines": 2,
           "section": null,
-          "address": "bd624a787edaf09671d2d89e3b22b6457a0bfdd2534a9edcef592a12a415e747",
-          "body_sha256": "658cca8f2358ede06a0a058ab3bb5fa3f3e78d9fc1cf4394f632b5f64bf6c9b3",
+          "address": "e54ff6aa7ddac00d3a236c1349821183d7620187bf10150c76d8a3f9d216e38e",
+          "body_sha256": "e5d19018a710f308952e6371f414b931f96051cbfef408994fbeb58428f06452",
           "lines": [
+            {"kind": "context", "old_line": 8, "new_line": 8, "text": "ctx"},
             {"kind": "removed", "old_line": 9, "new_line": null, "text": "d"},
             {"kind": "added", "old_line": null, "new_line": 9, "text": "e", "no_newline": true}
           ]

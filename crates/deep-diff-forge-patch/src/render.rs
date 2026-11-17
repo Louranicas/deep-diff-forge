@@ -246,7 +246,8 @@ mod tests {
 
     #[test]
     fn multi_hunk_render_has_two_headers() {
-        let input = "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-a\n+A\n@@ -9,1 +9,1 @@\n-b\n+B\n";
+        let input =
+            "--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n+A\n ctx\n@@ -9,2 +9,2 @@\n-b\n+B\n ctx\n";
         let files = parse(input).unwrap();
         let out = render_unified(&files);
         assert_eq!(out.matches("@@ -").count(), 2);

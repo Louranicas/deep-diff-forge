@@ -1586,7 +1586,7 @@ mod tests {
         assert_eq!(signals(&file), [S::UnsafeAdded, S::ProcessSpawn]);
         // The same token in two hunks is two items: one per hunk.
         let two = parse(
-            "--- a/src/l.rs\n+++ b/src/l.rs\n@@ -1,0 +1,1 @@\n+unsafe {}\n@@ -9,0 +10,1 @@\n+unsafe {}\n",
+            "--- a/src/l.rs\n+++ b/src/l.rs\n@@ -1,1 +1,2 @@\n+unsafe {}\n ctx\n@@ -9,1 +10,2 @@\n+unsafe {}\n ctx\n",
         )
         .unwrap()
         .remove(0);
@@ -2476,10 +2476,15 @@ mod tests {
             );
             let found = [(S::ProcessSpawn, Side::New, 3)];
             assert_eq!(items(&joined), found, "{joined}");
-            for second in ["-2,0 +3,2", "-9,0 +3,2"] {
+            // Numbered after the first hunk, the second is placed by Git at the end: refused.
+            for second in ["-0,0 +3,2", "-2,0 +3,2", "-9,0 +3,2"] {
                 let split = format!(
                     "{head}@@ -0,0 +1,2 @@\n+//! Helpers.\n+{opener}\n@@ {second} @@\n+{closer} {spawn}\n+pub fn k() {{}}\n"
                 );
+                if second != "-0,0 +3,2" {
+                    assert!(placed_elsewhere(&split), "{split}");
+                    continue;
+                }
                 assert_eq!(items(&split), found, "{split}");
                 // Read alone, as before, the second hunk shows nothing.
                 let file = parse(&split).unwrap().remove(0);
@@ -2494,11 +2499,11 @@ mod tests {
         }
         // Three hunks, with a hunk between the opener and the closer that changes nothing.
         let three = format!(
-            "{head}@@ -0,0 +1,1 @@\n+/*\n@@ -2,0 +2,1 @@\n+words\n@@ -3,0 +3,1 @@\n+// */ {spawn}\n"
+            "{head}@@ -0,0 +1,1 @@\n+/*\n@@ -0,0 +2,1 @@\n+words\n@@ -0,0 +3,1 @@\n+// */ {spawn}\n"
         );
         assert_eq!(items(&three), [(S::ProcessSpawn, Side::New, 3)]);
         // Other languages have the same boundary and the same rule.
-        let script = "--- /dev/null\n+++ b/web/run.js\n@@ -0,0 +1,1 @@\n+/*\n@@ -2,0 +2,1 @@\n\
+        let script = "--- /dev/null\n+++ b/web/run.js\n@@ -0,0 +1,1 @@\n+/*\n@@ -0,0 +2,1 @@\n\
                       +// */ const cp = require(\"child_process\");\n";
         assert_eq!(items(script), [(S::ProcessSpawn, Side::New, 2)]);
     }
@@ -2528,6 +2533,14 @@ mod tests {
 
     /// The items of a patch's one file when each hunk is read alone: what the reading of 0.8.3
     /// and the lexer reading find from a start as code.
+    /// The parser refuses the patch: a hunk `git apply` places elsewhere than its header says.
+    fn placed_elsewhere(patch: &str) -> bool {
+        matches!(
+            parse(patch),
+            Err(deep_diff_forge_patch::PatchParseError::HunkPlacedElsewhere { .. })
+        )
+    }
+
     fn items_of_hunks_alone(patch: &str) -> Vec<Found> {
         let file = parse(patch).unwrap().remove(0);
         let kind = FileKind::of(&file);
@@ -2567,7 +2580,7 @@ mod tests {
     /// 0.8.3 and the lexer reading find from a start as code, the whole answer before hunks
     /// were joined) is an item of the file, and the per-hunk labels, asked in order, backwards
     /// and one at a time, are the file's. The hunks are a created file cut into hunks, added
-    /// lines after one line of an existing file, and an existing file's hunks of every form
+    /// lines between two lines of an existing file, and an existing file's hunks of every form
     /// with any numbers (added lines only, a line and added lines, context on both sides, a
     /// last line removed), in a file the patch creates and in one that exists. A created file cut into
     /// hunks has every item its lexer reading has as one hunk.
@@ -2581,7 +2594,7 @@ mod tests {
             seed ^= seed << 17;
             usize::try_from(seed % (below as u64)).unwrap()
         };
-        let (mut more, mut runs) = (0, 0);
+        let (mut more, mut runs, mut read) = (0, 0, 0);
         for case in 0..4500 {
             let lines: Vec<String> = (0..=1 + next(7))
                 .map(|_| {
@@ -2592,13 +2605,17 @@ mod tests {
                 .collect();
             let created = case % 3 == 0;
             let any_form = case % 3 == 2;
-            // Cut the lines into hunks: a creation; added lines after line 5 of an existing
-            // file; or hunks of every form at any old position.
+            // Cut the lines into hunks: a creation; added lines between lines 5 and 6 of an
+            // existing file (with context on both sides: the parser refuses a hunk with none,
+            // or one with no trailing context before another); or hunks of every form at any
+            // old position, of which the parser reads those Git places where they say.
             let (mut text, mut at, mut joined) = (String::new(), 0, String::new());
             while at < lines.len() {
                 let take = 1 + next(lines.len() - at);
-                let (old, new) = if created { (at, at + 1) } else { (5, at + 6) };
-                let form = if any_form { next(4) } else { 0 };
+                // A creation's hunks are numbered from line 0, the only form the parser reads.
+                let (old, new) = if created { (0, at + 1) } else { (5, at + 6) };
+                let plain = if created { 0 } else { 2 };
+                let form = if any_form { next(4) } else { plain };
                 let (old, new) = if any_form {
                     (1 + next(30), 100 * at + 1)
                 } else {
@@ -2633,7 +2650,12 @@ mod tests {
             } else {
                 "--- a/src/x.rs\n+++ b/src/x.rs\n"
             };
-            let file = parse(&format!("{head}{text}")).unwrap().remove(0);
+            let patch = format!("{head}{text}");
+            if !created && placed_elsewhere(&patch) {
+                continue;
+            }
+            let file = parse(&patch).unwrap().remove(0);
+            read += 1;
             let gaining = hunks_with_more_than_alone(&file, &text);
             // Only the hunks of a creation go on from one another.
             assert!(created || gaining == 0, "a file that exists:\n{text}");
@@ -2662,8 +2684,9 @@ mod tests {
                 }
             }
         }
+        eprintln!("{read} of 4500 read, {runs} runs, {more} hunks with more than alone");
         assert!(
-            runs > 3000 && more > 60,
+            runs > 2000 && more > 60,
             "{runs} runs, {more} hunks with more than alone"
         );
     }
@@ -2699,6 +2722,10 @@ mod tests {
             ),
         ] {
             let patch = format!("{head}{hunks}");
+            // The parser now refuses all but the first: Git places their last hunk at the end.
+            if placed_elsewhere(&patch) {
+                continue;
+            }
             assert_eq!(items(&patch), [], "{patch}");
             assert_eq!(items(&patch), items_of_hunks_alone(&patch), "{patch}");
         }
@@ -2706,7 +2733,7 @@ mod tests {
         let removed = format!(
             "{head}@@ -1,1 +0,0 @@\n-const S: &str = \"\n@@ -2,2 +0,0 @@\n-\"; #[test]\n-fn t() {{}}\n"
         );
-        assert_eq!(items(&removed), items_of_hunks_alone(&removed));
+        assert!(placed_elsewhere(&removed), "{removed}");
     }
 
     /// `hunk_signals` answers for the hunk it is given, read alone, as every release up to
@@ -3774,7 +3801,7 @@ mod tests {
                 let line = line_of(rng, kind.style[0], bytes);
                 let _ = write!(
                     hunks,
-                    "@@ -{},1 +{},2 @@\n x\n+{line}\n",
+                    "@@ -{},1 +{},2 @@\n+{line}\n x\n",
                     1 + 10 * k,
                     1 + 11 * k
                 );
@@ -4492,7 +4519,7 @@ mod tests {
 
     #[test]
     fn hunk_signals_agree_with_file_evidence() {
-        let patch = "--- a/src/x.rs\n+++ b/src/x.rs\n@@ -1,1 +1,2 @@\n a\n+unsafe { f() }\n@@ -10,1 +11,3 @@\n b\n+#[allow(x)]\n+let c = std::process::Command::new(\"x\");\n";
+        let patch = "--- a/src/x.rs\n+++ b/src/x.rs\n@@ -1,2 +1,3 @@\n a\n+unsafe { f() }\n ctx\n@@ -10,2 +11,4 @@\n b\n+#[allow(x)]\n+let c = std::process::Command::new(\"x\");\n ctx\n";
         let file = parse(patch).unwrap().remove(0);
         let per_hunk: Vec<Vec<EvidenceSignal>> = file
             .patch_twin

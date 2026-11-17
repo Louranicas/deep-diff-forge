@@ -176,6 +176,25 @@ pub enum PatchParseError {
         /// Why it is refused.
         reason: &'static str,
     },
+    /// A hunk plain `git apply` places by an anchor its header does not determine: one with no
+    /// context that does not start at line 0 or 1 (Git places it at the end of the file), or one
+    /// after a hunk with no trailing context. `git diff -U0` writes such hunks; `git apply
+    /// --unidiff-zero` reads them, plain `git apply` does not place them where they say.
+    HunkPlacedElsewhere {
+        /// 1-based line number of the hunk's header.
+        line_number: usize,
+        /// Why Git places it elsewhere.
+        reason: &'static str,
+    },
+    /// A patch `git apply` fails to write after it has begun: a symlink whose target is empty,
+    /// holds a NUL, is longer than 4,095 bytes or is in a binary body, or one path that is both
+    /// a file and the directory of another. Git has then already removed what the patch deletes.
+    GitCannotWrite {
+        /// 1-based line number where the section began.
+        line_number: usize,
+        /// What Git cannot write.
+        reason: &'static str,
+    },
     /// A header line (a path, mode or hunk header the parser reads meaning from) that is not
     /// UTF-8. Decoded lossily, the value it names would be a substitute: `caf\xe9` and
     /// `caf\xe8` both read `caf\u{fffd}`, so two files would share one reviewed path.
@@ -246,10 +265,35 @@ impl PatchParseError {
             | Self::SectionWithoutPatch { .. }
             | Self::PathInSeveralSections { .. }
             | Self::HeaderNotWrittenByGit { .. }
+            | Self::HunkPlacedElsewhere { .. }
+            | Self::GitCannotWrite { .. }
             | Self::MalformedHunkHeader { .. }
             | Self::BodyLineOutsideHunk { .. }
             | Self::TruncatedHunk { .. }
             | Self::HunkLineCountMismatch { .. } => exit::INVALID_INPUT,
+        }
+    }
+}
+
+impl PatchParseError {
+    /// The message of a refusal for what plain `git apply` would place or write otherwise.
+    fn fmt_git_outcome(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::HunkPlacedElsewhere {
+                line_number,
+                reason,
+            } => write!(
+                f,
+                "the hunk at line {line_number} would be placed elsewhere by git apply: {reason} (git diff -U0 output; apply it with --unidiff-zero)"
+            ),
+            Self::GitCannotWrite {
+                line_number,
+                reason,
+            } => write!(
+                f,
+                "the file section beginning at line {line_number} cannot be written by git apply, which would fail after removing files: {reason}"
+            ),
+            _ => Ok(()),
         }
     }
 }
@@ -323,6 +367,9 @@ impl std::fmt::Display for PatchParseError {
                 f,
                 "header line {line_number} ({header}) is not one Git's diff writes there: {reason}"
             ),
+            Self::HunkPlacedElsewhere { .. } | Self::GitCannotWrite { .. } => {
+                self.fmt_git_outcome(f)
+            }
             Self::LossyHeader { line_number } => write!(
                 f,
                 "header line {line_number} is not UTF-8, so the path or value it names cannot be reviewed exactly"

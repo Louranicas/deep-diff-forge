@@ -121,7 +121,8 @@ impl Header {
 /// file created or deleted has its mode line and `index`, then text, a binary line, or nothing
 /// (an empty file). Any other has the mode change, then a rename's or copy's similarity and
 /// names or a rewrite's dissimilarity, then, when the content changed, `index` (with the mode
-/// when the mode did not change) and text or a binary line. A section is read only if its
+/// when the mode did not change) and text or a binary line, or nothing when `-w`, `-b`, `-I` or
+/// a textconv driver hides every hunk of a move or mode change. A section is read only if its
 /// headers are one of these, with any of the [`Header::optional`] lines left out.
 const GIT_WRITES: &[&[Header]] = {
     use Header::{
@@ -167,6 +168,13 @@ const GIT_WRITES: &[&[Header]] = {
         &[Om, Nm, Dis, Ix, N],
         &[Om, Nm, Dis, Ix, Bf],
         &[Om, Nm, Dis, Ix, Bp],
+        // `-w`, `-b`, `-I` or a textconv driver that hides every hunk of a move or a mode
+        // change: Git still writes the header, with `index`, and no body (S3B-M-2).
+        &[Om, Nm, Ix],
+        &[Sim, Rf, Rt, Ixm],
+        &[Sim, Cf, Ct, Ixm],
+        &[Om, Nm, Sim, Rf, Rt, Ix],
+        &[Om, Nm, Sim, Cf, Ct, Ix],
     ]
 };
 
@@ -522,11 +530,17 @@ struct FileBuf {
     /// The first header line not in the form Git writes it, refused when the section ends, after
     /// every refusal 0.8.4 made, so those keep their reasons.
     unwritten: Option<PatchParseError>,
+    /// The last hunk closed had no trailing context, so `git apply` places it at the end of the
+    /// file and no hunk can follow it there: `Some(true)` when it also had no old lines at line
+    /// 0 (a creation's), which only another such hunk may follow.
+    open_end: Option<bool>,
 }
 
 /// Working accumulator for one hunk.
 struct HunkBuf {
     id: HunkId,
+    /// The line of its `@@` header.
+    header_line: usize,
     section: Option<String>,
     old_start: u32,
     new_start: u32,
@@ -561,6 +575,9 @@ struct Parser {
     /// What the sections flushed so far did to each path they wrote or removed (see
     /// [`Parser::record_path_uses`]).
     path_uses: BTreeMap<String, PathUse>,
+    /// Each copy's source, with the line its section began: a file the patch keeps unless a
+    /// section removes it (checked at the end, [`Parser::finish`]).
+    copy_sources: Vec<(String, usize)>,
 }
 
 /// What the earlier sections of the patch did to a path.
@@ -930,6 +947,7 @@ impl Parser {
         self.next_hunk_id += 1;
         self.hunk = Some(HunkBuf {
             id,
+            header_line: line_number,
             section: header.section,
             old_start: header.old_start,
             new_start: header.new_start,
@@ -1114,6 +1132,32 @@ impl Parser {
                 return Err(PatchParseError::HunkWithoutChange { line_number });
             }
             if let Some(file) = self.file.as_mut() {
+                // Plain `git apply` must place a hunk with no trailing context at the end of the
+                // file (`match_end`, `apply_one_fragment`) and one at line 0 or 1 at its start
+                // (`match_beginning`), or refuse the patch. A hunk it would place by such an
+                // anchor where its header does not put it lands elsewhere than the review shows:
+                // `git diff -U0` output (S3B-H-1). After a creation's first hunk (no old lines,
+                // line 0), Git refuses another such hunk whole: it alone may follow.
+                let context = |l: &&PatchLine| l.kind == PatchLineKind::Context;
+                let leading = hunk.lines.iter().take_while(context).count();
+                let trailing = hunk.lines.iter().rev().take_while(context).count();
+                let at_zero = hunk.old_start == 0
+                    && hunk.lines.iter().all(|l| l.kind == PatchLineKind::Added);
+                let elsewhere = if file.open_end.is_some_and(|zero| !(zero && at_zero)) {
+                    Some("it follows a hunk with no trailing context, which Git places at the end")
+                } else if leading == 0 && trailing == 0 && hunk.old_start > 1 {
+                    Some("it has no context, so Git places it at the end of the file")
+                } else {
+                    None
+                };
+                if let Some(reason) = elsewhere {
+                    file.unwritten
+                        .get_or_insert(PatchParseError::HunkPlacedElsewhere {
+                            line_number: hunk.header_line,
+                            reason,
+                        });
+                }
+                file.open_end = (trailing == 0).then_some(at_zero);
                 file.hunks.push(PatchHunk {
                     id: hunk.id,
                     old_start: Some(hunk.old_start),
@@ -1297,16 +1341,55 @@ impl Parser {
             if !follows {
                 return Err(again(path));
             }
+            if self.file_and_directory(&path) {
+                return Err(cannot_write(file.first_line));
+            }
+            if how == Writes::Moved && file.rename_from.is_none() {
+                let source = file
+                    .metadata
+                    .iter()
+                    .find_map(|m| m.strip_prefix("copy from "));
+                let source = source.and_then(super::paths::decode_path);
+                self.copy_sources
+                    .extend(source.map(|s| (squash_slashes(&s), file.first_line)));
+            }
             self.path_uses.insert(path, PathUse::Written);
         }
         Ok(())
+    }
+
+    /// One path as a file and as the directory of another, with the paths written so far: Git
+    /// writes one and fails on the other, after it has removed what the patch deletes (S3B-M-1).
+    fn file_and_directory(&self, path: &str) -> bool {
+        let written = |p: &str| self.path_uses.get(p) == Some(&PathUse::Written);
+        let dir = format!("{path}/");
+        path.match_indices('/').any(|(at, _)| written(&path[..at]))
+            || self
+                .path_uses
+                .range(dir.clone()..)
+                .take_while(|(p, _)| p.starts_with(&dir))
+                .any(|(_, u)| *u == PathUse::Written)
     }
 
     fn finish(mut self) -> Result<Vec<ReviewFile>, PatchParseError> {
         // End of input: any still-open hunk must have satisfied its counts.
         self.close_hunk(self.last_line)?;
         self.flush_file()?;
+        // A copy keeps its source, a file, unless a section removes it (a written one was
+        // checked when it was written): Git cannot then write under it, nor at its directory.
+        for (source, line_number) in &self.copy_sources {
+            if !self.path_uses.contains_key(source) && self.file_and_directory(source) {
+                return Err(cannot_write(*line_number));
+            }
+        }
         Ok(self.files)
+    }
+}
+
+fn cannot_write(line_number: usize) -> PatchParseError {
+    PatchParseError::GitCannotWrite {
+        line_number,
+        reason: "one path is both a file and the directory of another",
     }
 }
 
@@ -1578,6 +1661,45 @@ impl FileBuf {
         self.shape.push((header, line_number));
     }
 
+    /// Why `git apply` fails to write the symlink this section leaves, if it does: after it has
+    /// removed what the patch deletes (S3B-M-1). The target is the new side of the hunks, or empty
+    /// for a new link with none; a binary body is a target DDF cannot read.
+    fn symlink_git_cannot_write(&self) -> Option<&'static str> {
+        let mode = |prefix: &str| self.metadata.iter().find_map(|m| m.strip_prefix(prefix));
+        let has_mode_line = mode("old mode ").is_some() || mode("new mode ").is_some();
+        let index = self.metadata.iter().find_map(|m| index_mode(m));
+        let new = mode("new mode ")
+            .or(mode("new file mode "))
+            .or(index.filter(|_| !has_mode_line));
+        if new != Some("120000") {
+            return None;
+        }
+        if self.metadata.iter().any(|m| is_binary_marker(m)) {
+            return Some("a symlink's target in a binary body");
+        }
+        if self.hunks.is_empty() && mode("new file mode ").is_none() {
+            return None;
+        }
+        let mut target = String::new();
+        for line in self.hunks.iter().flat_map(|h| &h.lines) {
+            if line.kind != PatchLineKind::Removed {
+                target.push_str(&line.text);
+                if !line.no_newline {
+                    target.push('\n');
+                }
+            }
+        }
+        if target.is_empty() {
+            Some("an empty symlink target")
+        } else if target.contains('\0') {
+            Some("a symlink target with a NUL")
+        } else if target.len() > 4095 {
+            Some("a symlink target longer than 4,095 bytes")
+        } else {
+            None
+        }
+    }
+
     /// Called last, so every refusal 0.8.4 makes keeps its reason: a line not in the form Git
     /// writes it, then a Git section whose headers are no shape Git's diff writes. Five
     /// rescores in a row each found one more shape Git reads otherwise than the review did;
@@ -1585,6 +1707,12 @@ impl FileBuf {
     fn refuse_unwritten(&mut self) -> Result<(), PatchParseError> {
         if let Some(unwritten) = self.unwritten.take() {
             return Err(unwritten);
+        }
+        if let Some(reason) = self.symlink_git_cannot_write() {
+            return Err(PatchParseError::GitCannotWrite {
+                line_number: self.first_line,
+                reason,
+            });
         }
         // Git writes `---`/`+++` only before a hunk; an empty file is `new file mode` and
         // `index`. Read, a new symlink with `---`/`+++` and no hunk let Git delete the file the
@@ -2974,12 +3102,14 @@ diff --git a/x b/x
 diff --git a/x b/x
 --- a/x
 +++ b/x
-@@ -1,1 +1,1 @@
+@@ -1,2 +1,2 @@
 -a
 +A
-@@ -10,1 +10,1 @@
+ ctx
+@@ -10,2 +10,2 @@
 -b
 +B
+ ctx
 ";
         let file = one(input);
         assert_eq!(file.patch_twin.hunks.len(), 2);
@@ -2992,12 +3122,14 @@ diff --git a/x b/x
 diff --git a/x b/x
 --- a/x
 +++ b/x
-@@ -1,1 +1,1 @@
+@@ -1,2 +1,2 @@
 -a
 +A
-@@ -10,1 +10,1 @@
+ ctx
+@@ -10,2 +10,2 @@
 -b
 +B
+ ctx
 ";
         let file = one(input);
         assert_eq!(file.patch_twin.hunks[0].id, HunkId(0));
@@ -3990,7 +4122,7 @@ diff --git a/x b/x
     /// successfully; the section text is optional and must be accepted and ignored.
     #[test]
     fn hunk_header_accepts_section_text() {
-        let input = "--- a/x\n+++ b/x\n@@ -10,7 +10,6 @@ fn foo()\n-a\n-b\n-c\n-d\n-e\n-f\n-g\n+A\n+B\n+C\n+D\n+E\n+F\n";
+        let input = "--- a/x\n+++ b/x\n@@ -10,8 +10,7 @@ fn foo()\n-a\n-b\n-c\n-d\n-e\n-f\n-g\n+A\n+B\n+C\n+D\n+E\n+F\n ctx\n";
         let file = one(input);
         assert_eq!(file.patch_twin.hunks.len(), 1);
         assert_eq!(file.patch_twin.hunks[0].old_start, Some(10));
@@ -4894,7 +5026,7 @@ diff --git a/a b c.rs b/a b c.rs
     /// of it is read back as the same review (the fuzz rule, held for each shape).
     #[test]
     fn every_shape_git_writes_is_read_and_renders_to_a_shape_git_writes() {
-        assert_eq!(GIT_WRITES.len(), 37);
+        assert_eq!(GIT_WRITES.len(), 42);
         for shape in GIT_WRITES {
             let mut variants = vec![section_for(shape, |_| true)];
             // A binary line straight after `diff --git` is no patch to Git (refused before this).
