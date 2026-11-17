@@ -656,6 +656,19 @@ fn every_generated_patch_ddf_reads_is_applied_by_git_as_reviewed() {
     for (shape, n) in shapes.iter().take(25) {
         eprintln!("  {n:5}  {shape}");
     }
+    // Failures first, so a plant or a control names them, not a count it starves.
+    assert!(
+        total.failures.is_empty(),
+        "{} failures; the first:\n{}",
+        total.failures.len(),
+        total
+            .failures
+            .iter()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n---\n")
+    );
     // Not vacuous: the plain binary group is reached, and most of Git's own patches and many
     // near misses are read and applied.
     assert!(
@@ -668,17 +681,5 @@ fn every_generated_patch_ddf_reads_is_applied_by_git_as_reviewed() {
         "only {} of {} patches were read and applied",
         total.applied_as_read,
         total.patches
-    );
-    assert!(
-        total.failures.is_empty(),
-        "{} failures; the first:\n{}",
-        total.failures.len(),
-        total
-            .failures
-            .iter()
-            .take(3)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("\n---\n")
     );
 }
