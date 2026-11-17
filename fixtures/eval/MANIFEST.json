@@ -531,55 +531,124 @@
       "sha256": "12aad991e95568580821af934a2b034064898b4f66a78c17e79afb1ceee87c98"
     },
     {
-      "id": "evidence/rust-code-view-20261114",
+      "id": "evidence/integrity-rust",
       "kind": "evidence",
-      "patch": "evidence/rust-code-view-20261114.patch",
-      "origin": "internal: two findings of 2026-11-14 against the code view (crates/deep-diff-forge-graph/src/lexical.rs), each reproduced on the published v0.8.3 binary with a control before it was counted, and a third text found while the fix was written. (1) Rust nests block comments, and the view ended one at the first */, so after /* /* */ a // cut the line and the call behind the last */ was hidden (src/net.rs: a fetch and a spawn; the three lines after them hold the same comment with a quote and with //* inside it and add nothing a rule names; v0.8.3 reports no signal for the file, and process_spawn and network_fetch for the two calls written plainly). (2) A character literal with an escape longer than one character put the view one quote out of step, so that '\"' opened a string and \"/*\" a comment over the rest of the hunk (src/table.rs, a new file whose first line is such a constant, and the unsafe block after it; src/escapes.rs, the same with '\\u{1F600}'|'\"' and a byte literal: v0.8.3 reports no evidence for either file, and unsafe_added for each without that line). (3) src/piled.rs: a string and then a raw string that holds a comment opener on each of three lines; a scanner that counts comment depth has one reading for each depth, and the reading that resumed both strings, the compiler's, must not be the one dropped (found by the fuzz oracle against rustc's lexer while the fix was written; released versions read it right). Expected: every item. The fuzz target rust_code_view holds the view to the compiler's lexer for any text",
+      "patch": "evidence/integrity-rust.patch",
+      "origin": "synthetic: agent batteries 2026-11-13: a skipped test, an assertion that cannot fail written with spaces, a stub and a cfg_attr skip in tests; panic paths and a dropped error in source. Negatives: unwrap_or, and the same words in a comment and a string. Declared false positive since review V3 round 3: an unwrap inside a #[test] function the hunk shows, because a test attribute is not proof of test code (any attribute name but cfg can be bound to a macro that leaves the function in the program)",
       "expect": [
         {
-          "path": "src/net.rs",
-          "signal": "network_fetch",
+          "path": "tests/it.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "tests/it.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "tests/it.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 8
+        },
+        {
+          "path": "tests/it.rs",
+          "signal": "stub_added",
+          "side": "new",
+          "line": 11
+        },
+        {
+          "path": "src/lib.rs",
+          "signal": "panic_path_added",
           "side": "new",
           "line": 2
         },
         {
-          "path": "src/net.rs",
-          "signal": "process_spawn",
+          "path": "src/lib.rs",
+          "signal": "panic_path_added",
           "side": "new",
-          "line": 3
+          "line": 5
         },
         {
-          "path": "src/table.rs",
-          "signal": "unsafe_added",
+          "path": "src/lib.rs",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 9
+        }
+      ],
+      "sha256": "2fd175eaee1fc9ecd90fb81a1e987b26373323a9f258cb323a71aceb8047dae8",
+      "known_false_positive": [
+        {
+          "path": "tests/it.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 6
+        }
+      ]
+    },
+    {
+      "id": "evidence/error-swallowed-multilang",
+      "kind": "evidence",
+      "patch": "evidence/error-swallowed-multilang.patch",
+      "origin": "synthetic: agent batteries 2026-11-13: an empty handler in Python (two lines), TypeScript (one line and two) and Go (an if with an init statement, and _ = err). Negative: a handler that logs. A promise's catch with an empty function was a negative here until review V3 round 1 (VD3-L-1) and is expected since",
+      "expect": [
+        {
+          "path": "a.py",
+          "signal": "error_swallowed",
           "side": "new",
           "line": 4
         },
         {
-          "path": "src/escapes.rs",
-          "signal": "unsafe_added",
+          "path": "web/a.ts",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "web/a.ts",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "srv/a.go",
+          "signal": "error_swallowed",
           "side": "new",
           "line": 3
         },
         {
-          "path": "src/piled.rs",
-          "signal": "unsafe_added",
+          "path": "srv/a.go",
+          "signal": "error_swallowed",
           "side": "new",
-          "line": 6
+          "line": 5
         },
         {
-          "path": "src/piled.rs",
-          "signal": "unsafe_added",
-          "side": "new",
-          "line": 7
-        },
-        {
-          "path": "src/piled.rs",
-          "signal": "process_spawn",
+          "path": "web/a.ts",
+          "signal": "error_swallowed",
           "side": "new",
           "line": 7
         }
       ],
-      "sha256": "170eccbcb87e8fbfd1e3285aa88a2223b61188a97dfb47152b2787cc75307614"
+      "sha256": "b13245c86fe887729851d318094ee7dc1ae344474d841f3f924b00adfd358b62"
+    },
+    {
+      "id": "evidence/known-miss-stub-message",
+      "kind": "evidence",
+      "patch": "evidence/known-miss-stub-message.patch",
+      "origin": "synthetic: agent batteries 2026-11-13: a documented limit: a JavaScript placeholder that exists only as a message string",
+      "expect": [],
+      "known_miss": [
+        {
+          "path": "web/stub.js",
+          "signal": "stub_added",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "sha256": "a1f5293e5f6d5833dc634b90b32c98fe1c8b4331c3d3f8b4a81f7da99e3a3bd4"
     },
     {
       "id": "findings/mixed",
@@ -646,6 +715,1669 @@
       ],
       "sha256": "6d4d75d0a4d0663b9f573094f57e2fd53bea3ae9e9a3edb1450bb14173cd6662",
       "findings_sha256": "b21611a2708dafab22abba2a68280c22783907ecdb075302271c29e7e236d8d6"
+    },
+    {
+      "id": "evidence/agent-evasions",
+      "kind": "evidence",
+      "patch": "evidence/agent-evasions.patch",
+      "origin": "synthetic: agent batteries 2026-11-13, gap analysis probes written by Claude (a sample, not a measurement): twelve ways an agent makes a gate pass without doing the work, each a declared miss until a rule sees it. Eight name labels that do not exist yet (assertions_removed, input_special_cased, error_defaulted, expectations_changed, module_mocked); a declared miss that is later found fails the run until it is moved to expect",
+      "expect": [],
+      "known_miss": [
+        {
+          "path": "tests/tautology.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/assertion_dropped.rs",
+          "signal": "assertions_removed",
+          "side": "old",
+          "line": 3
+        },
+        {
+          "path": "src/special.rs",
+          "signal": "input_special_cased",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/defaulted.rs",
+          "signal": "error_defaulted",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/discarded.rs",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/ok_discard.rs",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "app/handler.py",
+          "signal": "error_defaulted",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "tests/test_early_return.py",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/snapshots/total.snap",
+          "signal": "expectations_changed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "web/pay.test.ts",
+          "signal": "module_mocked",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/indexed.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/ci_return.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 3
+        }
+      ],
+      "sha256": "c69c7d48c496f64f48776967700c6002a40e80a09d28e865e80607f98874381d"
+    },
+    {
+      "id": "evidence/review-v3-round1",
+      "kind": "evidence",
+      "patch": "evidence/review-v3-round1.patch",
+      "origin": "internal: an adversarial review by Vesper V3 round 1, 2026-11-13 (docs/reviews/vesper-v3-round1-report-20261113.md), findings VD3-H-1, VD3-M-1 and VD3-L-1, each reproduced before it was counted. Caught since the fixes: a panic path under a false cfg_attr that only mentions test, a change inside an assertion that spans lines (Rust), a catch whose empty block is on the next line, a promise catch with an empty function, test.skipIf, and Result::unwrap written as a function. Declared misses: the multi-line assertion in Python and TypeScript, a Go skip through a receiver not named t, Python assertions on a constant, and a Python body that is only an ellipsis",
+      "expect": [
+        {
+          "path": "src/false_cfg_attr.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "tests/multiline.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "web/next_line_block.ts",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "web/promise.ts",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "web/skipif.test.ts",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/ufcs.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "tests/test_multiline.py",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "web/multiline.test.ts",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "go/other_receiver_test.go",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/test_constants.py",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/test_constants.py",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "tests/test_constants.py",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "app/ellipsis.py",
+          "signal": "stub_added",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "sha256": "730f3cbb9107929c489dbfdf60d182990cda5b82d83d79c4fa7f3bc716611133"
+    },
+    {
+      "id": "evidence/review-v3-round2",
+      "kind": "evidence",
+      "patch": "evidence/review-v3-round2.patch",
+      "origin": "internal: an adversarial review by Vesper, V3 round 2, 2026-11-13 (docs/reviews/vesper-v3-round2-report-20261113.md), findings VD3R2-H-1, VD3R2-M-1 and VD3R2-L-1, each reproduced before it was counted. Expected: a panic path under an unknown attribute path that ends in test, and a promise catch whose empty handler has a default value that calls a function. Negatives: a todo and an assertion whose message alone changed. Declared false positive since round 3: a panic path in a real test written #[r#test], because no test attribute is proof. Declared false positive since the decision of 2026-11-14 that the parser never removes evidence (docs/reviews/claude-independent-review-2-20261114.md, IR2-H-1 to IR2-H-4: the proof of test code was broken four more ways, each compiled and run): the panic path in a top-level function under #[cfg(test)] in a new file, a negative from round 3 until then; it is reported with test_likely",
+      "expect": [
+        {
+          "path": "src/custom_test_attr.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "web/callbacks.ts",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 1
+        },
+        {
+          "path": "web/callbacks.ts",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "web/callbacks.ts",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 3
+        }
+      ],
+      "known_false_positive": [
+        {
+          "path": "src/raw_test_attr.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/cfg_test_fn.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        }
+      ],
+      "sha256": "3f8f96734b500c69c8c20426d17d9b552b9a93fcc60a4fbf0347f14eb673a352"
+    },
+    {
+      "id": "evidence/review-v3-round3",
+      "kind": "evidence",
+      "patch": "evidence/review-v3-round3.patch",
+      "origin": "internal: an adversarial review by Vesper, V3 round 3, 2026-11-13 (docs/reviews/vesper-v3-round3-report-20261113.md), findings VD3R3-H-1, VD3R3-H-2 and VD3R3-M-1, each reproduced before it was counted. Expected: a panic path under a test framework's attribute name that an import or a renamed dependency can bind to anything, under a cfg(test) that an attribute macro before it may drop, and under a cfg(test) in a hunk from the middle of a file where a comment opened above ends on the attribute's line; a method call with a space before its parenthesis; and an assertion that becomes trivial on a line that already holds a trivial one. Declared false positive since the decision of 2026-11-14 that the parser never removes evidence (docs/reviews/claude-independent-review-2-20261114.md, IR2-H-1 to IR2-H-4: the proof of test code was broken four more ways, each compiled and run): the two panic paths inside a top-level #[cfg(test)] module of a new file, one of them inside a macro's arguments, negatives until then; they are reported with test_likely",
+      "expect": [
+        {
+          "path": "src/aliased.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/renamed_crate.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/stripped.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/comment_above.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 43
+        },
+        {
+          "path": "src/spaced.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/same_row.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 3
+        }
+      ],
+      "known_false_positive": [
+        {
+          "path": "src/with_tests.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 11
+        },
+        {
+          "path": "src/with_tests.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 12
+        }
+      ],
+      "sha256": "30688c82e81f09a7e0388cf12e60cdd5064f1c504ee05879a0467b0b9b798b10"
+    },
+    {
+      "id": "evidence/review-v3-round4",
+      "kind": "evidence",
+      "patch": "evidence/review-v3-round4.patch",
+      "origin": "internal: an adversarial review by Vesper, V3 round 4, 2026-11-13 (docs/reviews/vesper-v3-round4-report-20261113.md), findings VD3R4-H-1 and VD3R4-M-1, each reproduced before it was counted. Expected: a panic path under a cfg(test) in a hunk of an existing file that only says it starts at line 1 (git apply --unidiff-zero or -C0 applies it further down, under a comment opened above), with context and with every line added; and the trivial assertion over three lines inside another macro's body, on the line that opens it (a declared miss, with syntax_unchecked on that line, while a parser read the hunks and one-line rules the rest; since 2026-11-14 the tokens of a hunk are read across its lines, a macro's body like any other). Declared false positive since the decision of 2026-11-14 that the parser never removes evidence (docs/reviews/claude-independent-review-2-20261114.md, IR2-H-1 to IR2-H-4: the proof of test code was broken four more ways, each compiled and run): the panic path in the cfg(test) module of a file that the patch creates whole, a negative until then; it is reported with test_likely",
+      "expect": [
+        {
+          "path": "src/forged_first_line.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/inserted_at_top.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "tests/forwarded.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 5
+        }
+      ],
+      "known_false_positive": [
+        {
+          "path": "src/whole_new_file.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 9
+        }
+      ],
+      "sha256": "2f6f783d2ca0f569eb3cb97724c79d334170bcdfe6dd5d129864e6aa49ca737c"
+    },
+    {
+      "id": "evidence/independent-review-20261114",
+      "kind": "evidence",
+      "patch": "evidence/independent-review-20261114.patch",
+      "origin": "internal: an independent review by a Claude subagent, 2026-11-14 (docs/reviews/claude-independent-review-20261114.md), findings IR-H-1, IR-H-2, IR-M-2, IR-M-3, IR-L-2 and IR-L-3, each reproduced before it was counted. Expected: a production panic path on the line of a proved test function (named as a function, and inside a macro's arguments); a panic path in a new file whose first line the grammar reads as a shebang and the compiler as an attribute and an opened comment, so that the cfg(test) under it is comment text; the trivial assertion and the placeholder written over lines inside another macro's body (declared misses, marked syntax_unchecked, until 2026-11-14: the tokens of a hunk are now read across its lines); a conditional skip whose condition changed from miri to all(); unwrap and expect passed as functions or called by a path; a spaced allow attribute. Negatives: an ignore that belongs to a serde attribute; unwrap_or_default passed as a function. Declared false positives: a method named expect on a hand-written parser and on a mock, and a Python name that begins with unittest.skip; and since 2026-11-14 two that were negatives until then: the panic path in the cfg(test) module of a file created whole, read inside a macro's arguments (the parser never removes evidence any more; it is reported with test_likely), and the conditional skip of which only the reason changed (an attribute that starts on an unchanged line is the same as before only if its whole text is, second independent review IR2-M-1, and the reason is part of the text). Declared misses: cfg(any()) on a test; and respellings in Python, JavaScript and Go, where no parser backs the token rules (a skip raised as an exception, assertions with a message, with parentheses or with inner spaces, chained skip modifiers, a spaced call, an empty error check with the operands reversed). Since 2026-11-15 the first line of src/shebang.rs is read for what it is as well: `#!`, a comment and `[allow(unused)]` are the inner attribute `#![allow(unused)]` to the compiler, and the reader of tokens, which now reads release 0.8.3's `#[allow(` with anything between its tokens, reports the suppressed lint",
+      "expect": [
+        {
+          "path": "src/shared_line.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/shared_line.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/shebang.rs",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 1
+        },
+        {
+          "path": "src/shebang.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "tests/macro_body.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "tests/macro_body.rs",
+          "signal": "stub_added",
+          "side": "new",
+          "line": 7
+        },
+        {
+          "path": "tests/slow.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/passed.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/passed.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/passed.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/passed.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "src/model.rs",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 3
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "tests/any.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/test_respelled.py",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/test_respelled.py",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "tests/test_respelled.py",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "web/respelled.test.ts",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "web/respelled.test.ts",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "web/respelled.test.ts",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "web/respelled.test.ts",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "web/respelled.test.ts",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 6
+        },
+        {
+          "path": "go/respelled_test.go",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "go/respelled_test.go",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 3
+        }
+      ],
+      "known_false_positive": [
+        {
+          "path": "src/parser.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/parser.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "tests/test_respelled.py",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "src/whole_test_module.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 7
+        },
+        {
+          "path": "tests/reason.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 4
+        }
+      ],
+      "sha256": "68186172b62d5d7fb5d62562a81cd97b95a314737e2ebdc76cef372ff58e48ea"
+    },
+    {
+      "id": "evidence/review-v3-round8",
+      "kind": "evidence",
+      "patch": "evidence/review-v3-round8.patch",
+      "origin": "internal: an adversarial review by Vesper, V3 round 8, 2026-11-14 (docs/reviews/vesper-v3-round8-report-20261114.md), finding VD3R8-M-1, reproduced before it was counted. Expected: a raw identifier read as the identifier it is to the compiler: unwrap called as a method, by a path and passed as a function, a placeholder macro, an ignored test and a trivial assertion, each spelled with r#. Negative: the opener of a raw string is not an identifier, and the call inside the string is text",
+      "expect": [
+        {
+          "path": "src/raw.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/raw.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/raw.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "src/raw.rs",
+          "signal": "stub_added",
+          "side": "new",
+          "line": 6
+        },
+        {
+          "path": "tests/raw.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/raw.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 4
+        }
+      ],
+      "sha256": "c7a16e080c9f8874e900f1c7b41be78969bba3d310b28a1338391453e874ad31"
+    },
+    {
+      "id": "evidence/independent-review-2-20261114",
+      "kind": "evidence",
+      "patch": "evidence/independent-review-2-20261114.patch",
+      "origin": "internal: a second independent review by a Claude subagent, 2026-11-14 (docs/reviews/claude-independent-review-2-20261114.md), findings IR2-H-1, IR2-M-1 and IR2-M-2, and round 9 of Vesper's review (docs/reviews/vesper-v3-round9-report-20261114.md), finding VD3R9-M-1, each reproduced before it was counted. Expected: a production panic path in a new file whose first line holds //* inside a block comment, which the grammar does not count as a nested opener and the compiler does, so that the cfg(test) after it is comment text (it was withdrawn as proved test code); unwrap called by a path that is broken after its ::, passed as a function of the patch's own type, named as a value with generic arguments over two lines, and called after a comment that the lexer's code view ends too early; a conditional skip applied by a cfg_attr inside a cfg_attr; a conditional skip whose nested condition changed from all(miri) to all(); a removed test written #[r#test]. Negatives: an import named expect, a path that only leads through a module named unwrap, and a condition of which only the spacing changed. Declared false positive: a panic path in the cfg(test) module of a file created whole, reported with test_likely since the parser never removes evidence. Declared miss: a call inside another macro's body after /* /* */ // */, where the parser names no construct and the lexer's code view, which does not nest block comments, shows the token rules a comment. Changed 2026-11-14, when the parser left the evidence path and the tokens of a hunk are read across its lines (docs/reviews/claude-independent-review-3-20261114.md): a construct over lines is reported on its first added line, the line of the :: and not of the name; two more declared misses, the function of the patch's own type passed as a value (the parser named any path used as a value; tokens do not tell one from an import or a type, and only the standard Result and Option are read) and the call after /* /* */ // */ in plain code (the parser nested the comment; the code view does not); and one more declared false positive, the condition of which only the spacing changed (nothing is compared with the old side any more: a line written again inside a conditional skip is a change to it). Changed again 2026-11-14 (review round 12): the code view reads Rust as the compiler's lexer does and nests block comments, so the two calls after /* /* */ // */ (in plain code, and inside another macro's body) are found; they moved from the declared misses to the expected items. The function of the patch's own type passed as a value stays declared",
+      "expect": [
+        {
+          "path": "src/comment_opener.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/paths.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/paths.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 7
+        },
+        {
+          "path": "tests/nested_skip.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/condition.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "tests/raw_removed.rs",
+          "signal": "test_removed",
+          "side": "old",
+          "line": 1
+        },
+        {
+          "path": "src/paths.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 10
+        },
+        {
+          "path": "src/paths.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 12
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "src/paths.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 6
+        }
+      ],
+      "known_false_positive": [
+        {
+          "path": "src/whole_new.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 9
+        },
+        {
+          "path": "tests/respaced.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 3
+        }
+      ],
+      "sha256": "1342828f8cfea18027fcc8c53237e9128b5b5e86b97e671ee587670c30e6d15a"
+    },
+    {
+      "id": "evidence/independent-review-3-20261114",
+      "kind": "evidence",
+      "patch": "evidence/independent-review-3-20261114.patch",
+      "origin": "internal: a third independent review by a Claude subagent, 2026-11-14 (docs/reviews/claude-independent-review-3-20261114.md), findings IR3-H-1, IR3-M-1 to IR3-M-5, IR3-L-3 and IR3-L-4, each reproduced before it was counted, after which the parser was taken out of the evidence path. Expected: unwrap called over two lines in the arm of a macro_rules definition (mr1); unwrap called over three lines after a block comment that the grammar's scanner read as still open (gc1); an assertion of true over three lines with a line comment after the true (ca1); expect called as a method with generic arguments (tf4); a removed test whose attribute has arguments, tokio::test(flavor) (tr1). Negative: 8 KB of &) under a comment that names todo, which took the parser 15 s and holds nothing (the eval has no clock; the time is held by a unit test and measured). Declared misses, all one limit, a change that adds no token to the construct: a conditional skip whose condition lost feature = ci because a line end was moved into a comment (at1) or the line was deleted (at1ctl, which the parser found), and a call on an unchanged line that the change brings to life by removing the comment around it (un1)",
+      "expect": [
+        {
+          "path": "src/mr1.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/gc1.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/ca1.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/tf4.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/tr1.rs",
+          "signal": "test_removed",
+          "side": "old",
+          "line": 10
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "src/at1.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 13
+        },
+        {
+          "path": "src/at1ctl.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 13
+        },
+        {
+          "path": "src/un1.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 12
+        }
+      ],
+      "sha256": "a1557e60e8aaa53eb50fc34d214df180eb245224eaf37e65a34391c7a9caeb7c"
+    },
+    {
+      "id": "evidence/rust-code-view-20261114",
+      "kind": "evidence",
+      "patch": "evidence/rust-code-view-20261114.patch",
+      "origin": "internal: two findings of the independent reviews of 2026-11-14 against the code view (crates/deep-diff-forge-graph/src/lexical.rs), each reproduced on the released v0.8.3 binary with a control before it was counted, and a third text found while the fix was written. (1) IR2-H-3, docs/reviews/claude-independent-review-2-20261114.md: Rust nests block comments, and the view ended one at the first */, so after /* /* */ a // cut the line and the call behind the last */ was hidden (src/net.rs: a fetch, a spawn, an unwrap, a todo after a nested comment that holds a quote, and an unwrap after a comment that holds //*; v0.8.3 reports no signal for the file, and process_spawn and network_fetch for its control). (2) IR4-H-1, docs/reviews/claude-independent-review-4-20261114.md: a character literal with an escape longer than one character put the view one quote out of step, so that '\"' opened a string and \"/*\" a comment over the rest of the hunk (src/table.rs, a new file whose first line is such a constant: the unsafe block, the unwrap, the todo, the ignored test and the trivial assertion after it; src/escapes.rs, the same with '\\u{1F600}'|'\"' and a byte literal: v0.8.3 reports no evidence for either file, and unsafe_added for their controls). (3) src/piled.rs: a string and then a raw string that holds a comment opener on each of three lines; a scanner that counts comment depth has one reading for each depth, and the reading that resumed both strings, the compiler's, must not be the one dropped (found by the fuzz oracle against rustc's lexer while the fix was written; released versions read it right). Expected: every item. The fuzz target rust_code_view holds the view to the compiler's lexer for any text",
+      "expect": [
+        {
+          "path": "src/net.rs",
+          "signal": "network_fetch",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/net.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/net.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/net.rs",
+          "signal": "stub_added",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "src/net.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 6
+        },
+        {
+          "path": "src/table.rs",
+          "signal": "unsafe_added",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/table.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 6
+        },
+        {
+          "path": "src/table.rs",
+          "signal": "stub_added",
+          "side": "new",
+          "line": 10
+        },
+        {
+          "path": "src/table.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 16
+        },
+        {
+          "path": "src/table.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 18
+        },
+        {
+          "path": "src/escapes.rs",
+          "signal": "unsafe_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/piled.rs",
+          "signal": "unsafe_added",
+          "side": "new",
+          "line": 6
+        },
+        {
+          "path": "src/piled.rs",
+          "signal": "unsafe_added",
+          "side": "new",
+          "line": 7
+        },
+        {
+          "path": "src/piled.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 7
+        }
+      ],
+      "sha256": "170eccbcb87e8fbfd1e3285aa88a2223b61188a97dfb47152b2787cc75307614"
+    },
+    {
+      "id": "evidence/independent-review-5-20261114",
+      "kind": "evidence",
+      "patch": "evidence/independent-review-5-20261114.patch",
+      "origin": "internal: a fifth independent review by a Claude subagent (docs/reviews/claude-independent-review-5-20261114.md, IR5-H-1, IR5-M-1, IR5-M-2) and round 12 of Vesper's review (docs/reviews/vesper-v3-round12-report-20261114.md, VD3R12-M-1, VD3R12-M-2), 2026-11-14, each reproduced before it was counted. Expected: after a string over a line end, an unwrap, a todo, an ignored test and a trivial assertion with the comment /*\"\"*/ between two of their tokens (src/union.rs), a conditional skip with a closing bracket inside a string of its condition (src/skip.rs), and the unwrap in a hunk of an existing file (src/cli.rs): the bytes of two readings were united and the union showed the comment's quotes between the tokens; raw identifiers after the left-to-right mark U+200E, which the compiler takes for white space (src/marks.rs); a spawn on a line added inside an existing block comment, // */ ... /*, and the same with the opener added by an earlier hunk (src/net.rs, src/lib.rs): a side below line 1 is also read as beginning inside a block comment; a spawn under a shebang line that holds /* (src/bin/tool.rs); every item under m!(k#r\"\\\"); m!(\" /* \"); (src/kraw.rs), which rustc 1.99.1 reads as k, # and a raw string in editions 2015 and 2018 and refuses in 2021 and 2024; and the unwrap on the line that closes a string opened above the hunk (src/db.rs, the review's honest case): a side that, read from code, ends inside a string is also read as beginning inside one. Declared false positives, the cost of those two further readings: a call in the text of a string after **/ in a hunk below line 1 (src/glob.rs), and a call in the text of a string in a hunk that ends inside another string (src/log.rs). Found since round 14, when every Rust hunk came to be read once more as release 0.8.3 read it, by that release's rules: the spawn under m!('r#r\"\\\"); m!(\" /* \"); (src/rawlt.rs), which editions 2015 and 2018 read as 'r, # and a raw string where 2021 and 2024, which the code view follows, read one raw lifetime and an ordinary string (the scanner of that release knew no raw lifetime, and so reads this text as the older editions do). Declared misses: the ignored test and the trivial assertion under the same text (that release had no rule for them, and the reader of tokens reads the view of the newer editions); and a spawn after // \"; in a hunk whose string was opened by an earlier hunk (src/store.rs): read from code that side carries nothing over a line end, so nothing says it began inside a string",
+      "expect": [
+        {
+          "path": "src/union.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "src/union.rs",
+          "signal": "stub_added",
+          "side": "new",
+          "line": 9
+        },
+        {
+          "path": "src/union.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 15
+        },
+        {
+          "path": "src/union.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 22
+        },
+        {
+          "path": "src/skip.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 7
+        },
+        {
+          "path": "src/cli.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 8
+        },
+        {
+          "path": "src/marks.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/marks.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "src/marks.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 10
+        },
+        {
+          "path": "src/net.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "src/lib.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 12
+        },
+        {
+          "path": "src/bin/tool.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/kraw.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/kraw.rs",
+          "signal": "unsafe_added",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "src/kraw.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 9
+        },
+        {
+          "path": "src/kraw.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 10
+        },
+        {
+          "path": "src/kraw.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 11
+        },
+        {
+          "path": "src/kraw.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 11
+        },
+        {
+          "path": "src/db.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 15
+        },
+        {
+          "path": "src/rawlt.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 4
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "src/rawlt.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 8
+        },
+        {
+          "path": "src/rawlt.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 9
+        },
+        {
+          "path": "src/store.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 12
+        }
+      ],
+      "known_false_positive": [
+        {
+          "path": "src/glob.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 8
+        },
+        {
+          "path": "src/log.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 41
+        }
+      ],
+      "sha256": "6b02a3ae82b0bfc5236d7a071e3598f14713694afa6676e00e4953490f424026"
+    },
+    {
+      "id": "evidence/independent-review-6-20261114",
+      "kind": "evidence",
+      "patch": "evidence/independent-review-6-20261114.patch",
+      "origin": "internal: a sixth independent review by a Claude subagent (docs/reviews/claude-independent-review-6-20261114.md, IR6-H-1, IR6-H-2, IR6-H-3, IR6-L-1, IR6-L-4), round 13 of Vesper's review (docs/reviews/vesper-v3-round13-report-20261114.md, VD3R13-M-1) and the review of the port of the Rust scanner to the released line (LF-H-1), 2026-11-14, each reproduced before it was counted, with `git apply` 2.56.0 and rustc 1.99.1 where a claim is about them. Expected. The place of a hunk is where Git must put it: a spawn on a line added inside an existing block comment in a hunk whose header says +1 (src/placed.rs: Git applies it at line 9), the same with the comment opened by an earlier hunk (src/second.rs), and a line `#! ...` inside a macro call in a hunk that says +1 (src/macro.rs: no shebang, since the old position is 6). Hunks Git must put together are one text: a call cut in two by the hunks of a created file (src/split.rs) and by a hunk of added lines after one that ends its file (src/end.rs), a spawn after a comment two deep opened in the first hunk of a created file (src/deep.rs), and a spawn below a string opened in the first hunk whose text holds crates/*/*/Cargo.toml (src/glob.rs). A join is a further reading and takes none away: two hunks of added lines only, the first leaving a block comment open, the second a spawn and a call (src/zero.rs: plain `git apply` puts both at the end of the file, where the second is the text of that comment, and the hunks are also read as that one text; `git apply --unidiff-zero` puts each where its numbers say, where the comment is closed between them and rustc compiles the second as code, so each hunk is always read on its own as well; the first build of this round read the second only as a continuation and lost both items, which round 13 reported). A side that carries anything over a line end is also read from inside a string, and from inside a raw string: #[ignore] added between two tests whose expected output is a raw string over lines (tests/snapshots.rs, a `diff -U3`), a test removed between two strings (tests/t.rs), a spawn after the closing line of a string, on a line that holds the string \"/*\" (src/help.rs), a spawn after a raw string whose text ends in a backslash (src/paths.rs), and what release 0.8.3 reported and round 13 lost, a spawn and an unsafe block below a string whose text has more comment openers than closers (src/main.rs, src/script.rs, plain `git diff`s). And the general answer: a hunk that reaches the top of its file is read exactly, so the full-context forms of two declared misses are found (src/full/strcode.rs, src/full/nested.rs). A hunk with old position 1 is the top of its file whatever its new position says, and a line comment there is a line comment (src/top.rs: nothing is reported). Declared misses, each as a bare fragment: a spawn after a string that began above the hunk, on a line whose quotes balance (src/strcode.rs: read from code nothing is carried over a line end, so nothing says the side began in a string); a spawn two comments deep behind `// */ //` (src/nested.rs, src/depth2.rs: a side is read from inside one comment, not two); a call cut in two by two hunks that touch while the second header says they do not (src/apart.rs: Git finds a hunk by its context, wherever its header says it is); and four spellings of a suppressed lint that the one-line rule does not read (src/allow.rs: a comment inside the attribute, the attribute over two lines, `cfg_attr(all(), allow(...))`, `expect(...)`). Declared false positives, the cost of the further readings: a call in the text of a string on a line after a block comment that the hunk does not see the end of (src/notes.rs: the side carries a comment over a line end and is read from inside a string too), and the two items release 0.8.3 reported in the text of a string after a string over lines (src/legacy.rs: the reading of that release, by its own rules, is kept so that nothing it reports is lost; the two items of newer signals that the same text gave until round 13 are not reported). Since 2026-11-15 three of the declared misses above are found and expected: the call cut in two by hunks that touch while the second header says they do not (src/apart.rs: the first half ends on `x.unwrap`, and the edge of a side is read), and two of the four spellings of a suppressed lint (src/allow.rs: the comment inside the attribute and the attribute over two lines are the tokens `#`, `[`, `allow`, `(` to the reader; `cfg_attr(all(), allow(...))` and `expect(...)` stay declared). Corrected 2026-11-15 (seventh independent review, IR7-L-3): Git starts looking for a hunk at its NEW position and takes the nearest place that has its old lines, so the hunk of src/placed.rs goes to line 9 when its lines stand there and not at line 1; where this text says that Git places a hunk by its old position, only positions 0 and 1 are meant, which say the hunk must be at the beginning. The expectations did not change. Since round 16 (2026-11-15) the call of src/apart.rs is a declared miss again: `.unwrap` with nothing after it at the end of a side is no evidence by itself (a field can be named so), and neither number of the second hunk says the two touch",
+      "expect": [
+        {
+          "path": "src/placed.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/second.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/macro.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 1
+        },
+        {
+          "path": "src/split.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/end.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/deep.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/glob.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/zero.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 23
+        },
+        {
+          "path": "src/zero.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 24
+        },
+        {
+          "path": "tests/snapshots.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 18
+        },
+        {
+          "path": "tests/t.rs",
+          "signal": "test_removed",
+          "side": "old",
+          "line": 41
+        },
+        {
+          "path": "src/help.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 7
+        },
+        {
+          "path": "src/paths.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "src/main.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 14
+        },
+        {
+          "path": "src/script.rs",
+          "signal": "unsafe_added",
+          "side": "new",
+          "line": 12
+        },
+        {
+          "path": "src/full/strcode.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/full/nested.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "src/allow.rs",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 1
+        },
+        {
+          "path": "src/allow.rs",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 3
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "src/strcode.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/nested.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "src/depth2.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 12
+        },
+        {
+          "path": "src/allow.rs",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 6
+        },
+        {
+          "path": "src/allow.rs",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 8
+        },
+        {
+          "path": "src/apart.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        }
+      ],
+      "known_false_positive": [
+        {
+          "path": "src/notes.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 23
+        },
+        {
+          "path": "src/legacy.rs",
+          "signal": "unsafe_added",
+          "side": "new",
+          "line": 6
+        },
+        {
+          "path": "src/legacy.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 6
+        }
+      ],
+      "sha256": "eab7ce1302d432cf86117f52c9aa9367bcb4069be9d1fd2c82aeea69f575aead"
+    },
+    {
+      "id": "evidence/independent-review-7-20261115",
+      "kind": "evidence",
+      "patch": "evidence/independent-review-7-20261115.patch",
+      "origin": "internal: a seventh independent review by a Claude subagent (docs/reviews/claude-independent-review-7-20261115.md, IR7-H-1, IR7-H-2, IR7-M-1, IR7-M-2, IR7-M-3, IR7-L-3) and round 14 of Vesper's review, 2026-11-15, each reproduced before it was counted, with `git apply` 2.56.0 and rustc 1.99.1 where a claim is about them. Expected. No number in a hunk header decides the language of a file with no extension: a fetch and an eval added below `#!/bin/sh` in a hunk written `@@ -4,3 +1,5 @@` (tools/deploy: plain Git applies it at line 1 with no message; release 0.8.3 and round 13 report both, round 14 reported nothing), the same hunk written `@@ -4,3 +4,5 @@` (tools/setup: \"Hunk #1 succeeded at 1 (offset -3 lines)\"; no version before this one reported anything), and the hunk with the shebang written second in its section (tools/late: the first hunk is read as the script's language too). A side that began inside a raw string is read to the quote that truly ends it: the plain `git diff -U3` of a test whose page is kept in r##\"...\"## and holds href=\"#top\" and a link (tests/page.rs: two panic paths and a spawn after the string; round 13 found none, round 14 the spawn only). Hunks are read together on the hint of either number, and a hunk with no old line counts as an earlier hunk: an added line and the changed line after it (src/m.rs: `opt.unwrap` and `();`; plain Git refuses the pair, `git apply --unidiff-zero` puts them together), and two hunks with context whose second has a false old number and a true new one (src/cut.rs: Git starts looking at the new number and prints nothing). The edge of a side is read: the same pair with both numbers false, which nothing joins (src/edge.rs: the first half ends on `.unwrap`), and a pair cut before the word (src/before.rs: the second half begins `unwrap()`). The paths release 0.8.3 keyed its signals on are read as tokens: `std::process :: Command :: new` (src/sp1.rs), the same over three lines (src/sp3.rs), `TcpStream :: connect` (src/sp4.rs), `Command` and `::new` on two lines under a glob import (src/sp7.rs), and `#[` and `allow(` on two lines (src/lint.rs); each compiles, and release 0.8.3 reports none of them. A second section for one path (src/n.rs, twice: plain Git applies both sections to the one file and the result is the call `opt.unwrap` `();`): the two are two files to this crate and nothing joins them, the first ends on `.unwrap` and that edge is the item; the fix is the parser's refusal of such a patch in release 0.8.4, which this branch does not stand on yet. Declared misses. A second section that goes on in a string the first opened (src/two.rs: plain Git applies both, rustc compiles the result, and the spawn after the string's last line is read as text of a string; this is IR7-H-2 where no edge shows it, and it waits for the same refusal). A trivial assertion cut after its opening bracket by two hunks that nothing joins (tests/cutassert.rs: `assert!(` ends a line of every assertion written over several lines, so it is no evidence at the end of a side). A raw string whose text has quotes with one, two, three and four `#` and that ends at a quote with five (tests/deep.rs: a side is read for its first four counts). A spawn through an alias that never writes the names the rule keys on (src/alias.rs: `Command as C`, then `C::new`; release 0.8.3 the same). A Python call with a space before its dot (tools/space.py: `os . system(cmd)`; the rules of the other languages read one line as it is written). Declared false positives, the cost of this round's readings: a call of a function of the crate's own named `expect` on a changed line that begins its hunk (src/free.rs: a side that begins with `expect(` may be the end of a call cut before its name; 2 of 177,957 fragments of real crate files begin so), and a fetch word below a line that reads as a shebang in the middle of a text file with no extension (NOTES: the file is read as that language too). Changed 2026-11-15 after round 15 of Vesper's review (docs/reviews/vesper-v3-round15-report-20261115.md, VD3R15-M-1): what a side ends on is read only where it is evidence by itself, and the beginning of a side is not read at all. So three items above are declared misses again, each needing a writer who sets out to: the call cut after `.unwrap` by two hunks that nothing joins (src/edge.rs), the same cut before the word (src/before.rs), and the second section for one path (src/n.rs: nothing is reported for it until the parser refuses it). Expected instead, with both numbers of the second hunk false: a stub cut after `todo!` (src/stub.rs) and a spawn cut after `Command::` (src/spawn.rs). Hard negatives, each a line of honest code as a one-line hunk of `git diff -U0`, for which nothing may be reported: a return type named `Command` at the end of a line whose brace stands on the next (src/cmd.rs: Vesper's patch, which round 15 reported as a spawn in a file that has none), a return type `TcpStream` (src/net.rs), a field of type `UdpSocket` (src/sock.rs), a line that ends on the bare name `reqwest` (src/uses.rs), a variable named `todo` (src/list.rs), a field named `expect` at the head of a chain (src/field.rs), an assignment to a variable named `ignore` (src/assign.rs), a removed line that begins with a call of a function named `test` (tests/old.rs), and the call of a function named `expect` at the beginning of a hunk, which round 15 reported and is no longer a declared false positive (src/free.rs). Changed again in round 17 (2026-11-15), after round 16 of Vesper's review (VD3R16-M-1) and the ninth independent review (IR9-M-2, IR9-L-5): a form is read at the end of a side only where every continuation the grammar allows is the construct, and `todo!` and `Command::` are not such forms (a sentence ends on the first, `Command::VERSION` goes on from the second). So the stub cut after `todo!` (src/stub.rs) and the spawn cut after `Command::` (src/spawn.rs), both behind two false numbers, are declared misses that need a writer who sets out to; one true number of the second hunk still joins the two and finds each",
+      "expect": [
+        {
+          "path": "tools/deploy",
+          "signal": "network_fetch",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "tools/deploy",
+          "signal": "dynamic_eval",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "tools/setup",
+          "signal": "network_fetch",
+          "side": "new",
+          "line": 6
+        },
+        {
+          "path": "tools/setup",
+          "signal": "dynamic_eval",
+          "side": "new",
+          "line": 7
+        },
+        {
+          "path": "tools/late",
+          "signal": "network_fetch",
+          "side": "new",
+          "line": 12
+        },
+        {
+          "path": "tools/late",
+          "signal": "network_fetch",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "tools/late",
+          "signal": "dynamic_eval",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "tests/page.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 14
+        },
+        {
+          "path": "tests/page.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 15
+        },
+        {
+          "path": "tests/page.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 15
+        },
+        {
+          "path": "src/m.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/cut.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/sp1.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 1
+        },
+        {
+          "path": "src/sp3.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 1
+        },
+        {
+          "path": "src/sp4.rs",
+          "signal": "network_fetch",
+          "side": "new",
+          "line": 1
+        },
+        {
+          "path": "src/sp7.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/lint.rs",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 1
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "src/edge.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/before.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 50
+        },
+        {
+          "path": "src/n.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/two.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "tests/cutassert.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/deep.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 23
+        },
+        {
+          "path": "src/alias.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tools/space.py",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/stub.rs",
+          "signal": "stub_added",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/spawn.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "known_false_positive": [
+        {
+          "path": "NOTES",
+          "signal": "network_fetch",
+          "side": "new",
+          "line": 31
+        }
+      ],
+      "sha256": "38965fc16bcd23a16ec612dd54ff280ffc54da14918ad5d3ccd5f37283440c06"
+    },
+    {
+      "id": "evidence/independent-review-8-20261115",
+      "kind": "evidence",
+      "patch": "evidence/independent-review-8-20261115.patch",
+      "origin": "internal: an eighth independent review by a Claude subagent (docs/reviews/claude-independent-review-8-20261115.md: IR8-M-1, IR8-M-3, IR8-M-4, IR8-L-1, IR8-L-3, IR8-L-4; GO-WITH-FIXES on the round 15 commit), 2026-11-15, each reproduced before it was counted. IR8-M-1, a hint of a later round took away a join an earlier rule made: two hunks that have old lines and whose old numbers say they touch turn an assertion into `debug_assert!(true, ...)`, and beside them stands a hunk of added lines only that names the same old position. In src/decoy.rs it is written after a hunk that ends the file (the review's decoy2.patch: round 14 reported the assertion, round 15 did not, and did when a number Git never reads was changed); in src/first.rs it is written first (decoy.patch: neither round reported it); in src/between.rs it holds code that, read between the two, would part the assertion from its condition. Expected in all three. IR8-L-1: `<Command>::new`, `Command::<>::new`, `<TcpStream>::connect` and `TcpStream::<>::connect` are the paths the release keys on in two more spellings (src/q.rs, which compiles and runs; no version reported a line of it). Declared misses that need a writer who sets out to: two hunks that BOTH have old lines and both say they end before one line, the false one written first, part the two that touch (src/claimed.rs: what stays of IR8-M-1); a call cut twice so that its word stands alone in a hunk of its own, behind false numbers (src/alone.rs) and a function passed as a value cut before its name (src/value.rs), both IR8-M-3: no end of a side is evidence by itself there; and a hunk of added lines that `git apply --unidiff-zero` puts by its new number inside the lines an earlier hunk showed (src/inside.rs, IR8-M-4: plain Git puts it at the end of the file, and the reader takes a hunk's lines as lines that stand together). Declared misses of an ordinary diff: a script with no extension whose hunk does not show line 1 has no language, so its fetch and its `eval` are not read (tools/release, IR8-L-4: the same in every version); and `eval (source)`, `os.system (command)` with a space before the bracket (tools/run.py). Hard negatives (IR8-L-3): a line that ends on an enum variant named `Command` (src/kind.rs) and one that ends on a field named `todo` (src/sum.rs), both of which round 15 reported; a hunk that begins with the call of a function named `unwrap` (src/free.rs), which round 15 reported too; and the name as a generic argument, `Vec::<Command>::new()` and `HashMap<String, TcpStream>` (src/args.rs), which the new spellings must not read",
+      "expect": [
+        {
+          "path": "src/decoy.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 30
+        },
+        {
+          "path": "src/first.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 30
+        },
+        {
+          "path": "src/between.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 30
+        },
+        {
+          "path": "src/q.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/q.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "src/q.rs",
+          "signal": "network_fetch",
+          "side": "new",
+          "line": 6
+        },
+        {
+          "path": "src/q.rs",
+          "signal": "network_fetch",
+          "side": "new",
+          "line": 7
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "src/claimed.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 30
+        },
+        {
+          "path": "src/alone.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/value.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/inside.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "tools/release",
+          "signal": "network_fetch",
+          "side": "new",
+          "line": 21
+        },
+        {
+          "path": "tools/release",
+          "signal": "dynamic_eval",
+          "side": "new",
+          "line": 22
+        },
+        {
+          "path": "tools/run.py",
+          "signal": "dynamic_eval",
+          "side": "new",
+          "line": 20
+        },
+        {
+          "path": "tools/run.py",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 21
+        }
+      ],
+      "known_false_positive": [],
+      "sha256": "9b0345c9358294b03d92a354ce189c842f1a95835877a45703c0e877812c2655"
+    },
+    {
+      "id": "evidence/independent-review-9-20261115",
+      "kind": "evidence",
+      "patch": "evidence/independent-review-9-20261115.patch",
+      "origin": "internal: round 16 of Vesper's review (docs/reviews/vesper-v3-round16-report-20261115.md: VD3R16-M-1, VD3R16-L-1) and a ninth independent review by a Claude subagent (docs/reviews/claude-independent-review-9-20261115.md: IR9-M-1, IR9-M-2, IR9-L-1, IR9-L-2, IR9-L-4, IR9-L-5), 2026-11-15, each reproduced before it was counted, with `git apply` 2.56.0 and rustc 1.99.1 where the finding rests on them. Expected: the released name as the last name of a path in angle brackets, `<std::net::TcpStream>::connect`, `<std::net::UdpSocket>::bind`, `<p::Command>::new`, `<self::UdpSocket>::bind` (src/q.rs: the same paths to the compiler, which no version reported); and a call cut after `.unwrap::` by two hunks that nothing joins (src/turbo.rs): the one form that is read at the end of a side, since after a method's name and `::` only generic arguments and the call can follow. Hard negatives, each the honest end of a hunk that round 16 reported: a constant `Command::` whose name `VERSION;` stands on the next line (src/x.rs: Vesper's patch as `git diff -U0` wrote it, a `process_spawn` in a file that spawns nothing); rustfmt's layout of an assertion whose long condition begins with `true` (src/g.rs: `assert!(` and `true` changed, the line `&& ...` not in the hunk); a line of a block comment that ends on `todo!` (src/prose.rs); a removed `#[rstest` whose next line is `::fixture]` (src/attr.rs); `#[cfg_attr(miri, ignore` whose next line is `::case)]`, an attribute of a crate named `ignore` (src/alias.rs: read as a skip from round 13 to round 16); `#[allow` whose next line is `::this]` (src/lint.rs). Declared misses that need a writer who sets out to: a conditional skip cut after its `ignore` behind two false numbers (src/cutskip.rs); the spellings `<(Command)>::new`, `<Command<>>::new`, `<(TcpStream)>::connect` and `<<Command as T>::Me>::new` (src/spelled.rs: the same types to the compiler, not read); two hunks at old position 0, which `git apply --unidiff-zero` stacks at line 1, the one written later above the other, so that `opt.unwrap` and `()` stand together (src/twotop.rs), and one at old position 0 with one at old position 1 under it, every number true (src/topone.rs): each such hunk is the top of its file to the reader and is joined to nothing (IR9-M-1; plain `git apply` refuses both patches); a hunk at old position 1 whose added line `// */ pub fn f() { ... } /*` is code behind the `/*` that the hunk above it ends on, and a line comment to every reading from the start of a file (src/topcomment.rs: the same root, applied with `git apply --unidiff-zero` and compiled; release 0.8.3 misses it too); and the mirror of the declared decoy, a hunk with lines that says falsely that it BEGINS at the line where two hunks touch, written between them (src/mirror.rs, IR9-L-4). Declared false positives of an ordinary `git diff -U0` (IR9-L-1): a hunk of added lines is read as going on from the last hunk before it that ends its file, which is where plain `git apply` puts it, and a construct can form across the two that stands in neither place: `assert!(` changed on line 10 and `true,` added on line 41 as an argument of another call (src/far.rs), and a changed `} catch (e) {` with a hunk of added lines far below it that begins with `}` (src/far.js). On the `-U0` history of two repositories (10,333 Rust hunks in sections of two or more) the joins add no label and take none. Changed in round 18 (2026-11-16), after round 17 of Vesper's review (VD3R17-M-1) and the tenth independent review (IR10-L-3): no form is read at the end of a hunk side (a hunk side is read as text that ends there; nothing is inferred from how it ends), because inside a macro that takes any tokens `value.unwrap::` goes on as `NOT_A_CALL` and the program compiles, and after a range `unwrap::` is a free function. So the call cut after `.unwrap::` behind two false numbers (src/turbo.rs) is a declared miss that needs a writer who sets out to; one true number of the second hunk still joins the two and finds it",
+      "expect": [
+        {
+          "path": "src/q.rs",
+          "signal": "network_fetch",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/q.rs",
+          "signal": "network_fetch",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/q.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/q.rs",
+          "signal": "network_fetch",
+          "side": "new",
+          "line": 5
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "src/turbo.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/cutskip.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/spelled.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 6
+        },
+        {
+          "path": "src/spelled.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 7
+        },
+        {
+          "path": "src/spelled.rs",
+          "signal": "network_fetch",
+          "side": "new",
+          "line": 8
+        },
+        {
+          "path": "src/spelled.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 9
+        },
+        {
+          "path": "src/twotop.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/topone.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/topcomment.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/mirror.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 4
+        }
+      ],
+      "known_false_positive": [
+        {
+          "path": "src/far.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 10
+        },
+        {
+          "path": "src/far.js",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 10
+        }
+      ],
+      "sha256": "df2854112ad38c86d5178bb4cf11fc833ea34bf87e5f5a652b5526dca3ab5493"
+    },
+    {
+      "id": "evidence/independent-review-10-20261116",
+      "kind": "evidence",
+      "patch": "evidence/independent-review-10-20261116.patch",
+      "origin": "internal: round 17 of Vesper's review (docs/reviews/vesper-v3-round17-report-20261116.md: VD3R17-M-1) and a tenth independent review by a Claude subagent (docs/reviews/claude-independent-review-10-20261116.md: IR10-M-1, IR10-L-1, IR10-L-2, IR10-L-3, and its note on the bare `ignore`), 2026-11-16, each reproduced before it was counted, with `git apply` 2.56.1 and rustc 1.99.1 where the finding rests on them. Expected: `#[ignore(not_ready)]` and `#[cfg_attr(all(), ignore(flaky))]` (tests/ign.rs, the review's `ignparen.patch`: the lint `ill_formed_attribute_input` is deny by default and the patch's `Cargo.toml` allows it, and then both tests compile and are ignored; no version read either); the released path `<Command>::new` after `return`, `match`, `for _ in` and `break 'l` (src/kw.rs, the review's `kw.patch`: the program compiles and spawns `true`; no version read them, as the bracketed spelling was read only after a mark). Hard negatives, the last form that rounds 15 to 17 read at the end of a hunk side: `value.unwrap::` inside a macro that takes any tokens, where it goes on as `NOT_A_CALL` and the program compiles and calls nothing (src/macro.rs: Vesper's `macro-token-tree.patch` as `git diff -U0` wrote it), the same with `.expect::<` (src/macro2.rs), and `let r = 0..unwrap::` followed by `<u8>();`, a range whose end calls a free function (src/range.rs: the review's `range-u0.patch`). Rounds 16 and 17 reported a `panic_path_added` on each. Declared misses: the bare `ignore` that a `cfg_attr` list leaves open at the end of a hunk side (tests/slow.rs, the review's `cfgu0.patch`: rustfmt writes a long condition over lines and `ignore` alone above `)]`, so an ordinary `git diff -U0` of two rustfmt-clean files ends there; it can go on as `ignore::case`, and rounds 13 to 16 read it as a skip: ordinary, by the coordinator's ruling); a created file written as two hunks at old position 0, which `git apply --unidiff-zero` stacks the later one above the earlier, so that `opt.unwrap` and `()` stand together (src/newtwotop.rs, the review's `newtwotop.patch`; plain `git apply` refuses it). Declared false positive: the same two hunks in the other order (src/newtop.rs, `newtop-natural.patch`): the reader joins the hunks of a created file in the order written and reports the call, which Git's result does not hold (IR10-L-1, a writer's)",
+      "expect": [
+        {
+          "path": "tests/ign.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/ign.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 8
+        },
+        {
+          "path": "src/kw.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 11
+        },
+        {
+          "path": "src/kw.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 21
+        },
+        {
+          "path": "src/kw.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 31
+        },
+        {
+          "path": "src/kw.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 41
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "tests/slow.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/newtwotop.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "known_false_positive": [
+        {
+          "path": "src/newtop.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "sha256": "9f9160546e2ecb53d4d5e9cd20b41f586f46a72088b089d363093d0135e0b980"
+    },
+    {
+      "id": "evidence/independent-review-11-20261116",
+      "kind": "evidence",
+      "patch": "evidence/independent-review-11-20261116.patch",
+      "origin": "internal: round 18 of Vesper's review (docs/reviews/vesper-v3-round18-report-20261116.md: VD3R18-M-1, VD3R18-L-1) and an eleventh independent review by a Claude subagent (docs/reviews/claude-independent-review-11-20261116.md: IR11-L-1, IR11-L-2), 2026-11-16, each reproduced before it was counted, with rustc 1.99.1 where the finding rests on it. Hard negatives: `#[ignore(` and `#[cfg_attr(all(), ignore(` at the end of a one-line `-U0` side (tests/direct.rs, tests/cfg.rs: Vesper's patches as `git diff -U0` wrote them); in the file they stand in `discard! { … }`, a macro that takes any tokens, and the parenthesis goes on as `NOT_A_SKIP` and `)]`: it compiles and skips no test. Round 18 reported a `test_skipped` on each; since round 19 a skip is read only where the side holds its attribute whole, to its `]`. Expected: `<Command>::new(…)` after `&mut` (src/mutref.rs and src/mutref3.rs, the review's `mutref-u0.patch` and `mutref-u3.patch`, the string's absolute path replaced by a name: it compiles, and run it spawned `touch`), after `become` (src/become.rs, Vesper's `become.rs`, `explicit_tail_calls`) and after `do yeet` (src/yeet.rs, Vesper's `yeet.rs`, `yeet_expr`; both compiled with RUSTC_BOOTSTRAP=1). No version read them: the keyword list is now the keywords of rustc 1.99.1 after which an expression can begin and a `<` opens a path, measured by compiling `KW <Command>::new(\"true\")` after every strict and reserved keyword. Declared false positive: a side that begins at the `<` of `<Command>::new();` whose unseen line above ends on `Vec::` (src/vecturbo.rs, the review's `vecturbo-u0.patch`: a type argument, the program spawns nothing; a side's first token can go on from a line it does not show; a writer's, IR11-L-1). Declared miss, ordinary: rustfmt's layout of a `cfg_attr` list with a long condition and `ignore = \"…\"` alone on the line above `)]`, so a `git diff -U0` of two rustfmt-clean files ends there (tests/slowreason.rs, round 19's `cfgeqnew-u0.patch`; rounds 13 to 18 read it as a skip, release 0.8.3 does not): the side does not hold the attribute whole",
+      "expect": [
+        {
+          "path": "src/become.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 7
+        },
+        {
+          "path": "src/mutref.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/mutref.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "src/mutref3.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/mutref3.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "src/yeet.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 6
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "tests/slowreason.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "known_false_positive": [
+        {
+          "path": "src/vecturbo.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 4
+        }
+      ],
+      "sha256": "948ce0424233ccd343d16f6d3a28e7253ccac566c1b1d45c79b10bfc1f5341cf"
+    },
+    {
+      "id": "evidence/independent-review-12-20261117",
+      "kind": "evidence",
+      "patch": "evidence/independent-review-12-20261117.patch",
+      "origin": "internal: round 19 of Vesper's review (docs/reviews/vesper-v3-round19-report-20261117.md: VD3R19-M-1, VD3R19-L-1) and a twelfth independent review by a Claude subagent (docs/reviews/claude-independent-review-12-20261117.md: IR12-L-1, IR12-L-2, IR12-L-3), 2026-11-17, each reproduced on the frozen binaries; the line's build rounds are over, and all three are declared, not fixed (the coordinator's closing diff). Declared miss, ordinary (IR12-L-1): rustfmt's vertical layout of a `cfg_attr` list (`any(`, four targets, `),`, `ignore = \"…\"`, `)]`) with two targets changed, as plain `git diff` (three lines of context) writes it: the hunk ends on the `ignore` line, before `)]` (tests/four.rs, the review's `four-u3.patch`; rounds 14 and 18 report the skip, release 0.8.3 does not). A skip is read only where the side holds its attribute whole, and this miss happens wherever a hunk ends between the `ignore` and the `)]`, at any context width. Declared false positive, writer's (VD3R19-M-1 = IR12-L-2): seventeen `#[cfg_attr(a, ` opened inside one another in the tokens of a macro that discards them, with no `ignore` (src/deep.rs, the review's `deep17-u0.patch`; it compiles and skips nothing): the seventeenth list is past `CFG_ATTR_LISTS` (16), is not followed and is taken to hold a skip (rounds 14 to 19; release 0.8.3 reports nothing). Declared false positive, writer's (VD3R19-L-1 = IR12-L-3): `discard! { mut <Command>::new(\"true\") }` (src/mutmacro.rs, Vesper's `mut-macro.patch`; it compiles and spawns nothing): the keyword rule is lexical and reads a bracketed released path after any `mut` straight before it, `&mut` being the measured case",
+      "expect": [],
+      "known_miss": [
+        {
+          "path": "tests/four.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 5
+        }
+      ],
+      "known_false_positive": [
+        {
+          "path": "src/deep.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 6
+        },
+        {
+          "path": "src/mutmacro.rs",
+          "signal": "process_spawn",
+          "side": "new",
+          "line": 1
+        }
+      ],
+      "sha256": "5ee746068298582cc8096ec06370c97a3697fde16cc5eefa18bc95d7920e700f"
     }
   ]
 }

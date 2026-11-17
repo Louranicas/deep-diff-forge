@@ -1853,12 +1853,18 @@ fn print_rank_json(ranked: &[deep_diff_forge_graph::RankedFile], seal: &InputSea
                 .iter()
                 .map(|e| {
                     format!(
-                        "{{\"signal\": {}, \"address\": {}, \"side\": {}, \"line\": {}, \"basis\": {}}}",
+                        "{{\"signal\": {}, \"address\": {}, \"side\": {}, \"line\": {}, \"basis\": {}{}}}",
                         json_escape(e.signal.label()),
                         json_escape(&e.address),
                         json_escape(e.side.label()),
                         e.line,
-                        json_escape(deep_diff_forge_graph::EVIDENCE_BASIS)
+                        json_escape(e.basis.label()),
+                        // Present only when true, as in the daemon's document.
+                        if e.test_likely {
+                            ", \"test_likely\": true"
+                        } else {
+                            ""
+                        }
                     )
                 })
                 .collect();

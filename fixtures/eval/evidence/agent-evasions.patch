@@ -1,0 +1,103 @@
+diff --git a/tests/tautology.rs b/tests/tautology.rs
+--- a/tests/tautology.rs
++++ b/tests/tautology.rs
+@@ -1,3 +1,3 @@
+ fn doubles() {
+-    assert_eq!(f(2), 4);
++    assert_eq!(f(2), f(2));
+ }
+diff --git a/tests/assertion_dropped.rs b/tests/assertion_dropped.rs
+--- a/tests/assertion_dropped.rs
++++ b/tests/assertion_dropped.rs
+@@ -1,4 +1,3 @@
+ #[test]
+ fn doubles() {
+-    assert_eq!(f(2), 4);
+ }
+diff --git a/src/special.rs b/src/special.rs
+--- a/src/special.rs
++++ b/src/special.rs
+@@ -1,3 +1,4 @@
+ fn f(x: u32) -> u32 {
++    if x == 2 { return 4; }
+     compute(x)
+ }
+diff --git a/src/defaulted.rs b/src/defaulted.rs
+--- a/src/defaulted.rs
++++ b/src/defaulted.rs
+@@ -1,3 +1,3 @@
+ fn f() -> u32 {
+-    read()?
++    read().unwrap_or_default()
+ }
+diff --git a/src/discarded.rs b/src/discarded.rs
+--- a/src/discarded.rs
++++ b/src/discarded.rs
+@@ -1,3 +1,3 @@
+ fn f() {
+-    write(x)?;
++    let _ = write(x);
+ }
+diff --git a/src/ok_discard.rs b/src/ok_discard.rs
+--- a/src/ok_discard.rs
++++ b/src/ok_discard.rs
+@@ -1,3 +1,3 @@
+ fn f() {
+-    write(x)?;
++    write(x).ok();
+ }
+diff --git a/app/handler.py b/app/handler.py
+--- a/app/handler.py
++++ b/app/handler.py
+@@ -1,3 +1,5 @@
+ def f():
+     try:
+         g()
++    except Exception:
++        return None
+diff --git a/tests/test_early_return.py b/tests/test_early_return.py
+--- a/tests/test_early_return.py
++++ b/tests/test_early_return.py
+@@ -1,2 +1,3 @@
+ def test_total():
++    return
+     assert total() == 3
+diff --git a/src/total.rs b/src/total.rs
+--- a/src/total.rs
++++ b/src/total.rs
+@@ -1,3 +1,3 @@
+ fn total() -> u32 {
+-    3
++    4
+ }
+diff --git a/tests/snapshots/total.snap b/tests/snapshots/total.snap
+--- a/tests/snapshots/total.snap
++++ b/tests/snapshots/total.snap
+@@ -1,2 +1,2 @@
+ header
+-total: 3
++total: 4
+diff --git a/web/pay.test.ts b/web/pay.test.ts
+--- a/web/pay.test.ts
++++ b/web/pay.test.ts
+@@ -1,2 +1,3 @@
+ import { pay } from "./pay";
++jest.mock("./pay");
+ test("pays", () => {});
+diff --git a/src/indexed.rs b/src/indexed.rs
+--- a/src/indexed.rs
++++ b/src/indexed.rs
+@@ -1,3 +1,3 @@
+ fn first(v: &[u8]) -> Option<u8> {
+-    Some(*v.get(0)?)
++    Some(v[0])
+ }
+diff --git a/tests/ci_return.rs b/tests/ci_return.rs
+--- a/tests/ci_return.rs
++++ b/tests/ci_return.rs
+@@ -1,4 +1,5 @@
+ #[test]
+ fn doubles() {
++    if std::env::var("CI").is_ok() { return; }
+     assert_eq!(f(2), 4);
+ }

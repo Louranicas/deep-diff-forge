@@ -14,13 +14,15 @@ pub mod evidence;
 pub mod lexical;
 mod rank;
 mod risk;
+mod rust_tokens;
 
-#[doc(hidden)]
-pub use evidence::{CarriedShares, carried_bytes_on_this_thread};
 pub use evidence::{
-    EVIDENCE_BASIS, Evidence, EvidenceSignal, HunkLabels, MAX_EVIDENCE_PER_FILE, Side,
-    file_evidence, file_evidence_released, hunk_signals,
+    Basis, EVIDENCE_BASIS, Evidence, EvidenceSignal, FileKinds, HunkLabels, MAX_EVIDENCE_PER_FILE,
+    Side, file_evidence, file_evidence_released, file_walks, hunk_signals, hunk_signals_alone,
+    joined_hunks, view_lines_peak,
 };
+#[doc(hidden)]
+pub use evidence::{CarriedShares, carried_bytes_on_this_thread, hunk_signals_in_patch};
 pub use rank::{RankedFile, rank, sort_ranked};
 #[doc(hidden)]
 pub use risk::assess_file_in_patch;

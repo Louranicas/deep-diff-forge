@@ -23,14 +23,159 @@ use std::process::Command;
 /// declares nothing: what a nested block comment and a character literal with a long escape
 /// hid from `process_spawn`, `network_fetch` and `unsafe_added` (the published v0.8.3 binary
 /// misses four of the seven).
+/// Measured 2026-11-13 on 40 cases: precision 44 of 46 items, recall 44 of 71 items; ranking and
+/// findings as before. The recall floor fell from 33 of 41 on purpose: the cases
+/// `evidence/agent-evasions` (twelve ways an agent makes a gate pass without doing the work) and
+/// `evidence/review-v3-round1` (what an adversarial review found; seven not yet caught) add
+/// nineteen declared misses (`evidence/review-v3-round2` adds one declared false positive), and a declared miss counts as wrong. Each one that a rule later
+/// catches fails the run until it is moved to `expect`, and the floor rises again.
+/// Measured again 2026-11-13 on 41 cases, after round 3 of that review: precision 50 of 53,
+/// recall 50 of 77. The precision floor fell from 44 of 46 on purpose: a test attribute is no
+/// longer proof of test code, so a panic path in a `#[test]` function is reported, and the two
+/// such items in the corpus are declared false positives.
+/// Measured 2026-11-13 on 42 cases, after round 4: precision 53 of 56, recall 53 of 81.
+/// Measured 2026-11-14 on 43 cases, after an independent review: precision 63 of 69, recall 63
+/// of 104. Both floors fell on purpose: the new case declares three false positives (a method
+/// named `expect` that is not `Result`'s, twice, and a Python name that begins with
+/// `unittest.skip`) and thirteen misses, most of them respellings in Python, JavaScript and Go,
+/// where no parser backs the token rules.
+/// Measured again 2026-11-14 on 44 cases, after round 8 (raw identifiers): precision 69 of 75,
+/// recall 69 of 110.
+/// Measured a third time 2026-11-14 on 45 cases, after round 9 and a second independent review:
+/// precision 77 of 90, recall 77 of 119. The precision floor fell from 69 of 75 on purpose. The
+/// parser no longer withdraws a panic path as "proved test code" (the proof was broken four
+/// more ways, and the class has no end), so the five such items in the corpus are reported,
+/// marked `test_likely`, and are declared false positives, as is the one in the new case; and
+/// an attribute that starts on an unchanged line is the same as before only if its whole text
+/// is, so the conditional skip of which only the reason changed is reported and declared too.
+/// The recall floor rose: the new case has eight expected items and one declared miss.
+/// Measured a fourth time 2026-11-14 on 46 cases, after round 10 and a third independent
+/// review, when the parser was taken out of the evidence path and the tokens of a Rust hunk
+/// are read across its lines: precision 81 of 95, recall 81 of 125. The signal
+/// `syntax_unchecked` is gone, and with it two expectations; the three constructs it marked
+/// inside a macro's body (declared misses until then) are found. The new case,
+/// `evidence/independent-review-3-20261114`, has five expected items and three declared
+/// misses, all one limit: a change that adds no token to the construct. Two items the parser
+/// found are declared misses now (a function of the patch's own type passed as a value, and a
+/// call after `/* /* */ // */`, where the code view does not nest the comment), and one
+/// negative is a declared false positive (a conditional skip of which only the spacing of
+/// the condition changed: nothing is compared with the old side any more). So the precision
+/// floor fell from 77 of 90 on purpose, and the recall floor rose a little.
+/// Measured a fifth time 2026-11-14 on 47 cases, after round 12, when the code view was made
+/// to read Rust as the compiler's lexer does: precision 97 of 111, recall 97 of 139. Both
+/// floors rose. The two calls after `/* /* */ // */` went from declared misses to found, and
+/// the new case, `evidence/rust-code-view-20261114`, has fourteen expected items and declares
+/// nothing: what a nested block comment and a character literal with a long escape hid from
+/// the released rules (`process_spawn`, `network_fetch`, `unsafe_added`) and from the
+/// integrity signals.
+/// Measured a sixth time 2026-11-14 on 48 cases, after round 13, when a Rust hunk became a
+/// set of whole views whose findings are united: precision 116 of 132, recall 116 of 162. The
+/// new case, `evidence/independent-review-5-20261114`, has nineteen expected items (what a
+/// comment between two tokens hid after a string over lines, raw identifiers after white
+/// space past ASCII, a line inside an existing block comment, a shebang line, `k#r"\"`, and
+/// the line that closes a string opened above its hunk), two declared false positives (the
+/// cost of reading a hunk also as beginning inside a comment, and inside a string) and four
+/// declared misses (a text that only editions before 2021 read as the compiler does, and a
+/// string opened by an earlier hunk). Both floors rose.
+/// Measured a seventh time 2026-11-14 on 49 cases, after round 14, when nothing about a
+/// hunk's place or its start was taken on the patch writer's word any more: precision 134 of
+/// 153, recall 134 of 187. The new case, `evidence/independent-review-6-20261114`, has
+/// seventeen expected items (hunks whose header says `+1`, a file created as several hunks,
+/// two hunks of added lines that are read together and each on its own, a hunk between two
+/// strings over lines, a string whose text opens more comments than it closes, and the
+/// full-context forms of two constructions that a bare fragment cannot show), three
+/// declared false positives and eight declared misses. One declared miss of the case before
+/// it is found (a spawn in a text only editions before 2021 read as the compiler does: the
+/// reading of release 0.8.3, which every Rust hunk now also gets, reads it that way). The
+/// precision floor fell a little (it was 878,787), on purpose: two of the three new false
+/// positives are items release 0.8.3 reports in the text of a string, and that reading is
+/// kept so that no item of that release is lost. The recall floor rose a little (it was
+/// 716,049), though four of the eight new misses are spellings of a suppressed lint that no
+/// rule reads yet.
+/// Measured an eighth time 2026-11-15 on 50 cases, after round 15, when no number of a hunk
+/// header decided what is found any more and the edge of a hunk side was read: precision 158
+/// of 179, recall 158 of 213. The new case, `evidence/independent-review-7-20261115`, has
+/// twenty expected items (a script under false header numbers, a raw string whose text holds
+/// `"#`, hunks joined on the hint of either number, a call cut by hunks that nothing joins,
+/// the released signals' paths with white space and line ends in them, a second section for
+/// one path), five declared misses and two declared false positives. Three declared misses
+/// of the case before it are found (the call cut by two hunks that touch behind a false
+/// position, and two spellings of a suppressed lint) and one item of the first independent
+/// review's case is new (an inner `#![allow(…)]` written as `#!`, a comment and the rest).
+/// Both floors rose.
+/// Measured a ninth time 2026-11-15 on the same 50 cases, after round 16 narrowed what the
+/// end of a hunk side is read for and stopped reading its beginning (a return type named
+/// `Command` at the end of a line had been a spawn): precision 156 of 176, recall 156 of
+/// 215. The seventh review's case gained two expected items (a stub cut after `todo!`, a
+/// spawn cut after `Command::`) and nine hard negatives, lost one declared false positive (a
+/// call of a function named `expect` is no longer reported), and three of its items are
+/// declared misses again, with one of the sixth review's (a call cut after `.unwrap` by
+/// hunks that nothing joins, and its forms). The precision floor rose; the recall floor
+/// fell, on purpose: `.unwrap` at the end of a side is the end of an honest line too.
+/// Measured a tenth time 2026-11-15 on 51 cases, in the same round, after the eighth
+/// independent review: precision 163 of 183, recall 163 of 230. The new case,
+/// `evidence/independent-review-8-20261115`, has seven expected items (an assertion in two
+/// hunks that touch, beside a hunk of added lines that names their place, three ways; the
+/// released paths as `<Command>::new` and `Command::<>::new`), eight declared misses (a hunk
+/// with old lines that falsely claims the place; a call cut twice; a function value cut
+/// before its name; a hunk an applier puts inside another; a script whose hunk does not
+/// show its first line; a space before a call's bracket) and four hard negatives. The
+/// precision floor rose; the recall floor fell by the eight misses that are now written
+/// down.
+/// Measured an eleventh time 2026-11-15 on 52 cases, after round 17 put the end of a hunk
+/// side under one rule (a form is read there only where every continuation the grammar
+/// allows is the construct: a method's name with `::` after it, and nothing else):
+/// precision 166 of 188, recall 166 of 244. The new case,
+/// `evidence/independent-review-9-20261115`, has five expected items (the released paths
+/// with a qualified name in angle brackets; a call cut after `.unwrap::`), nine declared
+/// misses (a conditional skip cut after its `ignore`; four spellings of the released
+/// paths; hunks at old position 0 that `git apply --unidiff-zero` stacks; the mirror of the
+/// declared decoy), two declared false positives (a join of two `-U0` hunks that stand far
+/// apart) and six hard negatives, each an honest end of a hunk that round 16 reported. Two
+/// expected items of the seventh review's case (a stub cut after `todo!`, a spawn cut after
+/// `Command::`) are declared misses. Both floors fell, on purpose: what was taken out was
+/// read on an argument from a sample, and the declared misses are now written down.
+/// Measured a twelfth time 2026-11-16 on 53 cases, after round 18 stopped reading any form
+/// at the end of a hunk side (a hunk side is read as text that ends there; nothing is
+/// inferred from how it ends), read `#[ignore(…)]` as a skip and a bracketed released path
+/// after a keyword that begins an expression: precision 171 of 194, recall 171 of 252. The
+/// new case, `evidence/independent-review-10-20261116`, has six expected items
+/// (`#[ignore(…)]` and `ignore(…)` in a `cfg_attr` list; `<Command>::new` after `return`,
+/// `match`, `for _ in` and `break 'l`), two declared misses (the bare `ignore` an ordinary
+/// `-U0` hunk of rustfmt output ends on; a created file in two hunks at old position 0), one
+/// declared false positive (the same two hunks the other way round) and three hard
+/// negatives (`.unwrap::` and `.expect::<` in a macro that takes any tokens; `0..unwrap::`).
+/// The ninth review's call cut after `.unwrap::` is a declared miss. Both floors fell, on
+/// purpose: what was taken out was read at an edge, and grammar broke it.
+/// Measured a thirteenth time 2026-11-16 on 54 cases, after round 19 read a skip only where
+/// the side holds its attribute whole and the keywords before a bracketed path became those
+/// rustc 1.99.1 compiles there: precision 177 of 201, recall 177 of 259. The new case,
+/// `evidence/independent-review-11-20261116`, has six expected items (`<Command>::new` after
+/// `&mut` in two patches of two lines each, after `become` and after `do yeet`), one declared
+/// miss (`ignore = "…"` alone above an unchanged `)]`, rustfmt's layout, at the end of a
+/// `-U0` hunk), one declared false positive (a side that begins at `<Command>::new();` under
+/// an unseen `Vec::`) and two hard negatives (Vesper's `#[ignore(` and
+/// `#[cfg_attr(all(), ignore(` at the end of a side). The precision floor fell, on purpose:
+/// the false item is declared, not new to this round.
+/// Measured a fourteenth time 2026-11-17 on 55 cases, after the closing diff of round 19
+/// declared what its two reviews found (no code changed): precision 177 of 203, recall 177 of
+/// 260. The new case, `evidence/independent-review-12-20261117`, has one declared miss
+/// (`ignore = "…"` above `)]` where plain `git diff` ends its hunk: the miss is not `-U0`
+/// only) and two declared false positives, both a writer's (a seventeenth nested `cfg_attr`
+/// list with no `ignore`, taken to hold a skip; `mut <Command>::new` in a discarding macro).
+/// Both floors fell, on purpose: what was found is declared.
+/// Measured 2026-11-18 on the integrated tree (release 0.8.4 with the integrity signals; the
+/// reading of 0.8.4 united with theirs): the same 55 cases and the same figures, precision 177
+/// of 203, recall 177 of 260. The 0.8.4 case `evidence/rust-code-view-20261114` is the signals
+/// line's, with fourteen expected items.
 const RANKING_PAIRS_FLOOR: u64 = 800_000;
-const EVIDENCE_PRECISION_FLOOR: u64 = 965_517;
-const EVIDENCE_RECALL_FLOOR: u64 = 800_000;
+const EVIDENCE_PRECISION_FLOOR: u64 = 871_921;
+const EVIDENCE_RECALL_FLOOR: u64 = 680_769;
 const FINDINGS_FLOOR: u64 = 1_000_000;
 /// Declared misses (plan N4): each counts as wrong in its metric above. The receipt's
 /// `known_misses` keeps its first meaning, the evidence `known_miss` items; `declared` lists all.
-const DECLARED: u64 = 11;
-const EVIDENCE_KNOWN_MISSES: u64 = 7;
+const DECLARED: u64 = 112;
+const EVIDENCE_KNOWN_MISSES: u64 = 83;
 /// The smallest corpus the gate accepts, and the fewest cases of each kind.
 const MIN_CASES: usize = 30;
 const MIN_CASES_PER_KIND: usize = 3;
@@ -150,14 +295,14 @@ fn the_summary_names_each_metric_and_each_failure() {
     let (code, text) = run(&corpus());
     assert_eq!(code, Some(0), "{text}");
     assert!(
-        text.starts_with("deep-diff-forge eval: 35 cases\n"),
+        text.starts_with("deep-diff-forge eval: 55 cases\n"),
         "{text}"
     );
     for line in [
         "  ranking_pairs        12/15",
-        "  evidence_precision   28/29",
-        "  evidence_recall      28/35",
-        "  declared             11",
+        "  evidence_precision   177/203",
+        "  evidence_recall      177/260",
+        "  declared             112",
         "  KNOWN ranking/auth-check-removed: src/handlers/delete.rs ranks below docs/CHANGES.md",
         "  KNOWN evidence/shell-heredoc: reports (\"scripts/docs.sh\", \"network_fetch\", \"new\", 3)",
     ] {
@@ -508,7 +653,7 @@ fn a_declared_miss_must_still_be_a_miss() {
     );
     assert_eq!(
         metrics["evidence_recall"],
-        serde_json::json!({"right": 28, "total": 34, "ppm": 823_529})
+        serde_json::json!({"right": 177, "total": 259, "ppm": 683_397})
     );
 
     // A declared false positive the engine does not report.
@@ -526,7 +671,7 @@ fn a_declared_miss_must_still_be_a_miss() {
     );
     assert_eq!(
         metrics["evidence_precision"],
-        serde_json::json!({"right": 28, "total": 29, "ppm": 965_517})
+        serde_json::json!({"right": 177, "total": 203, "ppm": 871_921})
     );
 
     // A declared false positive that is also expected.
@@ -542,7 +687,7 @@ fn a_declared_miss_must_still_be_a_miss() {
             .unwrap()
             .ends_with("is not reported, or is expected: remove it")
     );
-    assert_eq!(metrics["evidence_precision"]["right"], 29);
+    assert_eq!(metrics["evidence_precision"]["right"], 178);
     assert_eq!(known, usize::try_from(DECLARED).unwrap() - 1);
 }
 

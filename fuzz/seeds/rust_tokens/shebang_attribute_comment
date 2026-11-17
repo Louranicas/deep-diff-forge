@@ -1,0 +1,5 @@
+#! /**/ [allow(unused)] /*
+#[cfg(test)] // */
+pub mod t {
+    pub fn production() -> u32 { crate::b().unwrap() }
+}

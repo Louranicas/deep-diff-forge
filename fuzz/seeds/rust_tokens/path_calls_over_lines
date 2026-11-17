@@ -1,0 +1,21 @@
+pub struct X;
+impl X { pub fn unwrap(self) {} }
+pub fn method(x: X) {
+    x.
+        r#unwrap();
+}
+pub fn path(x: X) {
+    X::
+        r#unwrap(x);
+}
+pub fn passed(it: impl Iterator<Item = X>) {
+    let _ = it.map(X::
+        r#unwrap);
+    let f = Option::<u32>::expect;
+    /* /* */ // */ let v = Result::unwrap(x);
+}
+use a::expect;
+outer! {
+    let v = X::
+        unwrap(x);
+}

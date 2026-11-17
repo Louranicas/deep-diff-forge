@@ -1,0 +1,7 @@
+fn f(x: Option<u8>, r: Result<u8, E>) -> u8 {
+    let a = x . unwrap ( ) ;
+    let b = r .expect ::<> ( m ) ;
+    assert ! ( true ) ;
+    assert_eq ! { true , true , m }
+    todo ! ( )
+}

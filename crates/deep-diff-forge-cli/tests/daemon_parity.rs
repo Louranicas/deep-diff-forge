@@ -74,6 +74,51 @@ fn diff_rank_matches_the_cli_rank_document_refusals_and_failures() {
     parity("diff.rank", &["--rank"]);
 }
 
+/// A list cut short is the same list on both surfaces, and it is the one that keeps what
+/// release 0.8.3 listed: an item of a newer signal on line 1 above 32 spawns, and all 32
+/// spawns are listed (review of the released line's fix, VLF3-L-1; MCP's `rank_patch`
+/// returns the daemon's document).
+#[test]
+fn a_list_cut_short_is_the_same_list_from_the_cli_and_the_daemon() {
+    use std::fmt::Write as _;
+    let mut patch = String::from(
+        "diff --git a/src/x.rs b/src/x.rs\nnew file mode 100644\n--- /dev/null\n+++ b/src/x.rs\n@@ -0,0 +1,33 @@\n+x.unwrap();\n",
+    );
+    for i in 0..32 {
+        let _ = writeln!(patch, "+std::process::Command::new(\"p{i}\");");
+    }
+    let (code, stdout, stderr) = cli(&patch, &["--rank"], &[]);
+    assert_eq!(code, exit::SUCCESS, "{stderr}");
+    let document: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        daemon("diff.rank", &patch, false, false).ok(),
+        Some(document.clone())
+    );
+    let file = &document["ranked"][0];
+    let listed: Vec<(&str, u64)> = file["evidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| {
+            (
+                item["signal"].as_str().unwrap(),
+                item["line"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    let spawns: Vec<(&str, u64)> = (2..=33).map(|line| ("process_spawn", line)).collect();
+    assert_eq!(listed, spawns);
+    assert_eq!(file["evidence_truncated"], true);
+    assert!(
+        file["signals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|signal| signal == "panic_path_added"),
+        "{file}"
+    );
+}
+
 fn parity(method: &str, mode: &[&str]) {
     let guards: [(&[&str], bool, bool); 4] = [
         (&[], false, false),

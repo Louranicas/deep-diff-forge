@@ -1,0 +1,54 @@
+pub fn first(v: &[u8]) -> u8 {
+    *v.first().‎r#unwrap()
+}
+pub fn second(v: &[u8]) -> u8 {
+    *Option::‎r#unwrap(v.first())
+}
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[‎r#ignore]
+    fn skipped() {
+        ‎r#assert!(false);
+    }
+}
+fn main() {
+    let a = std::panic::catch_unwind(|| first(&[]));
+    println!("first(&[]) panicked: {}", a.is_err());
+}
+pub fn first(v: &[u8]) -> u8 {
+    *v.first().r#unwrap()
+}
+pub fn second(v: &[u8]) -> u8 {
+    *Option::r#unwrap(v.first())
+}
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[r#ignore]
+    fn skipped() {
+        r#assert!(false);
+    }
+}
+fn main() {
+    let a = std::panic::catch_unwind(|| first(&[]));
+    println!("first(&[]) panicked: {}", a.is_err());
+}
+pub fn first(v: &[u8]) -> u8 {
+    *v.first(). r#unwrap()
+}
+pub fn second(v: &[u8]) -> u8 {
+    *Option:: r#unwrap(v.first())
+}
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[ r#ignore]
+    fn skipped() {
+         r#assert!(false);
+    }
+}
+fn main() {
+    let a = std::panic::catch_unwind(|| first(&[]));
+    println!("first(&[]) panicked: {}", a.is_err());
+}
