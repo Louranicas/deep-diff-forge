@@ -3677,12 +3677,16 @@ fn looks_like_secret(text: &str) -> bool {
     if text.contains("-----BEGIN") && text.contains("PRIVATE KEY") {
         return true;
     }
+    // At most `min` bytes of each run are read, which decides `run >= min` as the whole run
+    // does: a prefix that repeats inside its own run (`xAKIAAKIA…`) was walked to the run's
+    // end at every repeat, the square of the line's length (2026-11-18, beside FINDING-5).
     let tail = |prefix: &str, min: usize, ok: fn(u8) -> bool| {
         text.match_indices(prefix).any(|(i, _)| {
             let before = i.checked_sub(1).map(|j| text.as_bytes()[j]);
             let boundary = before.is_none_or(|b| !b.is_ascii_alphanumeric());
             let run = text.as_bytes()[i + prefix.len()..]
                 .iter()
+                .take(min)
                 .take_while(|b| ok(**b))
                 .count();
             boundary && run >= min
@@ -4279,6 +4283,163 @@ mod tests {
                 start.kind
             );
         });
+    }
+
+    /// A line that is one word of 200,000 bytes ranks in under a second of the thread's CPU
+    /// time, each on its own: a JavaScript and a TypeScript word (FINDING-5: the released
+    /// scanner walked back over the word at each of its bytes, 18 s in v0.8.3 and twice that
+    /// with the readings of 0.9.0), and the credential prefixes that repeat inside their own
+    /// run, which the secret rule walked to the run's end at each repeat.
+    #[test]
+    fn one_long_word_ranks_in_under_a_second() {
+        within_deadline(|| {
+            for (path, line) in [
+                ("src/a.js", "a".repeat(200_000)),
+                ("src/a.ts", "a".repeat(200_000)),
+                ("notes.txt", format!("x{}", "AKIA".repeat(50_000))),
+                ("notes.txt", format!("x{}", "xoxb-a".repeat(33_334))),
+            ] {
+                let patch = format!("--- a/{path}\n+++ b/{path}\n@@ -2,0 +3,1 @@\n+{line}\n");
+                let files = parse(&patch).unwrap();
+                let start = ScanClock::start();
+                let ranked = crate::rank(&files);
+                let spent = start.elapsed();
+                assert_eq!(ranked.len(), 1);
+                assert!(
+                    spent < std::time::Duration::from_secs(1),
+                    "{path}: a word of {} bytes ranked in {spent:?} of {}",
+                    line.len(),
+                    start.kind
+                );
+            }
+        });
+    }
+
+    /// The scanner with the bounded keyword test finds what the released walk found, with the
+    /// same labels on the same lines (FINDING-5; the released reading is the floor): 1,500
+    /// generated JavaScript and TypeScript hunks and creations in two hunks, each ranked and
+    /// read for its whole evidence once each way.
+    #[test]
+    fn the_bounded_keyword_reading_finds_what_the_released_one_finds() {
+        let lines =
+            crate::lexical::released_word_walk::hostile_lines(0x5EED_F1D5_0000_0007, 4500, 300);
+        let (mut asked, mut found) = (0, 0);
+        for (case, three) in lines.chunks(3).enumerate() {
+            let name = if case % 2 == 0 {
+                "src/a.js"
+            } else {
+                "src/a.ts"
+            };
+            let mut patch = format!("--- a/{name}\n+++ b/{name}\n@@ -2,0 +3,3 @@\n");
+            if case % 3 == 2 {
+                patch = format!("--- /dev/null\n+++ b/{name}\n@@ -0,0 +1,2 @@\n");
+            }
+            for (at, line) in three.iter().enumerate() {
+                if case % 3 == 2 && at == 2 {
+                    patch.push_str("@@ -2,0 +3,1 @@\n");
+                }
+                writeln!(patch, "+{line}").unwrap();
+            }
+            let read = || {
+                let files = parse(&patch).unwrap();
+                let items: Vec<(S, Side, u32, bool)> = file_evidence(&files[0])
+                    .iter()
+                    .map(|e| (e.signal, e.side, e.line, e.released))
+                    .collect();
+                (items, crate::rank(&files))
+            };
+            let (new, new_ranked) = read();
+            let ((old, old_ranked), calls) = crate::lexical::released_word_walk::run(read);
+            asked += calls;
+            found += old.len();
+            for item in &old {
+                assert!(
+                    new.contains(item),
+                    "the bounded reading lost {item:?}:\n{patch}"
+                );
+            }
+            assert_eq!(new, old, "{patch}");
+            assert_eq!(new_ranked, old_ranked, "{patch}");
+        }
+        assert!(
+            asked > 10_000,
+            "the released reading answered {asked} times"
+        );
+        assert!(found > 200, "{found} items found by the released reading");
+    }
+
+    /// The secret rule reads at most the bytes of a run its length test needs, and answers as
+    /// the walk to the run's end did: 20,000 generated lines of credential prefixes, runs of
+    /// their bytes and breaks between them, each compared with the rule of release 0.8.3.
+    #[test]
+    fn the_bounded_secret_reading_is_the_released_one() {
+        /// [`looks_like_secret`] as release 0.8.3 had it.
+        fn released(text: &str) -> bool {
+            if text.contains("-----BEGIN") && text.contains("PRIVATE KEY") {
+                return true;
+            }
+            let tail = |prefix: &str, min: usize, ok: fn(u8) -> bool| {
+                text.match_indices(prefix).any(|(i, _)| {
+                    let before = i.checked_sub(1).map(|j| text.as_bytes()[j]);
+                    let boundary = before.is_none_or(|b| !b.is_ascii_alphanumeric());
+                    let run = text.as_bytes()[i + prefix.len()..]
+                        .iter()
+                        .take_while(|b| ok(**b))
+                        .count();
+                    boundary && run >= min
+                })
+            };
+            let upper_digit = |b: u8| b.is_ascii_uppercase() || b.is_ascii_digit();
+            let alnum = |b: u8| b.is_ascii_alphanumeric();
+            let slack = |b: u8| b.is_ascii_alphanumeric() || b == b'-';
+            tail("AKIA", 16, upper_digit)
+                || ["ghp_", "gho_", "ghs_", "ghu_", "ghr_"]
+                    .iter()
+                    .any(|p| tail(p, 36, alnum))
+                || ["xoxb-", "xoxp-", "xoxa-", "xoxr-"]
+                    .iter()
+                    .any(|p| tail(p, 10, slack))
+                || tail("sk_live_", 16, alnum)
+        }
+        const ATOMS: [&str; 16] = [
+            "AKIA",
+            "ghp_",
+            "ghr_",
+            "xoxb-",
+            "xoxr-",
+            "sk_live_",
+            "A",
+            "a",
+            "7",
+            "-",
+            "_",
+            " ",
+            "x",
+            "-----BEGIN",
+            "PRIVATE KEY",
+            "é",
+        ];
+        let mut seed = 0x5EED_F1D5_0000_0008_u64;
+        let mut next = move |below: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            usize::try_from(seed % (below as u64)).unwrap()
+        };
+        let mut yes = 0;
+        for _ in 0..20_000 {
+            let mut line = String::new();
+            for _ in 0..=next(12) {
+                let atom = ATOMS[next(ATOMS.len())];
+                line.push_str(&atom.repeat(1 + next(3) * next(20)));
+            }
+            assert_eq!(looks_like_secret(&line), released(&line), "{line:?}");
+            yes += usize::from(released(&line));
+        }
+        assert!(
+            (2_000..18_000).contains(&yes),
+            "{yes} of 20,000 lines look like secrets"
+        );
     }
 
     /// The time a scan spends: the thread's own CPU time where Linux reports it, so a busy host

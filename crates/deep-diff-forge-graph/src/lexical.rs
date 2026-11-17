@@ -353,7 +353,21 @@ const JS_OPERAND_KEYWORDS: [&[u8]; 14] = [
     b"await",
 ];
 
-/// The identifier that ends `before`, if any.
+/// The length of the longest of [`JS_OPERAND_KEYWORDS`] (`instanceof`).
+const JS_OPERAND_KEYWORD_MAX: usize = {
+    let (mut most, mut k) = (0, 0);
+    while k < JS_OPERAND_KEYWORDS.len() {
+        if JS_OPERAND_KEYWORDS[k].len() > most {
+            most = JS_OPERAND_KEYWORDS[k].len();
+        }
+        k += 1;
+    }
+    most
+};
+
+/// The identifier that ends `before`, if any: the reading of release 0.8.3, which walked
+/// back over the whole word. Kept for the tests, which hold the bounded reading to it.
+#[cfg(test)]
 fn trailing_word(before: &[u8]) -> &[u8] {
     let start = before
         .iter()
@@ -362,11 +376,126 @@ fn trailing_word(before: &[u8]) -> &[u8] {
     &before[start..]
 }
 
-/// Whether `before` ends with a [`JS_OPERAND_KEYWORDS`] word that is not a property name
-/// (`x.return`).
-fn ends_with_operand_keyword(before: &[u8]) -> bool {
+/// [`ends_with_operand_keyword`] as release 0.8.3 had it, word for word: the reference the
+/// tests hold the bounded reading to, and what the scanner asks inside
+/// [`released_word_walk::run`].
+#[cfg(test)]
+fn released_ends_with_operand_keyword(before: &[u8]) -> bool {
     let word = trailing_word(before);
     JS_OPERAND_KEYWORDS.contains(&word) && !before[..before.len() - word.len()].ends_with(b".")
+}
+
+/// Tests only: the scanner with the released keyword reading, so a test can scan the same
+/// text both ways and compare what the scanner and the rules make of it.
+#[cfg(test)]
+pub(crate) mod released_word_walk {
+    use std::cell::Cell;
+
+    thread_local! {
+        /// `Some(calls)` while [`run`] runs on this thread.
+        static CALLS: Cell<Option<u64>> = const { Cell::new(None) };
+    }
+
+    /// Whether the scanner on this thread asks the released reading (counted).
+    pub(super) fn on() -> bool {
+        CALLS.with(|calls| calls.get().map(|n| calls.set(Some(n + 1))).is_some())
+    }
+
+    /// `work`, with every keyword question of the scanner on this thread answered by the
+    /// released reading; and how many questions it answered.
+    pub(crate) fn run<T>(work: impl FnOnce() -> T) -> (T, u64) {
+        let outer = CALLS.replace(Some(0));
+        let out = work();
+        let calls = CALLS.replace(outer).unwrap_or(0);
+        (out, calls)
+    }
+
+    /// `count` JavaScript lines from `seed` (the same lines on every run): words of up to
+    /// `longest` bytes, words that are, end in or hold a keyword the scanner knows (with up to
+    /// two more word bytes than the longest keyword before it, after `.`, `$`, a space or a
+    /// byte past ASCII), before and after quotes, template literals and their `${…}`, regexes,
+    /// divisions, comments and the tokens of the JavaScript rules, joined with no space
+    /// between them as often as with one.
+    pub(crate) fn hostile_lines(seed: u64, count: usize, longest: usize) -> Vec<String> {
+        const MARKS: [&str; 22] = [
+            "\"", "'", "`", "/", "/x/g", "${", "}", "/*", "*/", "//", ".", " ", "(", ")", "=", "+",
+            "\\", "$", "é", "!", ";", ",",
+        ];
+        const TOKENS: [&str; 8] = [
+            "eval(x)",
+            "fetch(u)",
+            "execSync(c)",
+            "new Function(s)",
+            "require('child_process')",
+            "it(",
+            "catch {}",
+            "// eslint-disable",
+        ];
+        const WORD_BYTES: &[u8] = b"aZ_09q";
+        let mut seed = seed | 1;
+        let mut next = move |below: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            usize::try_from(seed % (below as u64)).unwrap()
+        };
+        let keywords = super::JS_OPERAND_KEYWORDS;
+        let mut lines = Vec::with_capacity(count);
+        for _ in 0..count {
+            let mut line = String::new();
+            for _ in 0..=next(8) {
+                let keyword = std::str::from_utf8(keywords[next(keywords.len())]).unwrap();
+                let word = |len: usize, next: &mut dyn FnMut(usize) -> usize| -> String {
+                    (0..len)
+                        .map(|_| char::from(WORD_BYTES[next(WORD_BYTES.len())]))
+                        .collect()
+                };
+                match next(6) {
+                    0 => line.push_str(keyword),
+                    1 => {
+                        let pad = next(super::JS_OPERAND_KEYWORD_MAX + 3);
+                        line.push_str(&word(pad, &mut next));
+                        line.push_str(keyword);
+                    }
+                    2 => {
+                        let len = 1 + next(longest);
+                        line.push_str(&word(len, &mut next));
+                    }
+                    3 => line.push_str(TOKENS[next(TOKENS.len())]),
+                    _ => line.push_str(MARKS[next(MARKS.len())]),
+                }
+                if next(2) == 0 {
+                    line.push(' ');
+                }
+            }
+            lines.push(line);
+        }
+        lines
+    }
+}
+
+/// Whether `before` ends with a [`JS_OPERAND_KEYWORDS`] word that is not a property name
+/// (`x.return`).
+///
+/// Only the last [`JS_OPERAND_KEYWORD_MAX`] + 1 bytes are read: a word longer than every
+/// keyword is none of them, whatever its other bytes. The scanner asks this at every byte
+/// after a word byte, and until 0.9.0 the whole word was walked back each time, so a line of
+/// one word cost the square of its length (FINDING-5: 200,000 letters took 18 s to rank in
+/// v0.8.3). The answer is the released one for every `before` (the tests compare the two
+/// readings, and the views and evidence they give).
+fn ends_with_operand_keyword(before: &[u8]) -> bool {
+    #[cfg(test)]
+    if released_word_walk::on() {
+        return released_ends_with_operand_keyword(before);
+    }
+    let len = before
+        .iter()
+        .rev()
+        .take(JS_OPERAND_KEYWORD_MAX + 1)
+        .take_while(|b| is_ident(**b))
+        .count();
+    let (rest, word) = before.split_at(before.len() - len);
+    len <= JS_OPERAND_KEYWORD_MAX && JS_OPERAND_KEYWORDS.contains(&word) && !rest.ends_with(b".")
 }
 
 /// Whether a JS `/` here starts a regex literal rather than a division, as in the language's
@@ -2533,6 +2662,99 @@ mod tests {
             assert_eq!(view(Language::JavaScript, &regexes).len(), regexes.len());
             let spaces = format!("V=\"$({}curl x)\"", " ".repeat(200_000));
             assert!(view(Language::Shell, &spaces).ends_with("curl x)\""));
+        });
+    }
+
+    /// The keyword test reads a bounded suffix and answers as the released walk over the whole
+    /// word did (FINDING-5): for every prefix of every keyword with up to two more word bytes
+    /// than the longest keyword before it, after each kind of byte, and of 4,000 generated
+    /// lines with words of up to 300 bytes.
+    #[test]
+    fn the_bounded_keyword_reading_is_the_released_one() {
+        assert_eq!(JS_OPERAND_KEYWORD_MAX, b"instanceof".len());
+        let same_at_every_prefix = |line: &[u8]| {
+            for end in 0..=line.len() {
+                let before = &line[..end];
+                assert_eq!(
+                    ends_with_operand_keyword(before),
+                    released_ends_with_operand_keyword(before),
+                    "{:?}",
+                    String::from_utf8_lossy(before)
+                );
+            }
+        };
+        let mut keywords_seen = 0;
+        for keyword in JS_OPERAND_KEYWORDS {
+            for pad in 0..=JS_OPERAND_KEYWORD_MAX + 2 {
+                for lead in ["", ".", " ", "$", "x.", "é", "("] {
+                    let line = format!(
+                        "{lead}{}{}",
+                        "a".repeat(pad),
+                        std::str::from_utf8(keyword).unwrap()
+                    );
+                    same_at_every_prefix(line.as_bytes());
+                    keywords_seen += usize::from(ends_with_operand_keyword(line.as_bytes()));
+                }
+            }
+        }
+        // Each keyword alone and after each lead but `.` and `x.`: 14 x 5.
+        assert_eq!(keywords_seen, 70);
+        for line in released_word_walk::hostile_lines(0x5EED_F1D5_0000_0005, 4000, 300) {
+            same_at_every_prefix(line.as_bytes());
+        }
+    }
+
+    /// The scanner with the bounded keyword test gives the released views and states: 3,000
+    /// generated JavaScript lines (words of up to 300 bytes), read line after line with
+    /// whatever the lines before left open; and each keyword with up to two more word bytes
+    /// than the longest keyword before it, or a `.`, before a string, a template and a regex,
+    /// each line read from code. Every line is read once each way.
+    #[test]
+    fn the_bounded_keyword_reading_gives_the_released_views() {
+        let generated = released_word_walk::hostile_lines(0x5EED_F1D5_0000_0006, 3000, 300);
+        let mut alone = Vec::new();
+        for keyword in JS_OPERAND_KEYWORDS {
+            let keyword = std::str::from_utf8(keyword).unwrap();
+            for after in ["\"a\" + b", "'a' + b", "`a` + b", "/a/g + b"] {
+                alone.push(format!("x.{keyword}{after}"));
+                for pad in 0..=JS_OPERAND_KEYWORD_MAX + 2 {
+                    alone.push(format!("x = {}{keyword}{after}", "a".repeat(pad)));
+                }
+            }
+        }
+        let read = || {
+            let mut state = ScanState::default();
+            let mut views: Vec<(String, ScanState)> = generated
+                .iter()
+                .map(|line| (code_view(Language::JavaScript, line, &mut state), state))
+                .collect();
+            for line in &alone {
+                let mut state = ScanState::default();
+                views.push((code_view(Language::JavaScript, line, &mut state), state));
+            }
+            views
+        };
+        let bounded = read();
+        let (released, asked) = released_word_walk::run(read);
+        assert!(
+            asked > 10_000,
+            "the released reading answered {asked} times"
+        );
+        let lines = generated.iter().chain(&alone);
+        for ((line, new), old) in lines.zip(&bounded).zip(&released) {
+            assert_eq!(new, old, "{line:?}");
+        }
+    }
+
+    /// One JavaScript word of 200,000 letters scans in linear time (FINDING-5: the released
+    /// scan walked back over the word at each of its bytes).
+    #[test]
+    fn a_long_javascript_word_scans_in_linear_time() {
+        within_deadline(|| {
+            let word = "a".repeat(200_000);
+            assert_eq!(view(Language::JavaScript, &word), word);
+            let keyword_after = format!("{word}return\"x\"");
+            assert_eq!(view(Language::JavaScript, &keyword_after), keyword_after);
         });
     }
 
