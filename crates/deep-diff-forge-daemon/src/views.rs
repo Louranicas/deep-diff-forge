@@ -181,13 +181,15 @@ impl<'a> Scans<'a> {
         }
     }
 
-    /// Whether the reading of release 0.8.4 reads hunks of file `index` as one text: the file
-    /// is one the patch creates in more than one hunk. That reading goes from hunk to hunk
+    /// Whether the reading of release 0.8.4 reads hunks of file `index` as one text (the file
+    /// is one the patch creates in more than one hunk), or the file is one of several sections
+    /// of its path that are also read as one file. That reading goes from hunk to hunk
     /// within the bound the files of the patch share, so the labels of its hunks are those of
     /// the scan of the file, which reads it with its share.
     fn read_together(&self, index: usize) -> bool {
         *self.together[index].get_or_init(|| {
             deep_diff_forge_graph::HunkLabels::new(&self.files[index]).read_together() > 1
+                || self.shares.joined_across_sections(index)
         })
     }
 

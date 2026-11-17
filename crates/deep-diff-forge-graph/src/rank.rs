@@ -496,4 +496,158 @@ diff --git a/src/edited.rs b/src/edited.rs
         let r = ranked(input);
         assert_eq!(r[0].path, "src/added.rs");
     }
+
+    /// The six forms of one change to `src/{name}.rs` whose first lines are `first` and whose
+    /// last lines are `second`: as one section, and cut between the two into the several
+    /// sections of one path that the parser reads (for
+    /// [`the_sections_of_one_path_git_applies_in_order_are_one_file`]).
+    fn one_path_shapes(name: &str, first: &[&str], second: &[&str]) -> Vec<(&'static str, String)> {
+        use std::fmt::Write as _;
+        let plus = |lines: &[&str]| -> String {
+            lines.iter().fold(String::new(), |mut text, line| {
+                let _ = writeln!(text, "+{line}");
+                text
+            })
+        };
+        let p = format!("src/{name}.rs");
+        let (a, b) = (first.len(), second.len());
+        let create = |lines: &[&str]| {
+            format!(
+                "diff --git a/{p} b/{p}\nnew file mode 100644\n--- /dev/null\n+++ b/{p}\n@@ -0,0 +1,{} @@\n{}",
+                lines.len(),
+                plus(lines)
+            )
+        };
+        let change = format!("diff --git a/{p} b/{p}\n--- a/{p}\n+++ b/{p}\n");
+        let delete = format!(
+            "diff --git a/{p} b/{p}\ndeleted file mode 100644\n--- a/{p}\n+++ /dev/null\n@@ -1 +0,0 @@\n-// old\n"
+        );
+        let whole: Vec<&str> = first.iter().chain(second).copied().collect();
+        vec![
+            ("one section", create(&whole)),
+            (
+                "create then change",
+                format!(
+                    "{}{change}@@ -{a},0 +{},{b} @@\n{}",
+                    create(first),
+                    a + 1,
+                    plus(second)
+                ),
+            ),
+            (
+                "create then change, other numbers",
+                format!(
+                    "{}{change}@@ -9,0 +3,{b} @@\n{}",
+                    create(first),
+                    plus(second)
+                ),
+            ),
+            (
+                "change then change",
+                format!(
+                    "{change}@@ -1 +1,{} @@\n // old\n{}{change}@@ -{},0 +{},{b} @@\n{}",
+                    1 + a,
+                    plus(first),
+                    1 + a,
+                    2 + a,
+                    plus(second)
+                ),
+            ),
+            ("delete then create", format!("{delete}{}", create(&whole))),
+            (
+                "delete, create, change",
+                format!(
+                    "{delete}{}{change}@@ -{a},0 +{},{b} @@\n{}",
+                    create(first),
+                    a + 1,
+                    plus(second)
+                ),
+            ),
+        ]
+    }
+
+    /// IR7-H-2 in the shapes of one path in several sections that the parser reads (a change
+    /// in place after a creation, after a change, and after a deletion and a creation): plain
+    /// `git apply` 2.56.0 writes the text of the one-section form in each, and the sections
+    /// are read as one file too, so each finds what the one-section form finds, on the section
+    /// that holds the line. `n`: a call cut as `opt.unwrap` and `();`; `two`: a spawn after
+    /// the end of a string that the first section opens. (Until this rule none of the
+    /// several-section forms had the item, in any release.)
+    #[test]
+    fn the_sections_of_one_path_git_applies_in_order_are_one_file() {
+        use crate::evidence::EvidenceSignal as S;
+        for (name, first, second, signal, at) in [
+            (
+                "n",
+                &[
+                    "pub fn f(opt: Option<u32>) -> u32 {",
+                    "    let v = opt.unwrap",
+                ][..],
+                &["    ();", "    v", "}"][..],
+                S::PanicPathAdded,
+                0,
+            ),
+            (
+                "two",
+                &["pub fn help() -> &'static str {", "    let s = \"usage:"][..],
+                &[
+                    "  --help\"; std::process::Command::new(\"sh\").status().ok(); // \"",
+                    "    s }",
+                ][..],
+                S::ProcessSpawn,
+                1,
+            ),
+        ] {
+            for (shape, text) in one_path_shapes(name, first, second) {
+                let files = deep_diff_forge_patch::parse(&text).unwrap();
+                let ranked = rank(&files);
+                let found: Vec<&RankedFile> = ranked
+                    .iter()
+                    .filter(|r| r.signals.contains(&RiskSignal::Code(signal)))
+                    .collect();
+                assert_eq!(found.len(), 1, "{name}, {shape}: {ranked:#?}");
+                // on the section that holds the line: the first lines are the first section's
+                let item = found[0]
+                    .evidence
+                    .iter()
+                    .find(|e| e.signal == signal)
+                    .unwrap();
+                let holder = files
+                    .iter()
+                    .find(|f| f.patch_twin.hunks.iter().any(|h| h.id == item.hunk))
+                    .unwrap();
+                let text_of: Vec<&str> = holder
+                    .patch_twin
+                    .hunks
+                    .iter()
+                    .flat_map(|h| h.lines.iter())
+                    .map(|l| l.text.as_str())
+                    .collect();
+                let wanted = if at == 0 {
+                    first.last()
+                } else {
+                    second.first()
+                };
+                assert!(text_of.contains(wanted.unwrap()), "{name}, {shape}");
+            }
+        }
+    }
+
+    /// A run of sections of one path is read as one file only within the patch's budget: with a
+    /// line longer than 512 bytes in it, its sections are read as before, apart.
+    #[test]
+    fn sections_of_one_path_past_the_budget_are_read_apart() {
+        let long = "x".repeat(600);
+        let text = format!(
+            "diff --git a/src/n.rs b/src/n.rs\nnew file mode 100644\n--- /dev/null\n+++ b/src/n.rs\n@@ -0,0 +1,2 @@\n+// {long}\n+    let v = opt.unwrap\ndiff --git a/src/n.rs b/src/n.rs\n--- a/src/n.rs\n+++ b/src/n.rs\n@@ -2,0 +3,1 @@\n+    ();\n"
+        );
+        let files = deep_diff_forge_patch::parse(&text).unwrap();
+        let shares = CarriedShares::of(&files);
+        assert!(!shares.joined_across_sections(0) && !shares.joined_across_sections(1));
+        assert!(rank(&files).iter().all(|r| r.evidence.is_empty()));
+        let short = text.replace(&long, "short");
+        let files = deep_diff_forge_patch::parse(&short).unwrap();
+        let shares = CarriedShares::of(&files);
+        assert!(shares.joined_across_sections(0) && shares.joined_across_sections(1));
+    }
 }

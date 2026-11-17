@@ -12,16 +12,17 @@
 //! finds tokens, it never proves a change is safe, and a construct built at run time, or one
 //! the hunk shows only a part of, can hide from it.
 //!
-//! A section of a patch is the unit of everything here: a file is one section, and what is
-//! read together is hunks of one section. The parser of release 0.8.4 refuses a patch that
-//! names one path in more than one section, except the orders Git applies one after the
-//! other: a change in place after a section that wrote the path, and a new file after a
-//! deleted file. Plain `git apply` applies the two sections of such a patch to the same file,
-//! and a construct that one begins and the other ends is then read in two halves, as two
-//! files (seventh independent review, IR7-H-2; a hunk side is read as text that ends there,
-//! and nothing is inferred from how it ends: the module `rust_tokens`). The test
-//! `a_second_section_for_one_path_is_two_files_until_the_parser_refuses_it` pins that answer
-//! for a creation and a change in place after it, which the parser of 0.8.4 accepts.
+//! A section of a patch is a file here, and what is read together is first hunks of one
+//! section. The parser of release 0.8.4 refuses a patch that names one path in more than one
+//! section, except the orders Git applies one after the other: a change in place after a
+//! section that wrote the path, and a new file after a deleted file. Plain `git apply` applies
+//! the sections of such a patch to the same file, so in the reading of a patch they are also
+//! one file ([`CarriedShares`]): a copy of the first with the hunks of all of them, read by
+//! every reading, those that join hunks among them, within the patch's bound, and what it finds
+//! is reported on the section that holds the line. Before 2026-11-18 a construct that one
+//! section begins and the next ends was read in two halves, as two files, in every release
+//! (seventh independent review, IR7-H-2). A section read as the only file of its patch
+//! (`file_evidence`) is read alone.
 //!
 //! Every hunk is also read as release 0.8.4 reads it ([`HunkLabels`]): line by line, in the
 //! reading of 0.8.3 and in the compiler's lexer's, and for a file the patch creates in several
@@ -1227,11 +1228,8 @@ pub fn file_evidence_released(file: &ReviewFile) -> Vec<bool> {
 /// `share` says.
 pub(crate) fn file_evidence_marked(file: &ReviewFile, share: Share) -> (Vec<Evidence>, Vec<bool>) {
     let hunks = &file.patch_twin.hunks;
-    let found = file_found(file, &joined_texts(file), None);
-    let mut released = HunkLabels::sharing(file, share);
     let mut out: Vec<Evidence> = Vec::new();
-    for (index, (hunk, hits)) in hunks.iter().zip(&found).enumerate() {
-        let hits = unite(hits, &hits_of_items(hunk, &released.matches(index)));
+    for (hunk, hits) in hunks.iter().zip(hunk_hits(file, share)) {
         let mut address = None;
         // Each (side, signal, line) is in `hits` once and items of different hunks differ in
         // `hunk`, so there is nothing to deduplicate: a scan of `out` per item made a patch of
@@ -1254,6 +1252,29 @@ pub(crate) fn file_evidence_marked(file: &ReviewFile, share: Share) -> (Vec<Evid
     }
     let marks = out.iter().map(|item| item.released).collect();
     (out, marks)
+}
+
+/// What every reading finds in each hunk of `file`, read with `share`: the readings of the
+/// integrity signals, the reading of release 0.8.4, and, for a section of a path that the
+/// patch writes in several sections Git applies in order, what the reading of those sections
+/// as one file finds in its hunks ([`CarriedShares`]).
+fn hunk_hits(file: &ReviewFile, share: Share) -> Vec<Vec<Hit>> {
+    let mut released = HunkLabels::sharing(file, share);
+    let joined = match share {
+        Share::Of(_, joined) => joined,
+        Share::Own => &[],
+    };
+    let found = file_found(file, &joined_texts(file), None);
+    let hunks = &file.patch_twin.hunks;
+    let mut all = Vec::with_capacity(hunks.len());
+    for (index, (hunk, hits)) in hunks.iter().zip(&found).enumerate() {
+        let hits = unite(hits, &hits_of_items(hunk, &released.matches(index)));
+        all.push(match joined.get(index) {
+            Some(more) => unite(&hits, more),
+            None => hits,
+        });
+    }
+    all
 }
 
 /// The items the reading of release 0.8.4 found in `hunk` (`items`, in the order of its lines)
@@ -1334,7 +1355,8 @@ pub fn hunk_signals_in_patch(
     shares: &CarriedShares,
     at: usize,
 ) -> Option<Vec<EvidenceSignal>> {
-    hunk_signals_with(file, index, HunkLabels::in_patch(file, shares, at, &[]))
+    let signals = hunk_signals_with(file, index, HunkLabels::in_patch(file, shares, at, &[]))?;
+    Some(either(&signals, &shares.joined_signals(at, index)))
 }
 
 /// [`hunk_signals`], with the reading of release 0.8.4 asked of `released`.
@@ -2279,8 +2301,8 @@ fn quote_hash_records(texts: &[&str]) -> Vec<usize> {
 
 /// One item one reading of a text found: on the line at `at` of the text (in what
 /// [`texts_found`] gives, of its hunk).
-#[derive(Debug, Clone, Copy)]
-struct Hit {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Hit {
     at: usize,
     side: Side,
     signal: EvidenceSignal,
@@ -2986,7 +3008,7 @@ impl<'a> HunkLabels<'a> {
         let together = match share {
             _ if language.is_none() => 0,
             Share::Own => read_together(&file.patch_twin.hunks, CARRIED_BYTES).0,
-            Share::Of(together) => together.min(file.patch_twin.hunks.len()),
+            Share::Of(together, _) => together.min(file.patch_twin.hunks.len()),
         };
         Self {
             file,
@@ -3206,13 +3228,15 @@ fn read_together(hunks: &[PatchHunk], left: usize) -> (usize, usize) {
     (hunks.len(), bytes)
 }
 
-/// How many hunks of a file are read together.
+/// How many hunks of a file are read together, and what the reading of its path's sections
+/// as one file adds to each of its hunks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Share {
-    /// As the only file of its patch: the whole of [`CARRIED_BYTES`].
+pub(crate) enum Share<'a> {
+    /// As the only file of its patch: the whole of [`CARRIED_BYTES`], and no other section.
     Own,
-    /// As many as its patch's [`CarriedShares`] gave it.
-    Of(usize),
+    /// As many as its patch's [`CarriedShares`] gave it, and the hits of its hunks in the
+    /// reading of its path's sections as one file (none when it is not so read).
+    Of(usize, &'a [Vec<Hit>]),
 }
 
 /// Not part of the API, and may change: how many hunks of each file of a patch, from the
@@ -3225,20 +3249,63 @@ pub(crate) enum Share {
 /// every view of a patch gives every hunk the same labels, and the carried reading of one
 /// request, of a view over the whole patch or of any hunks of it in any order, reads at most
 /// 256 KiB in all.
+///
+/// The sections of one path that the patch writes in an order Git applies one after the other
+/// (a change in place after a section that wrote the path; a creation after a deletion begins
+/// again: the parser refuses every other order) are also read as one file, a copy of the
+/// first with the hunks of all of them in patch order, by every reading, those that join hunks
+/// among them; what that finds in a hunk is united with the rest of that hunk's answer, on the
+/// section that holds it. Such a run of sections spends its whole new side, each line counted
+/// with its end, from the same 256 KiB in patch order, at its last section, and is read so only
+/// when it fits and has no line longer than 512 bytes.
 #[doc(hidden)]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CarriedShares {
     together: Vec<usize>,
+    /// For each file, the hits of each of its hunks in the reading of its path's sections as
+    /// one file; empty for a file not so read.
+    joined: Vec<Vec<Vec<Hit>>>,
 }
 
 impl CarriedShares {
     /// The shares of the files of a patch, `files`, all of them in patch order.
     #[must_use]
     pub fn of(files: &[ReviewFile]) -> Self {
+        // The runs of sections of one path, in the order of their first section.
+        let mut runs: Vec<Vec<usize>> = Vec::new();
+        let mut open: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for (index, file) in files.iter().enumerate() {
+            match open.get(file.path.as_str()) {
+                Some(&run) if file.status != FileStatus::Added => runs[run].push(index),
+                _ => {
+                    open.insert(&file.path, runs.len());
+                    runs.push(vec![index]);
+                }
+            }
+        }
+        let mut last_of: Vec<Option<usize>> = vec![None; files.len()];
+        for (run, sections) in runs.iter().enumerate() {
+            if let [_, .., last] = sections.as_slice() {
+                last_of[*last] = Some(run);
+            }
+        }
+        let mut read_whole = Vec::new();
         let mut left = CARRIED_BYTES;
         let together = files
             .iter()
-            .map(|file| {
+            .enumerate()
+            .map(|(index, file)| {
+                if let Some(run) = last_of[index] {
+                    let hunks: Vec<PatchHunk> = runs[run]
+                        .iter()
+                        .flat_map(|&at| files[at].patch_twin.hunks.iter().cloned())
+                        .collect();
+                    let (fit, bytes) = read_together(&hunks, left);
+                    if fit == hunks.len() {
+                        left -= bytes;
+                        read_whole.push((run, hunks));
+                    }
+                }
                 if file.status != FileStatus::Added || file.patch_twin.hunks.len() < 2 {
                     return 0;
                 }
@@ -3255,7 +3322,37 @@ impl CarriedShares {
                 together
             })
             .collect();
-        Self { together }
+        let mut joined = vec![Vec::new(); files.len()];
+        for (run, hunks) in read_whole {
+            let sections = &runs[run];
+            let mut whole = files[sections[0]].clone();
+            whole.patch_twin.hunks = hunks;
+            let count = whole.patch_twin.hunks.len();
+            let mut hits = hunk_hits(&whole, Share::Of(count, &[])).into_iter();
+            for &at in sections {
+                joined[at] = hits
+                    .by_ref()
+                    .take(files[at].patch_twin.hunks.len())
+                    .collect();
+            }
+        }
+        Self { together, joined }
+    }
+
+    /// Not part of the API, and may change: whether the file at `index` is one of several
+    /// sections of its path that are also read as one file.
+    #[must_use]
+    pub fn joined_across_sections(&self, index: usize) -> bool {
+        self.joined
+            .get(index)
+            .is_some_and(|hunks| !hunks.is_empty())
+    }
+
+    /// The signals the reading of its path's sections as one file finds in hunk `hunk` of the
+    /// file at `index`.
+    fn joined_signals(&self, index: usize, hunk: usize) -> Vec<EvidenceSignal> {
+        let hits = self.joined.get(index).and_then(|hunks| hunks.get(hunk));
+        hits.map_or_else(Vec::new, |hits| signals_of(hits))
     }
 
     /// How many hunks, from the first, of the file at `index` are read together as one text
@@ -3266,8 +3363,9 @@ impl CarriedShares {
     }
 
     /// The share of the file at `index`.
-    pub(crate) fn share(&self, index: usize) -> Share {
-        Share::Of(self.read_together(index))
+    pub(crate) fn share(&self, index: usize) -> Share<'_> {
+        let joined = self.joined.get(index).map_or(&[][..], Vec::as_slice);
+        Share::Of(self.read_together(index), joined)
     }
 }
 
@@ -12498,17 +12596,18 @@ mod tests {
 
     /// A second section for the same path (seventh independent review, IR7-H-2). Plain
     /// `git apply` 2.56.0 applies both sections to the one file ("Checking patch src/n.rs..."
-    /// twice, rc 0), the result is the call `opt.unwrap\n();` and rustc compiles it. To this
-    /// crate a section is a file: nothing joins the two.
+    /// twice, rc 0), the result is the call `opt.unwrap\n();` and rustc compiles it.
     ///
     /// This test pinned the answer of the branch before it stood on release 0.8.4, and said
     /// that after the rebase `parse` must refuse this patch. It does not: the parser of 0.8.4
     /// refuses one path in several sections except where Git applies them one after the
     /// other, and a change in place after a section that wrote the path is such an exception
     /// (measured at integration, 2026-11-17: the 0.8.4 binary ranks this patch as two files).
-    /// So the answer below still holds, and the case stays open for a decision.
+    /// Since 2026-11-18 such sections are also read as one file in the patch's reading
+    /// ([`CarriedShares`]), and the call is found on the first section, where its line is.
     ///
-    /// Nothing is reported for it: the first section ends on `.unwrap`, which is
+    /// Each section read alone, as the only file of its patch (`file_evidence`), still has
+    /// nothing: the first section ends on `.unwrap`, which is
     /// no evidence by itself (a field can have that name), and the second begins with `();`.
     /// (Round 15 reported the call at the end of the first section; that reading also made
     /// a spawn of a return type named `Command`, and is gone. A rename of a file the patch
@@ -12527,6 +12626,12 @@ mod tests {
         );
         assert_eq!(found(&files[0]), []);
         assert_eq!(found(&files[1]), []);
+        // In the patch, the two sections are also one file.
+        let shares = CarriedShares::of(&files);
+        let (first, _) = file_evidence_marked(&files[0], shares.share(0));
+        let first: Vec<_> = first.iter().map(|e| (e.signal, e.side, e.line)).collect();
+        assert_eq!(first, [(S::PanicPathAdded, Side::New, 2)]);
+        assert_eq!(file_evidence_marked(&files[1], shares.share(1)).0, []);
     }
 
     /// The texts of a file are found in a time that goes with the number of its hunks. A
