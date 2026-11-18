@@ -34,54 +34,19 @@ diff --git a/src/top.rs b/src/top.rs
 +// */ pub fn evil() { std::process::Command::new("sh").arg("-c").arg("echo EVIL-RAN").status().ok(); } /*
  more prose
  and more
-diff --git a/src/split.rs b/src/split.rs
-new file mode 100644
---- /dev/null
-+++ b/src/split.rs
-@@ -0,0 +1,2 @@
-+pub fn a() {}
-+pub fn cut(x: Option<u32>) -> u32 { x.unwrap
-@@ -2,0 +3,1 @@
-+() }
-diff --git a/src/end.rs b/src/end.rs
---- a/src/end.rs
-+++ b/src/end.rs
-@@ -2,2 +2,3 @@
- pub fn b() {}
- pub fn c() {}
-+pub fn cut(x: Option<u32>) -> u32 { x.unwrap
-@@ -3,0 +5,1 @@
-+() }
-diff --git a/src/deep.rs b/src/deep.rs
-new file mode 100644
---- /dev/null
-+++ b/src/deep.rs
-@@ -0,0 +1,2 @@
-+//! Helpers.
-+/* /*
-@@ -2,0 +3,2 @@
-+ */ // */ pub fn evil() { std::process::Command::new("sh").arg("-c").arg("echo EVIL-RAN").status().ok(); }
-+pub fn k() {}
-diff --git a/src/glob.rs b/src/glob.rs
-new file mode 100644
---- /dev/null
-+++ b/src/glob.rs
-@@ -0,0 +1,2 @@
-+//! Helpers.
-+pub const GLOB: &str = "
-@@ -2,0 +3,3 @@
-+    crates/*/*/Cargo.toml";
-+pub fn evil() { std::process::Command::new("sh").arg("-c").arg("echo EVIL-RAN").status().ok(); }
-+fn main() { evil(); }
 diff --git a/src/zero.rs b/src/zero.rs
 --- a/src/zero.rs
 +++ b/src/zero.rs
-@@ -5,0 +6,2 @@ pub fn a() -> u32 {
+@@ -5,2 +5,4 @@ pub fn a() -> u32 {
+ 
 +    let x = Some(1); /* note
 +    let y = 2;
-@@ -20,0 +23,2 @@ pub fn b() -> u32 {
+ 
+@@ -20,2 +22,4 @@ pub fn b() -> u32 {
+ 
 +    std::process::Command::new("sh").status().ok();
 +    let z = q.unwrap();
+ 
 diff --git a/tests/snapshots.rs b/tests/snapshots.rs
 --- a/tests/snapshots.rs
 +++ b/tests/snapshots.rs

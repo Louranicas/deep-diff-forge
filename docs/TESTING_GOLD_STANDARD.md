@@ -176,8 +176,9 @@ era) no longer holds. How the standard is enforced today:
   corpus each run, under a root it makes if missing.
 - **Evaluation gate** (`cli/tests/eval.rs`, every PR): the labelled corpus in
   `fixtures/eval` (56 cases, measured 2026-11-18 on the integrated tree) must score at least its floors,
-  which are the measured values: ranking pairs 12/15, evidence precision 179/207,
-  evidence recall 179/260, findings 33/33. Any undeclared miss fails. The 112
+  which are the measured values: ranking pairs 12/15, evidence precision 170/195,
+  evidence recall 170/247, findings 33/33 (0.10.0; sections the parser refuses are in
+  `fixtures/eval-refused-by-parser/`, held refused by a test). Any undeclared miss fails. The 105
   declared misses (`known_miss`, `known_false_positive`) count as wrong in their
   metric rather than being excluded, and each fails once the engine gets it
   right. Planted controls prove a wrong label fails with exit 7, a changed file,

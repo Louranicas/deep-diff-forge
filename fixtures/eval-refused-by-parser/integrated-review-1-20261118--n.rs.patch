@@ -1,0 +1,14 @@
+diff --git a/n.rs b/n.rs
+index 3390b99..465f576 100644
+--- a/n.rs
++++ b/n.rs
+@@ -10 +10,2 @@
+-// l10
++// x
++    let v = opt.unwrap
+diff --git a/n.rs b/n.rs
+index 465f576..6b1bbc4 100644
+--- a/n.rs
++++ b/n.rs
+@@ -10,0 +11 @@
++    ();

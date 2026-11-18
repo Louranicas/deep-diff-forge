@@ -1,0 +1,14 @@
+diff --git a/src/first.rs b/src/first.rs
+--- a/src/first.rs
++++ b/src/first.rs
+@@ -4,0 +40,1 @@
++// end
+@@ -3,2 +3,2 @@
+-    let d = c * 2;
++    let d = c * 3;
+     debug_assert!(
+@@ -5,3 +30,3 @@
+-        a < b,
++        true,
+         "a must be below b");
+     let e = d + 1;

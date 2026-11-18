@@ -179,14 +179,21 @@ use std::process::Command;
 /// section's old number is read in the coordinates of one file, and a created file followed by
 /// a section that adds a line above its context. The precision floor fell, on purpose: what was
 /// found is declared, not new to this round.
+/// Measured again 2026-11-18 for release 0.10.0, whose parser refuses a hunk that plain `git
+/// apply` places elsewhere than its header says (ruling 1 of the integration): 29 sections of
+/// nine evidence cases gained a blank line of context, with their items unchanged; 18 sections
+/// (creations in several hunks, hunks that touch, and readings only such hunks give) moved with
+/// their 16 expectations (9 expected, 4 declared misses, 3 declared false positives) to
+/// `fixtures/eval-refused-by-parser/`: precision 170 of 195, recall 170 of 247, the same 56
+/// cases. The recall floor fell by what left, not by a reading that changed.
 const RANKING_PAIRS_FLOOR: u64 = 800_000;
-const EVIDENCE_PRECISION_FLOOR: u64 = 864_734;
-const EVIDENCE_RECALL_FLOOR: u64 = 688_461;
+const EVIDENCE_PRECISION_FLOOR: u64 = 871_794;
+const EVIDENCE_RECALL_FLOOR: u64 = 688_259;
 const FINDINGS_FLOOR: u64 = 1_000_000;
 /// Declared misses (plan N4): each counts as wrong in its metric above. The receipt's
 /// `known_misses` keeps its first meaning, the evidence `known_miss` items; `declared` lists all.
-const DECLARED: u64 = 112;
-const EVIDENCE_KNOWN_MISSES: u64 = 81;
+const DECLARED: u64 = 105;
+const EVIDENCE_KNOWN_MISSES: u64 = 77;
 /// The smallest corpus the gate accepts, and the fewest cases of each kind.
 const MIN_CASES: usize = 30;
 const MIN_CASES_PER_KIND: usize = 3;
@@ -311,9 +318,9 @@ fn the_summary_names_each_metric_and_each_failure() {
     );
     for line in [
         "  ranking_pairs        12/15",
-        "  evidence_precision   179/207",
-        "  evidence_recall      179/260",
-        "  declared             112",
+        "  evidence_precision   170/195",
+        "  evidence_recall      170/247",
+        "  declared             105",
         "  KNOWN ranking/auth-check-removed: src/handlers/delete.rs ranks below docs/CHANGES.md",
         "  KNOWN evidence/shell-heredoc: reports (\"scripts/docs.sh\", \"network_fetch\", \"new\", 3)",
     ] {
@@ -664,7 +671,7 @@ fn a_declared_miss_must_still_be_a_miss() {
     );
     assert_eq!(
         metrics["evidence_recall"],
-        serde_json::json!({"right": 179, "total": 259, "ppm": 691_119})
+        serde_json::json!({"right": 170, "total": 246, "ppm": 691_056})
     );
 
     // A declared false positive the engine does not report.
@@ -682,7 +689,7 @@ fn a_declared_miss_must_still_be_a_miss() {
     );
     assert_eq!(
         metrics["evidence_precision"],
-        serde_json::json!({"right": 179, "total": 207, "ppm": 864_734})
+        serde_json::json!({"right": 170, "total": 195, "ppm": 871_794})
     );
 
     // A declared false positive that is also expected.
@@ -698,7 +705,7 @@ fn a_declared_miss_must_still_be_a_miss() {
             .unwrap()
             .ends_with("is not reported, or is expected: remove it")
     );
-    assert_eq!(metrics["evidence_precision"]["right"], 180);
+    assert_eq!(metrics["evidence_precision"]["right"], 171);
     assert_eq!(known, usize::try_from(DECLARED).unwrap() - 1);
 }
 
@@ -803,4 +810,43 @@ fn every_item_of_the_corpus_has_a_basis_the_vocabulary_lists() {
         }
     }
     assert_eq!(rungs.into_iter().collect::<Vec<_>>(), ["hunk", "lexical"]);
+}
+
+/// Release 0.10.0 (ruling 1 of its integration): the sections of evaluation cases that the
+/// parser refuses for the place of a hunk left the corpus with their expectations and are kept
+/// in `fixtures/eval-refused-by-parser/`. Each is listed in its `REASONS.tsv` and is refused
+/// whole (exit 4) with the reason listed there, so none of them can come back unread.
+#[test]
+fn every_section_that_left_the_corpus_is_refused_for_its_reason() {
+    let dir = corpus().join("../eval-refused-by-parser");
+    let reasons = std::fs::read_to_string(dir.join("REASONS.tsv")).unwrap();
+    let rows: Vec<Vec<&str>> = reasons
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .map(|line| line.split('\t').collect())
+        .collect();
+    let mut patches: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|e| e == "patch"))
+        .map(|path| path.file_name().unwrap().to_str().unwrap().to_owned())
+        .collect();
+    patches.sort();
+    let listed: Vec<String> = rows.iter().map(|row| row[0].to_owned()).collect();
+    assert_eq!(patches, listed, "every patch there is listed once");
+    for row in &rows {
+        let out = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+            .args(["--stdin-patch", "--outline"])
+            .stdin(std::fs::File::open(dir.join(row[0])).unwrap())
+            .output()
+            .expect("run");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!((out.status.code(), row[1]), (Some(4), "4"), "{}", row[0]);
+        assert!(stderr.contains(row[2]), "{}: {stderr}", row[0]);
+        assert!(
+            stderr.contains("would be placed elsewhere by git apply"),
+            "{stderr}"
+        );
+    }
+    assert_eq!(rows.len(), 16);
 }

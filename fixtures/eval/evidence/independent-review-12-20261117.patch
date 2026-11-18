@@ -15,9 +15,11 @@ diff --git a/tests/four.rs b/tests/four.rs
 diff --git a/src/deep.rs b/src/deep.rs
 --- a/src/deep.rs
 +++ b/src/deep.rs
-@@ -6 +6 @@ fn main() {
+@@ -5,3 +5,3 @@ fn main() {
+ 
 -    x
 +    #[cfg_attr(a, #[cfg_attr(a, #[cfg_attr(a, #[cfg_attr(a, #[cfg_attr(a, #[cfg_attr(a, #[cfg_attr(a, #[cfg_attr(a, #[cfg_attr(a, #[cfg_attr(a, #[cfg_attr(a, #[cfg_attr(a, #[cfg_attr(a, #[cfg_attr(a, #[cfg_attr(a, #[cfg_attr(a, #[cfg_attr(a, 
+ 
 diff --git a/src/mutmacro.rs b/src/mutmacro.rs
 --- a/src/mutmacro.rs
 +++ b/src/mutmacro.rs
