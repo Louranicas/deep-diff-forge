@@ -129,13 +129,17 @@ era) no longer holds. How the standard is enforced today:
   rule is lexical (any `mut` straight before the `<`, so `&raw mut` and `mut` in a macro's
   discarded tokens are a writer's false items: VD3R19-L-1, IR12-L-3).
   The fuzz targets are unchanged in this round.
-  In 0.9.0 two targets were added for the agent hooks. `hook_input` reads any bytes as the
-  JSON a client gives `agent hook <event>`, through the CLI's own `hook` module, for each
-  of the three events: an input is read only when this target's own reading finds an
-  object that names the event, a session and a directory (and then with the same values),
-  and every other input, bytes that are not UTF-8 included, is refused with the hooks' own
-  message: a JSON object with `systemMessage` alone, saying nothing was judged, and for a
-  stop UNJUDGED and "not a pass". `judge_patch` edits a working tree with real Git (one
+  In 0.9.0 two targets were added for the agent hooks. `hook_input` reads any byte string
+  up to 256 KiB (the hook itself reads up to 32 MiB) as the JSON a client gives
+  `agent hook <event>`, through the CLI's own `hook` module, for each of the three events:
+  UTF-8 text is read only when this target's own reading finds an object that names the
+  event, a session and a directory (and then with the same values), and all other text is
+  refused with the hooks' own message: a JSON object with `systemMessage` alone, saying
+  nothing was judged, and for a stop UNJUDGED and "not a pass". Bytes that are not UTF-8
+  are refused before that reading, where the target cannot reach; for them it checks only
+  the form of the message, and a CLI test
+  (`bytes_that_are_not_utf8_are_refused_by_every_event`) runs the hook on such bytes
+  (integrated review of 0.9.0, VI1-L-3 and CI5). `judge_patch` edits a working tree with real Git (one
   base repository per process, put back before every input; files written, deleted or made
   executable, any bytes in names and contents, Git's own files left out) and calls
   `judge_patch`: the patch is read as the hooks read it (`SealedReview` with no guards) or
@@ -171,9 +175,9 @@ era) no longer holds. How the standard is enforced today:
   `fuzz_target.sh` lists targets with a TOML parser and fuzzes a new private
   corpus each run, under a root it makes if missing.
 - **Evaluation gate** (`cli/tests/eval.rs`, every PR): the labelled corpus in
-  `fixtures/eval` (55 cases, measured 2026-11-18 on the integrated tree) must score at least its floors,
-  which are the measured values: ranking pairs 12/15, evidence precision 179/205,
-  evidence recall 179/260, findings 33/33. Any undeclared miss fails. The 110
+  `fixtures/eval` (56 cases, measured 2026-11-18 on the integrated tree) must score at least its floors,
+  which are the measured values: ranking pairs 12/15, evidence precision 179/207,
+  evidence recall 179/260, findings 33/33. Any undeclared miss fails. The 112
   declared misses (`known_miss`, `known_false_positive`) count as wrong in their
   metric rather than being excluded, and each fails once the engine gets it
   right. Planted controls prove a wrong label fails with exit 7, a changed file,

@@ -17,14 +17,18 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     and what it finds is united with what the readings of the integrity signals find (whole
     sides from stated starts, joins of hunks, the token reader). `code_view` with Rust is the
     scanner of 0.8.3, as in 0.8.4; the whole-side views of the signals are `rust_views`.
-  - *Measured:* the evaluation corpus gives the figures of the signals line (55 cases,
-    precision 177 of 203, recall 177 of 260).
+  - *Measured at this merge (2026-11-17):* the evaluation corpus gives the figures of the
+    signals line (55 cases, precision 177 of 203, recall 177 of 260). The integrated tree as
+    reviewed (`31103f9e`, 2026-11-18) gives precision 179 of 205, recall 179 of 260 (the
+    section rule below); with the integrated review's two declared false items (CI1), 56
+    cases, precision 179 of 207, recall 179 of 260.
 - **The agent hooks on the same tree.** `agent/loop` (`ef6afdf`) is merged after it. The hooks
   are as reviewed; the signal vocabulary has the five integrity labels (facts and remedies
   written at the merge, "since" 0.9.0), and the sides of a label are read from the reader of a
   Rust hunk's tokens as well as from the rule tables. A binary creation keeps `new_file` with
   the weights of the vocabulary (0.8.4's rule). Measured: the hooks' verify runs 5 to 10 give
-  the decisions of the reviewed binary, step for step; the corpus gives the same figures.
+  the decisions of the reviewed binary, step for step; the corpus gave the same figures at that
+  merge (2026-11-17).
   - *The sections of one path that Git applies in order are one file (IR7-H-2; a miss of
     0.8.4 and of every release before it, fixed here).* The signals line was to be merged only
     once it stood on 0.8.4's refusal of a path named by more than one section, and the parser
@@ -46,24 +50,15 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     Still read apart: a run past the bound; a later section whose hunks have old lines, where
     the joins of one file do not join it; a section read as the only file of its patch
     (`file_evidence`); the earlier sections of the old path of a rename or a copy (Git reads its
-    source as before the patch). The seventh review's two corpus items for it moved from
-    declared misses to expected: precision 179 of 205, recall 179 of 260.
-- **The agent hooks on the same tree.** `agent/loop` (`ef6afdf`) is merged after it. The hooks
-  are as reviewed; the signal vocabulary has the five integrity labels (facts and remedies
-  written at the merge, "since" 0.9.0), and the sides of a label are read from the reader of a
-  Rust hunk's tokens as well as from the rule tables. A binary creation keeps `new_file` with
-  the weights of the vocabulary (0.8.4's rule). Measured: the hooks' verify runs 5 to 10 give
-  the decisions of the reviewed binary, step for step; the corpus gives the same figures.
-  - *A second section for one path (IR7-H-2) is open.* The signals line was to be merged only
-    once it stood on 0.8.4's refusal of a path named by more than one section. The parser of
-    0.8.4 refuses that except where Git applies the sections one after the other: a change in
-    place after a section that wrote the path, and a new file after a deleted file. Measured
-    on the integrated binary: a call cut between a creation and a change in place of the same
-    path (`opt.unwrap` and `();`), and a spawn after a string that the first section opens,
-    are not found in the shapes create-then-change, modify-then-change and
-    delete-create-change; written as one section they are (`panic_path_added`,
-    `process_spawn`). Plain `git apply` writes the joined text in every shape. Release 0.8.4
-    misses the same. A decision is pending.
+    source as before the patch). The other way, the joined reading can form a construct
+    across the boundary of two sections where no form of Git writes it, and reports it though
+    it is in neither place: a later section is read by its old numbers in the coordinates of
+    one file, and after a creation in the order written. Two shapes give a false
+    `panic_path_added`: an honest `git diff -U0` series whose later section adds a line above
+    the end of an earlier hunk, and a created file followed by a section that adds a line above
+    its context lines (integrated review of 0.9.0, CI1; rare, and declared, not built: the
+    alternative risks losing true items). The seventh review's two corpus items for it moved
+    from declared misses to expected: precision 179 of 205, recall 179 of 260.
 - **A long word costs its length, not its square (FINDING-5; in every release up to 0.8.4).**
   The JavaScript and TypeScript scanner asks at every byte after a word byte whether the word
   is one after which an expression starts (`return`, `typeof`, `instanceof`, ...), and it
@@ -121,6 +116,29 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   and contents, real Git): the parser reads it as the hooks do, or refuses it, and when it
   reads it, it reads exactly the paths the edits changed, each once. Five minutes each, no
   crash: `hook_input` 4,046,034 runs, `judge_patch` 8,102.
+- **The integrated review's fixes (2026-11-18).** Two reviewers of the integrated tree
+  (`31103f9e`) each said GO-WITH-FIXES, with low findings only; the coordinator's rulings:
+  - *The vocabulary's `basis` is read from the code that sets an item's* (VI1-L-2, CI3).
+    `schema signals` and `explain signal` said `["lexical"]` for every code-evidence label,
+    while items of nine of them carry `"hunk"`: `error_swallowed` (a handler and its body)
+    and the eight the reader of a Rust hunk's tokens gives (a construct over several lines).
+    Each label now lists every rung an item of it can stand on, from the rule tables' kinds of
+    match and the token reader's list, and a test holds every item of the evaluation corpus
+    to the document.
+  - *`not_accepted` says what the binary does* (CI4). For `test_skipped`, making the
+    assertions always true raises `trivial_assert` only for `assert!(true)` and
+    `assert_eq!(true, true)`, and the entry says so. For `test_removed`, skipping the test
+    raises `test_skipped` (it said that nothing sees it); emptying its body raises nothing;
+    renaming a test so that the runner no longer collects it is reported as `test_removed`
+    itself, so it is no substitute and is not listed.
+  - *The `hook_input` fuzz target says what it checks* (VI1-L-3, CI5): any byte string up to
+    256 KiB (the hook reads up to 32 MiB), and for bytes that are not UTF-8 only the form of
+    the refusal, since the hook refuses them before the reading the target can reach. A CLI
+    test runs the hook itself on such bytes, for each event.
+  - *Two false items of the section rule are declared* (CI1): the limits above name them,
+    and the evaluation corpus has them as a case of two declared false positives
+    (`evidence/integrated-review-1-20261118`), so a change that removes them is seen.
+  - A superseded copy of the hooks bullet, which still said that IR7-H-2 was open, is gone.
 
 ### Added
 
