@@ -307,48 +307,59 @@ impl Word {
 
     /// The word `name` is, whole: a longer name (`unwrap_or`, `ignored`) is another word.
     fn of(name: &[u8]) -> Self {
-        match name {
-            b"unwrap" => Self::Unwrap,
-            b"expect" => Self::Expect,
-            b"assert" => Self::Assert,
-            b"debug_assert" => Self::DebugAssert,
-            b"assert_eq" => Self::AssertEq,
-            b"debug_assert_eq" => Self::DebugAssertEq,
-            b"todo" => Self::Todo,
-            b"unimplemented" => Self::Unimplemented,
-            b"ignore" => Self::Ignore,
-            b"cfg_attr" => Self::CfgAttr,
-            b"cfg" => Self::Cfg,
-            b"test" => Self::Test,
-            b"rstest" => Self::Rstest,
-            b"tokio" => Self::Tokio,
-            b"true" => Self::True,
-            b"Result" => Self::Result,
-            b"Option" => Self::Option,
-            b"Command" => Self::Command,
-            b"new" => Self::New,
-            b"process" => Self::Process,
-            b"reqwest" => Self::Reqwest,
-            b"ureq" => Self::Ureq,
-            b"TcpStream" => Self::TcpStream,
-            b"connect" => Self::Connect,
-            b"UdpSocket" => Self::UdpSocket,
-            b"bind" => Self::Bind,
-            b"allow" => Self::Allow,
-            b"return" => Self::Return,
-            b"match" => Self::Match,
-            b"in" => Self::In,
-            b"break" => Self::Break,
-            b"yield" => Self::Yield,
-            b"if" => Self::If,
-            b"while" => Self::While,
-            b"mut" => Self::Mut,
-            b"become" => Self::Become,
-            b"do" => Self::Do,
-            b"yeet" => Self::Yeet,
-            _ => Self::Other,
-        }
+        WORDS
+            .iter()
+            .find(|(word, _)| *word == name)
+            .map_or(Self::Other, |(_, word)| *word)
     }
+}
+
+/// The words the reader knows ([`Word::of`]).
+const WORDS: [(&[u8], Word); 38] = [
+    (b"unwrap", Word::Unwrap),
+    (b"expect", Word::Expect),
+    (b"assert", Word::Assert),
+    (b"debug_assert", Word::DebugAssert),
+    (b"assert_eq", Word::AssertEq),
+    (b"debug_assert_eq", Word::DebugAssertEq),
+    (b"todo", Word::Todo),
+    (b"unimplemented", Word::Unimplemented),
+    (b"ignore", Word::Ignore),
+    (b"cfg_attr", Word::CfgAttr),
+    (b"cfg", Word::Cfg),
+    (b"test", Word::Test),
+    (b"rstest", Word::Rstest),
+    (b"tokio", Word::Tokio),
+    (b"true", Word::True),
+    (b"Result", Word::Result),
+    (b"Option", Word::Option),
+    (b"Command", Word::Command),
+    (b"new", Word::New),
+    (b"process", Word::Process),
+    (b"reqwest", Word::Reqwest),
+    (b"ureq", Word::Ureq),
+    (b"TcpStream", Word::TcpStream),
+    (b"connect", Word::Connect),
+    (b"UdpSocket", Word::UdpSocket),
+    (b"bind", Word::Bind),
+    (b"allow", Word::Allow),
+    (b"return", Word::Return),
+    (b"match", Word::Match),
+    (b"in", Word::In),
+    (b"break", Word::Break),
+    (b"yield", Word::Yield),
+    (b"if", Word::If),
+    (b"while", Word::While),
+    (b"mut", Word::Mut),
+    (b"become", Word::Become),
+    (b"do", Word::Do),
+    (b"yeet", Word::Yeet),
+];
+
+/// The names of [`WORDS`], for the test that ranks a long line of each.
+#[cfg(test)]
+pub(crate) fn word_names() -> impl Iterator<Item = &'static [u8]> {
+    WORDS.iter().map(|(name, _)| *name)
 }
 
 /// What a token is.

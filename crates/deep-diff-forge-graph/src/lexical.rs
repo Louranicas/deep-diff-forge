@@ -312,20 +312,17 @@ fn in_command_position(bytes: &[u8], i: usize, in_case: bool) -> bool {
         None | Some(b';' | b'|' | b'&' | b'(' | b'`' | b'!') => true,
         Some(b'{') => before.len() < 2 || before[before.len() - 2] != b'$',
         Some(b')') => in_case,
-        Some(_) => [
-            &b"then"[..],
-            b"do",
-            b"else",
-            b"if",
-            b"elif",
-            b"while",
-            b"until",
-            b"time",
-        ]
-        .iter()
-        .any(|word| ends_with_word(before, word)),
+        Some(_) => SHELL_LIST_WORDS
+            .iter()
+            .any(|word| ends_with_word(before, word)),
     }
 }
+
+/// The shell's reserved words after which a command list starts ([`in_command_position`]);
+/// with `case` and `esac`, the words the shell scanner looks for.
+pub(crate) const SHELL_LIST_WORDS: [&[u8]; 8] = [
+    b"then", b"do", b"else", b"if", b"elif", b"while", b"until", b"time",
+];
 
 /// Whether a shell `(` at byte `i` opens a case pattern (`case x in (a) …`) rather than a
 /// subshell: it follows the `in` of a case or the `;;` or `;&` that ends an arm.
@@ -336,7 +333,7 @@ fn opens_case_pattern(bytes: &[u8], i: usize) -> bool {
 
 /// JS words after which an expression starts, so a `/` there opens a regex and a quote right
 /// after one opens a string (`return"x"`, `typeof'y'`).
-const JS_OPERAND_KEYWORDS: [&[u8]; 14] = [
+pub(crate) const JS_OPERAND_KEYWORDS: [&[u8]; 14] = [
     b"return",
     b"typeof",
     b"void",

@@ -2713,26 +2713,43 @@ fn empty_handler(language: Language, code: &str, next: Option<&str>) -> bool {
             let body = body.trim();
             nothing(body) || (body.is_empty() && next.is_some_and(nothing))
         }
-        Language::JavaScript => line.match_indices("catch").any(|(at, word)| {
-            // A promise's `.catch(…)` swallows when its handler is a function with an empty body.
-            if at > 0 && line.as_bytes()[at - 1] == b'.' {
-                return empty_callback(&line[at + word.len()..]);
-            }
-            let before_ok = at == 0 || !is_boundary_blocker(line.as_bytes()[at - 1]);
-            let after = line[at + word.len()..].trim_start();
-            if !before_ok || after.as_bytes().first().is_some_and(|b| is_ident(*b)) {
-                return false;
-            }
-            // An optional binding in parentheses, then the block.
-            let after = match after.strip_prefix('(') {
-                Some(binding) => match binding.split_once(')') {
-                    Some((_, block)) => block,
-                    None => return false,
-                },
-                None => after,
-            };
-            empty_block(after)
-        }),
+        Language::JavaScript => {
+            // Each `catch` reads on from where it stands, and the text after one `)` or one
+            // `(…)` may be read for many of them (`catch(catch(catch(…`, `.catch((.catch((…`),
+            // so what is found after a closer is found once for the line: the closer of each
+            // `(` in one pass ([`Parens`]), the next `)` from a place that only moves on, and
+            // the block after a binding's `)` once for that `)`. Each was a walk to the end of
+            // the line for every `catch` (2 MB of `x.catch((` took 254 s; 2026-11-18).
+            let parens = Parens::of(line);
+            let (mut next_close, mut block_after) = (NextClose::of(line), None);
+            line.match_indices("catch").any(|(at, word)| {
+                // A promise's `.catch(…)` swallows when its handler is a function with an
+                // empty body.
+                if at > 0 && line.as_bytes()[at - 1] == b'.' {
+                    return empty_callback(&line[at + word.len()..], &parens);
+                }
+                let before_ok = at == 0 || !is_boundary_blocker(line.as_bytes()[at - 1]);
+                let after = line[at + word.len()..].trim_start();
+                if !before_ok || after.as_bytes().first().is_some_and(|b| is_ident(*b)) {
+                    return false;
+                }
+                // An optional binding in parentheses, then the block.
+                let Some(binding) = after.strip_prefix('(') else {
+                    return empty_block(after);
+                };
+                let Some(close) = next_close.from(line.len() - binding.len()) else {
+                    return false;
+                };
+                match block_after {
+                    Some((seen, empty)) if seen == close => empty,
+                    _ => {
+                        let empty = empty_block(&line[close + 1..]);
+                        block_after = Some((close, empty));
+                        empty
+                    }
+                }
+            })
+        }
         // `if err != nil {` and `if err := f(); err != nil {`: the test comes last in the head.
         Language::Go => line.strip_prefix("if ").is_some_and(|head| {
             head.rsplit_once("err != nil")
@@ -2745,7 +2762,7 @@ fn empty_handler(language: Language, code: &str, next: Option<&str>) -> bool {
 /// Whether `after` (what follows `.catch` on a line of code) is a call whose argument is a
 /// function with an empty body: `(() => {})`, `(e => {})`, `(async (e) => { })`,
 /// `(function () {})`. Anything else, including a handler that names a function, is not.
-fn empty_callback(after: &str) -> bool {
+fn empty_callback<'a>(after: &'a str, parens: &Parens<'a>) -> bool {
     let Some(inner) = after.trim_start().strip_prefix('(') else {
         return false;
     };
@@ -2757,14 +2774,14 @@ fn empty_callback(after: &str) -> bool {
         let name = rest.bytes().take_while(|b| is_ident(*b)).count();
         let Some(rest) = rest
             .get(name..)
-            .and_then(|rest| after_closing(rest.trim_start(), b'(', b')'))
+            .and_then(|rest| parens.after(rest.trim_start()))
         else {
             return false;
         };
         rest
     } else {
         let after_parameters = if inner.starts_with('(') {
-            after_closing(inner, b'(', b')')
+            parens.after(inner)
         } else {
             inner.get(inner.bytes().take_while(|b| is_ident(*b)).count()..)
         };
@@ -2780,27 +2797,81 @@ fn empty_callback(after: &str) -> bool {
         .is_some_and(|rest| rest.trim_start().starts_with(')'))
 }
 
-/// What follows the `close` that matches the `open` that `text` starts with, nesting counted:
-/// for `(a = f(), b) => {}` and parentheses, ` => {}`. `None` when `text` does not start with
-/// `open` or it is never closed. `text` is a code view, so a delimiter in a string is blank.
-/// Before, the first `)` ended the parameters, and a default value that calls a function hid an
-/// empty handler (review V3 round 2, VD3R2-L-1).
-fn after_closing(text: &str, open: u8, close: u8) -> Option<&str> {
-    if text.as_bytes().first() != Some(&open) {
-        return None;
-    }
-    let mut depth = 0usize;
-    for (at, byte) in text.bytes().enumerate() {
-        if byte == open {
-            depth += 1;
-        } else if byte == close {
-            depth -= 1;
-            if depth == 0 {
-                return text.get(at + 1..);
-            }
+/// The `(` of a line of code paired with the `)` that closes it, nesting counted, found in one
+/// pass the first time they are asked for. [`Parens::after`] answers for any suffix of the
+/// line.
+struct Parens<'a> {
+    line: &'a str,
+    pairs: std::cell::OnceCell<Vec<(usize, usize)>>,
+}
+
+impl<'a> Parens<'a> {
+    fn of(line: &'a str) -> Self {
+        Self {
+            line,
+            pairs: std::cell::OnceCell::new(),
         }
     }
-    None
+
+    /// What follows the `)` that matches the `(` that `text` (a suffix of the line) starts
+    /// with: for `(a = f(), b) => {}`, ` => {}`. `None` when `text` does not start with `(` or
+    /// it is never closed. The line is a code view, so a parenthesis in a string is blank.
+    /// Before, the first `)` ended the parameters, and a default value that calls a function
+    /// hid an empty handler (review V3 round 2, VD3R2-L-1); until 2026-11-18 each call walked
+    /// from its `(` to the closer.
+    fn after(&self, text: &'a str) -> Option<&'a str> {
+        if text.as_bytes().first() != Some(&b'(') {
+            return None;
+        }
+        let open = self.line.len() - text.len();
+        debug_assert!(std::ptr::eq(text.as_ptr(), self.line[open..].as_ptr()));
+        let pairs = self.pairs.get_or_init(|| {
+            let (mut pairs, mut opened) = (Vec::new(), Vec::new());
+            for (at, byte) in self.line.bytes().enumerate() {
+                match byte {
+                    b'(' => opened.push(at),
+                    b')' => pairs.extend(opened.pop().map(|open| (open, at))),
+                    _ => {}
+                }
+            }
+            pairs.sort_unstable();
+            pairs
+        });
+        let at = pairs.binary_search_by_key(&open, |pair| pair.0).ok()?;
+        self.line.get(pairs[at].1 + 1..)
+    }
+}
+
+/// The first `)` of a line at or after a place, for places that do not move back: each byte
+/// is looked at once however many places ask.
+struct NextClose<'a> {
+    line: &'a [u8],
+    /// The last place asked from, and the answer.
+    last: Option<(usize, Option<usize>)>,
+}
+
+impl<'a> NextClose<'a> {
+    fn of(line: &'a str) -> Self {
+        Self {
+            line: line.as_bytes(),
+            last: None,
+        }
+    }
+
+    fn from(&mut self, place: usize) -> Option<usize> {
+        if let Some((asked, found)) = self.last
+            && place >= asked
+            && found.is_none_or(|close| close >= place)
+        {
+            return found;
+        }
+        let found = self.line[place..]
+            .iter()
+            .position(|byte| *byte == b')')
+            .map(|at| place + at);
+        self.last = Some((place, found));
+        found
+    }
 }
 
 /// The distinct signals of `found`, in [`EvidenceSignal::ALL`] order.
@@ -3680,7 +3751,7 @@ fn looks_like_secret(text: &str) -> bool {
     // At most `min` bytes of each run are read, which decides `run >= min` as the whole run
     // does: a prefix that repeats inside its own run (`xAKIAAKIA…`) was walked to the run's
     // end at every repeat, the square of the line's length (2026-11-18, beside FINDING-5).
-    let tail = |prefix: &str, min: usize, ok: fn(u8) -> bool| {
+    let tail = |&(prefix, min, ok): &SecretPrefix| {
         text.match_indices(prefix).any(|(i, _)| {
             let before = i.checked_sub(1).map(|j| text.as_bytes()[j]);
             let boundary = before.is_none_or(|b| !b.is_ascii_alphanumeric());
@@ -3692,18 +3763,38 @@ fn looks_like_secret(text: &str) -> bool {
             boundary && run >= min
         })
     };
-    let upper_digit = |b: u8| b.is_ascii_uppercase() || b.is_ascii_digit();
-    let alnum = |b: u8| b.is_ascii_alphanumeric();
-    let slack = |b: u8| b.is_ascii_alphanumeric() || b == b'-';
-    tail("AKIA", 16, upper_digit)
-        || ["ghp_", "gho_", "ghs_", "ghu_", "ghr_"]
-            .iter()
-            .any(|p| tail(p, 36, alnum))
-        || ["xoxb-", "xoxp-", "xoxa-", "xoxr-"]
-            .iter()
-            .any(|p| tail(p, 10, slack))
-        || tail("sk_live_", 16, alnum)
+    SECRET_PREFIXES.iter().any(tail)
 }
+
+/// A secret prefix, the least number of bytes after it, and which bytes those may be.
+type SecretPrefix = (&'static str, usize, fn(u8) -> bool);
+
+/// The token prefixes [`looks_like_secret`] knows, each with the least number of bytes of its
+/// kind that must follow it, in the order they are tried.
+const SECRET_PREFIXES: [SecretPrefix; 11] = {
+    const fn upper_digit(b: u8) -> bool {
+        b.is_ascii_uppercase() || b.is_ascii_digit()
+    }
+    const fn alnum(b: u8) -> bool {
+        b.is_ascii_alphanumeric()
+    }
+    const fn slack(b: u8) -> bool {
+        b.is_ascii_alphanumeric() || b == b'-'
+    }
+    [
+        ("AKIA", 16, upper_digit),
+        ("ghp_", 36, alnum),
+        ("gho_", 36, alnum),
+        ("ghs_", 36, alnum),
+        ("ghu_", 36, alnum),
+        ("ghr_", 36, alnum),
+        ("xoxb-", 10, slack),
+        ("xoxp-", 10, slack),
+        ("xoxa-", 10, slack),
+        ("xoxr-", 10, slack),
+        ("sk_live_", 16, alnum),
+    ]
+};
 
 /// The sides of a hunk on which some rule looks for `signal`: added lines ([`Side::New`]),
 /// removed lines ([`Side::Old`]), or both, in that order. Read from the rule tables (today's
@@ -4289,7 +4380,9 @@ mod tests {
     /// time, each on its own: a JavaScript and a TypeScript word (FINDING-5: the released
     /// scanner walked back over the word at each of its bytes, 18 s in v0.8.3 and twice that
     /// with the readings of 0.9.0), and the credential prefixes that repeat inside their own
-    /// run, which the secret rule walked to the run's end at each repeat.
+    /// run, which the secret rule walked to the run's end at each repeat; and lines of 200,000
+    /// bytes of `catch` heads, whose handler or binding each `catch` read to the end of the
+    /// line (the empty-handler rule until 2026-11-18). The long-line tests hold every trigger.
     #[test]
     fn one_long_word_ranks_in_under_a_second() {
         within_deadline(|| {
@@ -4298,6 +4391,9 @@ mod tests {
                 ("src/a.ts", "a".repeat(200_000)),
                 ("notes.txt", format!("x{}", "AKIA".repeat(50_000))),
                 ("notes.txt", format!("x{}", "xoxb-a".repeat(33_334))),
+                ("src/a.js", "x.catch((".repeat(22_223)),
+                ("src/a.ts", "catch(".repeat(33_334)),
+                ("src/a.ts", "catch (".repeat(28_572)),
             ] {
                 let patch = format!("--- a/{path}\n+++ b/{path}\n@@ -2,0 +3,1 @@\n+{line}\n");
                 let files = parse(&patch).unwrap();
@@ -4307,7 +4403,7 @@ mod tests {
                 assert_eq!(ranked.len(), 1);
                 assert!(
                     spent < std::time::Duration::from_secs(1),
-                    "{path}: a word of {} bytes ranked in {spent:?} of {}",
+                    "{path}: a line of {} bytes ranked in {spent:?} of {}",
                     line.len(),
                     start.kind
                 );
@@ -4440,6 +4536,442 @@ mod tests {
             (2_000..18_000).contains(&yes),
             "{yes} of 20,000 lines look like secrets"
         );
+    }
+
+    // The empty-handler rule as it was before 2026-11-18 (`empty_handler`, `empty_callback`,
+    // `after_closing` of `3f6ae0cd`, renamed): the reference the one-pass reading is held to.
+    /// Whether `code` (a line's code view) opens an error handler that does nothing, given the code
+    /// of the line after it on the same side (`None` when the hunk ends there).
+    ///
+    /// - Python: `except …:` whose body is `pass` or `...`, on the same line or the next.
+    /// - JS and TS: `catch`, with or without a binding, whose block is empty: `{}` on the line, `{`
+    ///   ending the line and `}` starting the next, or the whole empty block on the next line. Also
+    ///   a promise's `.catch(…)` whose handler is a function with an empty body, on one line.
+    /// - Go: `if err != nil {`, with or without a statement before the test, closed at once, on the
+    ///   line or the next.
+    ///
+    /// A handler whose body the hunk does not show is not evidence: the next line must be there.
+    fn released_empty_handler(language: Language, code: &str, next: Option<&str>) -> bool {
+        let line = code.trim();
+        let next = next.map(str::trim);
+        let nothing = |body: &str| matches!(body, "pass" | "...");
+        // The block after `head` is empty: `{}` here, or `{` here and `}` first on the next line.
+        let empty_block = |after: &str| {
+            let after = after.trim();
+            let closed_here = after
+                .strip_prefix('{')
+                .is_some_and(|rest| rest.trim_start().starts_with('}'));
+            let block_on_next_line = after.is_empty()
+                && next.is_some_and(|n| {
+                    n.strip_prefix('{')
+                        .is_some_and(|rest| rest.trim_start().starts_with('}'))
+                });
+            closed_here
+                || (after == "{" && next.is_some_and(|n| n.starts_with('}')))
+                || block_on_next_line
+        };
+        match language {
+            Language::Python => {
+                let Some(rest) = line.strip_prefix("except") else {
+                    return false;
+                };
+                if rest.as_bytes().first().is_some_and(|b| is_ident(*b)) {
+                    return false;
+                }
+                let Some((_, body)) = rest.rsplit_once(':') else {
+                    return false;
+                };
+                let body = body.trim();
+                nothing(body) || (body.is_empty() && next.is_some_and(nothing))
+            }
+            Language::JavaScript => line.match_indices("catch").any(|(at, word)| {
+                // A promise's `.catch(…)` swallows when its handler is a function with an empty body.
+                if at > 0 && line.as_bytes()[at - 1] == b'.' {
+                    return released_empty_callback(&line[at + word.len()..]);
+                }
+                let before_ok = at == 0 || !is_boundary_blocker(line.as_bytes()[at - 1]);
+                let after = line[at + word.len()..].trim_start();
+                if !before_ok || after.as_bytes().first().is_some_and(|b| is_ident(*b)) {
+                    return false;
+                }
+                // An optional binding in parentheses, then the block.
+                let after = match after.strip_prefix('(') {
+                    Some(binding) => match binding.split_once(')') {
+                        Some((_, block)) => block,
+                        None => return false,
+                    },
+                    None => after,
+                };
+                empty_block(after)
+            }),
+            // `if err != nil {` and `if err := f(); err != nil {`: the test comes last in the head.
+            Language::Go => line.strip_prefix("if ").is_some_and(|head| {
+                head.rsplit_once("err != nil")
+                    .is_some_and(|(_, after)| empty_block(after))
+            }),
+            Language::Rust | Language::Shell | Language::Yaml => false,
+        }
+    }
+
+    /// Whether `after` (what follows `.catch` on a line of code) is a call whose argument is a
+    /// function with an empty body: `(() => {})`, `(e => {})`, `(async (e) => { })`,
+    /// `(function () {})`. Anything else, including a handler that names a function, is not.
+    fn released_empty_callback(after: &str) -> bool {
+        let Some(inner) = after.trim_start().strip_prefix('(') else {
+            return false;
+        };
+        let inner = inner.trim_start();
+        let inner = inner.strip_prefix("async ").unwrap_or(inner).trim_start();
+        let body = if let Some(rest) = inner.strip_prefix("function") {
+            // An optional name, then the parameters.
+            let rest = rest.trim_start();
+            let name = rest.bytes().take_while(|b| is_ident(*b)).count();
+            let Some(rest) = rest
+                .get(name..)
+                .and_then(|rest| released_after_closing(rest.trim_start(), b'(', b')'))
+            else {
+                return false;
+            };
+            rest
+        } else {
+            let after_parameters = if inner.starts_with('(') {
+                released_after_closing(inner, b'(', b')')
+            } else {
+                inner.get(inner.bytes().take_while(|b| is_ident(*b)).count()..)
+            };
+            let Some(rest) = after_parameters.and_then(|rest| rest.trim_start().strip_prefix("=>"))
+            else {
+                return false;
+            };
+            rest
+        };
+        body.trim_start()
+            .strip_prefix('{')
+            .and_then(|rest| rest.trim_start().strip_prefix('}'))
+            .is_some_and(|rest| rest.trim_start().starts_with(')'))
+    }
+
+    /// What follows the `close` that matches the `open` that `text` starts with, nesting counted:
+    /// for `(a = f(), b) => {}` and parentheses, ` => {}`. `None` when `text` does not start with
+    /// `open` or it is never closed. `text` is a code view, so a delimiter in a string is blank.
+    /// Before, the first `)` ended the parameters, and a default value that calls a function hid an
+    /// empty handler (review V3 round 2, VD3R2-L-1).
+    fn released_after_closing(text: &str, open: u8, close: u8) -> Option<&str> {
+        if text.as_bytes().first() != Some(&open) {
+            return None;
+        }
+        let mut depth = 0usize;
+        for (at, byte) in text.bytes().enumerate() {
+            if byte == open {
+                depth += 1;
+            } else if byte == close {
+                depth -= 1;
+                if depth == 0 {
+                    return text.get(at + 1..);
+                }
+            }
+        }
+        None
+    }
+
+    /// The empty-handler rule reads what follows a closer once for a line and answers as it did
+    /// when each `catch` walked to the end of the line: 60,000 generated lines, with a next
+    /// line or none, in each language the rule reads, compared with the rule as it was. Half
+    /// are atoms in any order (`catch`, `.catch`, brackets, arrows, bindings, blocks); half are
+    /// a handler's head, binding or callback and block, between atoms, so that many are empty
+    /// handlers and many nearly are.
+    #[test]
+    fn the_one_pass_handler_reading_is_the_released_one() {
+        const ATOMS: [&str; 24] = [
+            "catch",
+            ".catch",
+            "catch ",
+            "(",
+            ")",
+            "{",
+            "}",
+            " ",
+            "=>",
+            "async ",
+            "function",
+            "function f",
+            "e",
+            "x",
+            ",",
+            "f()",
+            "a = f(",
+            ";",
+            "(e) => {}",
+            "() => {}",
+            "{}",
+            "except",
+            ": pass",
+            "if err != nil ",
+        ];
+        const HEADS: [&str; 8] = [
+            "catch",
+            "} catch",
+            "x.catch",
+            "p.then(f).catch",
+            "except",
+            "except E",
+            "if err != nil",
+            "if e := f(); err != nil",
+        ];
+        const MIDDLES: [&str; 14] = [
+            "",
+            " ",
+            "(e)",
+            " (e) ",
+            "(",
+            "((",
+            "(() => ",
+            "((e) => ",
+            "(function () ",
+            "(async (e) => ",
+            "(e => ",
+            "(function f(a = g()) ",
+            "((a = f(), b) => ",
+            ":",
+        ];
+        const TAILS: [&str; 10] = [
+            "{}", " { }", "{", "", "})", "{})", "{ })", "{}) ", ")", " pass",
+        ];
+        const NEXT: [&str; 7] = ["", "{}", "}", "{ }", "x", "{", "pass"];
+        let mut seed = 0x5EED_F1D5_0000_0009_u64;
+        let mut next = move |below: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            usize::try_from(seed % (below as u64)).unwrap()
+        };
+        let mut found = 0;
+        for case in 0..60_000 {
+            let language = [Language::JavaScript, Language::Python, Language::Go][case % 3];
+            let mut atoms = |most: usize| -> String {
+                (0..next(most)).map(|_| ATOMS[next(ATOMS.len())]).collect()
+            };
+            let line = if case % 2 == 0 {
+                atoms(11)
+            } else {
+                let (before, after) = (atoms(3), atoms(3));
+                let head = HEADS[next(HEADS.len())];
+                let middle = MIDDLES[next(MIDDLES.len())];
+                let tail = TAILS[next(TAILS.len())];
+                format!("{before}{head}{middle}{tail}{after}")
+            };
+            let following = (next(4) > 0).then(|| NEXT[next(NEXT.len())]);
+            let released = released_empty_handler(language, &line, following);
+            assert_eq!(
+                empty_handler(language, &line, following),
+                released,
+                "{language:?}: {line:?} then {following:?}"
+            );
+            found += usize::from(released);
+        }
+        assert!(found > 1_000, "{found} empty handlers");
+    }
+
+    /// The lines of the long-line test: every trigger the readers know, in the path of each
+    /// language its table names (2026-11-18, the rule of the class "cost quadratic in the length
+    /// of one line": no check walks from a match to the end of its line more than once for a
+    /// line). Built from the tables, so a new token, keyword, word or prefix is in it:
+    /// each rule's tokens, modules (after `require`, `import` and `from`), spaced heads and
+    /// tails and secret prefixes; the empty-handler rule, which has no table, by the words it
+    /// starts from; the JavaScript operand keywords; the Rust token reader's words; the shell's
+    /// list words with `case` and `esac`; and every ASCII punctuation byte in every language.
+    fn long_line_cases() -> Vec<(&'static str, String)> {
+        const LANGUAGES: [Language; 6] = [
+            Language::Rust,
+            Language::Python,
+            Language::JavaScript,
+            Language::Go,
+            Language::Shell,
+            Language::Yaml,
+        ];
+        let path = |language: Language| match language {
+            Language::Rust => "src/x.rs",
+            Language::Python => "x.py",
+            Language::JavaScript => "x.ts",
+            Language::Go => "x.go",
+            Language::Shell => "x.sh",
+            Language::Yaml => "x.yml",
+        };
+        let text = |bytes: &[u8]| String::from_utf8(bytes.to_vec()).unwrap();
+        let mut cases = std::collections::BTreeSet::new();
+        for rule in RULES.iter().chain(LEGACY_RUST_RULES).chain(RELEASED_RULES) {
+            let paths: Vec<&str> = match rule.scope {
+                Scope::Languages(languages) => languages.iter().map(|l| path(*l)).collect(),
+                other => vec![sample_path(other)],
+            };
+            let triggers: Vec<String> = match rule.matches {
+                Match::Tokens(tokens) => tokens
+                    .iter()
+                    .map(|token| token.trim_end_matches('*').to_owned())
+                    .collect(),
+                Match::Imports(modules) => modules
+                    .iter()
+                    .flat_map(|m| {
+                        [
+                            format!("require('{m}')"),
+                            format!("import '{m}'"),
+                            format!("from '{m}'"),
+                        ]
+                    })
+                    .collect(),
+                Match::Spaced { heads, tails } => heads
+                    .iter()
+                    .flat_map(|h| {
+                        tails
+                            .iter()
+                            .flat_map(move |t| [format!("{h}{t}"), format!("{h} {t}")])
+                    })
+                    .collect(),
+                Match::Secret => SECRET_PREFIXES
+                    .iter()
+                    .map(|(p, _, _)| (*p).to_owned())
+                    .collect(),
+                Match::EmptyHandler => [
+                    "catch",
+                    "catch(",
+                    "catch (",
+                    ".catch(",
+                    ".catch((",
+                    "except",
+                    "if err != nil {",
+                ]
+                .map(str::to_owned)
+                .to_vec(),
+                Match::AnyCode => Vec::new(),
+            };
+            for path in &paths {
+                for trigger in &triggers {
+                    cases.insert((*path, trigger.clone()));
+                }
+            }
+        }
+        for keyword in crate::lexical::JS_OPERAND_KEYWORDS {
+            cases.insert((path(Language::JavaScript), text(keyword)));
+        }
+        for word in crate::rust_tokens::word_names() {
+            cases.insert((path(Language::Rust), text(word)));
+        }
+        for word in crate::lexical::SHELL_LIST_WORDS
+            .iter()
+            .chain(&[&b"case"[..], b"esac"])
+        {
+            cases.insert((path(Language::Shell), text(word)));
+        }
+        for language in LANGUAGES {
+            for byte in (b'!'..=b'~').filter(u8::is_ascii_punctuation) {
+                cases.insert((path(language), char::from(byte).to_string()));
+            }
+        }
+        cases.into_iter().collect()
+    }
+
+    /// Rank, on as many threads as the host has, two lines of 2 MiB for each case: its trigger
+    /// repeated, and one word that ends in it. What each costs is the thread CPU time of its
+    /// ranking. Returns the lines over `bound` and the slowest line; fails when a line has no
+    /// answer within ten times `bound` of wall time.
+    fn long_lines_over(
+        cases: Vec<(&'static str, String)>,
+        bound: std::time::Duration,
+    ) -> (Vec<String>, (std::time::Duration, String)) {
+        use std::sync::{Arc, Mutex, mpsc};
+        const SIZE: usize = 2 * 1024 * 1024;
+        type Item = (&'static str, String, bool);
+        let items: Vec<Item> = cases
+            .into_iter()
+            .flat_map(|(path, trigger)| [(path, trigger.clone(), true), (path, trigger, false)])
+            .collect();
+        let total = items.len();
+        let queue = Arc::new(Mutex::new(items));
+        let (said, heard) = mpsc::channel::<(Item, Option<std::time::Duration>)>();
+        let workers = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
+        for _ in 0..workers {
+            let (queue, said) = (Arc::clone(&queue), said.clone());
+            std::thread::spawn(move || {
+                loop {
+                    let Some(item) = queue.lock().unwrap().pop() else {
+                        return;
+                    };
+                    let (name, trigger, repeated) = &item;
+                    let line = if *repeated {
+                        let mut line = trigger.repeat(SIZE / trigger.len() + 1);
+                        line.truncate(SIZE);
+                        line
+                    } else {
+                        format!("{}{trigger}", "a".repeat(SIZE - trigger.len()))
+                    };
+                    let patch = format!("--- a/{name}\n+++ b/{name}\n@@ -2,0 +3,1 @@\n+{line}\n");
+                    let _ = said.send((item.clone(), None));
+                    let files = parse(&patch).unwrap();
+                    let start = ScanClock::start();
+                    let ranked = crate::rank(&files);
+                    let spent = start.elapsed();
+                    assert_eq!(ranked.len(), 1);
+                    let _ = said.send((item, Some(spent)));
+                }
+            });
+        }
+        drop(said);
+        let (mut started, mut over, mut slowest, mut done) = (
+            Vec::new(),
+            Vec::new(),
+            (std::time::Duration::ZERO, String::new()),
+            0,
+        );
+        let name = |(path, trigger, repeated): &Item| {
+            let form = if *repeated {
+                "repeated"
+            } else {
+                "ending a word"
+            };
+            format!("{path}: {trigger:?} {form}")
+        };
+        while done < total {
+            match heard.recv_timeout(bound * 10) {
+                Ok((item, None)) => started.push(item),
+                Ok((item, Some(spent))) => {
+                    done += 1;
+                    started.retain(|other| *other != item);
+                    if spent > slowest.0 {
+                        slowest = (spent, name(&item));
+                    }
+                    if spent > bound {
+                        over.push(format!("{} took {spent:?}", name(&item)));
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {
+                    panic!(
+                        "no answer within {:?} for {}",
+                        bound * 10,
+                        started.iter().map(name).collect::<Vec<_>>().join("; ")
+                    )
+                }
+            }
+        }
+        (over, slowest)
+    }
+
+    /// The bound of the long-line tests: a line of 2 MiB ranks inside it in thread CPU time
+    /// (ten seconds in a debug build, two in a release build).
+    fn long_line_bound() -> std::time::Duration {
+        std::time::Duration::from_secs(if cfg!(debug_assertions) { 10 } else { 2 })
+    }
+
+    /// Every long-line case ([`long_line_cases`]: 397 triggers on 2026-11-18, 794 lines of 2
+    /// MiB) ranks inside the bound ([`long_line_bound`]). The lines are ranked on as many
+    /// threads as the host has (2026-11-18, 16 threads: 6 s for all of them in a release
+    /// build, the slowest 0.22 s; 67 s in a debug build, the slowest 3.2 s).
+    #[test]
+    fn long_lines_of_every_trigger_rank_in_bounded_time() {
+        let cases = long_line_cases();
+        let count = cases.len();
+        let (over, slowest) = long_lines_over(cases, long_line_bound());
+        println!("{count} cases, {} lines; slowest {slowest:?}", count * 2);
+        assert!(over.is_empty(), "over the bound: {over:#?}");
     }
 
     /// The time a scan spends: the thread's own CPU time where Linux reports it, so a busy host
