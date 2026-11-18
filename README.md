@@ -152,14 +152,20 @@ The reverse holds too. An internally incoherent patch is **refused, not repaired
 Each fails with exit 4. None is quietly turned into a plausible-looking model.
 
 A `diff --git` section is read only if its header lines are one of the shapes Git's own diff
-writes (`crates/deep-diff-forge-patch/CONFORMANCE.md`). What that promises: for every patch DDF
-accepts, a plain `git apply` in Git's default configuration, on the tree the patch was made
-from, either writes exactly the paths and contents (as Git stores them) the review shows, or
-refuses the whole patch while checking it and writes nothing. DDF reads a diff without the tree
-it applies to, so a review can show a change that never lands, but never one that lands
-otherwise. To keep that, it refuses a hunk Git would place where its header does not say
-(`git diff -U0` output) and a patch Git would fail to write halfway
-(`crates/deep-diff-forge-patch/CONFORMANCE.md` has the limits). "Git writes it" is not
+writes (`crates/deep-diff-forge-patch/CONFORMANCE.md`). What that promises is what a patch alone
+can settle: for every patch DDF accepts, a plain `git apply` in Git's default configuration
+either refuses the whole patch while checking it and writes nothing, or writes exactly the
+paths, types and modes the review shows and, for each hunk, removes and adds exactly the lines
+(as Git stores them) the review shows, at the place Git's own anchor rule gives: a hunk with no
+trailing context at the end of the file, one at old line 0 or 1 at its start, any other where
+its lines are found nearest the line its header names. A header's line numbers are the
+patch's claim, true on the tree Git made it from; a hand-written header can name one copy of
+some lines while Git changes another, so the review states the anchor ("Git places this hunk
+at the end of the file"). Checking the place against the tree is not built. DDF reads a diff
+without the tree it applies to, so a review can show a change that never lands, but never one
+that lands otherwise. To keep that, it refuses a hunk with no context past line 1, or one after
+a hunk with no trailing context (`git diff -U0` output), and a patch Git would fail to write
+halfway (`crates/deep-diff-forge-patch/CONFORMANCE.md` has the limits). "Git writes it" is not
 "`git apply` accepts it": a plain `git diff` of a binary file, a `--submodule=diff` envelope and
 a `--no-index` pair of binary files are read, and `git apply` refuses each whole.
 

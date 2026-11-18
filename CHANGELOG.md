@@ -29,10 +29,24 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   - a whole percentage.
 
   Every refusal 0.8.4 made stays, with its reason.
-  - *What is promised (C1):* for every patch DDF accepts, a plain `git apply` in Git's default
-    configuration, on the tree the patch was made from, either writes exactly the paths and
-    contents (as Git stores them) the review shows, or refuses the whole patch while checking
-    it and writes nothing. To keep that, two kinds of patch are refused:
+  - *What is promised (C1), what a patch alone can settle:* for every patch DDF accepts, a
+    plain `git apply` in Git's default configuration either refuses the whole patch while
+    checking it and writes nothing, or writes exactly the paths, types and modes the review
+    shows and, for each hunk, removes and adds exactly the lines (as Git stores them) the review
+    shows, at the place Git's own anchor rule gives: a hunk with no trailing context at the end
+    of the file, one at old line 0 or 1 at its start (with both, the whole file), any other
+    where its context and removed lines are found nearest the line its header names. A
+    header's line numbers and `@@` text are the patch's claims, true on the tree Git made the
+    patch from. A hand-written patch can name one copy of some lines while Git changes another
+    (a last hunk with leading context only, on a file whose end repeats its lines), so the
+    review a person reads states the anchor: the inline and side-by-side layouts and the TUI's
+    hunk header say "Git places this hunk at the end of the file" (or at the start, or on the
+    whole file). No JSON member is added: `review.v0` and `review-hunks.v0` carry the lines the
+    anchor follows from (rule in `docs/API_AND_IPC.md`), and the outline's ranges are documented,
+    and described in the MCP tools, as the patch's claim. Checking the place against the tree,
+    when DDF has one, is not built. The test oracle places each hunk by Git's anchors, and the
+    generated differential writes such hunks by hand (row `hunk-anchor`). To keep the promise,
+    two kinds of patch are refused:
     - a hunk Git places by an anchor its header does not set (`HunkPlacedElsewhere`): a hunk
       with no context past line 1, which plain `git apply` places at the end of the file, and
       a hunk after one with no trailing context. Plain `git apply` tries no other place
@@ -65,7 +79,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     - `git apply --reject`;
     - a failure while writing that the patch does not determine (permissions, a full disk),
       which can leave the tree half-written;
-    - another tree, where Git places a hunk at an offset;
+    - another tree, where the place Git's rule finds (an offset, or the end of the file) can be
+      another copy of the hunk's lines than the one its header names;
     - attributes in the target tree (`eol`, `ident`, `working-tree-encoding`);
     - a non-default configuration: with `core.fileMode=false`, Git writes the mode an `index`
       line names, so leaving that line out changes the mode written (`CONFORMANCE.md`).

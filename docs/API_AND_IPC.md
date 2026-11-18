@@ -427,6 +427,13 @@ the path a `renamed` or `copied` file takes its content from. It is absent for e
 file. Its hazards count in the file's `hazards`. The rename headers in `metadata` may be ones
 DDF records for an implied move (DDF-HUNT-PATCH-6), not lines from the input.
 
+Where Git places a hunk (no member states it; the hunk's lines settle it, `CONFORMANCE.md`):
+`old_start` 0 or 1: at the start of the file; last line not context: at the end (both: the whole
+file); else nearest `new_start`. `old_start`, `old_lines`, `new_start` and `new_lines` are the
+patch's own claim. In `review-outline.v0` they come without lines (only the start anchor shows
+there): fetch the lines with `review.hunks`, whose `review-hunks.v0` may split a hunk across pages,
+the last page holding its last line.
+
 Planned: separate version numbers for the model, the projection and agent
 annotations.
 

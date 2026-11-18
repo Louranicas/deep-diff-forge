@@ -9,16 +9,32 @@ header shapes Git's own diff writes, and it refuses the others
 
 ## What is promised
 
-For every patch DDF accepts, a plain `git apply` in Git's default configuration, on the tree
-the patch was made from, does one of two things:
+What DDF promises is what a patch alone can settle. For every patch DDF accepts, a plain
+`git apply` in Git's default configuration does one of two things:
 
-- it writes exactly the paths, types, modes and contents (as Git stores them) the review
-  shows; or
-- it refuses the whole patch while checking it, and writes nothing.
+- it refuses the whole patch while checking it, and writes nothing; or
+- it writes exactly the paths, types and modes the review shows and, for each hunk, removes and
+  adds exactly the lines (as Git stores them) the review shows, at the place Git's own anchor
+  rule gives:
+  - a hunk with no trailing context is placed at the end of the file;
+  - a hunk at old line 0 or 1 is placed at the start of the file (with both, it is the whole
+    file);
+  - any other hunk is placed where its context and removed lines are found nearest the line
+    its header names.
+
+The line numbers in a hunk header and the text after `@@` are the patch's own claims. On the
+tree Git made the patch from they are true. A patch written by hand can name one occurrence of
+some lines while Git changes another: on a file whose end repeats them, `@@ -2,2 +2,2 @@` with
+leading context only changes the last copy (row `hunk-anchor`). So the review a person reads
+states the anchor: the inline and side-by-side layouts and the TUI's hunk header say "Git places
+this hunk at the end of the file" (or at the start, or on the whole file). The machine surfaces
+(`review.v0`, `review-hunks.v0`) carry the lines the anchor follows from, and the outline
+(`review-outline.v0`) carries ranges marked as the patch's claim (`docs/API_AND_IPC.md`).
+Checking the place against the tree, when DDF has one, is not built.
 
 A review never shows one change while Git writes another. It may show a change that never
-lands, because DDF reads a diff without the tree it applies to: a hunk that does not fit the
-file, or a file that already exists, makes Git refuse the whole patch.
+lands, because DDF reads a diff without the tree it applies to: a hunk that fits no place Git's
+rule allows, or a file that already exists, makes Git refuse the whole patch.
 
 To keep that, DDF refuses what Git would place or write otherwise than the review shows:
 
@@ -72,9 +88,10 @@ Limits of the promise:
 - **A failure while writing that the patch does not determine** (permissions, a full disk, a
   file-system limit) can leave the tree half-written: Git has removed what the patch deletes
   before it writes. That is Git's behaviour, not a reading of the patch.
-- **Another tree.** On a tree other than the patch's base, Git places a hunk wherever its lines
-  are found nearest the header's line ("offset"), which can be another place the review does not
-  show. The `@@` section text is the patch's own claim.
+- **Another tree.** The review states Git's rule, not a line of the tree Git is given. On a
+  tree other than the patch's base, the place nearest the header's line where a hunk's lines
+  are found ("offset"), or the copy at the end of the file, can be another occurrence of the
+  same lines than the one the header names. The `@@` section text is the patch's own claim.
 - **Attributes in the target tree.** `.gitattributes` there (`eol`, `ident`,
   `working-tree-encoding`) makes `git apply` write the work-tree form, not the bytes Git stores
   and the review shows.
@@ -197,6 +214,7 @@ The traditional form (`---`/`+++` with no `diff --git`) is not written by Git, b
 | `new-name` | `+++ P` (in a Git section) | As `---`, for the new name (`gitdiff_newname` 997). | As `---`. | As `---`. | Right after `---`. | As `---`. | As `---`. |
 | `hunk-header` | `@@ -a,b +c,d @@` | Ends the header (`gitdiff_hdrend` 922). The hunks are read from here (`parse_single_patch` 1924). | Each hunk follows the last. | A hunk that changes nothing (`parse_fragment` 1772). A hunk with no header before it: "patch fragment without header" (1633). | Only after `---`/`+++`. | Read. A first hunk with no `---`/`+++` before it was read. | Read only after `---`/`+++`. |
 | `hunk-placement` | A hunk's place: `@@ -a,b +c,d @@` and its context lines | With no trailing context the hunk's old lines must end the file (`match_end`); at old line 0 or 1 they must start it (`match_beginning`); with neither, Git takes the place nearest line `c` where they are found (`find_pos`). An anchored hunk that does not match there fails: Git tries elsewhere only under `-C` (`apply_one_fragment` 3146–3173). | Each hunk in turn, on the file as the hunks before it left it. | A hunk whose lines are not found at its anchor, or nowhere. | At the default (`-U3`), a hunk lacks trailing context only at the end of the file, and leading context only at its start. `git diff -U0` writes hunks with no context. | Read. A `-U0` hunk was shown at its header's line, and Git placed it at the end of the file (S3B-H-1). | A hunk with no context past line 1, and a hunk after one with no trailing context (except a creation's hunks at line 0, after which Git refuses the patch), are refused (`HunkPlacedElsewhere`). A hunk at line 1 with no context is read: Git writes it only when it is the whole file, and else refuses the patch. |
+| `hunk-anchor` | A last hunk with leading context and no trailing context, whose header names an earlier copy of its lines | `match_end`: the hunk is placed at the end of the file whatever line its header names (`find_pos`, `apply.c` 2865–2868). | As `hunk-placement`. | A file whose end does not hold the hunk's old lines: the whole patch. At line 1 with no trailing context, any file longer than the hunk. | At the end of its base, always; the header is then true. A hand-written header can name an earlier copy. | Read; the header's line was shown as the place. | Read, and the review says "Git places this hunk at the end of the file" (or "at the start of the file", "on the whole file"); line numbers are the patch's claim. |
 | `other-line` | Any other line | Ends the header (`gitdiff_unrecognized` 1159). The patch is whatever the headers so far say. | Not applicable. | "patch with only garbage" if no hunk, no binary line and no change in the headers (2344). | Not inside a header (a blank line or the next commit comes after a section). | The header ended there; a later header or hunk was refused. | Same. |
 | `git-binary-patch` | `GIT binary patch` | A binary patch. `literal`/`delta` hunks follow (`parse_chunk` 2302, `parse_binary` 2154). | Not applicable. | Not exactly this line: no binary patch. No `literal`/`delta` line after it: "unrecognized binary patch" (2181). | With `--binary` (1580). | Read, as a marker ending the header. With a carriage return it was read too. | Only as the last line of a shape Git writes. With a carriage return it is refused. |
 | `binary-files` | `Binary files A and B differ` | A binary section; Git writes the blob of the `index` line, or empties the file for a null id (`parse_chunk` 2319, `apply_binary` 3299). | Not applicable. | A line ending in a carriage return is not the marker. | For a binary file without `--binary` (3945, 3969). | Read. With a carriage return it was read as the marker too, so `old mode`/`new mode`, `index`, then the line was reviewed as a binary change while Git changed only the mode. | Only as the last line of a shape Git writes. With a carriage return it is refused. |
