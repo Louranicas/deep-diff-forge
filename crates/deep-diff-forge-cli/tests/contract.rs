@@ -985,18 +985,25 @@ fn envelope_exits_128_plus_the_signal_that_ended_the_command() {
 }
 
 /// The front page stays short and the documents it hands over stay linked (the landing tidy of
-/// 2026-11-18): `README.md` is under 400 lines; every relative link in `README.md`,
-/// `CHANGELOG.md`, `docs/release-notes/*.md` and `docs/reference/*.md` names a file that
-/// exists; and every version heading of the changelog has its file in `docs/release-notes/`.
+/// 2026-11-18): `README.md` is under 400 lines and links both indexes; every relative link, inline
+/// or reference-style, in `README.md`, `CHANGELOG.md`, `docs/release-notes/*.md` and
+/// `docs/reference/*.md` stays inside the repository, names a file that exists and, with a
+/// fragment, a heading of that file; every version heading of the changelog has a file in
+/// `docs/release-notes/` whose first line names the version.
 #[test]
 fn the_front_page_stays_short_and_its_documents_stay_linked() {
-    let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
+    use std::path::{Path, PathBuf};
+    // Fragments no heading defines: `#top` is the top of any page.
+    const NO_HEADING: [&str; 1] = ["top"];
+    let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+        .canonicalize()
+        .unwrap();
     let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
     let lines = readme.lines().count();
     assert!(lines < 400, "README.md has {lines} lines");
     let mut files = vec![root.join("README.md"), root.join("CHANGELOG.md")];
     for dir in ["docs/release-notes", "docs/reference"] {
-        let mut listed: Vec<std::path::PathBuf> = std::fs::read_dir(root.join(dir))
+        let mut listed: Vec<PathBuf> = std::fs::read_dir(root.join(dir))
             .unwrap()
             .map(|entry| entry.unwrap().path())
             .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
@@ -1005,10 +1012,11 @@ fn the_front_page_stays_short_and_its_documents_stay_linked() {
         assert!(!listed.is_empty(), "{dir} has no documents");
         files.extend(listed);
     }
+    let mut anchors = std::collections::BTreeMap::new();
+    let mut from_readme = std::collections::BTreeSet::new();
     let mut checked = 0;
     for file in &files {
         let text = std::fs::read_to_string(file).unwrap();
-        let dir = file.parent().unwrap();
         let mut fence = false;
         for (n, line) in text.lines().enumerate() {
             let trimmed = line.trim_start();
@@ -1020,21 +1028,37 @@ fn the_front_page_stays_short_and_its_documents_stay_linked() {
                 continue;
             }
             for target in relative_links(line) {
-                let path = target.split('#').next().unwrap();
-                if path.is_empty() {
+                let at = format!("{}:{}: {target}", file.display(), n + 1);
+                let (path, fragment) = target.split_once('#').unwrap_or((target, ""));
+                let resolved = if path.is_empty() {
+                    file.clone()
+                } else {
+                    let dir = file.parent().unwrap();
+                    inside(&root, dir, path).unwrap_or_else(|| panic!("{at} leaves the repository"))
+                };
+                checked += 1;
+                assert!(resolved.exists(), "{at} names no file");
+                if *file == root.join("README.md") {
+                    from_readme.insert(resolved.clone());
+                }
+                let markdown = resolved.extension().is_some_and(|ext| ext == "md");
+                if fragment.is_empty() || !markdown || NO_HEADING.contains(&fragment) {
                     continue;
                 }
-                checked += 1;
-                assert!(
-                    dir.join(path).exists(),
-                    "{}:{}: {target} names no file",
-                    file.display(),
-                    n + 1
-                );
+                let known = anchors
+                    .entry(resolved.clone())
+                    .or_insert_with(|| headings(&std::fs::read_to_string(&resolved).unwrap()));
+                assert!(known.contains(fragment), "{at}: no heading {fragment}");
             }
         }
     }
     assert!(checked > 100, "only {checked} relative links were found");
+    for index in ["docs/reference/README.md", "docs/release-notes/README.md"] {
+        assert!(
+            from_readme.contains(&root.join(index)),
+            "README.md does not link {index}"
+        );
+    }
     let changelog = std::fs::read_to_string(root.join("CHANGELOG.md")).unwrap();
     let mut versions = 0;
     for line in changelog.lines() {
@@ -1046,38 +1070,112 @@ fn the_front_page_stays_short_and_its_documents_stay_linked() {
             continue;
         }
         versions += 1;
+        let notes = root.join(format!("docs/release-notes/{version}.md"));
         assert!(
-            root.join(format!("docs/release-notes/{version}.md"))
-                .is_file(),
+            notes.is_file(),
             "{version} has no file in docs/release-notes/"
+        );
+        let text = std::fs::read_to_string(&notes).unwrap();
+        let first = text.lines().next().unwrap_or("");
+        assert!(
+            first.contains(version),
+            "the notes of {version} begin {first:?}"
         );
     }
     assert!(versions > 0, "the changelog names no version");
 }
 
+/// The path a link names from `dir`, resolved by its components under `root`; `None` when it
+/// climbs out of `root`.
+fn inside(root: &std::path::Path, dir: &std::path::Path, path: &str) -> Option<std::path::PathBuf> {
+    use std::path::{Component, Path};
+    let mut parts: Vec<_> = dir.strip_prefix(root).ok()?.components().collect();
+    for part in Path::new(path).components() {
+        match part {
+            Component::ParentDir => {
+                parts.pop()?;
+            }
+            Component::Normal(_) => parts.push(part),
+            _ => {}
+        }
+    }
+    Some(
+        parts
+            .iter()
+            .fold(root.to_path_buf(), |path, part| path.join(part)),
+    )
+}
+
+/// The anchors of a Markdown text: each heading by the slug rule GitHub and GitLab use (lower
+/// case; letters, digits, `-` and `_` kept, a space made `-`, the rest dropped; a repeated slug
+/// gains `-1`, `-2`, ...), and each `<a id="...">` or `<a name="...">`.
+fn headings(text: &str) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    let mut fence = false;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fence = !fence;
+            continue;
+        }
+        let level = line.chars().take_while(|&c| c == '#').count();
+        if !fence && (1..=6).contains(&level) && line[level..].starts_with(' ') {
+            let slug: String = line[level..]
+                .trim()
+                .to_lowercase()
+                .chars()
+                .filter(|&c| c.is_alphanumeric() || matches!(c, '-' | '_' | ' '))
+                .map(|c| if c == ' ' { '-' } else { c })
+                .collect();
+            let mut unique = slug.clone();
+            for n in 1.. {
+                if !out.contains(&unique) {
+                    break;
+                }
+                unique = format!("{slug}-{n}");
+            }
+            out.insert(unique);
+        }
+        for attribute in ["<a id=\"", "<a name=\""] {
+            for part in line.split(attribute).skip(1) {
+                out.insert(part.split('"').next().unwrap().to_owned());
+            }
+        }
+    }
+    out
+}
+
 /// The relative link targets of one line of Markdown, outside inline code: `](target)`,
-/// `src="target"` and `href="target"` whose target has no scheme.
+/// `src="target"`, `href="target"` and a reference definition `[label]: target`, each without
+/// a scheme.
 fn relative_links(line: &str) -> Vec<&str> {
-    let mut out = Vec::new();
+    let mut found = Vec::new();
+    if let Some((_, target)) = line
+        .trim_start()
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once("]: "))
+    {
+        found.push(target.split_whitespace().next().unwrap_or(""));
+    }
     for part in line.split('`').step_by(2) {
         for (open, close) in [("](", ')'), ("src=\"", '"'), ("href=\"", '"')] {
             let mut rest = part;
             while let Some(at) = rest.find(open) {
                 rest = &rest[at + open.len()..];
                 let end = rest.find(close).unwrap_or(rest.len());
-                let target = rest[..end].split_whitespace().next().unwrap_or("");
-                let scheme = target.split_once(':').is_some_and(|(scheme, _)| {
-                    !scheme.is_empty()
-                        && scheme
-                            .chars()
-                            .all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c))
-                });
-                if !target.is_empty() && !scheme {
-                    out.push(target);
-                }
+                found.push(rest[..end].split_whitespace().next().unwrap_or(""));
                 rest = &rest[end..];
             }
         }
     }
-    out
+    found.retain(|target| {
+        let scheme = target.split_once(':').is_some_and(|(scheme, _)| {
+            !scheme.is_empty()
+                && scheme
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c))
+        });
+        !target.is_empty() && !scheme
+    });
+    found
 }
