@@ -70,7 +70,7 @@ impl Seen {
 
 /// The tree before every case: `x` holds `a`, `y` holds `y`, `e` is empty, `d/x` holds `dx`, and
 /// `m` has two sections with one line in common, `f` ends with two of its earlier lines
-/// again and `g` does not, `t` and `u` repeat three lines (Git's search, S3C-L-1).
+/// again and `g` does not, `t`, `u` and `v` repeat lines (Git's search, S3C-L-1, VS3D-L-1).
 fn before() -> Tree {
     [
         ("x", &b"a\n"[..]),
@@ -82,6 +82,7 @@ fn before() -> Tree {
         ("g", b"x\na\nb\nc\nd\n"),
         ("t", b"a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nb\nX\nd\nk\nl\n"),
         ("u", b"a\nM\nx\nQ\nb\nc\nd\nM\nx\nQ\ne\n"),
+        ("v", b"a\nb\nc\nd\ne\nf\ng\nh\na\nb\nc\nd\ne\nf\ng\nh\n"),
     ]
     .into_iter()
     .map(|(path, content)| (path.to_owned(), regular(content)))
@@ -836,6 +837,24 @@ fn row_hunk_anchor() {
             "{hunk}"
         );
     }
+    // A later section for the same path is applied to the earlier section's result, where no
+    // line is skipped (S3D-L-1, review case `ts`): Git writes `Y` at line 3, on lines the first
+    // section wrote.
+    let ts = "diff --git a/t b/t\n--- a/t\n+++ b/t\n";
+    let s = see(
+        &r,
+        &format!("{ts}@@ -2,3 +2,3 @@\n b\n-c\n+X\n d\n{ts}@@ -5,3 +5,3 @@\n b\n-X\n+Y\n d\n"),
+    );
+    let t = "a\nb\nY\nd\ne\nf\ng\nh\ni\nj\nb\nX\nd\nk\nl\n";
+    assert_eq!(s.git_tree()["t"], file(t, false));
+    // Overlapping hunks (VS3D-L-1, review case `h3`): the second expects the `C` the first
+    // wrote. Read; Git refuses the whole patch and writes nothing.
+    let s = see(
+        &r,
+        "diff --git a/v b/v\n--- a/v\n+++ b/v\n@@ -2,3 +2,3 @@\n b\n-c\n+C\n d\n@@ -3,3 +3,3 @@\n C\n-d\n+D\n e\n",
+    );
+    assert_eq!(s.status(), ("v".into(), FileStatus::Modified));
+    s.git_writes_nothing();
 }
 
 /// A partial write the tree decides (S3C-X-1), outside the promise: the patch deletes `y` and

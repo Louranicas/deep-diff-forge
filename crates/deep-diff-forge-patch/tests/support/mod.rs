@@ -250,6 +250,19 @@ fn patched(old: &[u8], file: &ReviewFile) -> Option<Vec<u8>> {
             .lines
             .last()
             .is_none_or(|l| l.kind != PatchLineKind::Context);
+        // What the review says of the hunk must be the anchor this oracle places it by, and
+        // nothing for a hunk placed by search.
+        let said = match (start, end) {
+            (true, true) => Some("Git places this hunk on the whole file"),
+            (true, false) => Some("Git places this hunk at the start of the file"),
+            (false, true) => Some("Git places this hunk at the end of the file"),
+            (false, false) => None,
+        };
+        assert_eq!(
+            hunk.git_anchor(),
+            said,
+            "git_anchor() disagrees with the oracle"
+        );
         let line = if start {
             0
         } else if end {
