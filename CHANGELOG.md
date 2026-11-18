@@ -67,8 +67,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     The restated promise does not need the first of these refusals: a hunk with no context
     past line 1 would be stated as placed at the end of the file. DDF refuses such hunks
     (`HunkPlacedElsewhere`) because plain `git apply` places them at the end of the file
-    whatever their author meant (`git diff -U0` output is read by `git apply --unidiff-zero`,
-    not by plain apply). `GitCannotWrite` is what the promise's second outcome needs.
+    whatever their author meant (`git diff -U0` output is meant for `git apply
+    --unidiff-zero`). `GitCannotWrite` is what the promise's second outcome needs.
 
     One hunk layout no Git writes is read: a creation whose hunks all start at line 0. Git
     writes the first hunk into the empty file and refuses the whole patch at the second, while
@@ -207,6 +207,12 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Changed
 
+- The evidence readings of 0.9.0 that join hunks without context (Git-must joins, number hints,
+  hunks of one created file) are no longer reached from a parsed patch: the parser refuses a
+  hunk with no context past line 1 and a hunk after one with no trailing context. They stay
+  tested on hunks built without the parser. Series whose hunks carry context are read as before;
+  of 6,110 corpus patches 0.9.0 read, 698 are refused and none read changed; the evaluation
+  moved 18 such sections to `fixtures/eval-refused-by-parser/` (precision 170/195, recall 170/247).
 - `PatchParseError` has three new variants (the enum is `#[non_exhaustive]`):
   `HeaderNotWrittenByGit { line_number, header, reason }`,
   `HunkPlacedElsewhere { line_number, reason }` and `GitCannotWrite { line_number, reason }`.

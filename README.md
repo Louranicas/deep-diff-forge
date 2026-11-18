@@ -173,8 +173,8 @@ diff -U0` output), and a patch Git would fail to write halfway
 (`crates/deep-diff-forge-patch/CONFORMANCE.md` has the limits). The restated promise does not need
 the first refusal: a hunk with no context past line 1 would be stated as placed at the end of the
 file. DDF refuses such hunks (`HunkPlacedElsewhere`) because plain `git apply` places them at the
-end of the file whatever their author meant (`git diff -U0` output is read by `git apply
---unidiff-zero`, not by plain apply). `GitCannotWrite` is what the promise's second outcome needs.
+end of the file whatever their author meant (`git diff -U0` output is meant for `git apply
+--unidiff-zero`). `GitCannotWrite` is what the promise's second outcome needs.
 "Git writes it" is not "`git apply` accepts it": a plain `git diff` of a binary file, a
 `--submodule=diff` envelope and a `--no-index` pair of binary files are read, and `git apply`
 refuses each whole.
