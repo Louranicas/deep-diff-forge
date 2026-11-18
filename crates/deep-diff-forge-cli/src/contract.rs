@@ -533,8 +533,8 @@ mod tests {
     }
 
     #[test]
-    fn the_readme_states_the_capture_caps() {
-        let readme = include_str!("../../../README.md");
+    fn the_machine_contract_reference_states_the_capture_caps() {
+        let readme = include_str!("../../../docs/reference/output-and-exit-codes.md");
         let stated = format!(
             "stdout is capped at {} MiB and stderr at {} MiB",
             STDOUT_CAP / (1024 * 1024),

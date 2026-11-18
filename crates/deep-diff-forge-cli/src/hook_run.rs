@@ -9978,8 +9978,8 @@ mod tests {
     /// which under five seconds was no time, and was written down as asked) to the tenth
     /// (HR10-L-3: a run that may take all that is left cannot be owed beside others; and
     /// HR10-L-2: a run on the stop's own tree is held back only what the tree after it can
-    /// need). What every owed ask needs is one number, [`OWED_ASKS_NEED`], and README says
-    /// the same.
+    /// need). What every owed ask needs is one number, [`OWED_ASKS_NEED`], and
+    /// `docs/reference/agent-hooks.md` says the same.
     #[test]
     fn a_run_of_the_judge_has_its_part_of_the_time_or_is_not_made() {
         let seconds = |ms: u64| Duration::from_millis(ms);
@@ -10060,7 +10060,7 @@ mod tests {
         );
         assert_eq!(tree(0, OWED_ASKS_NEED), None);
 
-        let readme = include_str!("../../../README.md");
+        let readme = include_str!("../../../docs/reference/agent-hooks.md");
         let stated = format!(
             "{} seconds of its judging left when it comes to its commits ({} for the first ask it owes and {} for each of the two after it)",
             OWED_ASKS_NEED.as_secs(),

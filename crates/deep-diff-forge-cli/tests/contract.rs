@@ -157,12 +157,16 @@ fn schema_signals_and_explain_signal_answer_from_the_vocabulary() {
     assert!(stderr.contains("(result|exit-codes|signals)"), "{stderr}");
 }
 
-/// The README's two signal tables name every label of the vocabulary, and each row's score is
-/// the weight the scorer uses: one source of truth, and the document is held to it.
+/// The two signal tables of `docs/reference/risk-ranking.md` (once the README's "Risk ranking")
+/// name every label of the vocabulary, and each row's score is the weight the scorer uses: one
+/// source of truth, and the document is held to it.
 #[test]
-fn readme_signal_tables_match_the_vocabulary() {
-    let readme =
-        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md")).unwrap();
+fn risk_ranking_signal_tables_match_the_vocabulary() {
+    let readme = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/reference/risk-ranking.md"
+    ))
+    .unwrap();
     let start = readme.find("| Signal | When | Score |").unwrap();
     let section = &readme[start..];
     let section = &section[..section.find("\nLanguages come from the extension").unwrap()];
@@ -209,12 +213,16 @@ fn readme_signal_tables_match_the_vocabulary() {
     assert_eq!(seen, all, "the README tables and the vocabulary differ");
 }
 
-/// The README's exit-code tables and the binary's registry name the same codes, and each README
-/// row begins with the registry's meaning.
+/// The exit-code tables of `docs/reference/output-and-exit-codes.md` (once the README's "Exit
+/// codes") and the binary's registry name the same codes, and each row begins with the
+/// registry's meaning.
 #[test]
-fn readme_exit_code_tables_match_the_registry() {
-    let readme =
-        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md")).unwrap();
+fn exit_code_tables_match_the_registry() {
+    let readme = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/reference/output-and-exit-codes.md"
+    ))
+    .unwrap();
     let section = &readme[readme.find("## Exit codes").unwrap()..];
     let section = &section[..section.find("\n## ").unwrap()];
     let (code, stdout, _) = run(&["schema", "exit-codes"], "");
@@ -971,4 +979,102 @@ fn envelope_exits_128_plus_the_signal_that_ended_the_command() {
         "{v}"
     );
     assert_eq!(out.status.code(), Some(128 + 15));
+}
+
+/// The front page stays short and the documents it hands over stay linked (the landing tidy of
+/// 2026-11-18): `README.md` is under 400 lines; every relative link in `README.md`,
+/// `CHANGELOG.md`, `docs/release-notes/*.md` and `docs/reference/*.md` names a file that
+/// exists; and every version heading of the changelog has its file in `docs/release-notes/`.
+#[test]
+fn the_front_page_stays_short_and_its_documents_stay_linked() {
+    let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
+    let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
+    let lines = readme.lines().count();
+    assert!(lines < 400, "README.md has {lines} lines");
+    let mut files = vec![root.join("README.md"), root.join("CHANGELOG.md")];
+    for dir in ["docs/release-notes", "docs/reference"] {
+        let mut listed: Vec<std::path::PathBuf> = std::fs::read_dir(root.join(dir))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
+            .collect();
+        listed.sort();
+        assert!(!listed.is_empty(), "{dir} has no documents");
+        files.extend(listed);
+    }
+    let mut checked = 0;
+    for file in &files {
+        let text = std::fs::read_to_string(file).unwrap();
+        let dir = file.parent().unwrap();
+        let mut fence = false;
+        for (n, line) in text.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                fence = !fence;
+                continue;
+            }
+            if fence {
+                continue;
+            }
+            for target in relative_links(line) {
+                let path = target.split('#').next().unwrap();
+                if path.is_empty() {
+                    continue;
+                }
+                checked += 1;
+                assert!(
+                    dir.join(path).exists(),
+                    "{}:{}: {target} names no file",
+                    file.display(),
+                    n + 1
+                );
+            }
+        }
+    }
+    assert!(checked > 100, "only {checked} relative links were found");
+    let changelog = std::fs::read_to_string(root.join("CHANGELOG.md")).unwrap();
+    let mut versions = 0;
+    for line in changelog.lines() {
+        let Some(rest) = line.strip_prefix("## [") else {
+            continue;
+        };
+        let version = rest.split(']').next().unwrap();
+        if version == "Unreleased" {
+            continue;
+        }
+        versions += 1;
+        assert!(
+            root.join(format!("docs/release-notes/{version}.md"))
+                .is_file(),
+            "{version} has no file in docs/release-notes/"
+        );
+    }
+    assert!(versions > 0, "the changelog names no version");
+}
+
+/// The relative link targets of one line of Markdown, outside inline code: `](target)`,
+/// `src="target"` and `href="target"` whose target has no scheme.
+fn relative_links(line: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    for part in line.split('`').step_by(2) {
+        for (open, close) in [("](", ')'), ("src=\"", '"'), ("href=\"", '"')] {
+            let mut rest = part;
+            while let Some(at) = rest.find(open) {
+                rest = &rest[at + open.len()..];
+                let end = rest.find(close).unwrap_or(rest.len());
+                let target = rest[..end].split_whitespace().next().unwrap_or("");
+                let scheme = target.split_once(':').is_some_and(|(scheme, _)| {
+                    !scheme.is_empty()
+                        && scheme
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c))
+                });
+                if !target.is_empty() && !scheme {
+                    out.push(target);
+                }
+                rest = &rest[end..];
+            }
+        }
+    }
+    out
 }
