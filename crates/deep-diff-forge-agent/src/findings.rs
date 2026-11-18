@@ -711,7 +711,7 @@ mod tests {
     fn a_path_named_twice_resolves_lines_in_every_section() {
         let files = parse(
             "--- a/x.rs\n+++ b/x.rs\n@@ -1,1 +1,1 @@\n-a\n+b\n\
-             --- a/x.rs\n+++ b/x.rs\n@@ -10,1 +10,1 @@\n-c\n+d\n",
+             --- a/x.rs\n+++ b/x.rs\n@@ -9,3 +9,3 @@\n p\n-c\n+d\n q\n",
         )
         .unwrap();
         assert_eq!(files.len(), 2);

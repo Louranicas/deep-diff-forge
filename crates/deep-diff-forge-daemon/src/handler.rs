@@ -553,7 +553,7 @@ pub const METHODS: &[MethodSpec] = &[
     method(
         "diff.compute",
         "patch: string, require_files?: boolean, require_hunks?: boolean",
-        "the deep-diff-forge.review.v0 document `deep-diff-forge --stdin-patch --json` prints for the same patch",
+        "the deep-diff-forge.review.v0 document `deep-diff-forge --stdin-patch --json` prints for the same patch; hunk line ranges are the patch's own claim; Git places a hunk at old line 0 or 1 at the start of the file, and one whose last line is not context at the end of the file",
         1,
         Work::Request,
     ),
@@ -567,21 +567,21 @@ pub const METHODS: &[MethodSpec] = &[
     method(
         "review.outline",
         "patch: string, require_files?: boolean, require_hunks?: boolean, max_bytes?: integer, cursor?: string",
-        "deep-diff-forge.review-outline.v0: files in review-risk order with their hunks' addresses, headings and counts, no line text; next_cursor continues",
+        "deep-diff-forge.review-outline.v0: files in review-risk order with their hunks' addresses, ranges, headings and counts, no line text; next_cursor continues; hunk line ranges are the patch's own claim; Git places a hunk at old line 0 or 1 at the start of the file, and one whose last line is not context at the end of the file",
         1,
         Work::Request,
     ),
     method(
         "review.hunks",
         "patch: string, require_files?: boolean, require_hunks?: boolean, addresses?: [string], paths?: [string], max_bytes?: integer, cursor?: string",
-        "deep-diff-forge.review-hunks.v0: the chosen hunks verbatim (all, by address or by path), within max_bytes; next_cursor continues",
+        "deep-diff-forge.review-hunks.v0: the chosen hunks verbatim (all, by address or by path), within max_bytes; a hunk split across pages carries complete: false until its last page; next_cursor continues; hunk line ranges are the patch's own claim; Git places a hunk at old line 0 or 1 at the start of the file, and one whose last line is not context at the end of the file",
         1,
         Work::Request,
     ),
     method(
         "review.change",
         "repo: string, selection: \"staged\"|\"working_tree\"|\"range\", range?: \"A..B\", include_untracked?: boolean, view?: \"outline\"|\"hunks\"|\"review\"|\"rank\", require_files?: boolean, require_hunks?: boolean, addresses?: [string], paths?: [string], max_bytes?: integer, cursor?: string",
-        "the chosen view of the change Git returns for the selection, sealed over Git's exact bytes, with an acquisition member; only for a repository at or under a root the operator allowed (--allow-repo), and Git is stopped after 30 s",
+        "the chosen view of the change Git returns for the selection, sealed over Git's exact bytes, with an acquisition member; only for a repository at or under a root the operator allowed (--allow-repo), and Git is stopped after 30 s; hunk line ranges are the patch's own claim; Git places a hunk at old line 0 or 1 at the start of the file, and one whose last line is not context at the end of the file",
         1,
         Work::GitAcquisition,
     ),

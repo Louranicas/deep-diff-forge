@@ -137,7 +137,10 @@ Patch truth is the exact text that can be applied, and it is separate from every
 layer. Semantic analysis, risk ranking and agent notes may be absent, partial or wrong, but
 none of them can change the apply-able patch.
 
-The reverse holds too. An internally incoherent patch is **refused, not repaired**:
+The reverse holds too. These internally incoherent patches are **refused, not repaired** (hunks
+out of order, overlapping hunks and a new-side start that the old start and earlier counts do not
+give are read: Git either places each hunk by its own rule or refuses the whole patch and writes
+nothing, and the review states neither which, `CONFORMANCE.md`):
 
 - a hunk whose body disagrees with its `@@ -a,b +c,d @@` counts;
 - a hunk cut off at end of file;
@@ -150,6 +153,31 @@ The reverse holds too. An internally incoherent patch is **refused, not repaired
 - a mode header that is not octal.
 
 Each fails with exit 4. None is quietly turned into a plausible-looking model.
+
+A `diff --git` section is read only if its header lines are one of the shapes Git's own diff writes
+(`crates/deep-diff-forge-patch/CONFORMANCE.md`). What that promises is what a patch alone can
+settle: for every patch DDF accepts, a plain `git apply` in Git's default configuration either
+refuses the whole patch while checking it and writes nothing, or writes exactly the paths, types
+and modes the review shows and, for each hunk, removes and adds exactly the lines (as Git stores
+them) the review shows, at the place Git's own anchor rule gives: a hunk with no trailing context
+at the end of the file, one at old line 0 or 1 at its start, any other by Git's search outward from
+the new-side line its header names, over lines no earlier hunk of the same section wrote (a later
+section for the same path is applied to the earlier section's result, where no line is skipped; the
+review does not say which of several equal places Git takes). A header's line numbers are the
+patch's claim, true on the tree Git made it from; a hand-written header can name one copy of some
+lines while Git changes another, so the review states the anchor ("Git places this hunk at the end
+of the file"). Checking the place against the tree is not built. DDF reads a diff without the tree
+it applies to, so a review can show a change that never lands, but never one that lands otherwise.
+It refuses a hunk with no context past line 1, or one after a hunk with no trailing context (`git
+diff -U0` output), and a patch Git would fail to write halfway
+(`crates/deep-diff-forge-patch/CONFORMANCE.md` has the limits). The restated promise does not need
+the first refusal: a hunk with no context past line 1 would be stated as placed at the end of the
+file. DDF refuses such hunks (`HunkPlacedElsewhere`) because plain `git apply` places them at the
+end of the file whatever their author meant (`git diff -U0` output is read by `git apply
+--unidiff-zero`, not by plain apply). `GitCannotWrite` is what the promise's second outcome needs.
+"Git writes it" is not "`git apply` accepts it": a plain `git diff` of a binary file, a
+`--submodule=diff` envelope and a `--no-index` pair of binary files are read, and `git apply`
+refuses each whole.
 
 ## How it works
 

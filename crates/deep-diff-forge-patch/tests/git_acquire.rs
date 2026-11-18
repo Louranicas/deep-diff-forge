@@ -1438,3 +1438,29 @@ fn diff_files_refuses_any_git_answer_but_silence_or_a_clean_patch() {
     );
     assert_eq!(diff_with("same-git", "exit 0"), Ok(Vec::new()));
 }
+
+/// `diff.context=0` in the repository's configuration does not reach DDF's own `git diff`: it
+/// passes `-U3`. Before, the capture held a hunk with no context, which plain `git apply` places
+/// at the end of the file and the parser refuses (S3B-H-1).
+#[test]
+fn diff_context_in_the_repository_does_not_change_the_capture() {
+    let scratch = Scratch::new("git-acq-context");
+    let r = scratch.join("repo");
+    std::fs::create_dir_all(&r).unwrap();
+    git_out(&r, &["init", "-q"]);
+    std::fs::write(r.join("f"), b"a\nb\nc\nd\ne\n").unwrap();
+    git_out(&r, &["add", "-A"]);
+    git_out(&r, &["commit", "-q", "-m", "base"]);
+    git_out(&r, &["config", "diff.context", "0"]);
+    std::fs::write(r.join("f"), b"a\nb\nC\nd\ne\n").unwrap();
+    let hunk = |acq: &GitAcquisition| {
+        let patch = String::from_utf8_lossy(acq.diff().patch_bytes()).into_owned();
+        let files = deep_diff_forge_patch::parse(&patch).unwrap_or_else(|e| panic!("{e}: {patch}"));
+        let lines = &files[0].patch_twin.hunks[0].lines;
+        assert_eq!(lines.len(), 6, "two lines of context on each side: {patch}");
+    };
+    hunk(&acquire_git(&r, &GitSelection::WorkingTree, &options(false)).unwrap());
+    git_out(&r, &["commit", "-q", "-am", "change"]);
+    let range = GitSelection::parse_range("HEAD~1..HEAD").unwrap();
+    hunk(&acquire_git(&r, &range, &options(false)).unwrap());
+}

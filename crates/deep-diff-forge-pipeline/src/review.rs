@@ -550,7 +550,7 @@ mod tests {
     fn multi_line_tokens_are_attributed_by_every_line() {
         let old = "fn a() {\n    /* line1\n    SAFETY: ok\n    line3 */\n}\n";
         let new = "fn a() {\n    /* line1\n    SAFETY: trust me\n    line3 */\n}\n";
-        let patch = "--- a/x.rs\n+++ b/x.rs\n@@ -3 +3 @@\n-    SAFETY: ok\n+    SAFETY: trust me\n";
+        let patch = "--- a/x.rs\n+++ b/x.rs\n@@ -3,2 +3,2 @@\n-    SAFETY: ok\n+    SAFETY: trust me\n     line3 */\n";
         let source = SourcePair {
             path: "x.rs".into(),
             old: Some(old.into()),
@@ -560,8 +560,9 @@ mod tests {
         let twin = bundle.files()[0].semantic_twin.as_ref().unwrap();
         assert_eq!(twin.spans.len(), 2, "{:?}", twin.spans);
         assert_eq!(bundle.analyses()[0].coverage, Coverage::Analyzed);
-        // A hunk elsewhere in the file holds none of the comment's lines.
-        let elsewhere = "--- a/x.rs\n+++ b/x.rs\n@@ -5 +5 @@\n-}\n+}\n";
+        // A hunk elsewhere in the file holds none of the comment's lines (at line 1, where a
+        // hunk with no context is read).
+        let elsewhere = "--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n-fn a() {\n+fn a() {\n";
         let mut file = deep_diff_forge_patch::parse(elsewhere).unwrap().remove(0);
         let analysis = enrich_file(&mut file, &source, &mut 0);
         assert_eq!(analysis.coverage, Coverage::PartialLcs);

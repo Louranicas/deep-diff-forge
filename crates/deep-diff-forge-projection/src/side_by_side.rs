@@ -2,7 +2,7 @@
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#terminal-geometry
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-projection--side_by_side
 use crate::notes::{LOSSY, NO_NEWLINE, RENDERS_ALIKE, gutter_width, renders_alike, side_shown};
-use deep_diff_forge_core::{PatchLine, PatchLineKind, ReviewFile, display_safe};
+use deep_diff_forge_core::{PatchHunk, PatchLine, PatchLineKind, ReviewFile, display_safe};
 use std::fmt::Write as _;
 
 /// One cell of a side-by-side row (one side, old or new).
@@ -50,34 +50,37 @@ pub struct SideRow {
 /// Build aligned side-by-side rows for one file's hunks.
 #[must_use]
 pub fn side_rows(file: &ReviewFile) -> Vec<SideRow> {
+    file.patch_twin.hunks.iter().flat_map(hunk_rows).collect()
+}
+
+/// The aligned rows of one hunk.
+fn hunk_rows(hunk: &PatchHunk) -> Vec<SideRow> {
     let mut rows = Vec::new();
-    for hunk in &file.patch_twin.hunks {
-        let lines = &hunk.lines;
-        let mut i = 0;
-        while i < lines.len() {
-            if lines[i].kind == PatchLineKind::Context {
-                rows.push(context_row(&lines[i]));
-                i += 1;
-                continue;
-            }
-            // Gather a change block: removed run, then added run (git order).
-            let mut removed = Vec::new();
-            while i < lines.len() && lines[i].kind == PatchLineKind::Removed {
-                removed.push(&lines[i]);
-                i += 1;
-            }
-            let mut added = Vec::new();
-            while i < lines.len() && lines[i].kind == PatchLineKind::Added {
-                added.push(&lines[i]);
-                i += 1;
-            }
-            let pairs = removed.len().max(added.len());
-            for k in 0..pairs {
-                rows.push(SideRow {
-                    left: removed.get(k).map(|l| cell(l, '-')),
-                    right: added.get(k).map(|l| cell(l, '+')),
-                });
-            }
+    let lines = &hunk.lines;
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].kind == PatchLineKind::Context {
+            rows.push(context_row(&lines[i]));
+            i += 1;
+            continue;
+        }
+        // Gather a change block: removed run, then added run (git order).
+        let mut removed = Vec::new();
+        while i < lines.len() && lines[i].kind == PatchLineKind::Removed {
+            removed.push(&lines[i]);
+            i += 1;
+        }
+        let mut added = Vec::new();
+        while i < lines.len() && lines[i].kind == PatchLineKind::Added {
+            added.push(&lines[i]);
+            i += 1;
+        }
+        let pairs = removed.len().max(added.len());
+        for k in 0..pairs {
+            rows.push(SideRow {
+                left: removed.get(k).map(|l| cell(l, '-')),
+                right: added.get(k).map(|l| cell(l, '+')),
+            });
         }
     }
     rows
@@ -163,7 +166,8 @@ fn truncate_pad(text: &str, width: usize) -> String {
 /// fields are as wide as the file's largest line number, so the ` | ` gutter sits in one column
 /// on every row, and a row is followed by a `\` note for what its cells cannot show: a lossy
 /// line, a missing final newline, or a pair whose printed cells look the same (a tab is shown as
-/// four spaces, padding hides a trailing space, and the cut hides a change past `width`).
+/// four spaces, padding hides a trailing space, and the cut hides a change past `width`). A hunk
+/// Git anchors at the start or the end of the file is preceded by a `\` line that says so.
 #[must_use]
 pub fn render_side_by_side(files: &[ReviewFile], width: usize) -> String {
     let mut out = String::new();
@@ -171,20 +175,27 @@ pub fn render_side_by_side(files: &[ReviewFile], width: usize) -> String {
         let status = file.status.label();
         let gutter = gutter_width(file);
         let _ = writeln!(out, "{status}  {}", display_safe(&file.path));
-        for row in side_rows(file) {
-            let _ = writeln!(
-                out,
-                "{} | {}",
-                fmt_cell(row.left.as_ref(), gutter, width),
-                fmt_cell(row.right.as_ref(), gutter, width)
-            );
-            for (left, right) in note_rows(&row, width) {
+        for hunk in &file.patch_twin.hunks {
+            // Where Git anchors the hunk, whole (not cut to a column): the line numbers are the
+            // patch's claim.
+            if let Some(anchor) = hunk.git_anchor() {
+                let _ = writeln!(out, "{:>gutter$} \\ {anchor}", "");
+            }
+            for row in hunk_rows(hunk) {
                 let _ = writeln!(
                     out,
                     "{} | {}",
-                    fmt_note(left, gutter, width),
-                    fmt_note(right, gutter, width)
+                    fmt_cell(row.left.as_ref(), gutter, width),
+                    fmt_cell(row.right.as_ref(), gutter, width)
                 );
+                for (left, right) in note_rows(&row, width) {
+                    let _ = writeln!(
+                        out,
+                        "{} | {}",
+                        fmt_note(left, gutter, width),
+                        fmt_note(right, gutter, width)
+                    );
+                }
             }
         }
     }
@@ -201,6 +212,22 @@ mod tests {
     fn rows(input: &str) -> Vec<SideRow> {
         let files = parse(input).unwrap();
         side_rows(&files[0])
+    }
+
+    /// A hunk with no trailing context is placed by Git at the end of the file, whatever line
+    /// its header names (`CONFORMANCE.md`, row `hunk-anchor`): the review says so.
+    #[test]
+    fn a_hunk_git_anchors_at_the_end_says_so() {
+        let files = parse("--- a/f\n+++ b/f\n@@ -2,2 +2,2 @@\n a\n-b\n+B\n").unwrap();
+        assert!(
+            render_side_by_side(&files, 20)
+                .contains("     \\ Git places this hunk at the end of the file\n"),
+            "{}",
+            render_side_by_side(&files, 20)
+        );
+        let inner = parse("--- a/f\n+++ b/f\n@@ -2,3 +2,3 @@\n a\n-b\n+B\n c\n").unwrap();
+        let shown = render_side_by_side(&inner, 20);
+        assert!(!shown.contains("Git places"), "{shown}");
     }
 
     #[test]
@@ -337,9 +364,11 @@ mod tests {
 
     #[test]
     fn multi_hunk_rows_accumulate() {
-        let input = "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-a\n+A\n@@ -9,1 +9,1 @@\n-b\n+B\n";
+        let input =
+            "--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n+A\n ctx\n@@ -9,2 +9,2 @@\n-b\n+B\n ctx\n";
         let r = rows(input);
-        assert_eq!(r.len(), 2);
+        // A paired change and a line of context in each hunk.
+        assert_eq!(r.len(), 4);
     }
 
     #[test]
@@ -369,15 +398,15 @@ mod tests {
         let out = render_side_by_side(&parse(nonl).unwrap(), 20);
         assert_eq!(
             out,
-            "modified  x.sh\n   1 - rm -rf /tmp/cache    |    1 + rm -rf /tmp/cache   \n     \\ No newline at end of |                            \n"
+            "modified  x.sh\n     \\ Git places this hunk on the whole file\n   1 - rm -rf /tmp/cache    |    1 + rm -rf /tmp/cache   \n     \\ No newline at end of |                            \n"
         );
         let tab =
             "--- a/Makefile\n+++ b/Makefile\n@@ -1,2 +1,2 @@\n all:\n-\techo hi\n+    echo hi\n";
         let out = render_side_by_side(&parse(tab).unwrap(), 60);
         let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines.len(), 4, "{out}");
-        assert_eq!(lines[3].matches(RENDERS_ALIKE).count(), 2, "{out}");
-        assert_eq!(lines[3].find(" | "), lines[2].find(" | "));
+        assert_eq!(lines.len(), 5, "{out}");
+        assert_eq!(lines[4].matches(RENDERS_ALIKE).count(), 2, "{out}");
+        assert_eq!(lines[4].find(" | "), lines[3].find(" | "));
         let lossy = b"--- a/x.txt\n+++ b/x.txt\n@@ -1 +1 @@\n-key=\xff\n+key=\xfe\n";
         let decoded = deep_diff_forge_patch::decode(lossy);
         let files = deep_diff_forge_patch::parse_decoded(
@@ -387,19 +416,19 @@ mod tests {
         .unwrap();
         let out = render_side_by_side(&files, 60);
         assert_eq!(
-            out.lines().nth(2).unwrap().matches(LOSSY).count(),
+            out.lines().nth(3).unwrap().matches(LOSSY).count(),
             2,
             "{out}"
         );
         // Context with no final newline is noted on both sides; a plain change is not noted.
         let ctx = "--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n+b\n c\n\\ No newline at end of file\n";
         let out = render_side_by_side(&parse(ctx).unwrap(), 30);
-        assert_eq!(out.lines().count(), 4, "{out}");
-        assert_eq!(out.lines().nth(3).unwrap().matches(NO_NEWLINE).count(), 2);
+        assert_eq!(out.lines().count(), 5, "{out}");
+        assert_eq!(out.lines().nth(4).unwrap().matches(NO_NEWLINE).count(), 2);
         // Only the side carrying the flag gets the note.
         let added = "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n\\ No newline at end of file\n";
         let out = render_side_by_side(&parse(added).unwrap(), 30);
-        let note = out.lines().nth(2).unwrap();
+        let note = out.lines().nth(3).unwrap();
         let (left, right) = note.split_once(" | ").unwrap();
         assert!(
             !left.contains(NO_NEWLINE) && right.contains(NO_NEWLINE),
@@ -418,12 +447,14 @@ mod tests {
             "--- a/x\n+++ b/x\n@@ -1,3 +1,3 @@\n-foo\n-a b\n-{long}A\n+foo \n+a\u{a0}b\n+{long}B\n"
         );
         let out = render_side_by_side(&parse(&input).unwrap(), 60);
-        let lines: Vec<&str> = out.lines().skip(1).collect();
+        // The file's line, then where Git anchors the hunk (the whole file).
+        let lines: Vec<&str> = out.lines().skip(2).collect();
         assert_eq!(lines.len(), 6, "{out}");
         for note in lines.iter().skip(1).step_by(2) {
             assert_eq!(note.matches(RENDERS_ALIKE).count(), 2, "{out}");
         }
-        // Wider than the cell only on one side, a wider space, or a visible difference: no note.
+        // Wider than the cell only on one side, a wider space, or a visible difference: no note
+        // (the three lines are the file, the anchor and the row).
         for (old, new) in [
             ("a b", "a\u{3000}b"),
             ("a  b", "a b"),
@@ -432,16 +463,16 @@ mod tests {
         ] {
             let input = format!("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-{old}\n+{new}\n");
             let out = render_side_by_side(&parse(&input).unwrap(), 60);
-            assert_eq!(out.lines().count(), 2, "{old:?} {new:?}: {out}");
+            assert_eq!(out.lines().count(), 3, "{old:?} {new:?}: {out}");
         }
         let wide = "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a  b\n+a\u{3000}b\n";
         let out = render_side_by_side(&parse(wide).unwrap(), 60);
         assert_eq!(out.matches(RENDERS_ALIKE).count(), 2, "{out}");
         // Cut at two cells the pair looks alike and is noted; at three it differs and is not.
         let narrow = render_side_by_side(&parse(&input_pair("abc", "abd")).unwrap(), 2);
-        assert_eq!(narrow.lines().count(), 3, "the note row follows: {narrow}");
+        assert_eq!(narrow.lines().count(), 4, "the note row follows: {narrow}");
         let wider = render_side_by_side(&parse(&input_pair("abc", "abd")).unwrap(), 3);
-        assert_eq!(wider.lines().count(), 2, "{wider}");
+        assert_eq!(wider.lines().count(), 3, "{wider}");
     }
 
     fn input_pair(old: &str, new: &str) -> String {

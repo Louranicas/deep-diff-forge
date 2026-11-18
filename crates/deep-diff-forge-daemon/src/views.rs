@@ -759,7 +759,7 @@ mod tests {
                 let start = 1 + h * 20;
                 let _ = write!(
                     p,
-                    "@@ -{start},2 +{start},2 @@ fn h{h}()\n ctx\n-old{h}\n+new{h}\n"
+                    "@@ -{start},2 +{start},2 @@ fn h{h}()\n-old{h}\n+new{h}\n ctx\n"
                 );
             }
         }
@@ -796,7 +796,7 @@ mod tests {
     #[test]
     fn hazards_appear_once_per_hunk_and_on_each_line_that_carries_them() {
         let r = review(
-            "--- a/x.rs\n+++ b/x.rs\n@@ -1,2 +1,2 @@\n-a\u{202E}\n+b\u{202E}\n ok\n@@ -10 +10 @@\n-c\n+d\n",
+            "--- a/x.rs\n+++ b/x.rs\n@@ -1,2 +1,2 @@\n-a\u{202E}\n+b\u{202E}\n ok\n@@ -10,2 +10,2 @@\n-c\n+d\n ctx\n",
         );
         let file = &r.files()[0];
         let hunks = &file.patch_twin.hunks;
@@ -1246,7 +1246,7 @@ mod tests {
     #[test]
     fn the_hunks_of_a_creation_are_labelled_as_one_text() {
         let r = review(
-            "--- /dev/null\n+++ b/src/evil.rs\n@@ -0,0 +1,1 @@\n+/*\n@@ -2,0 +2,1 @@\n\
+            "--- /dev/null\n+++ b/src/evil.rs\n@@ -0,0 +1,1 @@\n+/*\n@@ -0,0 +2,1 @@\n\
              +// */ pub fn evil() { std::process::Command::new(\"sh\").status().ok(); }\n",
         );
         let outline = outline(&r, &page(MAX_MAX_BYTES, None)).unwrap();
@@ -1752,7 +1752,7 @@ mod tests {
     #[test]
     fn a_path_or_address_selects_every_match() {
         let one = "--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n-a\n+b\n";
-        let other = "--- a/x.rs\n+++ b/x.rs\n@@ -9 +9 @@\n-c\n+d\n";
+        let other = "--- a/x.rs\n+++ b/x.rs\n@@ -9,2 +9,2 @@\n-c\n+d\n ctx\n";
         let r = review(&format!("{one}{other}"));
         let by_path = hunks(&r, &Selection::Paths(vec!["x.rs".into()]), &Page::default()).unwrap();
         assert_eq!(by_path["selected_hunks"], 2);
@@ -1773,7 +1773,7 @@ mod tests {
     #[test]
     fn a_repeated_name_selects_its_hunks_once() {
         let one = "--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n-a\n+b\n";
-        let other = "--- a/x.rs\n+++ b/x.rs\n@@ -9 +9 @@\n-c\n+d\n";
+        let other = "--- a/x.rs\n+++ b/x.rs\n@@ -9,2 +9,2 @@\n-c\n+d\n ctx\n";
         let r = review(&format!("{one}{other}{one}"));
         let total = 3;
         let address = r.files()[0].patch_twin.hunks[0].address("x.rs");

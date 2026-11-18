@@ -29,7 +29,8 @@ fn now() -> Instant {
 
 /// A patch of `files` Rust files with `hunks` hunks of `lines` changed lines each. Of every 35
 /// added lines, one carries `unsafe` and one a process spawn (a 20-line hunk has one of each),
-/// so code evidence has work to do.
+/// so code evidence has work to do. Each hunk ends with a line of context, as Git writes it:
+/// `git apply` places a hunk with none at the end of the file.
 #[must_use]
 pub fn generated_patch(files: usize, hunks: usize, lines: usize) -> String {
     let mut out = String::new();
@@ -41,7 +42,7 @@ pub fn generated_patch(files: usize, hunks: usize, lines: usize) -> String {
             let _ = writeln!(
                 out,
                 "@@ -{start},{n} +{start},{n} @@ fn f{h}()",
-                n = lines + 1
+                n = lines + 2
             );
             let _ = writeln!(out, " fn f{h}() {{");
             for l in 0..lines {
@@ -53,6 +54,7 @@ pub fn generated_patch(files: usize, hunks: usize, lines: usize) -> String {
                 };
                 let _ = writeln!(out, "+{new}");
             }
+            let _ = writeln!(out, " }}");
         }
     }
     out
@@ -425,11 +427,11 @@ mod tests {
         let pinned = [
             (
                 "parse_seal",
-                "22da2a2e81a542149830dee499b67b90897ce7ba5cc0a46d509281a253032358",
+                "badb7128126cabdaa466bf8b9f5130fb01ce8a95c696b0eab1fa3cbfc58a89cc",
             ),
             (
                 "rank_with_evidence",
-                "22da2a2e81a542149830dee499b67b90897ce7ba5cc0a46d509281a253032358",
+                "badb7128126cabdaa466bf8b9f5130fb01ce8a95c696b0eab1fa3cbfc58a89cc",
             ),
             (
                 "rank_long_line",
@@ -441,7 +443,7 @@ mod tests {
             ),
             (
                 "outline_page",
-                "22da2a2e81a542149830dee499b67b90897ce7ba5cc0a46d509281a253032358",
+                "badb7128126cabdaa466bf8b9f5130fb01ce8a95c696b0eab1fa3cbfc58a89cc",
             ),
             (
                 "findings_verify",
@@ -449,7 +451,7 @@ mod tests {
             ),
             (
                 "findings_by_address",
-                "7c075fad8da15a2234c565855959d97548f7153e2dff43dd105dd404c06540c6",
+                "8cd074fb3cd522cd4d01969344f7c57c244522c09a10749c847bc7c82fa6c791",
             ),
             (
                 "structural_rust",
@@ -457,7 +459,7 @@ mod tests {
             ),
             (
                 "daemon_parallel",
-                "074d175495ad4020c5800880b499d55c13d5ef129050b80431d07524a51ec3a4",
+                "939a9df51d167f89d66b532f7ebaeeb66aa213690262b375d9cdde1b015aae97",
             ),
         ];
         let actual: Vec<(&str, String)> = workloads()

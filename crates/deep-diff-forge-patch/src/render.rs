@@ -134,7 +134,10 @@ pub fn old_path(file: &ReviewFile) -> Option<String> {
         let from = meta
             .strip_prefix("rename from ")
             .or_else(|| meta.strip_prefix("copy from "))?;
-        Some(super::paths::decode_path(from).unwrap_or_else(|| from.to_string()))
+        // Squashed as Git squashes a moved path (`find_name`), so `rename from d//x` names
+        // `d/x`, the file Git removes (independent review of S3a, S3A-L-1).
+        let from = super::paths::decode_path(from).unwrap_or_else(|| from.to_string());
+        Some(super::parser::squash_slashes(&from))
     })
 }
 
@@ -243,7 +246,8 @@ mod tests {
 
     #[test]
     fn multi_hunk_render_has_two_headers() {
-        let input = "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-a\n+A\n@@ -9,1 +9,1 @@\n-b\n+B\n";
+        let input =
+            "--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n+A\n ctx\n@@ -9,2 +9,2 @@\n-b\n+B\n ctx\n";
         let files = parse(input).unwrap();
         let out = render_unified(&files);
         assert_eq!(out.matches("@@ -").count(), 2);

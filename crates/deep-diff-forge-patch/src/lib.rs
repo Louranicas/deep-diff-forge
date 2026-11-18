@@ -170,6 +170,42 @@ pub enum PatchParseError {
         /// The section at `line_number` renames `path` to itself, so it removes and writes it.
         same_section: bool,
     },
+    /// A `diff --git` section whose header lines are not a shape Git's own diff writes: a
+    /// combination or an order of `old mode`, `new mode`, `new file mode`, `deleted file mode`,
+    /// `similarity index`, `rename`, `copy`, `index`, `---`/`+++` and binary lines that no Git
+    /// writes, a line not in the form Git writes it (a mode other than `100644`, `100755`,
+    /// `120000` or `160000`, an `index` id that is not hex, a score that is not a percentage),
+    /// a `Files … differ` line, or a binary marker ending in a carriage return. The shapes Git
+    /// writes are listed in the crate's `CONFORMANCE.md`; `similarity index`, `dissimilarity
+    /// index` and `index` lines may be left out of them. Five rescores in a row found a header
+    /// shape Git reads otherwise than the review did; DDF now reads no other header shape.
+    HeaderNotWrittenByGit {
+        /// 1-based line number of the header line refused.
+        line_number: usize,
+        /// Which header it is (`similarity index`, `---/+++`, …).
+        header: &'static str,
+        /// Why it is refused.
+        reason: &'static str,
+    },
+    /// A hunk plain `git apply` places by an anchor its header does not determine: one with no
+    /// context that does not start at line 0 or 1 (Git places it at the end of the file), or one
+    /// after a hunk with no trailing context. `git diff -U0` writes such hunks; `git apply
+    /// --unidiff-zero` reads them, plain `git apply` does not place them where they say.
+    HunkPlacedElsewhere {
+        /// 1-based line number of the hunk's header.
+        line_number: usize,
+        /// Why Git places it elsewhere.
+        reason: &'static str,
+    },
+    /// A patch `git apply` fails to write after it has begun: a symlink whose target is empty,
+    /// holds a NUL, is longer than 4,095 bytes or is in a binary body, or one path that is both
+    /// a file and the directory of another. Git has then already removed what the patch deletes.
+    GitCannotWrite {
+        /// 1-based line number where the section began.
+        line_number: usize,
+        /// What Git cannot write.
+        reason: &'static str,
+    },
     /// A header line (a path, mode or hunk header the parser reads meaning from) that is not
     /// UTF-8. Decoded lossily, the value it names would be a substitute: `caf\xe9` and
     /// `caf\xe8` both read `caf\u{fffd}`, so two files would share one reviewed path.
@@ -239,10 +275,59 @@ impl PatchParseError {
             | Self::HunkWithoutChange { .. }
             | Self::SectionWithoutPatch { .. }
             | Self::PathInSeveralSections { .. }
+            | Self::HeaderNotWrittenByGit { .. }
+            | Self::HunkPlacedElsewhere { .. }
+            | Self::GitCannotWrite { .. }
             | Self::MalformedHunkHeader { .. }
             | Self::BodyLineOutsideHunk { .. }
             | Self::TruncatedHunk { .. }
             | Self::HunkLineCountMismatch { .. } => exit::INVALID_INPUT,
+        }
+    }
+}
+
+impl PatchParseError {
+    /// The message of a refusal for what plain `git apply` would place or write otherwise.
+    fn fmt_git_outcome(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::HunkPlacedElsewhere {
+                line_number,
+                reason,
+            } => write!(
+                f,
+                "the hunk at line {line_number} would be placed elsewhere by git apply: {reason} (git diff -U0 output; apply it with --unidiff-zero)"
+            ),
+            Self::GitCannotWrite {
+                line_number,
+                reason,
+            } => write!(
+                f,
+                "the file section beginning at line {line_number} cannot be written by git apply, which would fail after removing files: {reason}"
+            ),
+            _ => Ok(()),
+        }
+    }
+
+    /// The message of a refusal for a path that one section, or two, both remove and write.
+    fn fmt_path_reuse(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PathInSeveralSections {
+                line_number,
+                path,
+                same_section: true,
+            } => write!(
+                f,
+                "the file section beginning at line {line_number} renames {} to itself, removing and writing one path in one section, which no tool writes",
+                Excerpt(path)
+            ),
+            Self::PathInSeveralSections {
+                line_number, path, ..
+            } => write!(
+                f,
+                "the file section beginning at line {line_number} writes or removes {}, which an earlier section also writes or removes; git apply does not apply such sections one after the other",
+                Excerpt(path)
+            ),
+            _ => Ok(()),
         }
     }
 }
@@ -303,22 +388,18 @@ impl std::fmt::Display for PatchParseError {
                 f,
                 "the file section beginning at line {line_number} holds nothing git apply reads as a patch (no hunk, no binary marker, and no rename, copy, creation, deletion or mode change in its headers)"
             ),
-            Self::PathInSeveralSections {
+            Self::PathInSeveralSections { .. } => self.fmt_path_reuse(f),
+            Self::HeaderNotWrittenByGit {
                 line_number,
-                path,
-                same_section: true,
+                header,
+                reason,
             } => write!(
                 f,
-                "the file section beginning at line {line_number} renames {} to itself, removing and writing one path in one section, which no tool writes",
-                Excerpt(path)
+                "header line {line_number} ({header}) is not one Git's diff writes there: {reason}"
             ),
-            Self::PathInSeveralSections {
-                line_number, path, ..
-            } => write!(
-                f,
-                "the file section beginning at line {line_number} writes or removes {}, which an earlier section also writes or removes; git apply does not apply such sections one after the other",
-                Excerpt(path)
-            ),
+            Self::HunkPlacedElsewhere { .. } | Self::GitCannotWrite { .. } => {
+                self.fmt_git_outcome(f)
+            }
             Self::LossyHeader { line_number } => write!(
                 f,
                 "header line {line_number} is not UTF-8, so the path or value it names cannot be reviewed exactly"

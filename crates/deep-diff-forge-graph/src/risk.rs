@@ -406,7 +406,7 @@ mod evidence_score_tests {
         assert_eq!(score("src/lib.rs", &[], &lines), 7 + 3, "large change 3");
         let mut text = "--- a/src/lib.rs\n+++ b/src/lib.rs\n".to_owned();
         for hunk in 0..MANY_HUNKS {
-            let _ = write!(text, "@@ -{0},1 +{0},2 @@\n x\n+y\n", hunk * 10 + 1);
+            let _ = write!(text, "@@ -{0},1 +{0},2 @@\n+y\n x\n", hunk * 10 + 1);
         }
         let many = parse(&text).unwrap().remove(0);
         assert_eq!(assess_file(&many).score, 7 + 2, "many hunks 2");
@@ -632,7 +632,7 @@ mod tests {
         let mut s = String::from("--- a/src/x.rs\n+++ b/src/x.rs\n");
         for i in 0..6 {
             let n = i * 10 + 1;
-            let _ = write!(s, "@@ -{n},1 +{n},1 @@\n-a\n+b\n");
+            let _ = write!(s, "@@ -{n},2 +{n},2 @@\n-a\n+b\n ctx\n");
         }
         let (_, signals) = score_file(&file(&s));
         assert!(signals.contains(&RiskSignal::ManyHunks));
@@ -1056,10 +1056,12 @@ mod tests {
             ),
         );
         assert_eq!(scored(&submodule), (4, vec![NewFile]));
+        // Modes with another execute bit, which Git reads but never writes, are refused by the
+        // parser since its accept-list (`deep-diff-forge-patch/CONFORMANCE.md`), so no review
+        // carries one.
         for x in ["100100", "100010", "100001"] {
-            assert_eq!(
-                scored(&new_file("run.sh", x)).1,
-                vec![NewFile, ExecutableBit],
+            assert!(
+                deep_diff_forge_patch::parse(&new_file("run.sh", x)).is_err(),
                 "{x}"
             );
         }
