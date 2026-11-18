@@ -26,8 +26,9 @@ The gate sequence below is the design. What runs today:
   `fixtures/council/` and, since 0.5.0, the labelled corpus `fixtures/eval/`
   (34 cases since 0.6.0, 35 with `evidence/rust-code-view-20261114` since 0.8.4); fuzz seeds live in `fuzz/seeds/`.
 - Gate 8 has no tooling; nothing writes `reports/releases/`.
-- 0.8.3 is tagged `v0.8.3` (2026-11-11 UTC), the release before 0.8.4; 0.8.4 is a release once
-  `v0.8.4` exists (no GitHub release). Published releases: `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`, `v0.8.0`, `v0.8.1`, `v0.8.2`, `v0.8.3`. crates.io
+- 0.8.4 is tagged `v0.8.4` (2026-11-17), the release before 0.9.0, and 0.8.3 `v0.8.3`
+  (2026-11-11 UTC); 0.9.0 is a release once `v0.9.0` exists (neither 0.8.4 nor 0.9.0 has a
+  GitHub release). Published releases: `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`, `v0.8.0`, `v0.8.1`, `v0.8.2`, `v0.8.3`. crates.io
   is on hold (`DDF_CRATES_IO`).
 - The local remote-tracking refs (last fetch, 2026-10-28) show GitLab `main` at
   `2f03f40`, the same commit as GitHub `main`; the 2026-10-26 instruction not to

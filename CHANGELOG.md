@@ -6,6 +6,29 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-18
+
+**Feature release with fixes for released versions.** 0.9.0 adds five integrity signals for a
+change that weakens its own checks (`test_skipped`, `trivial_assert`, `stub_added`,
+`error_swallowed`, `panic_path_added`; Rust hunks are read token by token across their lines,
+`test_removed` included), the signal vocabulary as data (`schema signals`, `explain signal`)
+and the agent hooks (`agent hook`: a session start, each tool call and a judged stop). Three
+fixes were found while the lines were integrated: the sections of one path that Git applies in
+order are read as one file; a long word or a run of secret prefixes costs its length, not its
+square; and one rule bounds the cost of one long line. Of these, 0.8.4 and earlier missed a
+process spawn cut across two sections of one path, and took time quadratic in the length of one
+JavaScript word (26 s of CPU for 200,000 letters on 0.8.3 and on 0.8.4) or of a run of secret
+prefixes ([DDF-2026-003](docs/advisories/DDF-2026-003.md)). The one breaking change is in the
+Rust API of `deep-diff-forge-graph`: `EvidenceSignal`, which is not `#[non_exhaustive]`, has
+five more variants; `Evidence` has two more public fields (`basis`, `test_likely`); and
+`hunk_signals` takes the hunk's place in its file and returns an `Option`. The JSON documents
+and exit codes are not broken: `rank.v0` gains values (five signal labels, the basis `hunk`,
+which an item 0.8.4 marked `lexical` can now carry, and `test_likely`), and `schema result` and
+`schema exit-codes` print what 0.8.4 prints. **Upgrade note:** a forge-warden that does not know
+the five new labels reads each as an unknown signal and holds. This release has no GitHub
+release: it is published as a signed tag on GitLab, Gitea and Forgejo; binaries built locally
+for Linux x86_64.
+
 ### Integration (2026-11-18)
 
 - **The integrity signals stand on release 0.8.4.** `agent/integrity-signals` (`33f4223`) is
@@ -5744,7 +5767,8 @@ A supply-chain & fuzz hardening pass then raised the release/CI posture:
   `--json`/`--jsonl` stability tests. Corrected the daemon's `lib.rs` doc from
   "thread-per-connection" to the true single-threaded sequential accept loop.
 
-[Unreleased]: https://gitlab.com/lukeomahoney/deep-diff-forge/-/compare/v0.8.4...main
+[Unreleased]: https://gitlab.com/lukeomahoney/deep-diff-forge/-/compare/v0.9.0...main
+[0.9.0]: https://gitlab.com/lukeomahoney/deep-diff-forge/-/tags/v0.9.0
 [0.8.4]: https://gitlab.com/lukeomahoney/deep-diff-forge/-/tags/v0.8.4
 [0.8.3]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.8.3
 [0.8.2]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.8.2

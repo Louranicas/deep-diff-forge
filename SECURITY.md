@@ -6,15 +6,23 @@ an exceptional one. This policy documents the maintained security boundary,
 the controls enforced by the repository, and the limits operators must account
 for.
 
-## Status 2026-11-16 (0.8.4 prepared)
+## Status 2026-11-18 (0.9.0 prepared)
 
-- 0.8.4 is a security release: v0.8.3 and earlier can review a patch otherwise than `git apply`
+- 0.9.0 adds five integrity signals and the agent hooks, and fixes two defects of 0.8.4 and
+  earlier ([DDF-2026-003](docs/advisories/DDF-2026-003.md)): a process spawn cut across two
+  sections of one path that Git applies in order was not found, and one long JavaScript word or
+  run of secret prefixes cost ranking time quadratic in its length. 0.9.0 is a release once the
+  signed tag `v0.9.0` exists; until then `v0.8.4` is the latest. It has no GitHub release: once
+  tagged it is published as a signed tag on GitLab, Gitea and Forgejo; binaries built locally
+  for Linux x86_64. A forge-warden that does not know the five new signals reads each as an
+  unknown signal and holds.
+- 0.8.4 (the signed tag `v0.8.4`, 2026-11-17; published on GitLab, Gitea and Forgejo on
+  2026-11-18), the release before 0.9.0, is a security release: v0.8.3 and earlier can review a patch otherwise than `git apply`
   writes it, for a `Files … differ` line (Git reads it as a binary marker and writes a blob from
   its object store) and for one path in several sections (Git applies them as a set): G1 and G2
   of the v0.8.3 rescore. They also hide Rust code after a nested block comment, a character
   literal with a long escape, or a comment an earlier hunk of a created file opened from the
-  Rust rules. 0.8.4 is a release once the signed tag `v0.8.4` exists; until then `v0.8.3` is
-  the latest. It has no GitHub release: once tagged it is published on GitLab
+  Rust rules. It has no GitHub release: it is published on GitLab
   (`https://gitlab.com/lukeomahoney/deep-diff-forge`), with mirrors on Gitea and Forgejo, as the
   signed tag and a Linux x86_64 binary built on the owner's machine
   ([local release](docs/RELEASE_AND_PUBLICATION.md#local-release-from-084)). Advisories:
@@ -40,9 +48,9 @@ for.
   Ubuntu 24.04, arm64 on Ubuntu 22.04 since v0.6.0; glibc 2.34 or newer, enforced
   by `scripts/check_glibc_floor.sh`), `aarch64-apple-darwin` and `x86_64-apple-darwin`.
   Every shipped binary is run in the release smoke test, the x86_64 macOS one under
-  Rosetta 2. 0.8.4 ships only `x86_64-unknown-linux-gnu`, built and smoke-tested on the owner's
+  Rosetta 2. From 0.8.4 a release ships only `x86_64-unknown-linux-gnu`, built and smoke-tested on the owner's
   machine (Fedora 44 toolbox) by `scripts/release_local.sh`; the other three targets are not
-  built for 0.8.4. Not claimed: musl, Windows, other architectures, crates.io packages,
+  built for 0.8.4 or 0.9.0. Not claimed: musl, Windows, other architectures, crates.io packages,
   or a daemon shared between users on one host
   ([supported platforms](README.md#supported-platforms)).
 - Known limits are listed under [Residual risks](#residual-risks-and-non-goals).
@@ -73,8 +81,9 @@ Fixes land on `main` first and reach users in the next tagged release.
 
 | Version | State | Security fixes |
 | --- | --- | --- |
-| `main` | 0.8.4 (a release once `v0.8.4` is tagged) | Land here first. |
-| `v0.8.3` (2026-11-11 UTC) | Published; superseded once `v0.8.4` is tagged | No. G1/G2 ([DDF-2026-001](docs/advisories/DDF-2026-001.md)) and the Rust code view ([DDF-2026-002](docs/advisories/DDF-2026-002.md)); 0.8.4 fixes them. |
+| `main` | 0.9.0 (a release once `v0.9.0` is tagged) | Land here first. |
+| `v0.8.4` (2026-11-17) | Published; superseded once `v0.9.0` is tagged | No. A process spawn cut across two sections of one path, and the cost of one long word or run of secret prefixes ([DDF-2026-003](docs/advisories/DDF-2026-003.md)); 0.9.0 fixes them. |
+| `v0.8.3` (2026-11-11 UTC) | Published, superseded | No. G1/G2 ([DDF-2026-001](docs/advisories/DDF-2026-001.md)) and the Rust code view ([DDF-2026-002](docs/advisories/DDF-2026-002.md)); 0.8.4 fixes them. |
 | `v0.8.2` (2026-11-10) | Published, superseded | No. It can show a change on a different file, or with a different mode or type, than `git apply` writes: a name left by a bare `diff --git` line before a binary line, a new file's mode overridden by `new mode`, or content under a mode Git reads as a submodule ([GHSA-rq5r-p3g9-phff](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-rq5r-p3g9-phff)); 0.8.3 fixes them. |
 | `v0.8.1` (2026-11-08) | Published, superseded | No. It can review a different file or mode than `git apply` writes: a copy, a `---`/`+++` name with nothing after its first component, repeated mode headers, a header after a binary line, or a carriage return in a move name (N1-N3 of the v0.8.1 rescore and F1-F2 of the rescore before the v0.8.2 tag, [GHSA-gp5v-m67f-gmgp](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-gp5v-m67f-gmgp)); 0.8.2 fixes them. |
 | `v0.8.0` (2026-11-07) | Published, superseded | No. It reviews a rename to a different destination than `git apply` writes when a non-header line comes between two `rename to` lines (F1 of the v0.8.0 rescore, high); 0.8.1 fixes it. |
