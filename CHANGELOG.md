@@ -34,16 +34,18 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     checking it and writes nothing, or writes exactly the paths, types and modes the review
     shows and, for each hunk, removes and adds exactly the lines (as Git stores them) the review
     shows, at the place Git's own anchor rule gives: a hunk with no trailing context at the end
-    of the file, one at old line 0 or 1 at its start (with both, the whole file), any other
-    where its context and removed lines are found nearest the line its header names. A
+    of the file, one at old line 0 or 1 at its start (with both, the whole file), any other by
+    Git's search outward from the new-side line its header names, over lines no earlier hunk of
+    the patch wrote (the review does not say which of several equal places Git takes). A
     header's line numbers and `@@` text are the patch's claims, true on the tree Git made the
     patch from. A hand-written patch can name one copy of some lines while Git changes another
     (a last hunk with leading context only, on a file whose end repeats its lines), so the
     review a person reads states the anchor: the inline and side-by-side layouts and the TUI's
     hunk header say "Git places this hunk at the end of the file" (or at the start, or on the
     whole file). No JSON member is added: `review.v0` and `review-hunks.v0` carry the lines the
-    anchor follows from (rule in `docs/API_AND_IPC.md`), and the outline's ranges are documented,
-    and described in the MCP tools, as the patch's claim. Checking the place against the tree,
+    anchor follows from (rule in `docs/API_AND_IPC.md`), and the ranges are documented, and
+    described in the MCP tools and daemon methods that serve them with both anchors, as the
+    patch's claim (the JSON carries no mark). Checking the place against the tree,
     when DDF has one, is not built. The test oracle places each hunk by Git's anchors, and the
     generated differential writes such hunks by hand (row `hunk-anchor`). To keep the promise,
     two kinds of patch are refused:
@@ -77,8 +79,11 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     Each is tested against real Git output. The list is not exhaustive: `-D`, textconv and
     `-w` output can also be refused whole. Outside the promise:
     - `git apply --reject`;
-    - a failure while writing that the patch does not determine (permissions, a full disk),
-      which can leave the tree half-written;
+    - a failure while writing that the patch does not determine (permissions, a full disk, a
+      file or a directory already in the tree where the patch writes), which can leave the tree
+      half-written;
+    - hunks out of order, overlapping, or with a new-side start the earlier counts do not give:
+      read, and placed by Git's search;
     - another tree, where the place Git's rule finds (an offset, or the end of the file) can be
       another copy of the hunk's lines than the one its header names;
     - attributes in the target tree (`eol`, `ident`, `working-tree-encoding`);
@@ -139,18 +144,21 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     fixed seeds. Each is one to three sections Git writes, with up to three near-miss moves.
     Half the threads use SHA-1 repositories and half SHA-256. DDF reads each patch, and a real
     `git apply` applies it in a repository whose object store holds every blob an `index` line
-    names (27 s on the build machine, beside other builds). Its sections include hunks with
-    one line of context and with none, as `git diff -U1` and `-U0` write them. DDF read 8,252.
-    Git applied 6,272 of those, each to exactly the tree the review describes. A binary section
+    names (85 s on the build machine, beside other builds). Its sections include hunks with
+    one line of context and with none, as `git diff -U1` and `-U0` write them, and hand-written
+    last hunks with leading context only, one naming an earlier copy of its lines. The oracle
+    places each hunk by Git's anchors and search. Figures of the run at the final commit: DDF
+    read 8,448. Git applied 6,558 of those, each to exactly the tree the review describes, 723
+    of them with a hand-written hunk Git anchors at the end. A binary section
     with a full id is held to the blob it names. Every other patch DDF read, Git refused whole,
     writing nothing:
-    - 936 binary markers with abbreviated ids;
-    - 47 `--no-index` pairs;
-    - 997 others whose hunks or files do not fit the tree;
+    - 893 binary markers with abbreviated ids;
+    - 44 `--no-index` pairs;
+    - 953 others whose hunks or files do not fit the tree;
     - none of the `--submodule=diff` envelope, which the generator does not write; the test
       of real Git output covers it.
 
-    296 patches with a `-U0` hunk Git places at the end of the file were refused, as designed.
+    302 patches with a `-U0` hunk Git places at the end of the file were refused, as designed.
 
     Any patch DDF read that Git refuses to read, outside the named presentations, fails the
     test, as does any that Git applies otherwise than the review shows.
@@ -162,7 +170,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     write; `shapes_git_fails_to_write_are_refused` runs those against real Git).
 
     Parser changes that earlier rescores found, each put back in a scratch clone, make the test
-    fail on the 64 seeds when the accept-list is turned off:
+    fail on the 64 seeds when the accept-list is turned off (measured on the generator of
+    `3e55b72`):
     - `Files … differ` read as text again (G1): 57 failures, the first at seed 16;
     - a bare header's name carried over (F3): 596 failures, the first at seed 8;
     - `new mode` after `new file mode` accepted (F2): 6 failures, the first at seed 24.
@@ -171,8 +180,14 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     test (50 failures): `new file mode` and `index` followed by an unread line is a shape Git
     writes. A binary marker ending in a carriage return read again, with the list on, fails it
     26 times (the first at seed 16): the binary oracle sees the blob the review names where Git
-    changed only the mode. The placement rule turned off (S3B-H-1) fails it 773 times (the
-    first at seed 8): Git writes the `-U0` hunk at the end of the file. The empty-symlink rule
+    changed only the mode. The placement rule turned off (S3B-H-1) failed it 773 times (the
+    first at seed 8) while the oracle placed hunks at their header's line. With the oracle
+    placing them by Git's anchors (`cc7b82f` on), a `-U0` hunk read is placed at the end of
+    the file, as the review then says, so the comparison no longer fails: the plant fails the
+    conformance row `hunk-placement` and the differential's count of `-U0` hunks refused by
+    design (0). An oracle that trusts a header's line (the end anchor turned off) fails the
+    differential 358 times and the row `hunk-anchor`: Git changes the last copy of the
+    hand-written hunk's lines. The empty-symlink rule
     turned off fails the conformance test, not the differential.
 - **`CONFORMANCE.md`** (in the patch crate) is the table of what Git reads. It has one row for
   each header line `apply.c` recognises, and one for the traditional form. Each row says what

@@ -137,7 +137,9 @@ Patch truth is the exact text that can be applied, and it is separate from every
 layer. Semantic analysis, risk ranking and agent notes may be absent, partial or wrong, but
 none of them can change the apply-able patch.
 
-The reverse holds too. An internally incoherent patch is **refused, not repaired**:
+The reverse holds too. These internally incoherent patches are **refused, not repaired** (hunks
+out of order, overlapping hunks and a new-side start that the old start and earlier counts do not
+give are read: Git places each by its own search, `CONFORMANCE.md`):
 
 - a hunk whose body disagrees with its `@@ -a,b +c,d @@` counts;
 - a hunk cut off at end of file;
@@ -157,8 +159,9 @@ can settle: for every patch DDF accepts, a plain `git apply` in Git's default co
 either refuses the whole patch while checking it and writes nothing, or writes exactly the
 paths, types and modes the review shows and, for each hunk, removes and adds exactly the lines
 (as Git stores them) the review shows, at the place Git's own anchor rule gives: a hunk with no
-trailing context at the end of the file, one at old line 0 or 1 at its start, any other where
-its lines are found nearest the line its header names. A header's line numbers are the
+trailing context at the end of the file, one at old line 0 or 1 at its start, any other by
+Git's search outward from the new-side line its header names, over lines no earlier hunk wrote
+(the review does not say which of several equal places Git takes). A header's line numbers are the
 patch's claim, true on the tree Git made it from; a hand-written header can name one copy of
 some lines while Git changes another, so the review states the anchor ("Git places this hunk
 at the end of the file"). Checking the place against the tree is not built. DDF reads a diff
