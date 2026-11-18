@@ -421,7 +421,7 @@ names (`deep-diff-forge.review.v0`, `ddf.result.v1` and so on).
 What may change within a `v0` schema name (stated 2026-11-03, after an expert-circle review):
 new members (present only when they apply, such as `hazards` and `old_path`), new enum values,
 and a different value for the same input when that fixes a value that misreported what Git
-does. A fix of that kind is listed under `### Changed` in the CHANGELOG, with the inputs it
+does. A fix of that kind is listed under `### Changed` in the [release notes](release-notes/README.md), with the inputs it
 affects. Removing or renaming a member, or changing a member's type, needs a new schema name.
 
 `old_path` (since 0.7.0): in `review.v0` files and `diff.file` JSONL events,
@@ -518,7 +518,7 @@ Additive members, so the schema names stay `v0`. They are present only when foun
     the bound of 32 a file) of the ranking are at least those of 0.8.3. An answer that is bounded
     in bytes (the MCP summary, a protocol line, a page) reaches its bound sooner when it says
     more, and says so as before (a summary with its omitted count, error 8, a cursor); time and
-    memory are linear in the patch, within the factors stated in the changelog. Measured for
+    memory are linear in the patch, within the factors stated in [the 0.8.4 notes](release-notes/0.8.4.md). Measured for
     release 0.8.4 (not again for this version, whose further readings say more) against the
     published v0.8.3 binary: the `rank_patch` summary (256 KiB) of a 1,500-file patch
     lists 1,082 files where 0.8.3 listed 1,094 (`omitted_files` 418 against 406), and a ranking

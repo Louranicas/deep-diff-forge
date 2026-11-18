@@ -99,7 +99,7 @@ prints the full registry.
 
 ## More
 
-- [Root README](https://github.com/Louranicas/deep-diff-forge#readme): command
+- [Reference documents](https://gitlab.com/lukeomahoney/deep-diff-forge/-/tree/main/docs/reference): command
   reference, output schemas, MCP server, SDKs and the daemon.
 - [API and IPC](https://github.com/Louranicas/deep-diff-forge/blob/main/docs/API_AND_IPC.md):
   JSON-RPC methods, MCP tools and socket rules.

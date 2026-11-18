@@ -369,7 +369,7 @@ ubuntu-22.04-arm): they link against the build image's glibc, and a 26.04 build 
 PR #79), hence the older arm64 image. Their
 declared floor is glibc 2.34 (measured on the v0.5.0 x86_64 binary; on glibc 2.34 to 2.38 the
 loader prints one stderr warning per run, see
-[supported platforms](../README.md#supported-platforms)). musl is not built: the tree-sitter C
+[supported platforms](reference/supported-platforms.md)). musl is not built: the tree-sitter C
 code needs a musl C toolchain and nothing would test the result.
 
 ```mermaid
