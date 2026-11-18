@@ -51,10 +51,10 @@ Tests, corpora and the review record are in the full notes.
 
 ### Changed
 
-- **`basis` in `rank.v0` evidence is no longer always `lexical`.** (superseded before release; see the full notes)
+- **`basis` in `rank.v0` evidence is no longer always `lexical`.** (details superseded before release; see the full notes)
 - **A hunk's evidence can depend on the hunks Git must put beside it.**
 - **Every Rust hunk is also read as release 0.8.3 read it**
-- **Existing Rust signals can be found where they were not before.** (superseded before release; see the full notes)
+- **Existing Rust signals can be found where they were not before.** (details superseded before release; see the full notes)
 - and 1 more, in the full notes
 
 ### Security
@@ -268,9 +268,9 @@ Full notes: [docs/release-notes/0.7.0.md](docs/release-notes/0.7.0.md)
 ### Added
 
 - **An exact platform matrix.**
-- **The launchd agent is loaded by a real launchd in CI.**
 - **Daemon metrics for Prometheus, without a listener.**
 - **`deep-diff-forge [--] <old> <new>` reviews two regular files.**
+- and 1 more, in the full notes
 
 ### Changed
 

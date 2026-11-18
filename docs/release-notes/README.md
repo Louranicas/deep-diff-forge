@@ -1,11 +1,12 @@
 # Release notes
 
 The notes of every release, newest first. Each file holds that version's full section of the
-[changelog](../../CHANGELOG.md), moved there word for word; the changelog keeps a short entry for
+[changelog](../../CHANGELOG.md), moved there; the changelog keeps a short entry for
 each version and links to its file.
 
-The signed release pages are on GitLab, the public home of the project
-(<https://gitlab.com/lukeomahoney/deep-diff-forge/-/releases>); Gitea and Forgejo mirror it.
+From 0.8.4 the signed release pages are on GitLab, the public home of the project
+(<https://gitlab.com/lukeomahoney/deep-diff-forge/-/releases>), with Gitea and Forgejo as mirrors;
+up to 0.8.3 they are on [GitHub's releases page](https://github.com/Louranicas/deep-diff-forge/releases).
 Security advisories are in [`docs/advisories/`](../advisories/).
 
 | Version | Date | In one line | Notes |

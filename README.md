@@ -288,7 +288,7 @@ the rule of the stop hook and the stated limits are in [the agent hooks referenc
 ## Reference
 
 The sections that stood on this page until 0.9.0 are in [`docs/reference/`](docs/reference/),
-moved word for word. The release archive ships this README alone: read them in a clone or at
+moved from this page. The release archive ships this README alone: read them in a clone or at
 <https://gitlab.com/lukeomahoney/deep-diff-forge/-/tree/main/docs>.
 
 | Sections | What is there |
@@ -319,7 +319,7 @@ moved word for word. The release archive ships this README alone: read them in a
 
 **Everyone is welcome.** Deep-Diff-Forge is an open invitation, with no prior involvement
 needed, and no contribution is too small. Fix a typo, report a bug with a patch that reproduces
-it, add a tree-sitter language, close one of the [known limits](#project-status), or review
+it, add a tree-sitter language, close one of the [known limits](docs/release-notes/0.9.0.md#status-at-release), or review
 someone else's pull request.
 
 1. Read [CONTRIBUTING.md](CONTRIBUTING.md). It covers setup in three commands, the quality bar

@@ -1,7 +1,7 @@
 # Reference
 
-The reference sections of the front page, as they stood there until 0.9.0, each in its own
-file and moved word for word. The [README](../../README.md#reference) says what each holds.
+The reference sections of the front page, as they stood there until 0.9.0, in the files below,
+moved from that page. The [README](../../README.md#reference) says what each holds.
 
 - [For agents: told while it works, judged when it stops](agent-hooks.md)
 - [Command reference](commands.md#command-reference)
