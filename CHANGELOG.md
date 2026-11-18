@@ -86,6 +86,32 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   - *Measured:* `lost3.py` over 6,110 patches finds no difference at all from the previous
     build of this tree (no item lost or gained, no refusal changed); the 51 cost inputs take
     64.44 s against 64.58 s.
+- **One rule for the cost of one long line, and a test that holds it.** A long JavaScript word
+  (above), the secret rule (above) and the empty-handler rule were each a check that walked
+  from a match to the end of its line or run again for every match: the third is new in the
+  integrated tree (it came with the signals). For each `catch` the rule read the handler's
+  binding to the next `)` and each `.catch(` read its callback to the matching `)`, so 2 MB of
+  `x.catch((` took 149 s of CPU at best of three runs (254 s in one run on a busier host;
+  v0.8.3: 0.00 s), and 2 MB of `catch(` 16 s and of `catch (` 14 s. The rule now: no check walks from a match to the end of its line, or of its run, more
+  than once for the line. The empty-handler rule pairs the line's parentheses in one pass,
+  finds the next `)` from a place that only moves on, and reads the block after a `)` once;
+  the same three lines rank in 0.08 s each. Its reading before the change is kept
+  for the tests and gives the same answer on 60,000 generated lines.
+  - *The test of the class* (`long_lines_of_every_trigger_rank_in_bounded_time`) builds its
+    list from the tables in the code, so a new token, keyword or word is in it without a new
+    test: every rule's tokens, modules, spaced heads and tails and secret prefixes (now one
+    table, `SECRET_PREFIXES`), the JavaScript operand keywords, the Rust token reader's words
+    (now one table, `WORDS`), the shell's list words, the empty-handler rule's head words and
+    every ASCII punctuation byte in every language: 397 triggers. Two lines of 2 MiB for
+    each, the trigger repeated and one word ending in it, rank inside 10 s of thread CPU in a
+    debug build (the slowest 3.2 s) and 2 s in a release build (the slowest 0.22 s). Before
+    the change, the release run gets no answer for `.catch((` repeated within 20 s. Nothing
+    else in the list was over the bound before the change: on the release binary of the
+    previous commit every trigger in twelve paths ranked in 0.23 s at most, the `catch`
+    family aside.
+  - *Measured:* `lost3.py` over 6,110 patches finds no difference from the previous commit;
+    the 51 cost inputs take 66.04 s against 65.50 s (each within 7% either way, best of
+    three on a busy host).
 - **Two fuzz targets for the agent hooks (fifteen in all).** `hook_input` reads any bytes as
   the JSON a client gives `agent hook <event>` (the CLI's own `hook` module): an input is read
   only when it is an object naming the event, a session and a directory, and anything else is

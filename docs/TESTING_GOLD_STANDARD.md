@@ -143,6 +143,21 @@ era) no longer holds. How the standard is enforced today:
   changed, each once. Five minutes each on 2026-11-18, no crash: `hook_input` 4,046,034
   runs, `judge_patch` 8,102 (about 26 a second: each runs Git several times). Seeds:
   `fuzz/seeds/hook_input` (4), `fuzz/seeds/judge_patch` (5).
+- **Cost of one long line (0.9.0):** one rule closes the class "cost quadratic in the length
+  of one line" (FINDING-5, the secret rule, the empty-handler rule): no check walks from a
+  match to the end of its line, or of its run, more than once for the line. One test holds
+  the class (`long_lines_of_every_trigger_rank_in_bounded_time` in the graph crate): it
+  builds its list from the tables in the code (every rule's tokens, modules, spaced heads and
+  tails and secret prefixes, the JavaScript operand keywords, the Rust token reader's words,
+  the shell's list words, the empty-handler rule's head words, and every ASCII punctuation
+  byte in every language; 397 triggers on 2026-11-18), and ranks two lines of 2 MiB for
+  each, the trigger repeated and one word ending in it, inside a bound of thread CPU time
+  (10 s in a debug build, 2 s in a release build). The gate runs all of them: on 16 threads
+  67 s in a debug build, the slowest line 3.2 s; in a release build 6 s, the slowest 0.22 s.
+  A new token, keyword or word is in the list without a new test. Readings that changed for
+  the class are compared with the reading they replaced, kept for the tests, on seeded
+  generated lines (the keyword test, the secret rule and the empty-handler rule: the same
+  answer on every line).
 - **Sandbox refusal controls:** the rootless-Podman planted-breach suite
   (`crates/deep-diff-forge-cli/tests/council_sandbox.rs`, 12 probes) runs on
   every pull request.
