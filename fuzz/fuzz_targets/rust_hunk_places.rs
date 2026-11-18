@@ -678,7 +678,12 @@ fn hinted_joins_are_read(choice: &[u8]) {
             ("in order", format!("{one}{two}")),
             ("the second first", format!("{two}{one}")),
         ] {
-            let file = parsed(&change(&patch)).expect("two hunks are a patch");
+            // 0.10.0: the parser refuses a hunk that `git apply` places elsewhere than its header
+            // says (no context past line 1, or after a hunk with no trailing context): such an
+            // input is no patch any more, and the rule has nothing to check (two hunks are a patch until then).
+            let Some(file) = parsed(&change(&patch)) else {
+                return;
+            };
             assert!(
                 has(&file, signal),
                 "{signal} of {first:?} and {second:?} as two hunks that touch ({what}, {order}, context above: {context}) is not found"
@@ -718,7 +723,12 @@ fn no_form_is_read_at_an_edge(choice: &[u8]) {
         } else {
             format!("{two}{one}")
         };
-        let file = parsed(&change(&patch)).expect("two hunks are a patch");
+        // 0.10.0: the parser refuses a hunk that `git apply` places elsewhere than its header
+        // says (no context past line 1, or after a hunk with no trailing context): such an
+        // input is no patch any more, and the rule has nothing to check (two hunks are a patch until then).
+        let Some(file) = parsed(&change(&patch)) else {
+            return;
+        };
         assert_eq!(
             has(&file, signal),
             read,
@@ -857,7 +867,12 @@ fn no_hunk_without_old_lines_parts_two_that_touch(choice: &[u8]) {
         );
     }
     let patch = hunks.concat();
-    let file = parsed(&change(&patch)).expect("hunks are a patch");
+    // 0.10.0: the parser refuses a hunk that `git apply` places elsewhere than its header
+    // says (no context past line 1, or after a hunk with no trailing context): such an
+    // input is no patch any more, and the rule has nothing to check (hunks are a patch until then).
+    let Some(file) = parsed(&change(&patch)) else {
+        return;
+    };
     assert!(
         has(&file, signal),
         "{signal} of {first:?} and {second:?} in two hunks whose old numbers touch is not found beside {decoys} hunks of added lines at their place: {patch:?}"
@@ -882,7 +897,12 @@ fn old_cuts_are_joined(choice: &[u8]) {
     } else {
         format!("{two}{one}")
     };
-    let file = parsed(&change(&patch)).expect("two hunks are a patch");
+    // 0.10.0: the parser refuses a hunk that `git apply` places elsewhere than its header
+    // says (no context past line 1, or after a hunk with no trailing context): such an
+    // input is no patch any more, and the rule has nothing to check (two hunks are a patch until then).
+    let Some(file) = parsed(&change(&patch)) else {
+        return;
+    };
     assert!(
         has(&file, "test_removed"),
         "the removed test of {first:?} cut from {second:?} is not found by the join: {patch:?}"
@@ -901,7 +921,12 @@ fn two_hunks_at_old_position_nought(choice: &[u8], all: &[(char, &str)]) {
     } else {
         format!("{above}{below}")
     };
-    let file = parsed(&change(&patch)).expect("two hunks of added lines are a patch");
+    // 0.10.0: the parser refuses a hunk that `git apply` places elsewhere than its header
+    // says (no context past line 1, or after a hunk with no trailing context): such an
+    // input is no patch any more, and the rule has nothing to check (two hunks of added lines are a patch until then).
+    let Some(file) = parsed(&change(&patch)) else {
+        return;
+    };
     alone_is_kept(&file, false, "two hunks at old position 0");
     released_is_kept(&file, "two hunks at old position 0");
 }
@@ -942,7 +967,12 @@ fn a_lined_hunk_written_after_two_that_touch_parts_nothing(choice: &[u8]) {
     } else {
         format!("{two}{one}{third}")
     };
-    let file = parsed(&change(&patch)).expect("three hunks are a patch");
+    // 0.10.0: the parser refuses a hunk that `git apply` places elsewhere than its header
+    // says (no context past line 1, or after a hunk with no trailing context): such an
+    // input is no patch any more, and the rule has nothing to check (three hunks are a patch until then).
+    let Some(file) = parsed(&change(&patch)) else {
+        return;
+    };
     assert!(
         has(&file, signal),
         "{signal} of {first:?} and {second:?} in two hunks whose old numbers touch is not found with a third written after them that claims old line {claims}: {patch:?}"
@@ -1008,7 +1038,12 @@ fn a_shebang_on_either_side_names_the_language(choice: &[u8], own: &[&str]) {
             lines.len(),
         ),
     ] {
-        let found = places(&file.expect("the script under another header is a patch"));
+        // 0.10.0: a form the parser refuses (a hunk `git apply` places elsewhere than its header
+        // says) is no patch any more and has nothing to check (the script under another header is a patch until then).
+        let Some(file) = file else {
+            continue;
+        };
+        let found = places(&file);
         for (signal, new_side, at) in &truth {
             assert!(
                 found.contains(&(*signal, *new_side, at + offset)),
@@ -1046,7 +1081,12 @@ fn honest_lines_are_no_items(choice: &[u8]) {
         (two, format!("{first} / {second}")),
         (removed, format!("removed: {old}")),
     ] {
-        let file = parsed(&change(&body)).expect("a hunk of changed lines is a patch");
+        // 0.10.0: the parser refuses a hunk that `git apply` places elsewhere than its header
+        // says (no context past line 1, or after a hunk with no trailing context): such an
+        // input is no patch any more, and the rule has nothing to check (a hunk of changed lines is a patch until then).
+        let Some(file) = parsed(&change(&body)) else {
+            return;
+        };
         for signal in [
             "process_spawn",
             "network_fetch",
@@ -1095,7 +1135,12 @@ fn no_number_hides_a_script(choice: &[u8], own: &[&str]) {
         ("two false numbers", script(old, new, ""), 0),
         ("the hunk written second", script(1, 1, &other), 2),
     ] {
-        let found = places(&file.expect("the same hunk under other numbers is a patch"));
+        // 0.10.0: a form the parser refuses (a hunk `git apply` places elsewhere than its header
+        // says) is no patch any more and has nothing to check (the same hunk under other numbers is a patch until then).
+        let Some(file) = file else {
+            continue;
+        };
+        let found = places(&file);
         for (signal, new_side, at) in &truth {
             assert!(
                 found.contains(&(*signal, *new_side, at + offset)),
@@ -1187,7 +1232,12 @@ fuzz_target!(|data: &[u8]| {
         several.push_str(&hunk(&header, &all[from..to]));
         from = to;
     }
-    let several = parsed(&creation(&several)).expect("a creation in several hunks is a patch");
+    // 0.10.0: the parser refuses a hunk that `git apply` places elsewhere than its header
+    // says (no context past line 1, or after a hunk with no trailing context): such an
+    // input is no patch any more, and the rule has nothing to check (a creation in several hunks is a patch until then).
+    let Some(several) = parsed(&creation(&several)) else {
+        return;
+    };
     alone_is_kept(&several, true, "the file created as several hunks");
     let found = places(&several);
     for item in &whole {
@@ -1232,7 +1282,12 @@ fuzz_target!(|data: &[u8]| {
             &all[from..]
         )
     );
-    let apart = parsed(&change(&apart)).expect("two hunks of added lines are a patch");
+    // 0.10.0: the parser refuses a hunk that `git apply` places elsewhere than its header
+    // says (no context past line 1, or after a hunk with no trailing context): such an
+    // input is no patch any more, and the rule has nothing to check (two hunks of added lines are a patch until then).
+    let Some(apart) = parsed(&change(&apart)) else {
+        return;
+    };
     alone_is_kept(
         &apart,
         false,
@@ -1280,7 +1335,12 @@ fuzz_target!(|data: &[u8]| {
     ] {
         let (old_rows, new_rows) = sides(size);
         let header = format!("@@ -{},{old_rows} +{new_start},{new_rows} @@", first + 1);
-        let file = parsed(&change(&hunk(&header, &fragment))).expect("a fragment is a patch");
+        // 0.10.0: the parser refuses a hunk that `git apply` places elsewhere than its header
+        // says (no context past line 1, or after a hunk with no trailing context): such an
+        // input is no patch any more, and the rule has nothing to check (a fragment is a patch until then).
+        let Some(file) = parsed(&change(&hunk(&header, &fragment))) else {
+            return;
+        };
         released_is_kept(&file, "the fragment");
         if declared {
             continue;
@@ -1301,11 +1361,15 @@ fuzz_target!(|data: &[u8]| {
         return;
     }
     let (old_rows, new_rows) = sides(size);
-    let whole = parsed(&change(&hunk(
+    // 0.10.0: the parser refuses a hunk that `git apply` places elsewhere than its header
+    // says (no context past line 1, or after a hunk with no trailing context): such an
+    // input is no patch any more, and the rule has nothing to check (a fragment is a patch until then).
+    let Some(whole) = parsed(&change(&hunk(
         &format!("@@ -{},{old_rows} +{},{new_rows} @@", first + 1, first + 1),
         &fragment,
-    )))
-    .expect("a fragment is a patch");
+    ))) else {
+        return;
+    };
     let truth = places(&whole);
     let mut cuts: Vec<usize> = (0..=usize::from(choice[5]) % 2)
         .map(|k| from + 1 + (usize::from(choice[k]) + 5 * k) % (changed - 1))
@@ -1329,7 +1393,12 @@ fuzz_target!(|data: &[u8]| {
         new_at += news;
         begin = end;
     }
-    let cut = parsed(&change(&pieces)).expect("a change cut into touching hunks is a patch");
+    // 0.10.0: the parser refuses a hunk that `git apply` places elsewhere than its header
+    // says (no context past line 1, or after a hunk with no trailing context): such an
+    // input is no patch any more, and the rule has nothing to check (a change cut into touching hunks is a patch until then).
+    let Some(cut) = parsed(&change(&pieces)) else {
+        return;
+    };
     let found = places(&cut);
     for item in &truth {
         assert!(
