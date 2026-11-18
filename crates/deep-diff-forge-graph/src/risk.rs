@@ -514,6 +514,32 @@ mod tests {
         parse(input).unwrap().into_iter().next().unwrap()
     }
 
+    /// The binary section `text`. 0.10.0 (ruling 1 of the integration, class C): the parser
+    /// refuses a section whose headers are no shape Git writes (`Files … differ`; an `index` line
+    /// with no mode where Git writes one), with the reason asserted here; its score is then taken
+    /// of the section as built without the parser: an in-place binary change of the path that
+    /// carries the refused section's header lines.
+    fn binary_section(text: &str) -> ReviewFile {
+        match parse(text) {
+            Ok(mut files) => files.remove(0),
+            Err(deep_diff_forge_patch::PatchParseError::HeaderNotWrittenByGit {
+                reason, ..
+            }) => {
+                let why = "no section Git writes has this header after the ones before it";
+                assert_eq!(reason, why, "{text}");
+                let first = text.lines().next().unwrap();
+                let path = &first[first.rfind(" b/").unwrap() + 3..];
+                let mut f = file(&format!(
+                    "{first}\nindex 1111111..2222222 100644\nBinary files a/{path} and b/{path} differ\n"
+                ));
+                let skip = usize::from(!f.patch_twin.metadata[0].starts_with("diff --git "));
+                f.patch_twin.metadata = text.lines().skip(skip).map(str::to_owned).collect();
+                f
+            }
+            Err(error) => panic!("{text}: {error}"),
+        }
+    }
+
     fn modify(path: &str, body_lines: usize) -> ReviewFile {
         use std::fmt::Write as _;
         let n = body_lines.max(1);
@@ -804,7 +830,7 @@ mod tests {
         const NULL: &str = "0000000000000000000000000000000000000000";
         const BLOB: &str = "545a1639dc6dea3534198996319dd2847b002e4a";
         let section = |path: &str, headers: &str, marker: &str| {
-            file(&format!(
+            binary_section(&format!(
                 "diff --git a/{path} b/{path}\n{headers}\n{marker}\n"
             ))
         };
@@ -893,7 +919,7 @@ mod tests {
         const NULL: &str = "0000000000000000000000000000000000000000";
         const BLOB: &str = "545a1639dc6dea3534198996319dd2847b002e4a";
         let section = |path: &str, headers: &str, marker: &str| {
-            file(&format!(
+            binary_section(&format!(
                 "diff --git a/{path} b/{path}\n{headers}\n{marker}\n"
             ))
         };

@@ -599,7 +599,8 @@ diff --git a/src/edited.rs b/src/edited.rs
             ),
         ] {
             for (shape, text) in one_path_shapes(name, first, second) {
-                let files = deep_diff_forge_patch::parse(&text).unwrap();
+                // 0.10.0: the parser refuses the later sections (no context); read as built.
+                let files = crate::unplaced::unplaced(&text);
                 let ranked = rank(&files);
                 let found: Vec<&RankedFile> = ranked
                     .iter()
@@ -641,12 +642,13 @@ diff --git a/src/edited.rs b/src/edited.rs
         let text = format!(
             "diff --git a/src/n.rs b/src/n.rs\nnew file mode 100644\n--- /dev/null\n+++ b/src/n.rs\n@@ -0,0 +1,2 @@\n+// {long}\n+    let v = opt.unwrap\ndiff --git a/src/n.rs b/src/n.rs\n--- a/src/n.rs\n+++ b/src/n.rs\n@@ -2,0 +3,1 @@\n+    ();\n"
         );
-        let files = deep_diff_forge_patch::parse(&text).unwrap();
+        // 0.10.0: the parser refuses the second section (no context); read as built.
+        let files = crate::unplaced::unplaced(&text);
         let shares = CarriedShares::of(&files);
         assert!(!shares.joined_across_sections(0) && !shares.joined_across_sections(1));
         assert!(rank(&files).iter().all(|r| r.evidence.is_empty()));
         let short = text.replace(&long, "short");
-        let files = deep_diff_forge_patch::parse(&short).unwrap();
+        let files = crate::unplaced::unplaced(&short);
         let shares = CarriedShares::of(&files);
         assert!(shares.joined_across_sections(0) && shares.joined_across_sections(1));
     }

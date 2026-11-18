@@ -745,6 +745,10 @@ fn hunks_by_address<'w>(
 }
 
 #[cfg(test)]
+#[path = "../../deep-diff-forge-graph/src/unplaced.rs"]
+mod unplaced;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use deep_diff_forge_patch::InputGuards;
@@ -1049,11 +1053,14 @@ mod tests {
     /// They are the labels a scan of that hunk alone gives, for every hunk: with evidence in
     /// some hunks, none in others, and one in a hunk of 30 KB (which a parser under a budget
     /// did not read, and marked `syntax_unchecked`).
+    ///
+    /// 0.10.0: the first two hunks carry a line of trailing context, as Git writes them (the
+    /// parser refuses a hunk after one with no trailing context).
     #[test]
     fn a_hunks_labels_come_from_the_one_scan_of_its_file() {
         let pad = "a".repeat(30_000);
         let r = review(&format!(
-            "--- a/tests/a.rs\n+++ b/tests/a.rs\n@@ -1,1 +1,3 @@\n fn t() {{\n+    assert!(\n+        true);\n@@ -10,1 +11,2 @@\n fn u() {{\n+    let n = 1;\n@@ -20,1 +22,3 @@\n fn v() {{\n+    x.unwrap();\n+    todo!();\n--- a/src/b.rs\n+++ b/src/b.rs\n@@ -1,1 +1,4 @@\n fn w() {{\n+    assert!(\n+        true);\n+    // {pad}\n"
+            "--- a/tests/a.rs\n+++ b/tests/a.rs\n@@ -1,2 +1,4 @@\n fn t() {{\n+    assert!(\n+        true);\n }}\n@@ -10,2 +12,3 @@\n fn u() {{\n+    let n = 1;\n }}\n@@ -20,1 +23,3 @@\n fn v() {{\n+    x.unwrap();\n+    todo!();\n--- a/src/b.rs\n+++ b/src/b.rs\n@@ -1,1 +1,4 @@\n fn w() {{\n+    assert!(\n+        true);\n+    // {pad}\n"
         ));
         let files = r.files();
         let scans = Scans::of(files);
@@ -1090,12 +1097,15 @@ mod tests {
     /// neither hunk has the call. A `git diff` with context lines writes no such hunks, so
     /// for its patches a picked hunk is still scanned alone. A view of one such hunk reads
     /// the texts that hunk stands in and does not scan the file (IR7-L-2).
+    ///
+    /// 0.10.0: the parser refuses such a creation (its second hunk follows one with no trailing
+    /// context), so no review holds it; the views' reading is tested on the file built without
+    /// the parser (`unplaced`, which also asserts the refusal and its reason).
     #[test]
     fn hunks_read_together_have_the_labels_of_the_files_scan() {
-        let r = review(
+        let files = &super::unplaced::unplaced(
             "diff --git a/src/lib.rs b/src/lib.rs\nnew file mode 100644\n--- /dev/null\n+++ b/src/lib.rs\n@@ -0,0 +1,2 @@\n+pub fn a() {}\n+pub fn evil(x: Option<u32>) -> u32 { x.unwrap\n@@ -2,0 +3,1 @@\n+() }\n",
         );
-        let files = r.files();
         for (whole, single) in [(true, false), (false, false), (false, true)] {
             let scans = Scans::of(files);
             assert_eq!(
@@ -1113,10 +1123,11 @@ mod tests {
     /// for it. Before, the labels of one picked hunk came from a scan of its whole file, and
     /// a one-line hunk cost what the hostile hunk beside it cost (1.8 s; 4 s in the review's
     /// own patch). Only the listing of every hunk scans every file, for the order.
+    /// (0.10.0: the first hunk carries a line of trailing context, as Git writes it.)
     #[test]
     fn a_selection_scans_only_the_hunks_it_shows() {
         let r = review(
-            "--- a/tests/a.rs\n+++ b/tests/a.rs\n@@ -1,1 +1,2 @@\n fn cheap() {\n+    let n = 1;\n@@ -10,1 +11,3 @@\n fn other() {\n+    assert!(\n+        true);\n--- a/src/b.rs\n+++ b/src/b.rs\n@@ -1,1 +1,2 @@\n fn w() {\n+    x.unwrap();\n",
+            "--- a/tests/a.rs\n+++ b/tests/a.rs\n@@ -1,2 +1,3 @@\n fn cheap() {\n+    let n = 1;\n }\n@@ -10,1 +11,3 @@\n fn other() {\n+    assert!(\n+        true);\n--- a/src/b.rs\n+++ b/src/b.rs\n@@ -1,1 +1,2 @@\n fn w() {\n+    x.unwrap();\n",
         );
         let files = r.files();
         let cheap = files[0].patch_twin.hunks[0].address(&files[0].path);

@@ -15,6 +15,8 @@ pub mod lexical;
 mod rank;
 mod risk;
 mod rust_tokens;
+#[cfg(test)]
+mod unplaced;
 mod vocabulary;
 
 pub use evidence::{
