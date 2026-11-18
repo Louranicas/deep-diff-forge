@@ -276,7 +276,8 @@ the local repository. Its self-test is `scripts/test_release_local.sh` (`just re
     from github.com: a read that bills nothing, but the gate needs github.com reachable.
   - The edits to `.github/ISSUE_TEMPLATE` are inert: GitHub reads them from its `main`, which
     stays at 0.8.3, and GitLab does not read them.
-  - The README's "Latest release" badge is GitHub's, so it shows v0.8.3.
+  - The README's "Latest release" badge reads GitLab's releases. The README shipped in the
+    0.9.0 archive still carries GitHub's badge, which shows v0.8.3.
 
 ## Artifact Layout
 
