@@ -6972,11 +6972,11 @@ fn three_commits_with_no_verdict(
 }
 
 /// The judging of a stop in a project with one working tree and no submodules: its limit
-/// of 45 seconds less the 4 it keeps for remembering and saying (README, "The order of a
-/// stop, and its time").
+/// of 45 seconds less the 4 it keeps for remembering and saying
+/// (`docs/reference/agent-hooks.md`, "The order of a stop, and its time").
 const JUDGING: f64 = 41.0;
-/// With less than this of its judging left a stop asks about no commit (README, the same
-/// table).
+/// With less than this of its judging left a stop asks about no commit
+/// (`docs/reference/agent-hooks.md`, the same table).
 const ASK_FLOOR: f64 = 3.0;
 
 /// One stop that came to its commits late, and what the test measured of it.

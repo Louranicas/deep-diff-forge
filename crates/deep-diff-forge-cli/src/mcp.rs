@@ -1,6 +1,6 @@
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--mcp
 // DDF slice D: `deep-diff-forge mcp`, a read-only Model Context Protocol server over stdio.
-// Design/status: docs/ROADMAP.md#status-2026-10-26 and README "MCP server".
+// Design/status: docs/ROADMAP.md#status-2026-10-26 and docs/reference/mcp-sdk-daemon.md "MCP server".
 //! A dual-era MCP server (specification 2026-07-28, with the 2025-11-25 `initialize` handshake for
 //! legacy clients) whose tools are the daemon's own methods, so an MCP client gets exactly what the
 //! CLI and the daemon give: `review_patch` is `diff.compute`, `rank_patch` is `diff.rank`. Every

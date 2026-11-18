@@ -3796,8 +3796,9 @@ impl Ask {
 /// "Least recently" is by the number of the stop each was last asked about at, which every
 /// ask writes down whether or not the attempt counts.
 ///
-/// What the property needs ([`OWED_ASKS_NEED`] is the one place the time is stated; README
-/// and the tests take it from there): a judge that can be run (with no judge or no policy
+/// What the property needs ([`OWED_ASKS_NEED`] is the one place the time is stated;
+/// `docs/reference/agent-hooks.md` and the tests take it from there): a judge that can be run
+/// (with no judge or no policy
 /// nothing is submitted for any commit, which is said); a state that can be kept (with
 /// none, every stop starts from what was last written, and says so); and
 /// [`OWED_ASKS_NEED`] of the judging left when the stop comes to its commits, after the

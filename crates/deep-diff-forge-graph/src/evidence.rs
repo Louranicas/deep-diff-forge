@@ -12808,8 +12808,8 @@ mod tests {
     ///
     /// It counts the lines of the code views a reading holds, not memory: what else a
     /// reading might hold for a text (a copy of a view, a cache) is not counted here, and the
-    /// memory figures of the README are measured, not held by this test (tenth independent
-    /// review, its weak tests).
+    /// memory figures of `docs/reference/risk-ranking.md` are measured, not held by this test
+    /// (tenth independent review, its weak tests).
     #[test]
     fn a_scan_holds_one_reading_of_one_text_at_a_time() {
         let longest = |file: &ReviewFile| {

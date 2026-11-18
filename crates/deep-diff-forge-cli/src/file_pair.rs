@@ -1,5 +1,5 @@
 // DDF integration: R02, R03, R07. Direct two-file review: Git produces the patch from two regular files, and the exact bytes are sealed and fed to the same outputs as `--stdin-patch`.
-// Design/status: README "Compare two files"; docs/ROADMAP.md
+// Design/status: docs/reference/commands.md "Compare two files"; docs/ROADMAP.md
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--file_pair
 //! `deep-diff-forge [--] <old> <new>`: review two regular files directly.
 //!
