@@ -567,7 +567,7 @@ pub const METHODS: &[MethodSpec] = &[
     method(
         "review.outline",
         "patch: string, require_files?: boolean, require_hunks?: boolean, max_bytes?: integer, cursor?: string",
-        "deep-diff-forge.review-outline.v0: files in review-risk order with their hunks' addresses, headings and counts, no line text; next_cursor continues",
+        "deep-diff-forge.review-outline.v0: files in review-risk order with their hunks' addresses, ranges (the patch's own claim), headings and counts, no line text; next_cursor continues",
         1,
         Work::Request,
     ),

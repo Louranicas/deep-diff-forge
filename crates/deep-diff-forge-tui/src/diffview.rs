@@ -548,8 +548,13 @@ fn rule(palette: &Palette, width: usize) -> Line<'static> {
 fn hunk_header(hunk: &PatchHunk, palette: &Palette) -> Line<'static> {
     let old = hunk.old_start.unwrap_or(0);
     let new = hunk.new_start.unwrap_or(0);
+    // The header's lines are the patch's claim; where Git anchors the hunk is said.
+    let anchor = hunk
+        .git_anchor()
+        .map(|a| format!(" ({a})"))
+        .unwrap_or_default();
     Line::from(Span::styled(
-        format!("@@ -{old} +{new} @@"),
+        format!("@@ -{old} +{new} @@{anchor}"),
         Style::default()
             .fg(palette.accent)
             .add_modifier(Modifier::DIM),

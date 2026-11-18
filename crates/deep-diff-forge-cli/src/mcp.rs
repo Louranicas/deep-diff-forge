@@ -373,7 +373,7 @@ fn view_tools() -> Vec<Value> {
         json!({
             "name": "review_outline",
             "title": "Outline a patch for review",
-            "description": format!("Start here. Every file in review-risk order with its score, signals and hunks (address, line ranges, @@ heading, counts), and no line text: the deep-diff-forge.review-outline.v0 document, sealed over the patch bytes. The whole answer fits max_bytes (default {MCP_DEFAULT_BYTES}); pass next_cursor back as cursor for the rest. Then fetch what matters with review_hunks.{UNTRUSTED}"),
+            "description": format!("Start here. Every file in review-risk order with its score, signals and hunks (address, line ranges, @@ heading, counts), and no line text: the deep-diff-forge.review-outline.v0 document, sealed over the patch bytes. A hunk's line ranges are the patch's own claim; where Git places the hunk is settled by its lines, fetched with review_hunks (a hunk at old line 0 or 1 is placed at the start of the file). The whole answer fits max_bytes (default {MCP_DEFAULT_BYTES}); pass next_cursor back as cursor for the rest. Then fetch what matters with review_hunks.{UNTRUSTED}"),
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -413,7 +413,7 @@ fn view_tools() -> Vec<Value> {
         json!({
             "name": "review_change",
             "title": "Review a change straight from Git",
-            "description": format!("Read the staged change, the working tree or a commit range from a Git repository and answer with its outline (default) or chosen hunks, sealed over the exact bytes Git returned, with an acquisition member (base, target). No patch to paste. Only repositories at or under a root the operator allowed (`deep-diff-forge mcp --allow-repo PATH`) can be read; Git is stopped after 30 s. The whole answer fits max_bytes (default {MCP_DEFAULT_BYTES}); next_cursor fetches the rest.{UNTRUSTED}"),
+            "description": format!("Read the staged change, the working tree or a commit range from a Git repository and answer with its outline (default; a hunk's line ranges are the patch's own claim, and where Git places the hunk is settled by its lines, fetched with view hunks; a hunk at old line 0 or 1 is placed at the start of the file) or chosen hunks, sealed over the exact bytes Git returned, with an acquisition member (base, target). No patch to paste. Only repositories at or under a root the operator allowed (`deep-diff-forge mcp --allow-repo PATH`) can be read; Git is stopped after 30 s. The whole answer fits max_bytes (default {MCP_DEFAULT_BYTES}); next_cursor fetches the rest.{UNTRUSTED}"),
             "inputSchema": {
                 "type": "object",
                 "properties": {
