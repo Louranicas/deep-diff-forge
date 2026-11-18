@@ -1,0 +1,79 @@
+{
+  "schema": "forge-warden.verdict.v2",
+  "tool": {
+    "name": "forge-warden",
+    "version": "0.2.0"
+  },
+  "evaluated_on": "2026-11-14",
+  "seals": {
+    "policy_sha256": "74d1bfb2884a4bd4505f10407fed2595a7b65ec82b361a76ac364fffb05c8f7c",
+    "rank_sha256": "92888805813c02a1a7eddae3ecb25e64bd335c7f35e0d1ed144df9f4009f8684",
+    "patch_sha256": "540e53b6ba66014bcf2a7e3513dfdc28cda65a3fb7f5b84160559d932b38a506",
+    "patch_facts_sha256": "6accafca7a8ffa46c8dd0d835b985f944b9d76343f70030fb401e3433b5b98ec",
+    "provenance": "produced",
+    "ranked_by": {
+      "version": "0.8.3",
+      "sha256": "b4ec54b07a1afa79b0493ce8030aac4fdff6eae6b369ba06a8c5be6528636918"
+    },
+    "git": {
+      "path": "/usr/bin/git",
+      "version": "git version 2.56.0",
+      "sha256": "20739384fd97e904e8545b39753c3e42a0cd7a8016d382f6ec1aadc910f8c872",
+      "admission": "approved",
+      "allowlist_sha256": "6caed663d4f7d288d8f4df32495800a5d58f2df9db14017f03f1e4cb3e1894ba"
+    }
+  },
+  "verdict": "fail",
+  "exit": {
+    "code": 7,
+    "name": "policy_fail",
+    "action": "change_input"
+  },
+  "summary": {
+    "files": 1,
+    "rules": 2,
+    "passed": 1,
+    "waived": 0,
+    "held": 0,
+    "failed": 1
+  },
+  "rules": [
+    {
+      "id": "no-secrets",
+      "kind": "forbid_signal",
+      "severity": "fail",
+      "outcome": "fail",
+      "why": "A credential committed once is compromised forever, even after a revert.",
+      "violations": [
+        {
+          "path": "lib/a.rs",
+          "message": "carries forbidden signal `secret_like`",
+          "signal": "secret_like",
+          "evidence": [
+            {
+              "address": "f70b2da50dfa4d496709fb2c5ac2d85e95be255e32ae248b7b58f156332a76fa",
+              "side": "new",
+              "line": 3
+            },
+            {
+              "address": "f70b2da50dfa4d496709fb2c5ac2d85e95be255e32ae248b7b58f156332a76fa",
+              "side": "new",
+              "line": 4
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "no-silent-suppression",
+      "kind": "forbid_signal",
+      "severity": "hold",
+      "outcome": "pass",
+      "why": "A silenced check hides the next real bug; fix the cause or justify it in review.",
+      "violations": []
+    }
+  ],
+  "expired_waivers": [],
+  "unused_waivers": [],
+  "notes": []
+}

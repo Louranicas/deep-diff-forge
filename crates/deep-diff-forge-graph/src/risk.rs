@@ -58,6 +58,22 @@ impl RiskSignal {
             Self::Code(signal) => signal.label(),
         }
     }
+
+    /// What the signal adds to a file's score, once per file. `test_only` and
+    /// `generated_or_vendored` add nothing: they are recorded because they withhold the bonuses
+    /// other paths earn. Code evidence carries its own weight ([`EvidenceSignal::weight`]), which
+    /// a test path can halve ([`assess_file`]).
+    #[must_use]
+    pub const fn weight(self) -> u32 {
+        match self {
+            Self::PublicApiSurface => 5,
+            Self::DeletedFile | Self::LargeChange | Self::HazardousText | Self::SymlinkChange => 3,
+            Self::NewFile | Self::ManyHunks | Self::ExecutableBit => 2,
+            Self::BinaryChange | Self::ConfigOrLockfile => 1,
+            Self::TestOnly | Self::GeneratedOrVendored => 0,
+            Self::Code(signal) => signal.weight(),
+        }
+    }
 }
 
 /// Lines (added+removed) at or above which a change counts as large.
@@ -95,9 +111,11 @@ pub struct Assessment {
 ///
 /// Code evidence adds each signal's weight once per file. A path cannot hide code: evidence
 /// keeps its weight on a generated or vendored path, and on a test path it counts half
-/// (rounded up), except a removed test, which counts in full.
+/// (rounded up), except a signal that a test lost its force (removed, skipped, or asserting
+/// nothing), which counts in full.
 ///
-/// `file` is read as the only file of its patch ([`crate::evidence::file_evidence`]);
+/// The answer is the file's own: `file` is read as the only file of its patch
+/// ([`crate::evidence::file_evidence`]), so it does not depend on the rest of the review;
 /// [`crate::rank`] reads each file of a patch with its share of the patch's carried reading.
 #[must_use]
 pub fn assess_file(file: &ReviewFile) -> Assessment {
@@ -124,7 +142,7 @@ pub(crate) fn assess_file_marked(file: &ReviewFile, share: Share) -> (Assessment
     for signal in EvidenceSignal::ALL {
         if evidence.iter().any(|e| e.signal == signal) {
             signals.push(RiskSignal::Code(signal));
-            score += if test && signal != EvidenceSignal::TestRemoved {
+            score += if test && !signal.weakens_a_test() {
                 signal.weight().div_ceil(2)
             } else {
                 signal.weight()
@@ -164,13 +182,13 @@ fn score_path_and_shape(file: &ReviewFile) -> (u32, Vec<RiskSignal>) {
 
     if is_public_api(path) {
         signals.push(RiskSignal::PublicApiSurface);
-        score += 5;
+        score += RiskSignal::PublicApiSurface.weight();
     }
     if test {
         signals.push(RiskSignal::TestOnly);
     } else if config {
         signals.push(RiskSignal::ConfigOrLockfile);
-        score += 1;
+        score += RiskSignal::ConfigOrLockfile.weight();
     }
 
     score += status_weight(file, &mut signals);
@@ -181,11 +199,11 @@ fn score_path_and_shape(file: &ReviewFile) -> (u32, Vec<RiskSignal>) {
     let hunks = file.patch_twin.hunks.len();
     if adds + dels >= LARGE_CHANGE_LINES {
         signals.push(RiskSignal::LargeChange);
-        score += 3;
+        score += RiskSignal::LargeChange.weight();
     }
     if hunks >= MANY_HUNKS {
         signals.push(RiskSignal::ManyHunks);
-        score += 2;
+        score += RiskSignal::ManyHunks.weight();
     }
 
     (score, signals)
@@ -216,7 +234,7 @@ fn hazard_weight(file: &ReviewFile, signals: &mut Vec<RiskSignal>) -> u32 {
         .any(|from| !deep_diff_forge_core::path_hazards(from).is_empty());
     if in_lines || from_hazardous || !deep_diff_forge_core::path_hazards(&file.path).is_empty() {
         signals.push(RiskSignal::HazardousText);
-        3
+        RiskSignal::HazardousText.weight()
     } else {
         0
     }
@@ -246,11 +264,11 @@ fn mode_weight(file: &ReviewFile, signals: &mut Vec<RiskSignal>) -> u32 {
         .any(|mode| mode & 0o170_000 == SYMLINK)
     {
         signals.push(RiskSignal::SymlinkChange);
-        weight += 3;
+        weight += RiskSignal::SymlinkChange.weight();
     }
     if new.iter().any(executable) && !old.iter().any(executable) {
         signals.push(RiskSignal::ExecutableBit);
-        weight += 2;
+        weight += RiskSignal::ExecutableBit.weight();
     }
     weight
 }
@@ -265,9 +283,9 @@ fn mode_weight(file: &ReviewFile, signals: &mut Vec<RiskSignal>) -> u32 {
 /// `Files /dev/null and b/x differ` under `new file mode` as `added`, and without this such a
 /// creation ranked below 0.8.3 once the line became a binary marker (R84-M-1).
 fn status_weight(file: &ReviewFile, signals: &mut Vec<RiskSignal>) -> u32 {
-    let (signal, weight) = match file.status {
-        FileStatus::Added => (RiskSignal::NewFile, 2),
-        FileStatus::Deleted => (RiskSignal::DeletedFile, 3),
+    let signal = match file.status {
+        FileStatus::Added => RiskSignal::NewFile,
+        FileStatus::Deleted => RiskSignal::DeletedFile,
         FileStatus::BinaryChanged => {
             let says = |header: &str| {
                 file.patch_twin
@@ -275,21 +293,22 @@ fn status_weight(file: &ReviewFile, signals: &mut Vec<RiskSignal>) -> u32 {
                     .iter()
                     .any(|m| m.starts_with(header))
             };
-            let mut weight = 1;
+            let mut weight = RiskSignal::BinaryChange.weight();
             if says("new file mode ") {
                 signals.push(RiskSignal::NewFile);
-                weight += 2;
+                weight += RiskSignal::NewFile.weight();
             }
             if says("deleted file mode ") {
                 signals.push(RiskSignal::DeletedFile);
-                weight += 3;
+                weight += RiskSignal::DeletedFile.weight();
             }
-            (RiskSignal::BinaryChange, weight)
+            signals.push(RiskSignal::BinaryChange);
+            return weight;
         }
         _ => return 0,
     };
     signals.push(signal);
-    weight
+    signal.weight()
 }
 
 /// Count added and removed lines across a file's hunks.
@@ -429,6 +448,36 @@ mod evidence_score_tests {
         assert_eq!(
             score("tests/it.rs", &["#[test]"], &["let a = 1;"]),
             plain + 3
+        );
+    }
+
+    /// A skipped test and an assertion that cannot fail live in test files: a test path does not
+    /// discount them. A stub is ordinary evidence and is halved there.
+    #[test]
+    fn a_test_path_does_not_discount_a_test_that_lost_its_force() {
+        let plain = score("tests/it.rs", &[], &["let a = 1;"]);
+        assert_eq!(score("tests/it.rs", &[], &["#[ignore]"]), plain + 3);
+        assert_eq!(score("tests/it.rs", &[], &["assert!(true);"]), plain + 3);
+        assert_eq!(score("tests/it.rs", &[], &["todo!()"]), plain + 2);
+        let source = score("src/x.rs", &[], &["let a = 1;"]);
+        assert_eq!(score("src/x.rs", &[], &["todo!()"]), source + 3);
+        // a panic path: 3 in source, halved (rounding up) on a test path
+        assert_eq!(
+            score("src/x.rs", &[], &["let v = f().unwrap();"]),
+            source + 3
+        );
+        assert_eq!(
+            score("tests/it.rs", &[], &["let v = f().unwrap();"]),
+            plain + 2
+        );
+        // each once, however many lines carry it
+        assert_eq!(
+            score(
+                "tests/it.rs",
+                &[],
+                &["#[ignore]", "assert!(true);", "#[ignore]"]
+            ),
+            plain + 6
         );
     }
 

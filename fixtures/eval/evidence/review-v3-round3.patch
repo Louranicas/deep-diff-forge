@@ -1,0 +1,75 @@
+diff --git a/src/aliased.rs b/src/aliased.rs
+new file mode 100644
+--- /dev/null
++++ b/src/aliased.rs
+@@ -0,0 +1,5 @@
++use tracing::instrument as rstest;
++#[rstest]
++pub fn production() {
++    load().unwrap();
++}
+diff --git a/src/renamed_crate.rs b/src/renamed_crate.rs
+new file mode 100644
+--- /dev/null
++++ b/src/renamed_crate.rs
+@@ -0,0 +1,4 @@
++#[tokio::test]
++pub fn production() {
++    load().unwrap();
++}
+diff --git a/src/stripped.rs b/src/stripped.rs
+new file mode 100644
+--- /dev/null
++++ b/src/stripped.rs
+@@ -0,0 +1,5 @@
++#[strip_cfg]
++#[cfg(test)]
++pub fn production() {
++    load().unwrap();
++}
+diff --git a/src/comment_above.rs b/src/comment_above.rs
+--- a/src/comment_above.rs
++++ b/src/comment_above.rs
+@@ -40,4 +40,5 @@
+  the comment that opened above this hunk ends on the next line
+ #[cfg(test)] // */
+ pub fn production() {
++    load().unwrap();
+ }
+diff --git a/src/spaced.rs b/src/spaced.rs
+new file mode 100644
+--- /dev/null
++++ b/src/spaced.rs
+@@ -0,0 +1,3 @@
++pub fn load() {
++    value.unwrap ();
++}
+diff --git a/tests/same_row.rs b/tests/same_row.rs
+--- a/tests/same_row.rs
++++ b/tests/same_row.rs
+@@ -1,4 +1,4 @@
+ fn check() {
+     assert!(true); assert!(
+-        computes()
++        true
+     );
+diff --git a/src/with_tests.rs b/src/with_tests.rs
+new file mode 100644
+--- /dev/null
++++ b/src/with_tests.rs
+@@ -0,0 +1,15 @@
++pub fn parse(text: &str) -> Option<u32> {
++    text.parse().ok()
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn reads_a_number() {
++        assert_eq!(parse("7").unwrap(), 7);
++        let value = parse("8").expect("a number");
++        assert_eq!(value, 8);
++    }
++}

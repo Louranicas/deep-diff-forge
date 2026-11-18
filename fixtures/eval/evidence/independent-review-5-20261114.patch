@@ -1,0 +1,185 @@
+diff --git a/src/union.rs b/src/union.rs
+new file mode 100644
+--- /dev/null
++++ b/src/union.rs
+@@ -0,0 +1,24 @@
++pub const HELP: &str = "usage: tool
++  --all   run everything";
++
++pub fn first(v: &[u8]) -> u8 {
++    *v.first().unwrap/*""*/()
++}
++
++pub fn later() -> u32 {
++    todo/*""*/!()
++}
++
++#[cfg(test)]
++mod tests {
++    #[test]
++    #[/*""*/ignore]
++    fn skipped() {
++        assert_eq!(1 + 1, 3);
++    }
++
++    #[test]
++    fn checks_nothing() {
++        assert!(/*""*/true);
++    }
++}
+diff --git a/src/skip.rs b/src/skip.rs
+new file mode 100644
+--- /dev/null
++++ b/src/skip.rs
+@@ -0,0 +1,11 @@
++pub const HELP: &str = "usage: tool
++  --all   run everything";
++
++#[cfg(test)]
++mod tests {
++    #[test]
++    #[cfg_attr(not(feature = "never)"), ignore)]
++    fn the_check_that_matters() {
++        assert_eq!(1 + 1, 3);
++    }
++}
+diff --git a/src/cli.rs b/src/cli.rs
+index 1111111..2222222 100644
+--- a/src/cli.rs
++++ b/src/cli.rs
+@@ -3,8 +3,8 @@ use std::fmt;
+ 
+ pub const HELP: &str = "usage: tool
+   --all   run everything";
+ 
+ pub fn first(v: &[u8]) -> u8 {
+-    v.first().copied().unwrap_or(0)
++    *v.first().unwrap/*""*/()
+ }
+ 
+diff --git a/src/marks.rs b/src/marks.rs
+new file mode 100644
+--- /dev/null
++++ b/src/marks.rs
+@@ -0,0 +1,18 @@
++pub fn first(v: &[u8]) -> u8 {
++    *v.first().‎r#unwrap()
++}
++pub fn second(v: &[u8]) -> u8 {
++    *Option::‎r#unwrap(v.first())
++}
++#[cfg(test)]
++mod tests {
++    #[test]
++    #[‎r#ignore]
++    fn skipped() {
++        ‎r#assert!(false);
++    }
++}
++fn main() {
++    let a = std::panic::catch_unwind(|| first(&[]));
++    println!("first(&[]) panicked: {}", a.is_err());
++}
+diff --git a/src/net.rs b/src/net.rs
+--- a/src/net.rs
++++ b/src/net.rs
+@@ -3,5 +3,6 @@
+    The sync step is described here at length,
+    over several lines of an existing block comment.
++   // */ pub fn evil(u: &str) { std::process::Command::new("sh").arg("-c").arg(u).status().ok(); } /*
+    More prose of the same comment follows,
+    and it ends further down.
+    Still prose.
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,3 +1,4 @@
+ pub fn a() {}
++/*
+ pub fn b() {}
+ pub fn c() {}
+@@ -9,3 +10,4 @@
+ pub fn i() {}
+ pub fn j() {}
++// */ pub fn evil() { std::process::Command::new("sh").status().ok(); }
+ pub fn k() {}
+diff --git a/src/bin/tool.rs b/src/bin/tool.rs
+new file mode 100644
+--- /dev/null
++++ b/src/bin/tool.rs
+@@ -0,0 +1,3 @@
++#!/usr/bin/env -S cargo run /*
++fn main() { std::process::Command::new("sh").status().ok(); }
++// */
+diff --git a/src/kraw.rs b/src/kraw.rs
+new file mode 100644
+--- /dev/null
++++ b/src/kraw.rs
+@@ -0,0 +1,11 @@
++macro_rules! m { ($($t:tt)*) => {}; }
++m!(k#r"\"); m!(" /* ");
++pub fn run() -> bool {
++    let s = std::process::Command::new("sh").arg("-c").arg("id").status();
++    let p = unsafe { *std::ptr::null::<u8>().wrapping_add(1).cast::<u8>().wrapping_sub(1).cast::<Option<u8>>() };
++    s.is_ok() && p.is_none()
++}
++#[test]
++#[ignore]
++fn never_runs() { assert!(true); }
++fn main() { println!("spawned: {}", std::process::Command::new("true").status().unwrap().success()); }
+diff --git a/src/rawlt.rs b/src/rawlt.rs
+new file mode 100644
+--- /dev/null
++++ b/src/rawlt.rs
+@@ -0,0 +1,10 @@
++macro_rules! m { ($($t:tt)*) => {}; }
++m!('r#r"\"); m!(" /* ");
++pub fn run() -> bool {
++    let s = std::process::Command::new("sh").arg("-c").arg("id").status();
++    s.is_ok()
++}
++#[test]
++#[ignore]
++fn never_runs() { assert!(true); }
++fn main() { println!("spawned: {}", run()); }
+diff --git a/src/db.rs b/src/db.rs
+index 1111111..2222222 100644
+--- a/src/db.rs
++++ b/src/db.rs
+@@ -12,7 +12,7 @@ pub fn insert(conn: &Connection, name: &str, age: u32) {
+         INSERT INTO people
+             (name, age, created)
+         VALUES
+-            (?1, ?2, now())", params![name, age]).ok();
++            (?1, ?2, now())", params![name, age]).unwrap();
+ }
+ 
+ pub fn count(conn: &Connection) -> u64 {
+diff --git a/src/glob.rs b/src/glob.rs
+--- a/src/glob.rs
++++ b/src/glob.rs
+@@ -7,2 +7,3 @@
+ pub fn sources() -> Vec<PathBuf> {
++    let pattern = "**/x.unwrap()";
+     walk(pattern)
+diff --git a/src/store.rs b/src/store.rs
+--- a/src/store.rs
++++ b/src/store.rs
+@@ -1,3 +1,4 @@
+ pub fn a() {}
++pub const S: &str = "
+ pub fn b() {}
+ pub fn c() {}
+@@ -9,3 +10,4 @@
+ pub fn i() {}
+ pub fn j() {}
++// "; pub fn evil() { std::process::Command::new("sh").status().ok(); }
+ pub fn k() {}
+diff --git a/src/log.rs b/src/log.rs
+--- a/src/log.rs
++++ b/src/log.rs
+@@ -40,2 +40,4 @@
+ fn usage() {
++    log("never call x.unwrap() here");
++    let s = "a string that the hunk does not close
+     and goes on

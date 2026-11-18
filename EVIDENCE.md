@@ -1427,3 +1427,48 @@ its build and checks are the local ones below ([local release](docs/RELEASE_AND_
   `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin` or `aarch64-apple-darwin`. G3, F1, F4 and
   F5 are open ([SECURITY.md](SECURITY.md#residual-risks-and-non-goals) for G3 and F1; the
   0.8.3 Known limits of the [CHANGELOG](CHANGELOG.md) for F1, F4 and F5).
+
+## 0.9.0 release commit (2026-11-18)
+
+Dates here are UTC. 0.9.0 is built and published as 0.8.4 was, without GitHub
+([local release](docs/RELEASE_AND_PUBLICATION.md#local-release-from-084)). 0.8.4 was released
+as the signed tag `v0.8.4` (2026-11-17, its commit `76572ec` on GitLab `main`; binary
+`0c93b3ed…`) and published on GitLab, Gitea and Forgejo on 2026-11-18.
+
+- **Inputs.** `integrate/0.9.0` joins three lines on release 0.8.4: the integrity signals
+  (`agent/integrity-signals`), the agent hooks (`agent/loop`) and three fixes found while they
+  were joined (the sections of one path that Git applies in order read as one file; a long word
+  or run of secret prefixes that costs its length; one rule for the cost of one long line). Two
+  reviewers read the integrated tree `31103f9e` (2026-11-18): both GO-WITH-FIXES, low findings
+  only. The round before this commit applies the rulings on them: the vocabulary's `basis` read
+  from the code that sets an item's, two `not_accepted` sentences, the `hook_input` fuzz
+  property stated as checked and a CLI test, two false items of the section rule declared in
+  the limits and in the corpus, and a superseded changelog copy removed. The defects of released
+  versions it fixes are [DDF-2026-003](docs/advisories/DDF-2026-003.md).
+- **Gate.** `scripts/ci_local.sh` passed every step on the candidate of this commit, whose tree
+  differs only in this section (01:19:49Z to 01:31:20Z): `steps failed: 0`.
+- **Evaluation.** 56 cases: precision 179 of 207, recall 179 of 260, findings 33 of 33, ranking
+  12 of 15, 112 declared, no failure. The receipt is the reviewed binary's (`31103f9e`) on the
+  same corpus except for the tool's version; the two new items are the declared false positives
+  of `evidence/integrated-review-1-20261118` (precision was 179 of 205 on 55 cases).
+- **Comparison.** `lost3.py` over 6,110 patches, the candidate's release binary (`5ba0a366…`)
+  against: the reviewed binary of `31103f9e` (`04d82f2e…`): no item lost or gained, no refusal
+  changed (plain and strict); the 0.8.4 release binary (`0c93b3ed…`): 2 patches with a lost item,
+  both the pairing artifact of the tool (a later section of one path now ranked above the
+  other), and 2,510 with a gained item, no refusal changed; v0.8.3: the same 2, 2,571 gained, and
+  5 refusals that differ (shapes 0.8.4 refuses, G2).
+- **Hooks.** The hooks' verify runs 5 to 10 give the decisions of the reviewed hooks binary,
+  step for step (12, 33, 17, 11, 8 and 8 steps).
+- **Vocabulary.** `schema signals` lists `["lexical", "hunk"]` for the nine labels whose items
+  can carry `hunk` (it listed `["lexical"]`); a test holds every item of the corpus to it.
+- **Compatibility, checked against 0.8.4's tree.** The JSON documents: `schema result` and
+  `schema exit-codes` print the same bytes; `rank.v0` gains values only. The Rust API of
+  `deep-diff-forge-graph` breaks: `EvidenceSignal` (not `#[non_exhaustive]`) has five more
+  variants, `Evidence` two more public fields, and `hunk_signals` a new signature. No other
+  public enum gained or lost a variant.
+- **Pending (the owner's steps).** The merge, the signed tag `v0.9.0` on GitLab, Gitea and
+  Forgejo, the release build of the tag, the signature of its `SHA256SUMS`, and publishing the
+  files. None had happened when this section was written.
+- **Not measured here.** 0.9.0 has had no independent rescore. The mutation run of the
+  integrated tree had not finished. No binary was built for `aarch64-unknown-linux-gnu`,
+  `x86_64-apple-darwin` or `aarch64-apple-darwin`.

@@ -1,0 +1,66 @@
+{
+  "schema": "forge-warden.verdict.v2",
+  "tool": {
+    "name": "forge-warden",
+    "version": "0.2.0"
+  },
+  "evaluated_on": "2026-11-14",
+  "seals": {
+    "policy_sha256": "74d1bfb2884a4bd4505f10407fed2595a7b65ec82b361a76ac364fffb05c8f7c",
+    "rank_sha256": "a28cc008d527267077812d4edaf289dfbae5dcbe9a0a60c4b2160bb226aadd2d",
+    "patch_sha256": "7bc5fe0c0650ea1b38563e7892e1d49e60bf74351c77cccff4d621437adc009e",
+    "patch_facts_sha256": "40ccc92dc1cf92b5c612c5c6e01fb0c4fe5d54e541c3a9734e2366ce351f97c6",
+    "provenance": "produced",
+    "ranked_by": {
+      "version": "0.8.3",
+      "sha256": "b4ec54b07a1afa79b0493ce8030aac4fdff6eae6b369ba06a8c5be6528636918"
+    },
+    "git": {
+      "path": "/usr/bin/git",
+      "version": "git version 2.56.0",
+      "sha256": "20739384fd97e904e8545b39753c3e42a0cd7a8016d382f6ec1aadc910f8c872",
+      "admission": "approved",
+      "allowlist_sha256": "6caed663d4f7d288d8f4df32495800a5d58f2df9db14017f03f1e4cb3e1894ba"
+    }
+  },
+  "verdict": "hold",
+  "exit": {
+    "code": 8,
+    "name": "policy_hold",
+    "action": "review_evidence"
+  },
+  "summary": {
+    "files": 1,
+    "rules": 2,
+    "passed": 2,
+    "waived": 0,
+    "held": 0,
+    "failed": 0
+  },
+  "rules": [
+    {
+      "id": "no-secrets",
+      "kind": "forbid_signal",
+      "severity": "fail",
+      "outcome": "pass",
+      "why": "A credential committed once is compromised forever, even after a revert.",
+      "violations": []
+    },
+    {
+      "id": "no-silent-suppression",
+      "kind": "forbid_signal",
+      "severity": "hold",
+      "outcome": "pass",
+      "why": "A silenced check hides the next real bug; fix the cause or justify it in review.",
+      "violations": []
+    }
+  ],
+  "expired_waivers": [],
+  "unused_waivers": [],
+  "notes": [
+    {
+      "code": "patch_unverifiable",
+      "detail": "unsupported file mode 160000 (a submodule or unknown file type); coverage cannot be verified, so nothing passes by default"
+    }
+  ]
+}

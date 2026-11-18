@@ -1,0 +1,46 @@
+diff --git a/src/forged_first_line.rs b/src/forged_first_line.rs
+--- a/src/forged_first_line.rs
++++ b/src/forged_first_line.rs
+@@ -1,4 +1,4 @@
+ #[cfg(test)] // */
+ fn production() {
+-    safe();
++    load().unwrap();
+ }
+diff --git a/src/inserted_at_top.rs b/src/inserted_at_top.rs
+--- a/src/inserted_at_top.rs
++++ b/src/inserted_at_top.rs
+@@ -0,0 +1,4 @@
++#[cfg(test)]
++fn helper() {
++    load().unwrap();
++}
+diff --git a/tests/forwarded.rs b/tests/forwarded.rs
+new file mode 100644
+--- /dev/null
++++ b/tests/forwarded.rs
+@@ -0,0 +1,8 @@
++macro_rules! outer {
++    ($($tt:tt)*) => { $($tt)* };
++}
++outer! {
++    assert!(
++        true
++    );
++}
+diff --git a/src/whole_new_file.rs b/src/whole_new_file.rs
+new file mode 100644
+--- /dev/null
++++ b/src/whole_new_file.rs
+@@ -0,0 +1,11 @@
++pub fn real() -> u32 {
++    7
++}
++
++#[cfg(test)]
++mod tests {
++    #[test]
++    fn it_is_seven() {
++        assert_eq!(Some(super::real()).unwrap(), 7);
++    }
++}

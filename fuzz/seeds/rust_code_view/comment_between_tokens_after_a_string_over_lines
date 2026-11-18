@@ -1,0 +1,35 @@
+pub const HELP: &str = "usage: tool
+  --all   run everything";
+
+pub fn first(v: &[u8]) -> u8 {
+    *v.first().unwrap/*""*/()
+}
+
+pub fn later() -> u32 {
+    todo/*""*/!()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[/*""*/ignore]
+    fn skipped() {
+        assert_eq!(1 + 1, 3);
+    }
+
+    #[test]
+    fn checks_nothing() {
+        assert!(/*""*/true);
+    }
+}
+pub const HELP: &str = "usage: tool
+  --all   run everything";
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[cfg_attr(not(feature = "never)"), ignore)]
+    fn the_check_that_matters() {
+        assert_eq!(1 + 1, 3);
+    }
+}

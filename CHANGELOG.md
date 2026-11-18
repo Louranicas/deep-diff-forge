@@ -6,6 +6,2979 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-18
+
+**Feature release with fixes for released versions.** 0.9.0 adds five integrity signals for a
+change that weakens its own checks (`test_skipped`, `trivial_assert`, `stub_added`,
+`error_swallowed`, `panic_path_added`; Rust hunks are read token by token across their lines,
+`test_removed` included), the signal vocabulary as data (`schema signals`, `explain signal`)
+and the agent hooks (`agent hook`: a session start, each tool call and a judged stop). Three
+fixes were found while the lines were integrated: the sections of one path that Git applies in
+order are read as one file; a long word or a run of secret prefixes costs its length, not its
+square; and one rule bounds the cost of one long line. Of these, 0.8.4 and earlier missed a
+process spawn cut across two sections of one path, and took time quadratic in the length of one
+JavaScript word (26 s of CPU for 200,000 letters on 0.8.3 and on 0.8.4) or of a run of secret
+prefixes ([DDF-2026-003](docs/advisories/DDF-2026-003.md)). The one breaking change is in the
+Rust API of `deep-diff-forge-graph`: `EvidenceSignal`, which is not `#[non_exhaustive]`, has
+five more variants; `Evidence` has two more public fields (`basis`, `test_likely`); and
+`hunk_signals` takes the hunk's place in its file and returns an `Option`. The JSON documents
+and exit codes are not broken: `rank.v0` gains values (five signal labels, the basis `hunk`,
+which an item 0.8.4 marked `lexical` can now carry, and `test_likely`), and `schema result` and
+`schema exit-codes` print what 0.8.4 prints. **Upgrade note:** a forge-warden that does not know
+the five new labels reads each as an unknown signal and holds. This release has no GitHub
+release: it is published as a signed tag on GitLab, Gitea and Forgejo; binaries built locally
+for Linux x86_64.
+
+### Integration (2026-11-18)
+
+- **The integrity signals stand on release 0.8.4.** `agent/integrity-signals` (`33f4223`) is
+  merged into `release/0.8.4-final` (`0a27bc2`); both lines were built and reviewed apart from
+  `d4dbc91`.
+  - *The reading of 0.8.4 stays whole.* Every hunk is also read as release 0.8.4 reads it (the
+    reading of 0.8.3 and the compiler's lexer's, line by line; the hunks of a created file
+    carried from one to the next within the patch's bound of 256 KiB) by that release's rules,
+    and what it finds is united with what the readings of the integrity signals find (whole
+    sides from stated starts, joins of hunks, the token reader). `code_view` with Rust is the
+    scanner of 0.8.3, as in 0.8.4; the whole-side views of the signals are `rust_views`.
+  - *Measured at this merge (2026-11-17):* the evaluation corpus gives the figures of the
+    signals line (55 cases, precision 177 of 203, recall 177 of 260). The integrated tree as
+    reviewed (`31103f9e`, 2026-11-18) gives precision 179 of 205, recall 179 of 260 (the
+    section rule below); with the integrated review's two declared false items (CI1), 56
+    cases, precision 179 of 207, recall 179 of 260.
+- **The agent hooks on the same tree.** `agent/loop` (`ef6afdf`) is merged after it. The hooks
+  are as reviewed; the signal vocabulary has the five integrity labels (facts and remedies
+  written at the merge, "since" 0.9.0), and the sides of a label are read from the reader of a
+  Rust hunk's tokens as well as from the rule tables. A binary creation keeps `new_file` with
+  the weights of the vocabulary (0.8.4's rule). Measured: the hooks' verify runs 5 to 10 give
+  the decisions of the reviewed binary, step for step; the corpus gave the same figures at that
+  merge (2026-11-17).
+  - *The sections of one path that Git applies in order are one file (IR7-H-2; a miss of
+    0.8.4 and of every release before it, fixed here).* The signals line was to be merged only
+    once it stood on 0.8.4's refusal of a path named by more than one section, and the parser
+    of 0.8.4 refuses that except where Git applies the sections one after the other: a change
+    in place after a section that wrote the path, and a new file after a deleted file (which
+    begins the file again). Measured at integration: a call cut between a creation and a change
+    in place of the same path (`opt.unwrap` and `();`), and a spawn after the end of a string
+    that the first section opens, were not found in the forms create then change, change then
+    change, and delete, create, change, by this tree, by the signals line and by release 0.8.4
+    (which misses the spawn the same way, as 0.8.3 does); written as one section they are.
+    Plain `git apply` writes the joined text in every form. Now such sections are also read as
+    one file, a copy of the first with the hunks of all of them in patch order, by every
+    reading, those that join hunks among them (the joins of the signals; for a run that begins
+    with a creation, 0.8.4's carried reading); each section's own reading stays, and what the
+    joined reading finds is reported on the section that holds its line. A run spends its whole
+    new side from the patch's 256 KiB, in patch order, and is read so only when it fits and
+    has no line longer than 512 bytes. All twelve measured forms now find what their
+    one-section form finds, and so does a rename followed by a change in place of the new path.
+    Still read apart: a run past the bound; a later section whose hunks have old lines, where
+    the joins of one file do not join it; a section read as the only file of its patch
+    (`file_evidence`); the earlier sections of the old path of a rename or a copy (Git reads its
+    source as before the patch). The other way, the joined reading can form a construct
+    across the boundary of two sections where no form of Git writes it, and reports it though
+    it is in neither place: a later section is read by its old numbers in the coordinates of
+    one file, and after a creation in the order written. Two shapes give a false
+    `panic_path_added`: an honest `git diff -U0` series whose later section adds a line above
+    the end of an earlier hunk, and a created file followed by a section that adds a line above
+    its context lines (integrated review of 0.9.0, CI1; rare, and declared, not built: the
+    alternative risks losing true items). The seventh review's two corpus items for it moved
+    from declared misses to expected: precision 179 of 205, recall 179 of 260.
+- **A long word costs its length, not its square (FINDING-5; in every release up to 0.8.4).**
+  The JavaScript and TypeScript scanner asks at every byte after a word byte whether the word
+  is one after which an expression starts (`return`, `typeof`, `instanceof`, ...), and it
+  walked back over the whole word each time: one added line of a 200,000-letter word took
+  18 s to rank in v0.8.3 and 35 s with the readings of this tree. It now reads at most eleven
+  bytes back (the longest keyword and one more), which gives the same answer for every text;
+  the same word ranks in 0.01 s. The secret rule had the same shape: a credential prefix that
+  repeats inside its own run (`xAKIAAKIA…`, `xoxb-a` repeated) was walked to the run's end at
+  each repeat (6 s for 200 KB in this tree, 3 s in v0.8.3, 33.5 s for 400 KB of `xoxb-a`); it
+  now reads at most the length its test needs, with the same answer, and those lines rank in
+  0.00 s.
+  - *The released reading is the floor, and here the whole answer.* The walk of 0.8.3 is kept
+    for the tests: the two keyword readings agree at every prefix of every keyword (with up to
+    two more word bytes before it, after each kind of byte) and of 4,000 generated lines; the
+    scanner gives the same views and states both ways over 3,000 generated lines and every
+    keyword before a string, a template and a regex; 1,500 generated JavaScript and
+    TypeScript hunks and two-hunk creations give the same evidence, item for item, and the
+    same ranking both ways; the secret rule answers as 0.8.3's on 20,000 generated lines. A
+    test holds each of the four long-word lines under one second of the thread's CPU time.
+  - *Measured:* `lost3.py` over 6,110 patches finds no difference at all from the previous
+    build of this tree (no item lost or gained, no refusal changed); the 51 cost inputs take
+    64.44 s against 64.58 s.
+- **One rule for the cost of one long line, and a test that holds it.** A long JavaScript word
+  (above), the secret rule (above) and the empty-handler rule were each a check that walked
+  from a match to the end of its line or run again for every match: the third is new in the
+  integrated tree (it came with the signals). For each `catch` the rule read the handler's
+  binding to the next `)` and each `.catch(` read its callback to the matching `)`, so 2 MB of
+  `x.catch((` took 149 s of CPU at best of three runs (254 s in one run on a busier host;
+  v0.8.3: 0.00 s), and 2 MB of `catch(` 16 s and of `catch (` 14 s. The rule now: no check walks from a match to the end of its line, or of its run, more
+  than once for the line. The empty-handler rule pairs the line's parentheses in one pass,
+  finds the next `)` from a place that only moves on, and reads the block after a `)` once;
+  the same three lines rank in 0.08 s each. Its reading before the change is kept
+  for the tests and gives the same answer on 60,000 generated lines.
+  - *The test of the class* (`long_lines_of_every_trigger_rank_in_bounded_time`) builds its
+    list from the tables in the code, so a new token, keyword or word is in it without a new
+    test: every rule's tokens, modules, spaced heads and tails and secret prefixes (now one
+    table, `SECRET_PREFIXES`), the JavaScript operand keywords, the Rust token reader's words
+    (now one table, `WORDS`), the shell's list words, the empty-handler rule's head words and
+    every ASCII punctuation byte in every language: 397 triggers. Two lines of 2 MiB for
+    each, the trigger repeated and one word ending in it, rank inside 10 s of thread CPU in a
+    debug build (the slowest 3.2 s) and 2 s in a release build (the slowest 0.22 s). Before
+    the change, the release run gets no answer for `.catch((` repeated within 20 s. Nothing
+    else in the list was over the bound before the change: on the release binary of the
+    previous commit every trigger in twelve paths ranked in 0.23 s at most, the `catch`
+    family aside.
+  - *Measured:* `lost3.py` over 6,110 patches finds no difference from the previous commit;
+    the 51 cost inputs take 66.04 s against 65.50 s (each within 7% either way, best of
+    three on a busy host).
+- **Two fuzz targets for the agent hooks (fifteen in all).** `hook_input` reads any bytes as
+  the JSON a client gives `agent hook <event>` (the CLI's own `hook` module): an input is read
+  only when it is an object naming the event, a session and a directory, and anything else is
+  refused with the hooks' own message ("did not run", nothing judged; UNJUDGED and "not a
+  pass" for a stop). `judge_patch` makes the patch the hooks give the judge from a working
+  tree that the fuzzer edits (files written, deleted or made executable, any bytes in names
+  and contents, real Git): the parser reads it as the hooks do, or refuses it, and when it
+  reads it, it reads exactly the paths the edits changed, each once. Five minutes each, no
+  crash: `hook_input` 4,046,034 runs, `judge_patch` 8,102.
+- **The integrated review's fixes (2026-11-18).** Two reviewers of the integrated tree
+  (`31103f9e`) each said GO-WITH-FIXES, with low findings only; the coordinator's rulings:
+  - *The vocabulary's `basis` is read from the code that sets an item's* (VI1-L-2, CI3).
+    `schema signals` and `explain signal` said `["lexical"]` for every code-evidence label,
+    while items of nine of them carry `"hunk"`: `error_swallowed` (a handler and its body)
+    and the eight the reader of a Rust hunk's tokens gives (a construct over several lines).
+    Each label now lists every rung an item of it can stand on, from the rule tables' kinds of
+    match and the token reader's list, and a test holds every item of the evaluation corpus
+    to the document.
+  - *`not_accepted` says what the binary does* (CI4). For `test_skipped`, making the
+    assertions always true raises `trivial_assert` only for `assert!(true)` and
+    `assert_eq!(true, true)`, and the entry says so. For `test_removed`, skipping the test
+    raises `test_skipped` (it said that nothing sees it); emptying its body raises nothing;
+    renaming a test so that the runner no longer collects it is reported as `test_removed`
+    itself, so it is no substitute and is not listed.
+  - *The `hook_input` fuzz target says what it checks* (VI1-L-3, CI5): any byte string up to
+    256 KiB (the hook reads up to 32 MiB), and for bytes that are not UTF-8 only the form of
+    the refusal, since the hook refuses them before the reading the target can reach. A CLI
+    test runs the hook itself on such bytes, for each event.
+  - *Two false items of the section rule are declared* (CI1): the limits above name them,
+    and the evaluation corpus has them as a case of two declared false positives
+    (`evidence/integrated-review-1-20261118`), so a change that removes them is seen.
+  - A superseded copy of the hooks bullet, which still said that IR7-H-2 was open, is gone.
+
+### Added
+
+- **Three evidence signals for a change that weakens its own checks** (agent batteries, phase
+  1). `test_skipped`: a test switched off where it stands (`#[ignore`, `pytest.mark.skip`,
+  `it.skip(`, `t.Skip(` and their kin). `trivial_assert`: an assertion that cannot fail
+  (`assert!(true)`, `assert True`, `expect(true).toBe(true)`). `stub_added`: a placeholder
+  where code should be (`todo!(`, `unimplemented!(`, `raise NotImplementedError`). Each is read
+  as code on an added line, with comments and strings blanked, and adds 3 to a file's score
+  once. On a test path the first two keep their full weight, as `test_removed` does; a stub is
+  halved like other evidence. Output is additive: the `signal` values of `rank.v0` evidence
+  and the hunk labels gain three members, and a file that carries one ranks higher than it
+  did.
+- **`error_swallowed`, and evidence that says how it was found** (agent batteries, phase 1,
+  slice 2). An error caught and dropped is evidence: a Python `except` whose body is `pass` or
+  `...`, an empty JS or TS `catch` block, an empty Go `if err != nil` block or `_ = err`, a
+  Rust `Err(_)` arm that does nothing. It adds 3 to a file's score once. A handler and its
+  body are usually two lines, which no one-line rule can see, so the scanner has a second kind
+  of rule that reads the next line on the same side of the hunk. A handler whose body the hunk
+  does not show is not reported.
+
+- **Rust hunks are read by the parser, and `panic_path_added`** (agent batteries, phase 1,
+  slice 3). The new side of each Rust hunk is parsed as a fragment with tree-sitter, after the
+  braces the hunk leaves open or closes without opening are balanced. What the parser reads
+  with no error above it is evidence whatever its spelling: `assert!( true )`,
+  `assert!(true, "msg")` and `#[cfg_attr(miri, ignore)]` are found, which no token matched.
+  `panic_path_added` (+3, once per file) is a `.unwrap()` or `.expect(` method call added
+  outside test code; inside a test function or test module that the hunk shows, it is not
+  reported. Where the parser cannot read (an error, the inside of a macro, a hunk over 64 KiB
+  or 50,000 nodes) the token rules' answer stands. The budgets are counts, so the same patch
+  gives the same ranking. The graph crate now depends on the syntax crate
+  (`docs/crate-edges.txt`). *Superseded before release (2026-11-14, the last entry under
+  Testing): no parser reads a hunk for evidence, the tokens of a hunk are read across its
+  lines, a panic path is reported in test code too (marked `test_likely`), and the graph
+  crate does not depend on the syntax crate.*
+
+- **The signal vocabulary as data: `deep-diff-forge schema signals`.** One
+  `deep-diff-forge.signals.v0` document lists every label a ranking can carry: `label`,
+  `class` (`security`, `integrity` or `shape`), `kind` (`direct`, or `heuristic` for a
+  guess; every signal of this version is direct), `weight`, `basis`, `sides`, `since` and
+  a one-line `summary`. The weights are read from the functions the scorer uses and the
+  sides from the rule table, so the document cannot disagree with a ranking. A reader that
+  judges rankings can take its vocabulary from the binary instead of from the source.
+- **`deep-diff-forge explain signal <label> [--json]`** says why a signal matters, which
+  changes answer it (`accept`), which only hide it (`not_accepted`: each names the signal
+  the substitute raises, or `null` where no signal sees it yet), and the compiler or linter
+  rules that stop the construct before a review does (`native_lints`). An agent that is
+  told a signal fired is told what counts as a repair and what does not. The exit-code
+  form of `explain` is unchanged.
+
+- **The agent loop: `deep-diff-forge agent hook session-start|post-tool|stop --client claude`.**
+  Claude Code hooks that run this binary during a session. After every tool call the agent
+  is told the evidence that is new in the working tree since the session began (label, path,
+  line, what answers the signal); this is advice and never blocks, and a finding is said
+  once per session. At a stop the uncommitted changes, and each commit made since the
+  session began that the branches, tags, stash, `HEAD` or their history name (each commit
+  once, by its own change), are judged by
+  forge-warden in authority mode against the policy at the commit the session began from;
+  only a fail holds the stop, a hold is reported for a person,
+  and a missing judge, policy or admitted ranker is UNJUDGED, never a pass. A failing commit
+  blocks once and then stands; a failing uncommitted change blocks once while it is there. No line of the change is repeated to the agent, and a path is quoted,
+  escaped and cut. When the judge gives no verdict, the reason carries its own words (the
+  name and message of its error document), not a guess from the exit code. `agent setup
+  --client claude --hooks` prints the settings and writes nothing. README "For agents: told while it works, judged when it stops"; SECURITY.md "Agent
+  hooks".
+- **`deep-diff-forge agent doctor --gate`** checks every link a judged stop depends on, in the
+  repository of the current directory: Git 2.40 or later, the repository, the policy at
+  `HEAD`, the judge, the whole chain by a real verdict on a probe (a patch that adds one
+  comment line to the policy), whether the policy protects its own file, whether the patch a
+  stop would judge can be made, whether hooks are switched on, whether a Claude Code
+  settings file registers the stop hook, and whether that hook's timeout leaves a stop its
+  time. Each check says what it found; one that
+  cannot be made because an earlier link is missing is not ready, never fine. Exit 7 when
+  the chain is not ready. Without `--gate`, `agent doctor` is unchanged.
+- **The patch a judge is given for a working tree** (`deep_diff_forge_patch::judge_patch`).
+  The working tree, with untracked files and without ignored ones, as `git diff --binary
+  --no-renames` against a base commit, made the way forge-warden's patch maker makes it for
+  two commits: staged and diffed in a new, empty Git directory that only borrows the object
+  store, with no configuration and, for the diff, no attributes. For a state committed with
+  no conversion the bytes are equal. The repository's index, object store and configuration
+  are only read, and nothing under its Git directory but the object store and `info/exclude`
+  shapes the bytes.
+- **An adversarial review of the agent hooks (Vesper, V4 round 1; `docs/reviews/`), verdict
+  NO-GO, and its fixes.** Each finding was reproduced before it was counted.
+  - *High: a program merely named `forge-warden` passed a failing stop in silence.* The hook
+    took the first `forge-warden` on `PATH` and read exit 0 as a pass with no document. A
+    verdict is now an exit code and a `forge-warden.verdict.v2` document that agree, sealed
+    to the policy and the patch the hook wrote and on a ranking the judge produced; anything
+    else is UNJUDGED. A judge inside the repository it would judge is refused, a `PATH` entry
+    that is not absolute is not searched, and `agent setup --hooks` writes the judge it finds
+    into the commands as an absolute `--judge` (`"judge"` in the JSON form).
+  - *Medium: the state directory followed a symbolic link, and a state file was read whole.*
+    The hook's directory must be a directory of its own (made 0700; a link or a file there
+    stops the hook with a message). A state file is opened without following a link, must be
+    a regular file of at most 1 MiB, and is written 0600.
+  - *Medium: `.git/info/attributes` changed the judged bytes.* The working tree was staged in
+    the repository's own Git directory. It is now staged in the scratch one, so neither that
+    file nor the repository's configuration is read; a `.gitattributes` in the working tree
+    still converts, and is in the patch.
+- **Round 2 of the same review (verdict NO-GO again) and its fixes.** The three findings of
+  round 1 were closed. Three were new, and a fourth was found while fixing.
+  - *High: `agent doctor --gate` called any text holding the words `agent hook stop` a
+    registered stop hook* (`true # agent hook stop` made the gate exit 0). A registered stop
+    hook is now read only as the command `agent setup --hooks` prints: one program with plain
+    or single-quoted arguments, this binary, and the judge, policy and rankers the gate
+    checked.
+  - *Medium: a sparse checkout was judged as if its absent files were deleted.* A working
+    tree whose index marks paths skip-worktree is refused by name
+    (`JudgePatchError::SkipWorktree`): advice stays silent and a stop is UNJUDGED.
+  - *Medium: a sealed document that contradicted itself was a pass* (`"verdict": "pass"`
+    beside `"exit": {"code": 7}`, half its members missing). The document must be whole, say
+    one thing in `verdict`, `exit.code` and the process exit, hold no rule stricter than its
+    verdict, and give no key twice.
+  - *Found while fixing: a patch that could not be made was "nothing to judge".* One error
+    stood for "no commit yet" and for several failures, so a failure let a stop pass in
+    silence. `judge_patch` now returns its own error (`NoBase`, `SkipWorktree`, `Failed`),
+    and only no base and no change are nothing to judge.
+- **Round 3 of the same review (verdict NO-GO a third time) and its fixes.** The sparse
+  working tree and the silent failure were closed. Two findings stood.
+  - *High: a shell assignment stood in for the checked program.* `A=ddf agent hook stop …`
+    passed the gate when a file named `A=ddf` led to this binary, and a shell runs that line
+    as the program `agent`. The gate now compares the program word itself with this binary's
+    own absolute path, and requires the judge to be named by the absolute path it checked.
+  - *Medium: the verdict check was still shallower than the schema.* A document with a date
+    that is not one, no Git, an empty summary, no rules and the exit name of a fail was a
+    pass. The document is now checked member by member against the schema forge-warden ships
+    (`verdict_v2.rs`), and a verdict must also name the ranker the hook gave, by its digest,
+    and a Git the owner enrolled.
+- **Round 4 of the same review (verdict NO-GO, two medium findings) and its fixes.** Both
+  findings of round 3 were closed.
+  - *Medium: members the schema makes optional were not checked when present.* A claimed
+    commit that is not hex, evidence that is not a list of citations, `evidence_truncated:
+    false` and a negative `waived_by` passed beside a waived rule. Each has the schema's form
+    now, and a test holds the list of every member the schema names against the code.
+  - *Medium: sealing to the ranker read each candidate whole.* A 256 MiB file in the ranker
+    directory cost 270 MiB and half the client's timeout. A candidate is hashed in pieces
+    (`deep_diff_forge_core::Sha256`, new), must be a regular file of at most 256 MiB, and all
+    candidates of a stop share 8 seconds; one that is refused is named with its reason. The
+    hash crate is built optimized in debug builds too, so a debug binary hashes itself in a
+    fraction of a second.
+- **Round 5 of the same review (NO-GO on one point).** The optional members were closed. The
+  hashing deadline was looked at only between two reads, so one stalled read ran past it. The
+  ranker directory is now listed and hashed by a helper the stop hook starts as a child
+  (`agent hook seal-rankers`) and kills at the deadline; a helper that does not come back
+  makes the stop UNJUDGED with that reason.
+- **Round 6 of the same review (NO-GO on one new point).** The deadline was closed: a read
+  delayed by ten seconds ended the stop after 8.03 s. New: the helper collected the whole
+  ranker directory before it cut the list to eight, so 500,000 empty files cost 69 MiB. The
+  files that come first by name are now chosen while the directory is read, seven paths held
+  at most, and only a path that would be kept is asked whether it is a file.
+- **Round 7 of the same review (NO-GO on one low point).** The memory finding was closed
+  (500,000 entries: 9 MiB, was 69 MiB). New: a file whose name is not UTF-8 took one of the
+  seven places and could not be written in the helper's list, so a later ranker that could
+  have been offered was not. Such a name takes no place now.
+- **Round 8 of the same review (NO-GO: the same point, one case left).** This binary's own
+  path, when it is not UTF-8, still took the first place and was dropped by the parent. It
+  takes a place only when it can be written; the directory then gives all eight.
+  `deep_diff_forge_patch::file_at_commit` reads a regular file from a commit, which is how
+  the policy is read.
+- **An independent review of the hooks (NO-GO after Vesper's GO) and its fixes.** A reviewer
+  that took no part in the work read the branch after round 9 and found two ways a stop
+  passed with no output although the judge never saw the session's change, five medium and
+  six low findings (`docs/reviews/claude-independent-review-hooks-20261114.md`). Both high
+  findings had one cause: the hook decided which repository and which base at the moment of
+  the stop, from things the session itself moves.
+  - *High: the repository that was judged followed the session's current directory.* After
+    `cd` into a nested repository, another repository, a directory outside any, or one that
+    was gone, the project's change was not judged and nothing was said. The project is now
+    fixed by the session's first hook: the directory the client names
+    (`CLAUDE_PROJECT_DIR`), else the one recorded in the session's state, else the hook
+    input's `cwd`. A stop judges it wherever the session is. A linked working tree of the
+    same repository that the session's directory is in is judged too, from the same commit
+    by the same policy; the worst answer decides and one message names each tree.
+  - *High: work the session committed was never judged, and a policy it committed became the
+    policy.* The patch was `HEAD` against the working tree, with `HEAD` read at the stop.
+    The base is now the commit `HEAD` named when the session's first hook ran, kept in its
+    state and not moved by a later start of the same session. Advice and judgment are about
+    everything since that commit, committed or not, and the policy is read from it. Messages
+    say "changes since this session began (commit abc1234)". A base the branch has left is
+    still compared with, and the message says so; one that can no longer be read, a session
+    that began before the first commit, and one that began on an orphan branch are UNJUDGED.
+  - *Medium: every failure to find the repository or its base was silence.* Git missing from
+    `PATH`, Git refusing the repository for its owner, a directory inside `.git`, an orphan
+    branch. Each is said now: a stop is UNJUDGED with the reason, the start of a session
+    says that stops will not be judged, and advice says each reason once in a session.
+    Nothing is said only when Git found no repository around a session with none recorded,
+    when there was no commit as the session began, or when the change is empty.
+  - *Medium: a file added to the index under an ignore rule was not in the patch* (`git add
+    -f`; a rule in `.gitignore` or in `info/exclude`), although the next commit holds it.
+    Every path the repository's index lists and the working tree has is staged.
+  - *Medium: a verdict that failed or held for something that is not a rule named nothing.*
+    An expired waiver blocked the agent with "Repair what the rules name" and no rule. The
+    message carries the judge's own words for expired waivers and notes, bounded, escaped
+    and marked as the judge's text; a fail with no failing rule says it is for a person.
+  - *Medium: `agent doctor --gate` said ready where a stop was UNJUDGED or no hook ran.* It
+    makes the patch a stop would make (new check `patch`), reads `disableAllHooks`
+    (`hooks_enabled`), counts only a hook of type `command`, and fails a Stop hook timeout
+    under 50 seconds (`hook_timeout`). The `--json` document has ten gate checks, was seven.
+  - *Medium: a command line a hook could not read ended with exit 2*, which Claude Code
+    reads from a stop hook as a block, so a mistyped settings entry held every stop.
+    `agent hook` exits 0 for these and says that the hook did not run (for a stop:
+    UNJUDGED).
+  - *Low.* A stop has one deadline of 45 seconds for all its steps, where the steps' own
+    limits added up to minutes; the scratch directory of a killed hook is removed by the
+    next hook once its process is gone. A lasting condition is told once per session by the
+    advice hook, and a hook input up to 32 MiB is read (a large tool answer over 1 MiB made
+    the hook say it did not run). The start of a session checks the chain as the gate does
+    and says "stops will be judged" only when every link is ready. "The same failure"
+    counts the items the judge cites, so a second credential in a file that blocked for one
+    blocks again; a state that cannot be kept is said with the decision. Staging reads no
+    configuration of the user or the system (a filter of the user's ran before), except the
+    user's ignore file, which is passed by hand. `schema signals` lists `hazardous_text` as
+    read from the path and from every changed line on both sides, as the scorer reads it.
+  - *A stop that is its session's first hook is never silent.* It records the project and
+    the base at that very stop and cannot know what the session committed before. On a
+    clean tree it said nothing. It now says, once, that the session's start was not recorded
+    and that work committed before it was not judged, beside whatever the judge says of what
+    is left in the tree; it is silent only where no project can be found at all.
+  - *The state file moved.* One file per session, in `deep-diff-forge/hooks` under
+    `$XDG_STATE_HOME` or `~/.local/state`, where it is found by the session's id before and
+    without finding the repository. Only the scratch directory is under the Git directory.
+  - *Tests.* A regression test for each finding, one document of each kind recorded from
+    the real judge (pass, hold, fail, fail by an expired waiver, hold by a note) as
+    fixtures, and a test at the hook that a patch which cannot be made is UNJUDGED. Stated
+    limits are in the README and in SECURITY.md: the hooks judge the project's working tree
+    and the one the session is in, not another linked working tree or another branch (a
+    judge on the pull request covers that); an agent can make a stop UNJUDGED, never a
+    pass; advice covers the project's tree only; work already in the tree when a session
+    begins is judged with it.
+- **Round 10 of Vesper's review and a second independent review of the hooks (both NO-GO) and
+  what changed.** The second review found that the cause of the first one's high finding was
+  half removed: the base was fixed, but only the working tree was compared with it
+  (`docs/reviews/claude-independent-review-hooks-2-20261114.md`); Vesper found a clone put
+  at the project's path taken for the project (`docs/reviews/vesper-v4-round10-report-20261114.md`).
+  - *What the hooks are for is said first* (README, SECURITY.md): they guard against honest
+    mistakes and shortcuts, and are not a boundary against deliberate evasion, which is the
+    judge on the pull request. An ordinary workflow must never end in a silent stop with
+    unjudged work; the limits are sorted by that.
+  - *High: committed work was judged only while the working tree still held it.* Branch,
+    commit, switch back; commit a staged file that was edited again; commit, push and reset:
+    each ended in a stop with no output. The session's first hook now records the tips of
+    the branches, remote-tracking refs, tags and the stash, and a stop has judged the working
+    tree and, for `HEAD` and each ref that names a commit made since, the patch from the
+    base (or the common ancestor) to it. The same patch is judged once; at most four
+    distinct patches; the rest, and new commits where the record of refs is partial, are
+    UNJUDGED with the refs named.
+  - *High (Vesper): the project was a pathname.* It is recorded with the device and inode of
+    its Git common directory; another repository at that path is UNJUDGED, and a project
+    that was moved is judged where the session's directory is in it.
+  - *Medium: the hooks wrote a state file larger than they read*, after a block with
+    thousands of violations, and the next hook took the session for a new one. A failure is
+    kept as a SHA-256 and a count, every list is bounded, and a state file that cannot be
+    read is UNJUDGED, never "no state". State schema `deep-diff-forge.hook-state.v2`.
+  - *Medium: a start that was not recorded was silent whenever the hook after a tool call
+    ran before the stop.* The first stop of such a session says so, whoever recorded.
+  - *Medium: another repository was never named.* A repository the session's directory is
+    in that is not its project, and a submodule with changes not committed in it, are named
+    once as not judged.
+  - *Medium: a failure held the first stop of every later turn.* A failure blocks once in a
+    session and then stands. Messages no longer call the range "your changes" or ask to
+    "repair what the rules name": the range holds commits pulled or made by others.
+  - *A nested repository no longer breaks staging.* One with no commit made `git add` fail
+    and every stop UNJUDGED. Nested repositories that the index does not hold are left out
+    of the staged tree and named (`JudgePatch::nested`).
+  - *Low.* `agent doctor --gate` has thirteen links, was ten: `state_directory`,
+    `start_hook_registered` and `advice_hook_registered` are new. When the state cannot be
+    kept the advice hook says so once, not after every tool call. The start of a session
+    names the project's directory. A state directory inside the project's working tree is
+    refused.
+  - *New in the patch crate:* `commit_patch`, `ref_tips`, `has_commits_beyond`,
+    `merge_base`, `dirty_submodules`.
+- **Round 11 of Vesper's review and a third independent review of the hooks (both NO-GO):
+  commits are judged one by one.** Both reviews found one root in different forms
+  (`docs/reviews/vesper-v4-round11-report-20261114.md`,
+  `docs/reviews/claude-independent-review-hooks-3-20261114.md`): a stop judged, for each
+  ref, the net patch from the session's base to the ref's tip, over bounded lists of refs.
+  The unit that is judged was changed; the findings were not patched one by one.
+  - *A commit is judged once, by its own change.* A stop has judged the uncommitted change
+    of the project's working tree (and of a linked working tree the session is in) against
+    that tree's `HEAD`, and then each commit of the session that no stop has judged, the
+    oldest first, as the patch from its first parent to itself. A commit is the session's
+    when a branch, a tag, the stash, the `HEAD` of a working tree, or the reflog of such a
+    `HEAD` or of the stash leads to it and nothing that was named when the session began
+    does. This closes: a credential committed and then reverted, whose net patch was empty
+    (VD4R11-H-1); a commit that a second commit undoes (HR3-M-1); the untracked files of
+    `git stash -u`, which are a commit of their own, and the older entries of the stash
+    (HR3-H-1); a commit on a detached `HEAD` that was left, and one in another working
+    tree (HR3-L-6). A commit that only a remote-tracking ref names is fetched, not the
+    session's.
+  - *No bound a repository reaches, and no order by name.* The commits that were there
+    when the session began are ids in a file beside the state (up to a million), which the
+    state names by SHA-256 and length; a list that is missing or changed is UNJUDGED. A
+    repository with more than 4,096 refs lost its stash and tags from the list (HR3-H-2);
+    the first four patches of sixteen tips in name order could leave out the session's own
+    (HR3-M-2). One stop now judges as many commits as its time allows, the oldest first,
+    and counts the rest as UNJUDGED until a later stop judges them. No name of a ref is
+    read (HR3-L-4) or put in a message (HR3-L-5): a unit is "Uncommitted changes in" a
+    path or "Commit" and twelve digits.
+  - *What blocks.* A failing commit holds the stop that first judges it and then stands,
+    whatever refs name it (HR3-L-1). A failing uncommitted change holds one stop while it
+    is there and is forgotten when a stop finds the change without it, so it blocks again
+    when it comes back (HR3-M-3).
+  - *Identity.* The project is known by the inode of its Git directory and its path; the
+    device number is left out, because it is given at mount time and a session resumed
+    after a reboot was refused (HR3-M-4). A project that was moved is no longer judged
+    where the session finds it: like a clone at its path, it is UNJUDGED with the remedy,
+    a new session.
+  - *Lows.* A stop that has more to name beside its verdict than a session remembers says
+    so once (HR3-L-2). A linked working tree inside the project's tree is named as that,
+    not as a repository of its own (HR3-L-3). README and SECURITY.md say what the code
+    does: 4 MiB for a state file, no naming of refs, `/clear` as a new session (HR3-L-7).
+  - *State.* Schema `deep-diff-forge.hook-state.v3`; a state of an earlier schema is not
+    read (UNJUDGED until the file is removed or a new session starts).
+  - *New in the patch crate:* `named_commits`, `commits_beyond`.
+  - *Tests after a mutation run on the hooks.* Of the 64 changes the run had found by then
+    that no test noticed, the ones whose code is still there have a test now: the forms of a
+    verdict that are two conditions, an unclosed string in the duplicate-key reader, the
+    bounds of the state, the input, the judge's error output, the rankers' listing and the
+    messages at the byte, which failure of a directory is which, the key of a finding on the
+    old side, five places of `agent doctor --gate`, and in the patch crate a long path, a
+    large index, a long or missing or unreadable `info/exclude`, the user's `diff.context`
+    and `head_contains`. The others are equivalent and are listed in the round's report.
+- **A fourth independent review of the hooks (NO-GO, narrower): staged content, messages that
+  keep what blocks, and commits with no verdict.** The review confirmed with the real judge
+  that every case of the third review holds and that a sweep of thirty ordinary Git
+  workflows blocks, and found narrower cases
+  (`docs/reviews/claude-independent-review-hooks-4-20261114.md`).
+  - *What is staged is judged* (HR4-H-1): the change the index holds is a third kind of
+    unit, "Staged changes in" the path, judged when it is another change than the working
+    tree's. A credential staged and then repaired without `git add` was in no patch.
+  - *A message keeps what blocks* (HR4-H-2): what blocks now, then what got no verdict,
+    then holds, then what stands (a count with three names past three). Twelve units were
+    listed the oldest first, and the commit that blocked could go unnamed.
+  - *A commit with no verdict* (HR4-M-2): refused while the chain gives verdicts, it is
+    said once, remembered as not judgeable, and the next commit is asked about; only a
+    chain that gives no verdict ends the asking, for that stop. Three such commits used to
+    end the judging of every later commit of the session.
+  - *A state that cannot be kept* (HR4-M-3): the client's `stop_hook_active` is honoured
+    then, so a failing commit, which cannot be repaired, does not block for good.
+  - *Which commits of others are judged* (HR4-M-1): those fetched during the session, not
+    those already in the repository when it began, however they reach the branch. README,
+    SECURITY, the start of a session and every message that names the range say so.
+  - *A failing commit always blocks once* (HR4-L-4): the exception for a failure that had
+    blocked while uncommitted is removed; its match let another credential stand.
+  - *Lows.* Reflogs are read with `git rev-list`, so a user's `log.showSignature` cannot
+    spoil the list; a working tree that was removed by hand is passed over and named;
+    `agent doctor --gate` has a link `commits` (HR4-L-1). A commit at the edge of a shallow
+    clone is UNJUDGED by its id, not judged "from nothing" (HR4-L-2). The commits that have
+    their answer are a file beside the state with no eviction (HR4-L-3). Another working
+    tree with uncommitted changes is named once (HR4-L-5). A message that leaves something
+    out says how much.
+  - *State.* Schema `deep-diff-forge.hook-state.v4`; a state of an earlier schema is not
+    read. *New in the patch crate:* `staged_patch`, `worktrees`, `has_uncommitted_changes`.
+- **Round 13 of Vesper's review and a fifth independent review of the hooks (both NO-GO): a
+  stop is silent only when everything has a pass.** Both found one thing from two sides
+  (`docs/reviews/vesper-v4-round13-report-20261114.md`,
+  `docs/reviews/claude-independent-review-hooks-5-20261114.md`): a commit that got no
+  verdict was written down as done, said once, and never asked about or named again. The
+  rule every part obeys now: a stop prints nothing only when every unit has a pass;
+  anything else is said at that stop, every time, in a bounded form.
+  - *No verdict is never done* (VD4R13-M-1, HR5-H-1): such a commit is named at every stop
+    and asked about again (never-asked commits first), up to five attempts that count;
+    after that it is still named. Final at once only what the hook proves from the
+    repository (a shallow clone's edge, a patch over the builder's size).
+  - *Holds and standing failures are a line of every stop* (HR5-M-4).
+  - *One message budget* (HR5-M-1, HR5-M-2): under 9,000 characters; what blocks is shown
+    the newest first and never without the names of its rules; a path that is cut keeps
+    its file name.
+  - *A staged failure is its own* (HR5-M-3): it blocks after the working tree was repaired
+    and says what clears it.
+  - *What a stop names beside its verdict is under the same rule.* A nested repository
+    that was left out, another repository the session is in, a submodule with changes,
+    another working tree with changes or gone, and a start that was not recorded were each
+    said once in a session (the entries above say "once"); a later stop where every unit
+    passed was silent beside them. Each is now said at every stop while it is true: in
+    full the first time, then in one line that counts such things and names the first
+    three. Working trees beyond the sixteen a stop looks at are counted, where they were
+    passed over, and the files of a repository that has no commit yet are said to be not
+    judged, where such a stop was silent. The members `start_said` and `more_said` left the state.
+  - *Lows.* `git add -N` is no staged content (HR5-L-1); the gate's probe is made for any
+    policy name (HR5-L-2); the words for a state that cannot be kept say what happened
+    (HR5-L-3); a reason from Git is its `fatal:` or `error:` line (HR5-L-4); a bare
+    repository's own entry is no working tree (HR5-L-5); the gate reads what is staged, and
+    a resumed start says when its lists are gone (HR5-L-6); README and SECURITY.md say when
+    a stop is silent (HR5-L-7).
+  - *State.* Schema `deep-diff-forge.hook-state.v5`; the file of judged commits holds
+    `id:n<attempts>:reason` and `id:x:reason` lines beside `p`, `h`, `f`.
+- **Round 14 of Vesper's review and a sixth independent review of the hooks: a no-verdict
+  is never given up; a failure is forgotten only when it was looked for and not found;
+  what is held is always named** (`docs/reviews/vesper-v4-round14-report-20261114.md`,
+  NO-GO on one medium, VD4R14-M-1; `docs/reviews/claude-independent-review-hooks-6-20261114.md`,
+  GO-WITH-FIXES: it found no stop that prints nothing while something is open).
+  - *A commit with no verdict is never given up* (VD4R14-M-1, HR6-L-1). After five
+    attempts that counted, a commit with no verdict was named at every stop and asked about
+    no more. A judge that failed on one patch five times while it answered for other patches
+    (so each attempt counted) left a commit with a credential UNJUDGED for the rest of the
+    session: when the judge recovered, the failing verdict was never obtained and no stop
+    blocked. Now such a commit is asked about again at every stop for the first five
+    attempts, then one such commit per stop in turn (the fewest attempts first, the last ask
+    of the stop, inside the same deadline); never given up. A fail then blocks like any
+    first judgment, a pass leaves the list, a hold is held. Its line says what is true: "no
+    verdict in N attempts; it is asked about again in its turn". The file of judged commits
+    holds any attempt count in `id:n<attempts>:reason` (it stopped at 5).
+  - *A failure that stands does not block again because nothing looked at it* (HR6-M-1).
+    A remembered failure was forgotten whenever its unit was absent from a stop. So a
+    staged failure blocked again after `git add -A` and one more edit of any file, every
+    other turn, with advice that was not true there; and a failure in a linked working
+    tree blocked again each time the session's directory left the tree and came back. Now
+    a failure is remembered with its working tree and forgotten only by a stop that looked
+    at that tree and found it gone; a stop that does not look names the tree and says that
+    a failure stands there; and a staged failure that is all in the working tree's failure
+    is that failure, not a second one (what is staged and no longer in the tree still
+    blocks for itself, once).
+  - *What the judge holds is always named* (HR6-M-2). A verdict that fails for one rule
+    and holds for another showed the failing rule alone, at every stop: both are shown,
+    the held ones marked "held, for a person", in the full and in the shorter form. And a
+    commit the judge held was named by its id alone from the second stop on, and at the
+    first too when the message was crowded: the names of a commit's rules are kept with
+    its answer (`id:h:rules`, `id:f:rules;held rules`) and said on the line of every stop.
+    New fixture: a recorded verdict of the real judge that fails and holds.
+  - *Lows.* A commit at a shallow clone's edge is not final: it is looked at again at
+    every stop and judged once `git fetch --unshallow` brought its parent (HR6-L-2). The
+    judge's probe is asked whenever an ask failed and no patch got a verdict, so the
+    attempts of one or two commits with no verdict count; they never did, and every stop
+    asked again at the judge's time-out (HR6-L-3). A message's bound is kept where the
+    message is finished: the lines of every stop stay whole, what is above gives way and
+    says so, a text over 9,000 characters is cut and says so, and something beside the
+    verdict that has no room to be said in full is counted and said in full at the first
+    stop with room, where it had been cut to nothing and remembered as said (HR6-L-4; a
+    message of 9,005 characters was produced). An index with unmerged paths is said as
+    that, with what to do, where it was Git's "error building trees"; the gate link for
+    hooks that are not registered says which settings files it read; SECURITY.md no
+    longer says that every unit that blocks is named with its rules (HR6-L-5).
+  - *Suspected by the review, closed.* Two stops of one session do not run at once: a
+    stop holds a lock beside the session's state, and a second one says UNJUDGED after
+    three seconds. A unit shown in its shorter form keeps one line of what the judge said
+    beside its rules.
+  - *State.* Schema `deep-diff-forge.hook-state.v6`: a remembered failure is kept with
+    the working tree it is in. *New in the patch crate:* `JudgePatchError::Unmerged`.
+
+- **Round 15 of Vesper's review and a seventh independent review of the hooks: the turn of
+  a commit that waits is kept for it; a failure is its lines and a working tree is what it
+  is, not where it is; a session's state is changed by one hook at a time**
+  (`docs/reviews/vesper-v4-round15-report-20261115.md`, NO-GO on three mediums;
+  `docs/reviews/claude-independent-review-hooks-7-20261115.md`, NO-GO on one high that was
+  new with the round before; it found no stop that prints nothing while something is open).
+  - *Every commit without a verdict is submitted at least once in as many stops as there
+    are such commits* (VD4R15-M-1). The commit whose turn it was came last; three commits
+    in front of it that got no verdict, and a probe that got none, ended the asking of
+    every stop before it. Each stop now first asks about the commit that has waited
+    longest among those past five attempts, then about the one asked about least
+    recently among those with fewer, then about the rest. A run of the judge before those
+    two leaves five seconds for each. Lines of the judged file: `id:n<attempts>@<stop>:reason`.
+  - *A working tree is known by what it is* (VD4R15-M-2, HR7-H-1, HR7-L-2). A failure was
+    remembered with the tree's path. `git worktree move` made an unchanged failure block
+    twice; a tree made anew at the path of a removed one inherited "has already blocked"
+    and never blocked; two trees whose paths were cut to the same words shared one
+    identity. A linked tree is known by its administrative directory and the file
+    `commondir` in it; what is remembered of a tree Git no longer lists is forgotten.
+  - *A failure is its lines* (HR7-M-1). The identity of a failure was one digest over all
+    of its lines, so what was left of a failure blocked again when another part of it was
+    repaired. A stop blocks for a line that is new or whose count has grown, says which
+    lines are new and which stand, and remembers what it saw. A staged line that has
+    blocked stands for as long as the index holds it.
+  - *A session's state is changed by one hook at a time* (VD4R15-M-3, HR7-L-4). Every stop
+    takes the session's lock, the first too; a session-start hook takes it for its
+    recording; an advice hook writes under it, onto the state as it is then, only what it
+    owns. Two first stops both blocked for one failure; a late advice hook brought back a
+    failure a stop had forgotten.
+  - *Lows.* The lines of every stop are never cut, and every unit is named or counted
+    (HR7-L-1: a cut took "and 42 more commits fail."). That a failure stands in a tree the
+    stop did not look at is said at every stop (HR7-L-3). A working tree inside the
+    project's tree is a working tree of it, not a "nested repository left out" at every
+    stop (HR7-L-5). A commit held or failed for something that is no rule keeps the
+    judge's first words (HR7-L-6). Rule names on a line are whole, with the number of
+    those that had no room; "1 more working tree".
+  - *Stated.* A change that is stashed and brought back blocks three times: as the
+    change, as the stash's commit, and as the change that is back.
+  - *State.* Schema `deep-diff-forge.hook-state.v7` (a remembered failure is a line with
+    its tree and whether it is staged; the stops that wrote a missing verdict are
+    counted); a state of an earlier schema is not read. The session's lock file is
+    `session-<hash>.lock`.
+
+- **Round 16 of Vesper's review and an eighth independent review of the hooks: nothing is
+  forgotten in silence; a tree is known by what cannot be touched and found by no path;
+  the session's own change is judged first; an ask that was not made is not written down.**
+  - *The memory of failures has a bound that loses nothing in silence (VD4R16-M-1).* The
+    session's state kept 2,048 failing lines and cut the oldest from the front with no
+    word: nine linked working trees with a failure of 256 lines each pushed out the first
+    tree's lines, and its unchanged failure blocked a second time. What is remembered is
+    now kept change by change. When there are more lines than the bound, the largest
+    changes the stop is not looking at are kept as one digest of all their lines, like a
+    failure of more than 256 lines already was: unchanged they stand, and any change
+    blocks as a whole, with a sentence that says the block is not all new. A change the
+    stop is looking at goes into that form only when every other is in it, and the stop
+    says so. Only with more than 2,048 failing changes is memory given up, oldest first,
+    never of the change being looked at, and the stop at which that happens says for how
+    many: "may block once more" is said then, not when the block comes.
+  - *A linked working tree is known by its administrative directory's inode and birth
+    time (VD4R16-L-1).* The modification time of its `commondir` file was part of what it
+    was, so `touch` of that file made an unchanged tree a new one and its failure blocked
+    again. The birth time cannot be set. Where a file system keeps none, `commondir`
+    stands in as before, and the limit is stated.
+  - *A tree whose paths Git records as relative ones is the same tree from outside
+    (HR8-M-1).* The content of a tree's `gitdir` file was read as text and used from the
+    hook's own directory. A tree made with `git worktree add --relative-paths` or
+    `worktree.useRelativePaths` therefore had another identity from the project than from
+    inside: a stop from the project forgot what had blocked in it, did not say that a
+    failure stands there, and the unchanged failure blocked again at every return. Paths
+    from Git's files are read as bytes and from the directory Git reads them from; which
+    trees a repository has is read from the directories under `worktrees`, not from
+    paths; and a tree that can only be named by its path is never forgotten for not being
+    listed. The nested repositories a patch leaves out are paths, not text
+    (`JudgePatch::nested` is `Vec<PathBuf>`).
+  - *An ask that was not made is not written down (HR8-L-1).* The first of the two asks a
+    stop owes was given "what is left less five seconds", which is nothing under five
+    seconds: the judge was not started, and the commit was written down as asked, with an
+    attempt counted. A run that comes first now has what is left when the reserve would
+    leave it under three seconds; an attempt is counted and a turn used only for a commit
+    the judge was run for; a commit the stop's time did not reach keeps both and is said
+    to be "not asked at this stop for lack of time". The time both asks need (8 seconds
+    of the judging left when the stop comes to its commits) is one constant that the
+    documents and the tests take it from.
+  - *The session's own change is judged before other working trees are looked at
+    (HR8-L-2).* A stop looked at up to sixteen other working trees first, each `git
+    status` with all the time the stop had left; where that is slow the project's own
+    change was UNJUDGED at every stop, with a reason that did not name the cause. The
+    order is now: the working tree the stop is in, the two asks it owes, the other
+    commits, and last the submodules and the other trees, in six seconds of their own, of
+    which one tree may take half of what is left. A tree that was not reached is counted as not looked at
+    and keeps what is remembered of it. A patch the judge had no time for says that.
+  - *Where failures stand is said at every stop from outside (HR8-L-3).* The trees where a
+    failure has blocked are looked at and named first; the line that counts what is not
+    judged gives the number of such trees among the things it does not name; a note that
+    only counts trees says in how many of them a failure stands.
+  - *What "stands" means is said where it is read (HR8-L-4).* A failure of a change that
+    is not committed is a rule, a signal, a path and a number, because that is all a
+    verdict gives that stays the same between two stops. README and SECURITY.md say so
+    where the identity is described, and the message FAIL STANDS says it.
+  - *Smaller.* A stop that waits for the session's lock says "another hook", not "another
+    stop": it may be the session's start.
+  - *State.* Schema `deep-diff-forge.hook-state.v8` (a v7 state is not read: the entries
+    of what has blocked have another form, and trees other identities).
+
+- **Round 17 of Vesper's review and a ninth independent review of the hooks: two verdicts
+  are compared by their lines, not by what is remembered of them; the tree a stop is in is
+  judged first also when it is a linked one; an ask that was made is written down.**
+  - *Staging a part of a large failure does not block again (HR9-M-1; also in the round
+    before).* Which of the index's failing lines the working tree's failure has too was
+    asked of the tree's failure as it is remembered. Past 256 lines that is one digest, and
+    a digest covers no single line: after a failure of 257 files had blocked, `git add` of
+    one of them blocked again as "Staged changes", and every further partial `git add`
+    once more. The two verdicts of a stop are compared line by line whatever their number;
+    the digest is only how a large failure is remembered between stops.
+  - *The tree a stop is in comes first (VD4R17-L-1).* The project's tree was read and
+    judged first whatever the stop was in. From a linked working tree with a slow main
+    tree, the stop's own change had about five seconds and was UNJUDGED at every such
+    stop. The tree of the stop's directory is read and judged first, the project's tree
+    after it, and the second is read only when the first has its verdicts.
+  - *What is kept for a staged change is kept as a digest too (HR9-L-1).* Over the bound
+    of 2,048 lines, the lines kept for a staged change (they have blocked as its own; the
+    tree's failure has them again) were let go with no word, and the staged failure,
+    untouched in the index, blocked a second time when the tree was repaired again. They
+    become one digest of everything that has blocked for that staged change, kept while a
+    stop can check it against what the index holds; where it cannot be kept, the stop says
+    in how many working trees what is staged may block once more.
+  - *An ask that was made is written down (HR9-L-2).* With about three seconds of judging
+    left the commit whose turn it was was submitted and answered "no verdict", and the
+    stop wrote nothing and said "not asked at this stop for lack of time"; a session
+    whose stops all came to their commits like that asked about the same commit every
+    time. An ask the judge was run for is written down with its reason whatever time is
+    left after it; "not asked" is said only of a commit the judge was not run for.
+  - *Two sentences where they belong (HR9-L-3).* What "stands" means for a change that is
+    not committed is a line of every message in which something of such a failure stands
+    or stands beside what is new, whatever heads it; it was part of the head FAIL STANDS
+    alone. A failure that was remembered by its lines and grows past 256 has its new lines
+    told apart in the block; it was a plain "FAIL" of all of it.
+  - *Stated.* With no birth time, whole-second times and reused inode numbers, a tree
+    removed and made again within one second can be taken for the old one, and the same
+    failing line in it does not block (README named only the harmless direction). A
+    repository with more than 256 working trees: what a stop says, and that it is never
+    silent. The sentences for memory that could not be kept: which of them a repository of
+    256 working trees or fewer cannot reach.
+  - *State.* The schema is still `deep-diff-forge.hook-state.v8`: the entries are the
+    same kinds, and a `k` entry can now be a digest, which the build before forgets at the
+    next stop that looks (it then says nothing of it: do not go back to that build in the
+    middle of a session).
+
+- **Round 18 of Vesper's review and a tenth independent review of the hooks: "not read" is
+  not "nothing there"; what is staged stands while the index is untouched; the tree a
+  stop is in is the one Git says; no run of the judge takes the time of what is owed
+  after it.**
+  - *A stop that could not read the tree forgets nothing (HR10-M-1; older).* A working
+    tree whose change could not be read (a file that may not be opened, a skip-worktree
+    path, a Git that failed or was slow at one stop) came with "no staged change", which
+    is the answer "the index was read and holds nothing". The stop forgot what had blocked
+    of the staged change, and the staged failure, untouched, blocked a second time at the
+    next stop. Everything a stop reads of a working tree now has three answers (nothing
+    there, this, not read and why), and only "nothing there" forgets. Such a stop says
+    that what has blocked of the staged change stands.
+  - *A large staged failure stands whatever the tree does (HR10-M-2; a regression of the
+    round before).* A staged failure of more than 256 lines that had blocked, was in the
+    working tree again in part, and was repaired there again in part blocked as "Staged
+    changes" with the index untouched. A digest that is exactly what the index holds says
+    that every staged line has blocked; it was asked only whether the staged change's own
+    failure is exactly it. The model test's exception that let this through is narrowed
+    to the one case a digest cannot answer: the index is not what the last stop saw.
+  - *Working trees inside a bare repository are judged from inside (HR10-M-3; older).* A
+    directory under the Git common directory was taken for one of Git's own files. With
+    `repo.git/main` and `repo.git/feature`, a stop made from `feature` in a session whose
+    project is `main` never judged what was not committed in `feature`, and said of it
+    that the session's directory was not in it. Which tree a directory is in is asked of
+    Git.
+  - *A session that begins with more than 256 working trees judges its tree
+    (VD4R18-L-1).* Its start could not list the commits that were there and recorded
+    nothing, so every stop was wholly UNJUDGED. The project and its base are recorded
+    with the fact that there is no list: the session's commits are UNJUDGED at every
+    stop, and what is not committed is judged and blocks.
+  - *The sentence for a digest that is given up says what happened (HR10-L-1).* It began
+    "This session has more failing lines than the hook keeps one by one (2048)" also in a
+    session with one working tree and 300 staged lines of which one file left the index.
+    It names its cause, and a second sentence says when what is staged is remembered as a
+    whole from now on. Both are reached by runs of the hooks.
+  - *The stop's own tree has the time the project's tree does not need (HR10-L-2; a
+    regression of the round before).* From a linked tree, time for two runs was held back
+    for the project's tree before it was known to have anything to judge: 15 of 35
+    seconds for the stop's own change. The project's tree is looked at first (one `git
+    status`); clean, nothing is held back for it; with a change, three seconds are. What
+    is held back for the asks about commits is what they can need by the session's file
+    of judged commits: three seconds when no commit waits for a verdict, thirteen at most.
+  - *A judge that hangs on two commits does not keep a third from being asked
+    (HR10-L-3; older).* A stop owes three asks at most, the oldest commit never asked
+    about among them; each leaves five seconds for each owed ask after it, and thirteen
+    seconds of the judging are what all three need. A run that was cut is written down
+    as asked, with the time it had.
+  - *Smaller.* A refusal of the hooks' own no longer begins "invalid Git selection:". A
+    `shallow` file that cannot be read, a `.gitmodules` that cannot be looked at and a
+    session directory that cannot be looked at are "not known", not "none".
+  - *Tests.* Two tests failed for where they ran, with nothing wrong in what they
+    tested. One cut a working tree's name at 140 characters and lost the words it looked
+    for under a long temporary directory (the mutation runs of the two rounds before
+    ended at their baseline on it, with no mutant tested): the name has 180. The other
+    counted the files under `objects` right after a `git commit` of its own, while the
+    maintenance process that commit leaves behind still held its lock file (22 of 400 runs
+    beside another test suite): the tests' own Git steps start no maintenance.
+  - *State.* Schema `deep-diff-forge.hook-state.v9` (the project says whether there is a
+    list of the commits that were there); a state of an earlier schema is not read. *New
+    in the patch crate:* nothing; the refusal for too many working trees says the number.
+
+- **Round 19 of Vesper's review and an eleventh independent review of the hooks: that a
+  directory is one of Git's own is known, not concluded; a look is not a reading.**
+  - *A tree Git cannot place is UNJUDGED, never "Git's own files" (HR11-M-1; older).* In a
+    bare repository with its trees inside it, any failure of Git for the directory a stop
+    was made from was read as "one of Git's own files": a tree pruned while its directory
+    was away, with credentials in it, gave a silent stop, and a Git that failed at one stop
+    named the tree the session was in as one "the session's directory is not in". A
+    directory is Git's own only when that is known without Git: it is inside the Git
+    directory and neither it nor any directory between has a `.git` entry. Any other
+    failure makes the stop UNJUDGED with Git's words; the tree the directory is under is
+    named as one the session's directory may be in, and nothing of it is forgotten.
+  - *`git status` saying nothing forgets nothing (HR11-L-2; older).* A stop made from
+    another tree took `git status` "clean" for "nothing there" and forgot what had blocked
+    in that tree; a file marked assume-unchanged, or a key a clean filter of the
+    repository takes out, is in the judge's patch and not in `git status`, so that stop
+    printed nothing and the unchanged failure blocked a second time on return. Where
+    something of the tree is remembered, it is read the way a stop from inside it reads
+    it, and only that reading finding nothing forgets.
+  - *Time is held back for commits that still wait (HR11-L-1).* A commit that once had no
+    verdict and then passed held five seconds back at every later stop (ten after both
+    lanes); the last line of each commit decides, as it does for the asks.
+  - *A session directory that is gone is in the tree it was in (HR11-L-5; older).* It is
+    asked about at the nearest directory above it that is there.
+  - *Sentences.* The reason "The commits of this session: UNJUDGED" in a session with more
+    than 256 working trees was cut after "they are not."; it says what follows first, and
+    a reason a message cuts ends with "…" (HR11-L-3). The sentence that a digest was given
+    up is not said at a stop where everything the index holds is remembered from then on,
+    the very block it had warned of (HR11-L-4). A run that had all that was left of the
+    stop, or the 30 seconds of one run, says so (HR11-L-6), and three README places say
+    what the code does.
+  - *Tests.* The two tests that failed for a loaded machine (review V4 round 19) wait for a
+    moment on the wall clock counted from the stop's first call of Git, measure what the
+    machine took, and make a stop again (a few times at most) only when that stop came to
+    its commits without the time the scenario needs; they pass only on stops that asked.
+    The mutation run on `07df120`: a test for each missed mutant, or why it is equivalent.
+    Two small functions were drawn out of their callers for that (what a tree leaves for
+    the project's tree; what the sentences about memory take of a message), and two
+    lines of a stop's message are constants of the module.
+  - *State.* Schema unchanged (`v9`).
+
+- **Round 20 of Vesper's review (NO-GO) and a twelfth independent review of the hooks
+  (GO-WITH-FIXES): what is missing proves nothing.**
+  - *A tree whose two records were removed is UNJUDGED, not "Git's own files" (VD4R20-M-1,
+    medium).* A directory under the Git directory with no `.git` entry above it was known
+    to be Git's own. In a bare repository with its trees inside it, removing a linked
+    tree's `.git` file and its administrative directory, its files left in place, made
+    that true of the tree the session was in: the next stop from it printed nothing with a
+    second credential there, and the failure that had blocked in it was forgotten. A
+    directory is Git's own only by where it lies: the Git directory itself or a directory
+    under one of the subtrees Git makes there (`objects`, `refs`, `logs`, `reftable`,
+    `hooks`, `info`, `worktrees`, `modules`, `branches`, `remotes`, `rr-cache`,
+    `lost-found`, `rebase-merge`, `rebase-apply`, `sequencer`, `svn`,
+    `fsmonitor--daemon`), with no `.git` entry between. Any other directory Git cannot
+    place makes the stop UNJUDGED with Git's words, and a stop that cannot place the
+    session's directory forgets nothing because a tree is no longer listed.
+  - *A directory that cannot be resolved is still under its tree (HR12-L-4).* Under a
+    directory that cannot be searched, the session's directory was "none", and the tree
+    it is under was named as one "the session's directory is not in". The path as written
+    (its links followed as far as they can be) says which tree it is under: "may be in
+    it".
+  - *The no-verdict line marks a cut reason (HR12-L-3).* It cut each commit's reason at
+    150 characters with no mark; it ends a cut reason with "…", within the same 150.
+  - *Stated (HR12-L-1, HR12-L-2).* README and SECURITY say that a tree whose only change
+    `git status` does not show, with nothing blocked there, is not named from another
+    tree; and that a remembered tree too large to read in its share of the six seconds is
+    named "could not be looked at … stands" at each stop from elsewhere, each taking that
+    much longer.
+  - *Mutation accounting (VD4R20-L-1, HR12-L-5).* Of the 76 mutants the run on `07df120`
+    missed, 69 are killed by behaviour and 7 are equivalent: `NAME_MAX - 2` for
+    `NAME_MAX + 2` in `TAIL_LINE` was counted killed by an assertion that repeats the
+    constant's definition, and the longest counting line (781 characters) fits the
+    mutant's 794. That assertion is labelled a definition check.
+  - *State.* Schema unchanged (`v9`).
+
+- **Round 21 of Vesper's review (NO-GO) and a thirteenth independent review of the hooks
+  (GO-WITH-FIXES): no directory Git cannot place is Git's own.**
+  - *A tree under a name Git uses is not Git's own either (VD4R21-M-1, medium; HR13-L-1).*
+    `git worktree add` makes a linked tree at `repo.git/hooks/feature`, `repo.git/logs/feat`
+    or `repo.git/svn`. With its `.git` file and its administrative directory removed, a
+    directory under one of the seventeen names the round before listed was Git's own: the
+    stop from that tree printed nothing with a second key in it, and the failure that had
+    blocked there was forgotten. Nothing on disk tells such a tree from Git's own files, so
+    where a directory lies no longer decides anything: a stop from any directory Git cannot
+    place is UNJUDGED with Git's words, and forgets nothing because a tree is no longer
+    listed. The list is gone. What follows, and is meant: a stop made from inside a Git
+    directory (`.git`, `.git/hooks`, `.git/NOTES_MERGE_WORKTREE`, `.git/lfs`, a bare
+    repository's own directory), which was silent when the project was clean, is UNJUDGED
+    once for that stop, with a reason that says the session's directory is inside the Git
+    directory and Git cannot say which working tree it is in; nothing remembered of any tree
+    is forgotten there because it is not listed. No stop is silent because of where its
+    directory lies.
+  - *Git's words come first (HR13-L-2).* The reason for a directory Git cannot place gave
+    the path before Git's words, and a message shows 300 characters of a reason: with a
+    long path, "…: fatal: this operation must b…" was all there was to read. Git's words,
+    then what follows from them, then the paths. README and SECURITY said that nothing
+    remembered of any tree is forgotten at such a stop; a tree the judge's own reading
+    finds clean is forgotten there, as at every stop. They say what this entry says: it
+    forgets nothing because a tree is no longer listed.
+  - *A relative directory is anchored (VD4R21-L-1).* Where the session's directory, given
+    as a relative path, could not be resolved (`../linked/locked/sub`, under a directory
+    that cannot be searched), the path was kept as written, no tree was under it, and the
+    linked tree it names was "the session's directory is not in it". It is taken from the
+    hook's own directory, as the system takes it; when that directory cannot be had, every
+    tree is one the session's directory may be in.
+  - *A `..` after a link steps up from where the link leads (suspected by the thirteenth
+    review; reproduced).* An absolute path with `alias/../linked` under a directory that
+    cannot be searched was taken out by name: the tree beside `alias` "may" have had the
+    session's directory, and the tree it was in on disk was one it was "not in". A `..`
+    after a part that cannot be resolved leaves the directory unknown: every tree may be
+    the one.
+  - *No ceiling (suspected by the thirteenth review; reproduced).* A
+    `GIT_CEILING_DIRECTORIES` at a linked tree's top in the session's environment made Git
+    say "not a git repository" for a directory in that tree: it was not judged from there,
+    and was named as one the session's directory is not in. Every Git call of the hooks has
+    the variable empty, which Git reads as no ceiling. The shared hardening list is
+    unchanged: the other commands honour a ceiling their caller sets. Not changed:
+    `GIT_DISCOVERY_ACROSS_FILESYSTEM`. Set, Git finds a tree across a mount, which is
+    right; unset (Git's default), a directory on another file system mounted inside a
+    linked tree is in no repository to Git, which README states as a limit.
+  - *Tests.* Each finding has a test that fails on `67202b1`: trees at `hooks/feature`,
+    `logs/feat` and `svn` with both records removed; a long path under
+    `.git/NOTES_MERGE_WORKTREE`; a relative directory under one that cannot be searched; a
+    `..` after a link; a ceiling at a linked tree's top. The tests that took a stop from
+    Git's directories to be quiet say that it is UNJUDGED, with the project judged.
+  - *State.* Schema unchanged (`v9`).
+
+- **Round 22 of Vesper's review (NO-GO) and a fourteenth independent review of the hooks
+  (GO-WITH-FIXES): four rules in place of special cases.** Every finding since round 19 had
+  one shape: the hook believed an answer about where the session's directory is (from Git,
+  from the path, from the listing of working trees) and forgot, or said nothing.
+  - *Where the session is, is found one way, first (VD4R22-M-1, medium).* A relative
+    directory that was removed (`../linked/build/gone`) was "nothing there" before it was
+    anchored: the linked tree it was under was not judged and was named as one the
+    session's directory is not in; with that tree's two records removed as well, the stop
+    printed nothing and forgot what had blocked there. One function now anchors a relative
+    path at the hook's own directory and walks the path up to its nearest directory that
+    is there, as for an absolute one, passing a part that names a file (a `cwd` that named a
+    file was "gone": suspected by the fourteenth review). The hook's own directory that
+    cannot be had, or a part that cannot be looked at, makes the stop UNJUDGED, every tree
+    it may be in named so.
+  - *Git's answer must hold the session's directory (HR14-L-4).* A `core.worktree` in a
+    linked tree's own configuration pointed at the project made Git say the tree was the
+    project: the stop from it printed nothing with a second key in it, and what had blocked
+    there was forgotten, also at a stop from the project, whose reading of the tree read the
+    project. Where Git names a tree that does not contain the directory, the stop is
+    UNJUDGED ("Git names as the working tree a directory that does not contain the
+    session's directory"); what is read of another tree is that tree's only when Git names
+    it there.
+  - *A file-system boundary across a linked tree is not "no repository" (HR14-L-3).* A btrfs
+    subvolume made inside a linked tree (one unprivileged command), or a mount, made Git
+    stop at the boundary: the tree was named as one the session's directory is not in.
+    Where the mount point Git names lies at or under a linked tree's top, the stop is
+    UNJUDGED with Git's words and that tree may be the one. Where none does, it is "no
+    repository" as before: on this kind of host `/var` is a mount point, and every directory
+    under it that is in no repository carries Git's boundary words.
+    `GIT_DISCOVERY_ACROSS_FILESYSTEM` is still left as the session has it.
+  - *A ceiling hides nothing of the project, and nothing else is shown (HR14-L-1).* Round 22
+    emptied `GIT_CEILING_DIRECTORIES` for every Git call, and a repository the user hides
+    with a ceiling (a home directory's) was found: a session below it took it for its
+    project, with an UNJUDGED line at each stop and a second's read of the whole home at
+    each tool call. The project is found with the caller's ceiling as it is; once it is
+    known, the caller's ceiling is kept without the entries at or under one of the project's
+    trees (main and linked, compared as they are on disk). A ceiling inside a tree still
+    does not hide it. What follows, and is meant: a session that begins below a ceiling
+    that hides its repository has no project, as before round 22.
+  - *What blocked in a tree is not forgotten while its directory stands (HR14-L-2; Vesper's
+    case 2).* A linked tree beside the project whose two records were removed, or whose
+    `.git` file was removed and then `git worktree prune` run, is placed by Git in no
+    repository: the stop from inside it printed nothing with a second key there, and the
+    tree was forgotten because it was no longer listed. A tree that is no longer listed and
+    whose directory stands is now named at every stop ("… is no longer a working tree of
+    this repository; what blocked there stands until the directory is gone or it is a tree
+    again"), and a stop from inside it is UNJUDGED. It is forgotten when its directory is
+    gone, or when it is a tree again and the judge's own reading finds that tree clean; a
+    directory that cannot be looked at keeps it, named so.
+  - *Tests.* Each finding has a test that fails on `8959ca8`: the relative directory that
+    was removed, with the tree whole and with its records removed; a `cwd` that names a
+    file; `core.worktree` pointed at the project; a file system mounted in a linked tree (in
+    a user and mount namespace of the test's own, passed where none can be made); a
+    repository hidden by a ceiling; a tree with both records removed and one pruned, then
+    its directory removed, and one made a tree again; a `v9` state read and written anew.
+  - *State.* Schema `deep-diff-forge.hook-state.v10`: it records the top level of each
+    linked tree it remembers a failure of (`trees`), which is how a tree no longer listed is
+    known to be gone. A `v9` state is read with no tree recorded and written back as `v10`
+    (refusing it would make every stop of a session running across the upgrade UNJUDGED);
+    its trees no longer listed are forgotten as before. A path that is not UTF-8 or is
+    longer than 16 KiB, and the paths past 256 KiB in all, are not recorded.
+
+- **Round 23 of Vesper's review (NO-GO) and a fifteenth independent review of the hooks
+  (GO-WITH-FIXES): containment is not identity.** Round 23's rule "Git's answer must hold
+  the session's directory" checked that the top Git names contains the directory, not that
+  the top and the Git directory Git names are one tree.
+  - *Git's answer is believed only as a pair that names one tree (VD4R23-M-1, medium;
+    HR15-L-1 and HR15-L-2, low).* Two genuine linked trees, the inner one inside the outer
+    one, the inner tree's own `core.worktree` naming the outer tree: Git named the outer
+    top (it holds the session's directory) with the inner tree's Git directory, the clean
+    outer tree was judged under the inner tree's name, what had blocked in the inner tree
+    was forgotten, and the next stop printed nothing with two keys in it. The same with
+    `core.worktree` naming a subdirectory of the tree that holds a clean copy of its
+    files; and a copy of a linked tree made with `cp -a` and cleaned was judged as that
+    tree, which then blocked a second time for the same failure. Now the top Git names
+    must be the one the Git directory it names records: a linked tree's `gitdir` file (its
+    path less `/.git`), the main tree's top as `git worktree list` gives it (the directory
+    of a main Git directory named `.git`; where the Git directory was made apart and
+    records no top, the project's top when the session began in the main tree). A pair
+    that is not one tree makes the stop UNJUDGED ("Git names … as the working tree of a
+    Git directory whose records name … as that tree", the two trees first so that a cut
+    for room keeps them, the Git directory's path after them); nothing of either tree is
+    forgotten, and neither directory is judged as that tree at that stop. That the top
+    contains the session's directory is still asked after it. What follows, and is meant:
+    a stop from a copy of a linked tree is UNJUDGED (it was judged as the tree, and a copy
+    with the tree's failure in it stood as that failure); a session that begins in such a
+    copy, or in a tree so redirected, is told why at its start, and its stops are
+    UNJUDGED; a session that began in a linked tree of a repository whose Git directory
+    was made apart is UNJUDGED at a stop from the main tree; and a stop from a linked tree
+    moved with a plain `mv` and not repaired is UNJUDGED (its `gitdir` names where it was;
+    `git worktree repair` in it records where it is).
+  - *What is read of every listed tree counts as its own only when Git names that tree
+    there (HR15-L-1).* That was asked only where a failure stood and the reading found
+    nothing, so a tree Git is pointed away from was read through the redirect elsewhere,
+    and once forgotten was never named again. Now every other tree a stop looks at is
+    asked, with the pair rule: one `git rev-parse` more for each, at most sixteen a stop,
+    each in the tree's share of the six seconds for looking. A tree Git does not name
+    there is "could not be looked at", with the reason, and nothing of it is forgotten.
+  - *A `v9` state is written as `v10` by the first hook that reads it (VD4R23-L-1, low).*
+    A clean `v9` state was read and, nothing changed, left as `v9`: the state read is the
+    same whether it came from `v9` or `v10`. Whether the file was `v9` is kept beside it,
+    and the first stop (or session start) that keeps the state writes it as `v10`.
+  - *A ceiling entry is compared in its resolved form (a note of the fifteenth review).*
+    An entry written through the project's path (`repo/../hidden`, which is the repository
+    `hidden` beside it) was compared as written, started with the project's path, and was
+    left out: the repository it hides was found. Entries are compared with their `..` and
+    their links resolved, `..` by name where the part before it is not there.
+  - *Words (the fifteenth review).* README, SECURITY and this file now say that a stop
+    made from a submodule's Git directory (`.git/modules/<name>`) is UNJUDGED: Git names
+    the submodule's working tree there, which does not contain the session's directory.
+    Its reason says so and now adds that the directory is inside the Git directory.
+    README's "inside the Git directory … Git cannot say which working tree it is in" is
+    the reason of a stop from `.git`, `.git/hooks` and the like, as it says; the round-23
+    sentences on `core.worktree` are the pair rule's.
+  - *Tests.* Each finding has a test that fails on `c9a2ece`: two nested linked trees, the
+    inner one pointed at the outer one; a tree pointed at a clean copy inside itself; a
+    copy of a linked tree, cleaned; a copy of a project whose Git directory was made apart;
+    a clean `v9` state; a ceiling written `repo/../hidden` (an integration test and an
+    entry of the ceiling's unit table). The pair rule has a unit table of its own (main,
+    linked, linked pointed at the main tree, at an outer tree, at a subdirectory, a copy, a
+    `gitdir` missing or unreadable, a Git directory made apart), on functions `c9a2ece`
+    does not have. The round-23 test of `core.worktree` pointed at the project now reads
+    the pair rule's words.
+  - *State.* Schema unchanged (`v10`).
+
+- **Round 24 of Vesper's review (NO-GO) and a sixteenth independent review of the hooks
+  (NO-GO): one tree identity moved onto another directory.** The last build round of this
+  line. Both reviews found one medium each; the class (VD4R23-M-1, HR15-L-1, HR15-L-2
+  before) is closed where the hook can see it cheaply and stated as a limit otherwise.
+  - *A tree does not move while the directory it is remembered at stands (VD4R24-M-1,
+    medium; HR16-L-3, low).* Two nested linked trees, the inner tree's `core.worktree` set
+    to the outer one and its administrative `gitdir` record edited to name the outer tree's
+    `.git`: Git and the records named the outer tree as the inner one, the clean outer tree
+    was judged under the inner tree's name, what had blocked in the inner tree was
+    forgotten, and the next stops printed nothing with two keys in it. The same after
+    `cp -a` of a linked tree, `git clean` and `git worktree repair` run in the copy. The
+    state already records the top of every tree something has blocked in: where a tree is
+    now paired, by any route, with another top than the recorded one and the recorded
+    directory still stands (or cannot be looked at), neither directory is read as that
+    tree. A stop from it is UNJUDGED ("Git names … as the working tree that this session's
+    memory has at …, which still stands"), a stop from elsewhere names it, nothing is
+    forgotten, and the recorded top is kept, until `git worktree repair` is run in the
+    directory that stands or it is removed. Where the recorded directory is gone, the tree
+    is read at its new top as before (a tree moved and repaired, `git worktree move`).
+  - *What is not a listed tree is not taken for one (HR16-M-1, medium).* A copy of a linked
+    tree made inside the project (`cp -a ../feature feature-copy`) with a key in it: every
+    stop from the project printed nothing, because a directory Git places in this
+    repository with a Git directory whose records name another directory was taken for a
+    working tree named by the rule for working trees, which names only listed trees. It is
+    named as left out, at every stop ("… is no working tree of this project by the
+    repository's records (Git names …)").
+  - *A listed tree is left out as judged by which tree it is, not by its path (HR16-L-1,
+    low).* With one tree's `gitdir` record edited to name another tree's `.git`, Git lists
+    the other path twice; a stop from that tree left both entries out by their path, and the
+    first tree's failure was neither looked at nor said. Two entries with one path are now
+    two trees, each taking an administrative directory no entry before it took.
+  - *Words (HR16-L-2, low, and the sixteenth review's notes; no code).* README and
+    SECURITY now say that a main Git directory named `.git` that does not lie at the tree's
+    top (`--separate-git-dir=…/.git`, or a `.git` link) makes every stop from the main tree
+    UNJUDGED; SECURITY's main-tree pair sentence names both layouts. A stop from a tree
+    moved with `mv` and not repaired says that `git worktree repair` run in it records where
+    it is; the note of a gone tree no longer says that `git worktree prune` forgets a main
+    Git directory listed as the main tree.
+  - *A stated limit.* SECURITY's "Not a boundary" says that an agent that edits Git's own
+    administrative files (`gitdir`, `commondir`, `core.worktree`) can make one tree be read
+    as another; the hooks make this visible where a remembered directory still stands, and
+    otherwise it is a stated limit, as editing the state file is.
+  - *Tests.* Each finding has a test that fails on `7380e8e`: the two nested trees with
+    both records moved; a copy repaired onto; a copy inside the project; two listed entries
+    with one path; and a tree moved by hand, unjudged with the remedy until repaired, then
+    standing (the remedy's words are new). A unit table for the recorded directory
+    (standing, gone, a file, unreadable, not recorded; the new top the same or another) and
+    two listed entries with one path, on functions `7380e8e` does not have.
+  - *State.* Schema unchanged (`v10`).
+
+- **The closing fix of the hooks line: Vesper's round 25 (GO) and a seventeenth independent
+  review of the hooks (NO-GO).**
+  - *The tree stands at its recorded directory only where that directory is the tree
+    (HR17-M-1, medium).* Round 25 took any directory at the recorded path for the tree
+    standing there: after `git worktree move`, a new tree, a clone or a build directory made
+    at the old path left the moved tree UNJUDGED at every stop, a new key in it never
+    blocked, and the remedy the stop named changed nothing. The recorded directory now
+    counts only when its `.git` file names the tree's own administrative directory, when that
+    file is not a `gitdir: ` line naming a path (an empty file, another first line), or when
+    it cannot be read (VD4R25C-L-1: conservative, UNJUDGED with nothing forgotten); otherwise the tree is read at its new top, its failure stands and a
+    new one blocks. VD4R24-M-1 and HR16-L-3 stay UNJUDGED with nothing forgotten (their old
+    directory still names the tree).
+  - *Words and stated limits (HR17-L-1, HR17-L-2, low).* The remedy for a tree moved with
+    `mv` is said only where the directory it was moved from is gone: run in a copy, the
+    repair makes the copy the tree and the directory copied no tree of the project, which
+    is now a stated limit. The note of a gone tree in which a failure stands no longer
+    advises `git worktree prune` (it would forget what blocked there) but repair where a
+    tree moved with `mv` is now; a tree whose entry Git ends after `mv` (prune, or
+    `git worktree add -f` at its old path) is a stated limit. SECURITY's "Not a boundary"
+    adds a tree's `.git` file to the files of Git's that an agent can edit.
+  - *A test that is sensitive to load (HR17-L-3; no code).*
+    `a_repository_with_more_working_trees_than_are_read_says_so` can fail under heavy
+    parallel load: the session start's 8 seconds over the reflogs of 256 trees run out, and
+    the session gets the words of one with no list of commits (the same on `7380e8e`).
+  - *Tests.* Each fails on `38af7b8`: a tree moved with `git worktree move` and a new tree,
+    a clone or a build directory made at its old path; two trees swapped; a new failure in
+    the moved tree before and after its commit. The unit table has rows for a recorded
+    directory with no `.git`, with a `.git` that names another tree's directory, with a
+    `.git` that is a directory, and with a `.git` that cannot be read.
+  - *State.* Schema unchanged (`v10`).
+
+### Testing
+
+- **Three evaluation cases for the integrity signals.** `fixtures/eval` has 37 cases: a Rust
+  case (a skipped test, an assertion written with spaces, a stub, a `cfg_attr` skip, panic
+  paths, a dropped error, and negatives including an `unwrap` inside a test the hunk shows),
+  an empty-handler case in Python, TypeScript and Go, and a declared miss (a JavaScript
+  placeholder that exists only as a message string). The Go case found that
+  `if err := f(); err != nil {}` was not read; it is now. Measured: evidence precision 33 of
+  34, recall 33 of 41; the floors are raised to those values.
+- **Twelve declared misses: how an agent makes a gate pass without doing the work.** The
+  case `evidence/agent-evasions` (38 cases now) records twelve small changes no rule sees
+  yet: an assertion compared with itself, the only assertion of a test deleted, a `return`
+  added at the top of a test (bare, or when `CI` is set), `?` replaced by
+  `unwrap_or_default()`, by `let _ =` and by `.ok();`, a broad `except` that returns
+  `None`, an input special-cased in the function under test, a snapshot edited with the
+  source, the module under test mocked, and a checked read replaced by an index. A declared
+  miss counts as wrong, so evidence recall is now 33 of 53 and its floor is set there; a
+  miss that a later rule catches fails the run until it is moved to `expect`. A new signal
+  starts here, as a case the engine misses.
+- **An adversarial review of the integrity signals (Vesper, V3 round 1; `docs/reviews/`),
+  verdict NO-GO, and its fixes.** Each finding was reproduced before it was counted.
+  - *High: a false test context hid a panic path.* `#[cfg_attr(any(), test)]` on a production
+    function made its `panic_path_added` item disappear: the last identifier anywhere in an
+    attribute decided what test code was. Now only a function's own test attribute (`#[test]`,
+    `#[rstest]`, a path ending in `::test`) or a module that is exactly `#[cfg(test)]` is test
+    code. A module merely named `tests` no longer counts either: without `#[cfg(test)]` it is
+    compiled into the program. A conditional skip (`#[cfg_attr(…, ignore)]`) is still reported:
+    under some configuration the test does not run.
+  - *Medium: a change inside a construct that spans lines was not seen.* `assert!(` on an
+    unchanged line with `true` added under it is now `trivial_assert`, on the added line: a
+    change to any line of an attribute or a macro invocation is a change to it. A `catch`
+    whose empty block is on the next line is `error_swallowed`.
+  - *Low: other spellings.* `test.skipIf(…)`, a promise's `.catch(…)` whose handler is a
+    function with an empty body, and `Result::unwrap(x)` / `Option::expect(x, …)` written as
+    functions are evidence. Still missed, and declared in the corpus: the multi-line
+    assertion in Python and TypeScript, a Go skip through a receiver not named `t`, Python
+    assertions on a constant, a Python body that is only `...`.
+  - *High as reported, not reproduced on a release build: a 60 MiB line and a consumer's
+    10 second limit.* The review timed 17.26 s on the debug build it was given. On a release
+    build of the same commit the same patch ranks in 1.9 s (v0.8.3: 1.5 s), and a line of
+    near-matches of every rule's words in 1.4 s. The bench gains `rank_long_line` (one 4 MiB
+    line of near-matches), so a change that makes a long line costlier shows in the pull
+    request's bench comparison.
+  - The corpus has 39 cases; evidence precision 40 of 41, recall 40 of 67.
+- **Round 2 of the same review (verdict NO-GO again) and its fixes.**
+  - *High: any attribute path ending in `::test` was believed.* `#[my_framework::test]` on a
+    production function still hid its panic path. Test attributes are now a short list of
+    whole paths (`test`, `rstest`, `tokio::test`, `async_std::test`, `actix_rt::test`,
+    `test_log::test` and the prelude paths of `test`), read without raw-identifier prefixes,
+    so `#[r#test]` is the built-in attribute and an unknown path proves nothing.
+  - *High: many parser-heavy hunks ran past a consumer's 10 seconds.* A 61 MiB patch of a
+    thousand 64 KB expressions did not finish in 15 s on a release build. The parser now
+    reads at most 2 MiB of Rust hunks in one review (`REVIEW_FRAGMENT_BUDGET`), in the
+    review's own order; beyond that the token rules' answer stands. The plan is made from
+    the whole review before any file is scored (`FragmentPlan`), so the ranking is the same
+    for any worker count and the views agree with it. The same patch now ranks in 2.6 s. A
+    hunk over the fragment budget is turned away before anything is built from it: a 60 MiB
+    line of `}` took 925 MiB and now takes 249 MiB. The bench gains `rank_many_fragments`.
+    *Superseded before release: there is no budget and no plan (the last entry of this
+    section); the bench workload stays, and its hunks are now read whole.*
+  - *Medium: the fix of round 1 reported constructs that were not added.* A `todo!(…)` or an
+    `assert!(true, …)` whose message alone changed was reported. A construct that starts on
+    an unchanged line is now evidence only when it did not carry the same signal before the
+    change: the old side of the hunk is parsed too, when such a construct is met.
+  - *Low:* a promise's empty handler whose parameter has a default value that calls a
+    function (`.catch((error = fallback()) => {})`) is read: parameters are matched by
+    nesting, not by the first `)`.
+  - Still reported, and declared in the corpus: a panic path in a function or an `impl` that
+    is only `#[cfg(test)]`. The corpus has 40 cases; evidence precision 44 of 46, recall 44
+    of 71.
+- **Round 3 of the same review (verdict NO-GO a third time) and its fixes.** The time, memory,
+  message-only and callback findings of round 2 were closed. Three were new.
+  - *High: a list of test attribute names is not proof either.* `use tracing::instrument as
+    rstest;` makes `#[rstest]` leave the function in the program, and a dependency renamed to
+    `tokio` does the same to `#[tokio::test]`. Checked with the compiler: the same holds for
+    `#[test]` itself; only `cfg` is reserved. So no test attribute withdraws a panic path any
+    more. What does is an exact `#[cfg(test)]` that is the first attribute of a top-level
+    module, function or `impl`, in a hunk that is the beginning of its file and parses with
+    no error: an attribute macro before it or around it may drop the `cfg`, and above a hunk
+    from the middle of a file a comment or a string can be open that ends on the attribute's
+    own line. Inside such an item a panic path in a macro's arguments
+    (`assert_eq!(f().unwrap(), 1)`) is withdrawn too. The cost is stated: a panic path in a
+    `#[test]` function is reported again (a test path halves it), and two such items are
+    declared false positives in the corpus.
+  - *High: harmless early hunks spent the parser's budget, and a later construct that only
+    the parser finds left no trace.* Three changes. Only a hunk whose new side holds a word
+    the parser reads (`unwrap`, `expect`, `assert`, `todo`, `unimplemented`, `ignore`) is
+    parsed or counted, so filler spends nothing. The token rules now read the same spellings
+    whatever the spacing (`value.unwrap ()`, `assert! ( true )`, `todo ! ()`, `# [ ignore ]`,
+    `#[ cfg_attr( miri , ignore ) ]`), so a hunk the parser does not read loses only what
+    is written over several lines. And such a hunk says so: the new signal
+    **`syntax_unchecked`** (+1, once per file) marks a Rust hunk that holds one of those words
+    and was not parsed (over 64 KiB or 50,000 nodes, or past the review's 2 MiB). It means
+    "not checked", not "bad". *Superseded before release: the signal and the budgets are gone
+    with the parser (the last entry of this section).*
+  - *Medium: the old-side comparison of round 2 could be turned against the evidence.* Two
+    assertions on one line were taken for one another, and an old side too large to parse
+    suppressed the item. Constructs are now paired by line and column, and when the old side
+    cannot be read the item stands.
+  - The corpus has 41 cases; evidence precision 50 of 53, recall 50 of 77.
+- **Round 4 of the same review (verdict NO-GO a fourth time) and its fixes.** The three
+  findings of round 3 were closed, one of them only as written. Two were new.
+  - *High: a hunk that only says it starts the file.* Round 3's proof of test code believed a
+    hunk of an existing file whose header says line 1. The header is the patch writer's word:
+    `git apply --unidiff-zero` and `-C0` apply such a hunk further down, under a comment
+    opened above it, and the function under its `#[cfg(test)]` is then in the program. A
+    panic path is now withdrawn only in the one hunk of a file the patch creates, every line
+    added: the whole file. A patch that creates a file is refused when the file exists.
+  - *Medium: a construct opened inside another macro's body and closed on another line left
+    no trace.* The parser does not expand macros, and a rule that reads one line cannot follow
+    `assert!(` / `true` / `);`. The line that opens an assertion or a `cfg_attr` there (or
+    under a parse error) now carries `syntax_unchecked`. That the assertion is trivial is
+    still not said: a declared miss in the corpus.
+  - The corpus has 42 cases; evidence precision 53 of 56, recall 53 of 81.
+- **Round 5 of the same review (verdict NO-GO a fifth time) and its fixes.**
+  - *High: a later section for the same path undid the whole-file proof.* One section creates
+    a file whose `#[cfg(test)]` a line comment follows; a second section for the same path
+    prepends `/*`. Git applies both, and the function is in the program. Whether a hunk is
+    its whole file is now the review plan's answer (`Reading::WholeFile`): the patch creates
+    the file, in one hunk, and no other file of the review has its path. The plan's answer
+    for a hunk is one of three (`Off`, `Hunk`, `WholeFile`) where it was a yes or no.
+  - *Medium: an outer macro on the same row hid the unchecked mark.* `outer! { assert!(` with
+    `true` and `);` below left nothing. A row counts as read only when the parser named a
+    construct at the opener's own column, not when any macro starts on the row.
+- **`test_likely` on a panic path under a test attribute.** Since no test attribute is proof,
+  a `.unwrap()` in a `#[test]` function is reported like any other, and on Deep-Diff-Forge's
+  own last 40 commits the signal is on 49 of 188 files. Such an item now carries
+  `"test_likely": true` in `rank.v0` (and says so in the TUI's note) when the hunk shows
+  `#[test]`, a path ending in `::test`, `#[rstest]` or `#[cfg(test)]` around it. It is a hint
+  for a reader: the signal, the score and what a judge reads do not change, so nothing can be
+  hidden by dressing code as a test. The owner's decision, on the reviewer's suggestion. The
+  hint follows the item a call is inside, not its row (review V3 round 7, low: a production
+  function on the same line as a test function carried it).
+- **A `fragment_scan` fuzz target** holds the rule the five rounds converged on: for any text,
+  as a new file or as a change, every item the token rules find alone is still there with the
+  parser on, except `syntax_unchecked` and, in a new file only, `panic_path_added`; the
+  scanner gives the same answer twice, and its rows are inside the fragment. *Superseded
+  before release: the target is `rust_tokens` and holds other rules (the last entry of this
+  section).*
+- **An independent review of the integrity signals (a Claude reviewer with no part in the
+  work; `docs/reviews/claude-independent-review-20261114.md`), verdict NO-GO, and its fixes.**
+  Vesper's rounds 6 and 7 had passed the branch; this reviewer found three high findings they
+  had not. Each was reproduced on a release build before it was counted.
+  - *High: test code was withdrawn by line.* A production function on the same line as a
+    proved test function lost its panic path whenever the parser named no construct for it:
+    `Result::unwrap(x)` as a function, or a call inside a macro's arguments. Compiled and run,
+    it panicked. The parser now gives each proved item as a span of text, and a panic path is
+    withdrawn only on a line all of whose code lies inside one such item. The `test_likely`
+    hint goes the same way.
+  - *High: a first line the grammar and the compiler read differently.* `#! /**/
+    [allow(unused)] /*` is a shebang line to the grammar; to the compiler it is an attribute
+    and an opened comment, which makes the `#[cfg(test)]` on the next line comment text. The
+    tree has no error and the function is in the program. A file now proves test code only
+    when its top level holds nothing but items and comments: no shebang line, no statement,
+    no frontmatter.
+  - *High: 2 MiB of the slowest text took 27 seconds.* Text that is all error recovery parses
+    at about forty times the cost of ordinary code. The review's parser budget is now 256 KiB
+    (measured: each of this repository's last 60 commits is under 160 KiB), and the same
+    patch ranks in 3.7 s. A second cost was quadratic in the reviewer's own words: which rows
+    the parser read was searched range by range for every line. It is a binary search now:
+    3 MiB of `m!{}` lines went from 10.8 s to 0.9 s.
+  - *Medium: a parser's word inside another macro's body left nothing.* `assert!` and
+    `(true)` on two lines, `assert!{true}`, `todo![]`, `x.unwrap` and `()` on two lines:
+    inside `outer! { … }` the parser names no construct and no token rule reads them. Any of
+    the parser's words that neither read now marks its hunk `syntax_unchecked`. That replaces
+    the two special cases of rounds 4 and 5.
+  - *Medium: a conditional skip whose condition changed was "the same construct".*
+    `#[cfg_attr(miri, ignore)]` rewritten over several lines to `#[cfg_attr(all(), ignore)]`
+    skips the test everywhere and was not evidence, because the attribute carried the same
+    signal before. An attribute or a macro that starts on an unchanged line is now compared
+    with its old text by kind and content.
+  - *Low.* No longer reported: an `ignore` that belongs to another attribute
+    (`#[cfg_attr(feature = "serde", serde(skip, ignore))]`). Now read: `unwrap` and `expect`
+    passed as functions (`.map(Result::unwrap)`) or called by any path
+    (`<Option<u32>>::unwrap(x)`), and `#[allow(` whatever its spacing. Declared in the corpus
+    and not fixed: a method named `expect` on another type (`self.expect(Token::LBrace)?`),
+    `#[cfg(any())]` on a test, and respellings in Python, JavaScript and Go.
+  - *Medium, not fixed in that commit: the parse time limit was a clock.* A hunk that parses
+    in a few tenths of a second on an idle machine passed its limit on a loaded one, and then
+    carried `syntax_unchecked` where the parser's item would have been: the same patch, two
+    answers. It was written down as a limit. Round 8 (below) did not accept that, and it is
+    fixed there.
+  - Tests: the fuzz target's rule is tightened (a panic path may go only inside a proved
+    item, and never from a line that holds code outside it); the two-section test no longer
+    returns early when the patch parser refuses a path named twice. The corpus has 43 cases;
+    evidence precision 63 of 69, recall 63 of 104.
+- **Round 8 of Vesper's review (NO-GO on two medium points) and its fixes.** Every finding
+  of the independent review was found closed except the clock, and one was new.
+  - *Medium: the same patch, two answers (IR-M-1, now fixed).* The parser of hunks asks no
+    clock any more. Its answer is a function of the hunk alone: eight copies of the review's
+    patch started together on one processor all give the item that one copy gives alone
+    (before: the item alone, `syntax_unchecked` together). What bounds the work is bytes:
+    64 KiB a hunk, 256 KiB a review. Measured without a clock on 56 shapes of hostile text at
+    8, 16, 32 and 60 KiB: the slowest (text that is all error recovery) costs 14 microseconds
+    a byte and grows in step with its length, 0.8 s for a whole hunk and 3.4 s for a whole
+    review's budget. A caller that needs a deadline sets one around the command, and then
+    gets an error, not a different answer. The other readers of the syntax crate (the
+    structural view, highlighting), which only show code, keep their deadline.
+  - *Found while the clock was being removed: items nested in one another were scanned on
+    the square of their depth.* The scanner asked the tree for each item's parent and the
+    sibling before it, and tree-sitter answers both by walking down from the root: 4,700
+    functions nested in one another took 2.9 s, which the clock had been hiding. The scanner
+    keeps the parent's kind and the attributes before each node itself; the same text takes
+    hundredths of a second.
+  - *Medium: a raw identifier was not the identifier.* `x.r#unwrap()` and `X::r#unwrap(x)`
+    compile to the same calls and left neither an item nor a mark. A raw identifier is now
+    read as the identifier it is, by the parser (methods, macros, attributes) and by every
+    Rust token rule: `r#todo!()`, `#[r#ignore]`, `r#assert!(true)`, `Result::r#unwrap`. The
+    opener of a raw string is not an identifier and is left alone.
+  - The four path names passed as functions (`Result::unwrap` and the like) are read by the
+    same rule as the calls, whatever the spacing.
+  - Tests: a raw identifier in each rule, with the parser and past its budget; 3,000 nested
+    modules scanned under a bound (the old walk took 7.7 s against a bound of 3); the scanner's
+    source may name no clock. The corpus has 44 cases; evidence precision 69 of 75, recall 69
+    of 110.
+- **Round 9 of Vesper's review and a second independent review (both NO-GO) and what
+  changed.** The second independent review (`docs/reviews/claude-independent-review-2-20261114.md`)
+  compiled and ran each of its high findings; round 9
+  (`docs/reviews/vesper-v3-round9-report-20261114.md`) found the clock gone and one new medium
+  gap.
+  - *A decision: the parser never removes evidence.* A `panic_path_added` item was withdrawn
+    when the parser "proved" its line to be test code: under an exact `#[cfg(test)]`, first
+    attribute of a top-level item of a file the patch creates whole. Five rounds each found
+    another way in which the grammar and the compiler read one file differently, and this
+    review found four more, each a file that met every condition, gave no evidence, and
+    panicked in production code when built: a `//*` inside a block comment (the grammar does
+    not count the nested opener), a character whose low byte is `*` or `/` (the grammar's
+    scanner cuts a character to eight bits), a comment that the lexer's code view ends too
+    early, and `cr"\"`, which is a raw string only from edition 2021. That class has no end,
+    so the proof is gone and nothing is withdrawn. **The cost: a panic path in a test module
+    is reported.** A test path still halves its weight, and an item the hunk shows under a
+    test attribute carries `test_likely: true`, a hint that changes no signal and no score.
+    `Reading::WholeFile`, `FragmentScan::test_items` and `Construct::in_test` are removed; the
+    fuzz target's rule is now the plain one (every item the token rules find alone is still
+    there with the parser on, except `syntax_unchecked`).
+  - *High: a 257 KB patch ranked in 15 s, and one 64 KB hunk in as long.* For some text the
+    parser's time grows with the square of the length (`// todo`, a newline and `#!#!#!…`:
+    16 KiB a second, 64 KiB fifteen), so a budget of bytes did not bound it, and no clock
+    cuts a parse any more. Each parsed hunk is now charged the square of its bytes against
+    the square of 22 KiB (`REVIEW_SQUARE_BUDGET`), and the budget of bytes is 128 KiB, down
+    from 256. On this repository's last 300 commits 97% of the hunks that hold a word the
+    parser reads are under 8 KiB, so a real review is read whole; one hunk of 22 KiB spends
+    the whole budget, a larger one is never parsed, and each hunk passed over says
+    `syntax_unchecked`. Measured on the review's patches (user seconds, `--rank` and
+    `--outline`): sixteen hunks of 16 KB 0.97 and 1.94 (were 15.4 and 30.9); one of 64 KB 0.00
+    and 0.00 (14.8); four of 64 KB 0.00 and 0.01 (60 and 121); thirty-two of 8 KB 1.82 and 3.56
+    (7.9 and 15.2); the first review's `ternary32.patch` 0.05 and 0.09 (3.7 and 7.4) and
+    `slow.patch` 0.66 and 1.27. Those outline figures were taken while a view still scanned
+    each hunk twice, once for the rank and once for its labels. The views now scan each file
+    once and take a hunk's labels from that scan (`views.rs`, `Scans`), so a view costs what
+    the rank costs: the same patches' outlines take 0.86, 0.01, 0.01, 1.64, 0.09 and 0.69.
+    Known limit: the two budgets are spent apart, and a patch built to spend both (seven
+    hunks of 8 KB of the quadratic text, then ninety-four small ones of the slowest linear
+    text) ranks in 2.7 s; its outline and its hunks view take 2.8 s.
+  - *Found while the token rule was taught nested lists: a line of `#[cfg_attr(` cost the
+    square of its length.* The rule for `#[cfg_attr(…, ignore)]` read each list of a line from
+    its own start, so lists opened inside one another were read once for each list around
+    them: 880 KB of `#[cfg_attr(` on one line ranked in 32 s (the cost was older than this
+    round). The lists of one line may now cost sixteen times the line between them, a count
+    and no clock, and a line past that is taken to hold a skip; the same line ranks in
+    0.03 s and carries `test_skipped`.
+  - *Medium (round 9): a path call or a path value over two lines was read by nothing.*
+    `X::` with `r#unwrap(x)` on the next line, and `it.map(Result::` with `unwrap)` on the
+    next, compile to the same calls and left neither an item nor a mark: only a one-line
+    token rule read a call by a path. The parser now names a function called by a path
+    (`X::unwrap(x)`, `<Option<u32>>::unwrap(x)`, `Result::<u32, E>::unwrap(r)`) and a path
+    used as a value (`it.map(X::unwrap)`, `Option::<u32>::unwrap`) as the construct a method
+    call is, on the line of the name. A path in a `use` declaration, a macro's path and a
+    definition are not constructs. A removed `#[r#test]` is `test_removed`: that rule reads
+    its three attributes whatever the spacing.
+  - *Medium: a condition changed inside a list, or by a string, was "the same attribute".*
+    An attribute that starts on an unchanged line was compared with its old text by its
+    words, which leave out what is nested and what is a string: `all(miri)` to `all()`,
+    `target_os = "plan9"` to `"linux"`. The whole text is compared now, without its
+    whitespace. The cost: a conditional skip written over several lines of which only the
+    reason changed (`ignore = "slow"` to `"very slow"`) is reported as well; the corpus
+    declares it a false positive.
+  - *Medium: words that left neither an item nor a mark.* `#[cfg_attr(all(), cfg_attr(all(),
+    ignore))]` is `test_skipped`, by the parser and by the token rule: a `cfg_attr` that a
+    `cfg_attr` applies is followed, and nothing else that is nested is. `Option::<u32>::unwrap`
+    as a value and a call after `/* /* */ // */` in plain code are found by the parser's new
+    constructs. Still open, and declared in the corpus: the same call inside another
+    macro's body, where the parser names nothing and the lexer's code view, which does not
+    nest block comments, shows the token rules a comment.
+  - *Low: `test_likely` on a line that holds a production call.* After `/* /* */ " */` the
+    code view takes the rest of the line for a string, so a production function there was
+    not seen and the line carried the hint. A panic path that the parser names outside every
+    item that spells a test now takes the hint from its line. A raw `#[r#cfg(test)]` gives
+    the hint as `#[cfg(test)]` does.
+  - Tests: each finding has a regression test that names it, and each of the four files of
+    the high findings must report its panic path. The corpus has 45 cases (new:
+    `evidence/independent-review-2-20261114`, eight items, one declared miss, one declared
+    false positive); six items that were negatives are declared false positives (five
+    panic paths in `#[cfg(test)]` code of a created file, and the reason-only change), so
+    evidence precision is 77 of 90 (was 69 of 75) and recall 77 of 119 (was 69 of 110).
+- **Round 10 and a third independent review (both NO-GO): the parser is out of the evidence
+  path.** Round 10 (`docs/reviews/vesper-v3-round10-report-20261114.md`) found one medium
+  regression; the third independent review
+  (`docs/reviews/claude-independent-review-3-20261114.md`) found one high and five medium
+  findings, each compiled and run. Ten rounds had found the same three classes again and
+  again, and each has no end while a parser reads a hunk:
+  - *The grammar and the compiler read a text differently.* After the withdrawals were gone
+    this could still hide a construct that only the parser found: where the grammar took
+    code for a comment, a call written over three lines left nothing (IR3-M-3), an
+    attribute's text compared without its whitespace was "the same" after a line end moved
+    into a comment (IR3-M-1), and a comment inside an assertion made it "not trivial"
+    (IR3-M-4).
+  - *The parser is slow on hostile text, and no budget of bytes bounds it.* The budget of
+    squares was sized on one text; `// todo` and a line of `&)` cost sixty times as much for
+    each byte squared: 8 KB ranked in 15 s and 22 KB in 118 s, inside both budgets
+    (IR3-H-1).
+  - *The parser is blind in places, and there a construct leaves no trace.* Another macro's
+    body was marked `syntax_unchecked`; the arm of a `macro_rules!` definition was not
+    (IR3-M-2), and a method call with generic arguments, `x.expect::<'static>("no")`, was no
+    construct at all (IR3-M-5).
+
+  **What replaces it.** For Rust, the rules for `panic_path_added`, `trivial_assert`,
+  `stub_added`, `test_skipped` and `test_removed` read the tokens of a hunk across its lines
+  (`crates/deep-diff-forge-graph/src/rust_tokens.rs`). Each side of a hunk (its unchanged
+  lines with its added, or its removed, lines), as the code view gives it (comments and
+  strings blank, raw identifier prefixes blank), is cut into identifiers and single
+  punctuation marks; white space and line ends only separate them. Each construct is found
+  from one word by reading a bounded number of the tokens around it (generic arguments of up
+  to 64 tokens are passed over); a `#[cfg_attr(…)]` list is followed token by token as the
+  tokens pass, sixteen lists inside one another at most, and one opened past that is taken
+  to hold a skip. There is no grammar, no recursion and no clock, the tokens are held in a
+  short window, and the cost of a side is its length. A construct is evidence when at least
+  one of its tokens is on an added line (for `test_removed`, a removed line), and it is
+  reported on the first such line: so a condition that became `true`, or a changed
+  condition of a conditional skip, is evidence, and a message that changed inside
+  `assert!(true, "…")` is not. An item says `"basis": "lexical"` when its tokens are on one
+  line and `"hunk"` when they are on several. `test_likely` is given to a panic path that
+  stands inside the braces of an item whose attribute spells a test; it is still only a
+  hint.
+
+  **What is found that was not.** A construct inside another macro's body or in a
+  `macro_rules!` arm, on one line or over several; a method call or a path call with generic
+  arguments; an assertion with a comment inside it; a construct where the grammar read a
+  comment; a removed `#[tokio::test(flavor = "…")]` and a removed `#[test]` written over
+  lines (IR3-L-4); a test inside another macro's body gets the hint.
+
+  **What is gone.** The signal `syntax_unchecked` (there is nothing that is "not checked"),
+  the basis `syntax_fragment`, the two budgets (`REVIEW_FRAGMENT_BUDGET`,
+  `REVIEW_SQUARE_BUDGET`), the plan of a review (`FragmentPlan`, `Reading`) and with it
+  `file_evidence_in`, `hunk_signals_in`, `assess_file_in`, `score_file_in` and
+  `RankedFile::scored_in`, the syntax crate's fragment scanner (`scan_fragment`,
+  `FragmentScan`, `Construct`), and the graph crate's dependency on the syntax crate. The
+  answer for a hunk no longer depends on what else the review holds or on its order. None
+  of these was in a release.
+
+  **Also.** A view of hunks picked by address or by path scans the hunks it shows and no
+  others (round 10, VD3R10-M-1; IR3-L-1): one small hunk beside a hostile one took 1.8 s
+  and takes 0.00 s. Only the listing of every hunk scans every file, once, for the order.
+
+  **Measured** (release build, user seconds, `--rank`, `--outline`, `--hunks`): the third
+  review's 8 KB of `&)` 0.00, 0.00, 0.00 (were 17.5, 15.6, 15.5); its 22 KB 0.00 (118.3);
+  128 hunks of 1 KB of it 0.00 (30.2); the second review's sixteen hunks of 16 KB 0.00,
+  0.01, 0.00; four of 64 KB 0.00, 0.01, 0.01; the first review's `ternary32.patch` 0.05,
+  0.08, 0.05 and `slow.patch` 0.66, 0.70, 0.65; a million lines 1.9, 2.5, 2.5 (were 2.2,
+  2.8, 2.8); one line of 60 MiB 1.4, 2.0, 2.2 (the same as before). Two megabytes of each
+  of fourteen hostile units, on one line or a unit a line, rank in 0.03 to 0.35 s.
+
+  **Known limits, declared.** The code view decides what is a comment or a string, and it
+  ends a Rust block comment at the first `*/`, where the compiler nests them: a call after
+  `/* /* */ // */` on its line is not seen (the parser, which nests them, found it in plain
+  code; the corpus declares it), and the hint can be wrong there. A name that a macro builds
+  or that is bound to another name is not read; of functions used as values only `Result`'s
+  and `Option`'s are read, so `it.map(X::unwrap)` with a type of the patch's own, which the
+  parser named, is declared a miss (tokens do not tell it from an import, a type or a longer
+  path). Generic arguments of more than 64 tokens are not passed over. A construct of which
+  the hunk shows only a part is not read. A change that only removes tokens adds none: a
+  conditional skip whose condition lost a term because a line was deleted or a line end
+  moved into a comment (IR3-M-1's first patch and its control, which the parser found), and
+  a call that the change brings to life by removing the comment around it (IR3-L-3), are
+  declared misses. Nothing is compared with the old side, so a line written again inside a
+  conditional skip is reported even when only its spacing changed (declared a false
+  positive). `test_likely` is spelled, not proved.
+
+  **Tests.** The token reader has unit tests for the tokens, the window and each construct;
+  every reproduction of the ten rounds and the three independent reviews is an assertion
+  with its new answer, in the tests or in the corpus; two megabytes of each hostile unit
+  must rank within a bound of CPU time; the fuzz target `rust_tokens` replaces
+  `fragment_scan` (every item on a line the change made, the same answer twice, and the same
+  signals however a construct is spread over added lines). The corpus has 46 cases (new:
+  `evidence/independent-review-3-20261114`, five items and three declared misses): evidence
+  precision 81 of 95 (was 77 of 90), recall 81 of 125 (was 77 of 119).
+
+- **Round 12 of Vesper's review and a fifth independent review (both NO-GO): findings are
+  united, bytes are not.** Both reviews (`docs/reviews/vesper-v3-round12-report-20261114.md`,
+  `docs/reviews/claude-independent-review-5-20261114.md`) confirmed that, read from a file's
+  first line, the Rust code view agrees with the compiler, that the other languages are
+  unchanged and that the cost is linear. Both found ways to hide a construct that the lexer
+  oracle could not see, all in how a hunk is read.
+  - *The root (IR5-H-1, high).* A line after an open string was read two ways, as code and
+    as going on in the string, and the bytes of both readings were united. After any string
+    that ran over a line end the two readings were out of step to the end of the hunk, and
+    the union showed the text of later comments and strings between the tokens of real code:
+    in `x.unwrap/*""*/()`, `todo/*""*/!()`, `#[/*""*/ignore]` and `assert!(/*""*/true)` two
+    quotes stood between the tokens, and in `#[cfg_attr(not(feature = "never)"), ignore)]` a
+    bracket closed the list early. Nothing was found, in a new file or in a hunk of an
+    existing one; 6.9% of real Rust files hold such a string. The same cause made false
+    items of string and comment text, in released versions too.
+  - *The decision.* For Rust a side of a hunk is read as a small set of whole views. Each is
+    the exact reading of the side from one stated start, a string or a comment that runs
+    over lines carried as the compiler carries it, with nothing read twice and no reading
+    mixed with another. Every Rust rule reads each view (the reader of tokens over the whole
+    side, the one-line rules line by line), and an item any view gives is reported once,
+    with the highest basis. The other languages keep the shared scanner and its readings,
+    byte for byte.
+  - *The starts.* From code: always. At line 1 of a file with the compiler's shebang rule:
+    a first line `#!` whose next token, after white space and comments that are no doc
+    comments, on that line or a later one, is not `[`, is blank and opens nothing (VD3R12-M-2:
+    `#!/usr/bin/env -S cargo run /*` had opened a comment over the file). From inside one
+    block comment: for a side that starts below line 1 and holds a changed line (VD3R12-M-1:
+    a line `// */ pub fn evil() { … } /*` added inside an existing comment, or after a `/*`
+    that an earlier hunk added, is a function the compiler compiles and was a line comment
+    to the view). From inside an ordinary string: for such a side when, read from code, it
+    ends inside a string or a raw string, which is the mark of a side whose first quote
+    closed a string opened above it. That reading finds the call on the line that closes a
+    long string (the fifth review's honest case, missed since round 11) and keeps what
+    round 12 found on the lines after such a string.
+  - *`test_likely`.* The hint of a panic path is the one the reading from code gives when
+    that reading finds it; when only other readings find it, it has the hint only if each
+    gives it. The hint still reaches nothing but its member.
+  - *`k#` (IR5-M-1).* The scanner had taken `k#name` for one token, as the newest lexer does.
+    rustc 1.99.1 has that token in no edition: 2015 and 2018 read `k`, `#` and the rest,
+    2021 and 2024 refuse the prefix. So `k#r"\"` opened an ordinary string where the
+    compiler reads a raw one, and one such line hid the rest of a hunk that editions 2015
+    and 2018 compile. A name and a `#` are now a name and a `#`; the fuzz oracle reads that
+    token again as the compiler does. A raw lifetime (`'r#name`) is still read as 2021 and
+    2024 read it.
+  - *Raw identifiers after white space past ASCII (IR5-M-2).* `x.<U+200E>r#unwrap()`,
+    `#[<U+200E>r#ignore]` and their kin with U+0085, U+200F, U+2028 and U+2029 are the names
+    they spell: the rule that reads `r#name` as `name` took every character past ASCII
+    before the `r` for part of a longer name. It now uses the one definition of the
+    compiler's white space that the reader of tokens and the shebang rule use.
+  - *Measured, against the round 12 binary.* On this repository's history (481 commits that
+    touch Rust, 5,985 hunks, 5,587 items before): 36 items are no longer reported, of which
+    35 stood in strings or comments and 1 is real code (in a hunk that begins inside a
+    string its quotes do not betray); 11 items are new, all text of strings (8 from the
+    reading that begins inside a comment, in test fixtures that hold patch text with `*/`,
+    3 from the reading that begins inside a string); 2 panic paths change their hint. On
+    177,957 fragments of 40 added lines cut from 13,779 real crate files (107,720 items
+    before): 111 items are no longer reported, 18 of them string or comment text and 93
+    real code; 5 are new, 1 of them real; 96 panic paths change their hint, 87 of them
+    gaining it where string text had broken the test's braces. Each further reading by
+    itself: the one from inside a comment adds 1 item on the fragments and 8 on the history,
+    all false; the one from inside a string adds 414 and 6, of which 378 and 3 are real code
+    that the reading from code alone does not find, and 36 and 3 are false.
+  - *Cost.* A side has at most three readings, and a further reading does no work on a line
+    it shows nothing of (the raw-line rules have answered in the first). Two megabytes of
+    each hostile unit, as a new file and as a fragment below line 1, on one line and a unit
+    to a line, rank in the time they took before (0.03 to 1.0 s of CPU on a loaded machine,
+    both binaries).
+  - *Limits that remain, declared.* A side that began inside a string but, read from code,
+    ends in code (another string opens on it and stays open, or the string was opened by an
+    earlier hunk and is closed after `//`) is read from code: the 93 and the 1 above. A side
+    that began inside a raw string is read as if the string were an ordinary one. A side
+    that began two or more block comments deep is read as one deep (this entry said that
+    this "shows code earlier than the compiler does and never later"; that was false, as
+    the next entry says: the text shown too early can hide later code).
+    The false items of the two further
+    readings, counted above. Editions before 2021: `cr"…"` is there the name `cr` and an
+    ordinary string, and `'r#name` is `'r`, `#` and what follows, so `cr"\"` and `'r#r"\"`
+    end a string elsewhere than the view does and a text written for those editions can
+    hide what follows (`c"…"` blanks the same bytes either way; `k#…` is read as those
+    editions read it). Frontmatter, which the compiler refuses as experimental. Characters
+    assigned after Unicode 18.0.0. A side whose first line says it is line 1 was taken for
+    the top of its file. (This entry said that this is where `git apply` puts such a hunk
+    unless it is run with `--unidiff-zero` or `-C0`. That was wrong: Git puts a hunk where
+    its old lines are, looking first at its new position, and only an old position of 0 or
+    1 says it must be the beginning. The next two entries correct it: the top of a file is
+    decided by what Git must do, and the sentence that stood here for a day, that Git places
+    a hunk by its old position and never by the new one, had the two numbers the wrong way
+    round.)
+  - *Tests.* Unit tests hold each start of a view, the shebang rule in twenty-four forms
+    (each checked with rustc 1.99.1), `k#`, the white space, and the eleven scanner rules
+    that the review's mutation run found no test for (IR5-L-1; one of the eleven, a rule
+    for `c"`, did nothing a name and a string do not do, and is gone); every reproduction of
+    both reviews is an assertion in the tests or the corpus. The fuzz target
+    `rust_code_view` now holds the exact view on every line (precision was not checked
+    after a string over a line end, which is where IR5-H-1 lived), and holds the other
+    starts to it: read from inside a comment a text has the views of `/*` and the text,
+    from inside a string those of `"` and the text, and from line 1 a shebang line by the
+    compiler's own rule is blank. `rust_tokens` has a fifth rule: constructs the target
+    writes itself give the same signals with a block comment of any text between two of
+    their tokens and complete strings of any text on the lines before them. The corpus has
+    48 cases (new: `evidence/independent-review-5-20261114`, nineteen items, two declared
+    false positives and four declared misses): evidence precision 116 of 132 (was 97 of
+    111), recall 116 of 162 (was 97 of 139), 65 declared (was 59). The head of
+    `rust_tokens.rs` no longer says the view ends a block comment at the first `*/`
+    (VD3R12-L-1, IR5-L-2), and the comment on `Found` names both kinds of item that can
+    come late (IR5-L-3).
+
+- **Round 18 of Vesper's review (NO-GO on one medium) and an eleventh independent review
+  (GO-WITH-FIXES, nothing high): a skip is read only where the side holds its attribute
+  whole.** Both reviews read the round 18 commit (`af74308`). The eleventh found it never
+  lower than release 0.8.3 or round 14 beyond the declared cases on every set it made
+  (58,198 patches: real `git diff --no-index` patches at three context widths, generated
+  sets and the `-U0`/`-U1`/`-U3` history of four repositories no review had used), no
+  item added by any of 70,924 cuts of real lines, and nothing lower than round 17 but
+  `.unwrap::` and `.expect::` at the end of a side. This is the line's last build round.
+  - *A skip's attribute is read only when the side holds it whole (VD3R18-M-1; the
+    coordinator's ruling).* Round 18 read `#[ignore(` and `ignore(` as an attribute of its
+    own in a `cfg_attr` list from the parenthesis on. Vesper compiled
+    `macro_rules! discard { ($($tokens:tt)*) => {}; }` with `discard! {` and
+    `#[ignore(` on one line and `NOT_A_SKIP` and `)]` on the next two (and the same with
+    `#[cfg_attr(all(), ignore(`): it runs and skips no test, and the `git diff -U0` of a
+    change from `#[allow(` ends its hunk on the parenthesis, which round 18 reported as a
+    `test_skipped` (release 0.8.3 and rounds 14 and 17: nothing). **One rule for the
+    class:** a skip is read only where the side's text holds its attribute whole, from `#`
+    to its `]` (`#[ignore]`, `#[ignore = "…"]`, `#[ignore(…)]`, `#![ignore…]`; in a
+    `cfg_attr` list, to the list's `)` and the `]` after it, so an `ignore(` to its
+    matching `)`). The construct, for where it is evidence, is unchanged: `#[ignore` and
+    the token after it, or the list from its `#` to its `ignore`. `ignored` asks for the
+    `]` that closes the attribute's `[`, within 64 tokens from `[` to `]` (an `#[ignore(…)]`
+    with a longer argument list is not read: it is the one form that round 18 read on a
+    whole text and round 19 does not, and no patch of the comparisons has one); a `cfg_attr` list keeps the skip
+    it holds and notes it when it closes and its `]` follows. A list opened past
+    `CFG_ATTR_LISTS` is still taken to hold a skip (it is not followed; no code nests
+    lists so). No other form read on a whole text loses its reading: every patch lower than round 18
+    below is a side that ends before the attribute's `]`. What the
+    rule takes away, at the end of a side: round 18's `#[ignore(`, `#![ignore(` and
+    `cfg_attr(…, ignore(`; and what rounds 13 to 18 read, `#[ignore =`, `#![ignore =` and an
+    `ignore` followed by `,`, `=` or `)` in a list left open. One of these is *ordinary*:
+    rustfmt writes a long condition over lines and `ignore = "reason"` alone on the line
+    above `)]`, so a `git diff -U0` of two rustfmt-clean files ends there
+    (`cfgeqnew-u0.patch`, made here with rustfmt; rounds 14 and 18 report the skip,
+    release 0.8.3 does not). It is the same shape as the bare `ignore` of `cfgu0.patch`,
+    and it is declared beside it (README, the head of `rust_tokens`, the corpus). When the
+    next hunk has a true number, the join reads the whole attribute and finds it.
+    Vesper's two patches give no signal; the complete forms of the tenth review's
+    `ignparen.patch` still skip. Tests: both opening-parenthesis forms, Vesper's indented
+    one-line sides and the six older forms join `no_form_is_read_at_the_end_of_a_side`
+    (63 forms, at the end of a new side and of an old side, after context and after a
+    change, spaced and a token a line, in a macro's braces and not); Vesper's patches at no
+    signal and the same text with its `)]` a skip; the unclosed forms in the table of the
+    conditional skip and of the spacing test; the bound; the ordinary `ignore = "…"` shape
+    at no signal with `-U0` and a skip with its `)]` in the hunk. Corpus: Vesper's patches
+    as hard negatives (new case `evidence/independent-review-11-20261116`).
+  - *Correction to the round 18 entry below.* It says that `#[ignore(`, `#![ignore(` and
+    `ignore(` in a `cfg_attr` list "are read as `test_skipped` on the whole text, at any
+    spacing the reader handles (never at an edge)". **The parenthesis was false:** round 18
+    read each of them at the end of a side from the opening parenthesis on (the eleventh
+    review's `endparen.patch`, Vesper's two patches). Since round 19 none of them is read
+    before the attribute's `]`. The round 17 entry's "(with `,`, `)` or `=` after it, it
+    is)", of an `ignore` at a side's end in an open list, was true of rounds 17 and 18 and
+    is not of round 19.
+  - *A side that begins at a bracketed path (IR11-L-1; declared, no code).* The head of
+    `rust_tokens` said "nothing is inferred from how it ends, and nothing from how it
+    begins", and the README that `Vec::<Command>::new()` is not read. A side's first token
+    can go on from a line the side does not show: `let v = Vec::` and on the next line
+    `<Command>::new();` compiles and spawns nothing, and a `-U0` hunk that changes the
+    second line begins at the `<`, which nothing shown precedes, and is read as the path
+    (rounds 16 to 18 report a `process_spawn`; release 0.8.3 and round 14 do not). Both
+    sentences now say this: the beginning of a side is read as the first tokens of its
+    text, and the false item is a writer's (no formatter breaks a line between `::` and
+    `<`; not reading such a `<` would lose `let c =` and `<Command>::new(…)` over two
+    lines). Declared in the README's writer's limits and the head comment; the reviewer's
+    `vecturbo-u0.patch` is a declared false positive in the corpus.
+  - *The keywords before a bracketed path (IR11-L-2, VD3R18-L-1; one rule, measured).* The
+    list is now the keywords of rustc 1.99.1 after which an expression can begin and a `<`
+    opens a path. It was derived by compiling `KW <Command>::new("true")` after each of
+    the 52 strict and reserved keywords of the Rust reference (38 strict, 14 reserved) and after `do yeet`, in 13
+    positions each (a statement, a `let`, a tail, a loop, a borrow, `&raw`, a condition, a
+    `match`, `for … in`, a coroutine, a tail call, a closure, an argument), in editions
+    2021 and 2024, with `RUSTC_BOOTSTRAP=1` and the keyword's feature where it is unstable
+    (1,354 compilations). The ones that compile: `return`, `match`, `in`, `break`, `if`,
+    `while`, `mut` (of `&mut`), and with a nightly feature `yield` (`coroutines`), `become`
+    (`explicit_tail_calls`) and `yeet` after `do` (`yeet_expr`). `mut`, `become` and
+    `do yeet` are new (18 lines of code, net); `else`, `const` and `mut` after `&raw` (no
+    address of a temporary), `continue` (a comparison follows it) and the rest do not
+    compile. The review's `mutref-u0.patch` and `mutref-u3.patch` (it spawned `touch`) and
+    Vesper's `become` and `do yeet` now report the spawn; a name before the `<`
+    (`mutable`, `becomes`, `yeet` without `do`, `undo yeet`) is no path. Corpus: the four
+    as expected items.
+  - *Documents (IR11-L-3).* The README's list of the rounds that took something back
+    names round 18 (`.unwrap::` and `.expect::` at the end of a side: 224 patches of the
+    review's sets by its count, 12 of the 6,110 patches this branch is compared on, re-measured) and round 19
+    (14 of the same patches, below). The round 18 sentence on memory, "peak memory within 1 MiB on every input",
+    holds for the first of its two runs only (on a build whose answers are the final
+    binary's); its second run, on the final binary, measured within 2 MiB, and the
+    eleventh review measured every input 1 to 2 MiB higher than round 17 (five by 2 MiB):
+    **within 2 MiB** is what holds. `git grep` finds the old phrase once more, in the
+    round 18 request to Vesper, a record of what was asked, left as it was.
+  - *Controls, comparisons, cost, fuzz.* Each plant in a scratch clone with its own target directory, against
+    the graph crate's 239 tests (all pass unplanted; so do the corpus test's 9): `#[ignore…`
+    read without its `]` fails 4 (`no_form_is_read_at_the_end_of_a_side`, the spacing
+    test, the test of `#[ignore(…)]` and the bare `ignore`, the count of cuts); a
+    `cfg_attr` list's `)` noted with no `]` after it 3; a list still open at the side's end
+    noted 5; the three at once (the reading of `af74308`) 7, and 4 of the corpus test; each
+    added keyword taken out (`mut`, `become`, `yeet` after `do`) 1, and `yeet` read without
+    its `do` 1 (`a_bracketed_path_after_a_keyword_that_begins_an_expression_is_read`). The
+    fuzz target `rust_hunk_places` built as a plain program and run over its 43 seeds, each
+    rule alone: no rule fails with this round's reader, with `af74308`'s, or with the three
+    plants at once. No fuzz target was changed: no rule tells round 18's reading of an
+    opening parenthesis from this round's (rule 16 holds that a cut line adds nothing the
+    whole line lacks, and round 18 read the parenthesis on the whole line too); the unit
+    tests above hold it. On the final binary, 6,110 patches (the 6,059 of round 18, this
+    round's own 20 and its corpus case, and the eleventh review's 30 reproductions), score,
+    signals and items, plain and strict: against release 0.8.3 one patch lower, the second
+    section for one path (as before), and 2,547 with something gained; against round 14,
+    fifteen lower (strict: sixteen, the list of 32 of `bound-lang.patch`, as since round
+    16), the six of round 18 (the bare `ignore`) and nine more, each a skip's attribute
+    that a side ends before its `]` (round 17's own `e6`, `#[cfg_attr(miri, ignore =`; six
+    of this round's one-line sides; `cfgeqnew-u0.patch` and its copy in the corpus, the
+    ordinary `ignore = "…"`); against round 18, fourteen lower, every one such a side (round
+    17's `e6`; this round's nine one-line sides, three with the parenthesis;
+    `cfgeqnew-u0.patch`; Vesper's `ignparen-u0.patch`; the review's `endparen.patch`; the
+    new corpus case, Vesper's two sections), and seven with
+    something gained (`&mut`, `become`, `do yeet`). No refusal differs. Cost, the 51
+    inputs of round 16 (`--rank --json`, user and system seconds, the best of three, peak
+    memory, one process at a time, against round 18, on a machine with a load of 8 to 16):
+    54.29 s in all for round 18 and 54.63 s now, peak memory within 2 MiB on every input
+    (0 to 2 MiB higher, a larger binary); the four that looked slower, re-timed three times
+    alternating, had equal bests (`items60-frag` 4.36 against 4.37 s, `manyhunks-added`
+    2.58 against 2.51 s, `slashstar-fragment-lines` 1.11 against 1.10 s, `hints-330k` 3.54
+    against 3.55 s). Memory on the reviewer's shapes (`--rank`): within 1.4 MB and 1.5 % of
+    round 18 on every shape (43,000 touching hunks with 60-byte context lines 451 MB).
+    Fuzz, 300 s each on this round's tree, every target with exit 0: `rust_hunk_places`
+    28,097 runs, `rust_tokens` 87,219, `rust_code_view` 767,893 and `evidence_scan` 202,278
+    (the last was pending from round 18). Pedantic clippy (workspace, all targets, and the
+    fuzz crate), `cargo fmt --check` and the workspace's tests (2,084 passed, 4 ignored)
+    are clean.
+  - *The round 19 reviews (addendum, 2026-11-17; documents and corpus only, no code).* Both
+    reviews read the round 19 commit (`f819a56`). Vesper said NO-GO on one medium and
+    recommended narrowing with no further round; the twelfth independent review said
+    GO-WITH-FIXES, documents only (it found nothing lower than release 0.8.3, and nothing
+    lower than round 14 on 15,864 patches of the `-U0`, `-U1` and `-U3` history of ten real
+    repositories). The line's build rounds are over, so each finding is declared, and the
+    release binary is unchanged (it is byte for byte the round 19 build).
+    - *The rustfmt `ignore` miss is not `-U0` only (IR12-L-1, ordinary).* This entry says
+      `git diff -U0` ends a hunk on `ignore = "reason"`, and the round 19 ruling said the
+      default three lines of context show the `)]`. **That was too narrow:** wherever a hunk
+      ends between the `ignore` and the `)]`, at any context width (plain `git diff`
+      included), the skip is not read. Plain `git diff` of a change to the second and third
+      of four targets of rustfmt's vertical `any(…)` ends its hunk on the `ignore` line (the
+      review's `four-u3.patch`; rounds 14 and 18 report the skip, release 0.8.3 does not):
+      with three lines of context it does so when the last changed line is three lines above
+      the `ignore` (two above, the `)]` is shown and the skip is read); `-U1` does when the
+      changed line of the condition stands directly above the `ignore`. The README, the head of `rust_tokens` and the
+      test's doc say so; `four-u3.patch` is a declared miss in the corpus.
+    - *A seventeenth nested `cfg_attr` list is taken to hold a skip (VD3R19-M-1 = IR12-L-2,
+      a writer's).* "A skip is read only where the side holds its attribute whole" holds for
+      the first 16 `#[cfg_attr(` lists followed at once (`CFG_ATTR_LISTS`). One opened
+      inside 16 others is not followed and is taken to hold a skip, with no `ignore` and no
+      `]`: seventeen openers in the tokens of a macro that discards them compile and skip
+      nothing, and rounds 14 to 19 report a `test_skipped` (release 0.8.3 does not). Only a
+      macro's token tree nests lists so. Every sentence of that rule now says so (README,
+      the head of `rust_tokens`, the docs of `ignored` and `Skips`, the testing document);
+      the review's `deep17-u0.patch` is a declared false positive in the corpus.
+    - *The keyword rule is lexical (VD3R19-L-1 = IR12-L-3, a writer's).* A bracketed
+      released path is read after any `mut` straight before its `<`; `&mut` is the measured
+      case. So `&raw mut <Command>::new("true")` (which the compiler refuses, E0745) and
+      `discard! { mut <Command>::new("true") }` (which compiles and spawns nothing) are read
+      as `process_spawn`, new against round 18. The sentence "nor `const` or `mut` after
+      `&raw`" in the README and the doc of `begins_expression` was false and now reads "nor
+      `const` after `&raw`", with the lexical rule and its false items stated. Vesper's
+      `mut-macro.patch` is a declared false positive in the corpus.
+    - *Corpus.* New case `evidence/independent-review-12-20261117`: 55 cases, precision
+      177/203, recall 177/260, findings 33/33, ranking 12/15, 112 declared (83 evidence
+      `known_miss`). Both floors fell, on purpose.
+- **Round 17 of Vesper's review (NO-GO on one medium) and a tenth independent review
+  (GO-WITH-FIXES, nothing high): no form is read at the end of a hunk side.** Both
+  reviews read the round 17 commit (`aa4acb7`). The tenth found it never lower than
+  release 0.8.3 or round 14 on every set it made (40,000 real `git diff --no-index`
+  patches, 46,000 generated, the `-U0`/`-U1`/`-U3` history of two repositories) beside
+  the declared `ignore`, and no edge item on 19.1 million lines of real Rust as one-line
+  hunks. Each broke the last edge form all the same.
+  - *No form is read at the end of a side (VD3R17-M-1, IR10-L-3; the coordinator's
+    ruling).* Round 17 kept one form, a method's name with `::` after it (`.unwrap::`,
+    `.expect::`, also with the `<`), because outside a macro only generic arguments and
+    the call can follow. Vesper compiled `macro_rules! discard { ($($tokens:tt)*) => {}; }`
+    and `discard! { value.unwrap:: NOT_A_CALL }`: it runs and calls nothing, and the
+    `git diff -U0` of a change from `value.other::` ends its hunk on `value.unwrap::`,
+    which round 17 reported as a `panic_path_added`. The tenth reviewer wrote
+    `let r = 1..unwrap::` and `<u8>();` with a free function named `unwrap`: after a range
+    the `.` is the second of `..`. Rounds 15, 16 and 17 each kept forms read at the end of
+    a side and each was broken by grammar (a path, an assertion, a sentence, a macro, a
+    range). **The rule now, in one sentence: a hunk side is read as text that ends there;
+    nothing is inferred from how it ends.** `waiting` and the `end` flag of the reader are
+    gone. A construct cut by two hunks is found by a join (one true number of the second
+    hunk, the old or the new) or where one half holds it whole; behind two false numbers
+    it is a declared miss that takes a writer. Of the 265 cuts of 28 constructs written as
+    two hunks, all are found with one true number, and 176 with none (round 17: 178; the
+    two are the cuts after `.unwrap ::` and `.unwrap :: <`). The ninth review's
+    `turbo.rs` in the corpus is a declared miss now. Tests: a property test over every
+    form that rounds 13 to 17 read at an edge (52, listed in `rust_tokens`'s tests: the
+    `cfg_attr` list left open on `ignore`; round 15's bare names, `X::unwrap`, `todo`,
+    `assert`, `assert_eq!(true,`, `Command`, `TcpStream`, `UdpSocket`, `reqwest`, `ureq`;
+    rounds 15 and 16's `todo!`, `assert!(true`, `assert_eq!(true, true`, `#[ignore`,
+    `#[allow`, `Command::`, `process::`, `TcpStream::`, `UdpSocket::` and the old side's
+    `#[test`, `#[rstest`, `#[tokio`, `#[tokio::`, `#[tokio::test`; round 17's `.unwrap::`,
+    `.unwrap::<`, `.expect::`, `.expect::<`; the reviewers' `value.unwrap::` and
+    `0..unwrap::`), each at the end of a new side and of an old side, after context and
+    after a changed line, spaced and a token a line, in a macro's braces and not: no
+    item; the method call with generic arguments read by the rule for the whole over any
+    lines (336 continuations) and not before its call; Vesper's `macro-token-tree.patch`
+    and the review's `range-u0.patch` at no signal in the graph crate's tests and as hard
+    negatives in the corpus. The whole rule still reads `0..unwrap::<u8>()` as a method
+    call when the side shows the call (round 14 did too; rustfmt writes it on one line):
+    a writer's false positive, not changed here.
+  - *The bare `ignore` at the end of a side (the ruling of round 17, kept; its statement
+    corrected).* A `cfg_attr` list that a side leaves open on `ignore` is still not a
+    skip (it can go on as `ignore::case`). Round 17 framed this as three of its own
+    patches; the tenth review showed it is **ordinary**: rustfmt writes a long condition
+    over lines and `ignore` alone on the line above `)]`, so a `git diff -U0` of two
+    rustfmt-clean files ends there (`cfgu0.patch`; rounds 14 and 16 reported the skip,
+    round 17 and release 0.8.3 do not). The README, the head of `rust_tokens` and the
+    corpus (`tests/slow.rs`, a declared miss) say so.
+  - *`#[ignore(…)]` is a skip (IR10-M-1).* The round 17 entry below says "`#[ignore(…)]`
+    is refused by the compiler and is not a form of the attribute", and the doc comment of
+    `waiting` said the same. **That is false:** rustc 1.99.1 reports `#[ignore(reason)]`
+    through the lint `ill_formed_attribute_input` ("this was previously accepted by the
+    compiler"), deny by default, and a lint can be allowed (`[lints.rust]
+    ill_formed_attribute_input = "allow"` in `Cargo.toml`, a line no Rust rule reads);
+    then the test compiles and does not run (checked again here: `#[ignore(not_ready)]`,
+    `#[ignore()]`, `#[cfg_attr(all(), ignore(x))]`, `#![ignore(x)]` inside a test's body
+    and `cfg_attr` within `cfg_attr`, each `ignored`). `#[ignore(`, `#![ignore(` and
+    `ignore(` as an attribute of its own in a `cfg_attr` list are read as `test_skipped`
+    on the whole text, at any spacing the reader handles (never at an edge). No version
+    read them; release 0.8.3 neither. `#[ignore[x]]` is a hard error and is not read.
+  - *A created file in several hunks at old position 0 (IR10-L-1; declared).* Plain
+    `git apply` refuses a created file with a second hunk at `-0,0`; `git apply
+    --unidiff-zero` applies it and puts the later hunk at line 1, above the earlier, as for
+    an existing file, while the reader joins a created file's hunks in the order written.
+    So `newtwotop.patch` (the call in Git's result) is a declared miss and
+    `newtop-natural.patch` (no call in Git's result; rounds 14 to 17 report one) a declared
+    false positive, both writers'. Declared with IR9-M-1 in the README, the docs of
+    `placed_at_top` (whose "and no other" was false for this applier) and `joined_texts`,
+    a test and the corpus. No new join family.
+  - *Bracketed released paths after a keyword (IR10-L-2).* `<Command>::new(…)` and the
+    other bracketed spellings are read where the `<` follows a keyword after which an
+    expression begins: `return`, `match`, `in` (of `for … in`), `break` with or without
+    its label (`break 'l <Command>::new(…)`), `yield`, `if`, `while` (compiled and run
+    here: each spawns). Not after `else` (only `{` or `if` can follow it), not after any
+    other name (`a <Command> ::new(x)`, `x.await <…`, a label alone). The review's
+    `kw.patch` has five `process_spawn` items, the four keywords and the control after `=`
+    (round 17: the control only); `kw-u3.patch` and `kw-u0.patch` score 6 (every version
+    before: 2). The whole rule reads `0..unwrap::<u8>()` as a method call (above).
+  - *Documents (IR10-L-4).* The head of `rust_tokens` (its list of declared limits), the
+    head of `evidence`, `docs/TESTING_GOLD_STANDARD.md`, the README and the docs of
+    `read_new`, `read_old`, `Skips`, `placed_at_top` and `joined_texts` say the one rule;
+    the sentences that named an edge form as read are gone or marked as history. The
+    memory test is described as what it is: it counts the lines of the views a reading
+    holds, not memory (the README's memory figures are measured, not held by it).
+  - *Fuzz.* `rust_hunk_places` (43 seeds; 5 new, printable ASCII): rule 7 is turned round
+    (a method call with generic arguments cut after its `::` or `<` is not found when the
+    numbers say nothing,
+    and is found by the join when the old number is true); rule 9 has the reviewers'
+    shapes (`value.unwrap::`, `value.expect::<` in a macro's braces, `0..unwrap::`); new
+    rule 16: a side's last line, whole and cut between two tokens outside every string
+    and comment of every reading (every cut of a line from a list of every form some
+    round read at an edge written out whole, and one cut of the input's own first line),
+    and the cut line reports nothing of the reader's eight signals that the whole line
+    does not; the joined constructs have `ignore(…)` in a `cfg_attr` list. `rust_tokens`
+    has `#[ignore(…)]` and a `cfg_attr` `ignore(…)` among its constructs (one new seed).
+    No existing seed's bytes changed; the new seeds are printable ASCII.
+  - *Controls, comparisons, cost.* Each plant in a scratch clone with its own target
+    directory, against the graph crate's 239 tests (all pass unplanted; so do the corpus
+    test's 9): round 17's `.unwrap::` read at the end of a side again fails 4
+    (`no_form_is_read_at_the_end_of_a_side`, the method call over any lines, and the two
+    counts of cuts); round 16's `todo!` there 5; the bare `ignore` of a `cfg_attr` list left
+    open read as a skip again (rounds 13 to 16) 6; `#[ignore(` unread 2, and 4 of the corpus
+    test; `ignore(` in a `cfg_attr` list unread 2; no keyword before a bracketed path 1, any
+    name before it 2, the label of `break 'l` unread 1, `else` and `await` taken for such
+    keywords 1; a created file's later hunk at `-0,0` read as a top 2; the four changes of
+    the reader undone at once (the reading of `aa4acb7`) 8, and 4 of the corpus test. The
+    fuzz target `rust_hunk_places` built as a plain program and run over its 43 seeds, each
+    rule alone: with this round's reader no rule fails; with `aa4acb7`'s, rule 7 fails on
+    all 43, rule 16 on 5, rule 9 on 2 (the macro and the range) and rules 6, 10 and 15 on
+    3 (`ignore(…)` in a `cfg_attr` list); with the `.unwrap::` plant, rules 7, 16 and 9 as
+    for `aa4acb7` and no other. (That run found one of this round's joined constructs
+    written with its `ignore` on the line that rules 10 and 15 show as context, which is no
+    change to a skip; it is cut before its `ignore` now, as the bare one is.) On the final
+    binary, 6,059 patches (the 6,000 the rounds are measured on, round 17's own 33, the
+    tenth review's 12 reproductions, Vesper's, and this round's 13), score, signals and
+    items, plain and strict: against release 0.8.3 one patch lower, the second section for
+    one path (as before), and 2,518 with something gained; against round 14, six lower,
+    every one the bare `ignore` above (round 17's own `e5` and `skipend`, the ninth review's
+    case, `cfgu0.patch` and two copies of it, this round's own and the tenth review's case
+    in the corpus; strict adds the list of 32 of `bound-lang.patch`, as in rounds 16 and
+    17); against round 17, twelve lower, every one a `.unwrap::` or `.expect::` at the end
+    of a side (the eighth review's cuts `c03-cut07` and `c03-cut08`, the ninth review's
+    `turbo.rs`, the tenth review's `range-edge` and `range-u0` and its case in the corpus,
+    Vesper's `macro-token-tree`, and five of this round's own), and eleven with something
+    gained (`#[ignore(…)]`, the keywords). No refusal differs. Cost, the 51 inputs of round
+    16 (`--rank --json`, user and system seconds, the best of three, peak memory, one
+    process at a time, against round 17): 48.13 s in all for round 17 and 48.53 s now,
+    peak memory within 1 MiB on every input; one input looked 22 % slower (`short-frag`,
+    1.22 against 1.49 s) and three alternating runs gave 1.21 s each way; the slowest,
+    `items60-frag`, 4.41 against 4.50 s, 404 MiB each. (Measured on a build whose answers
+    are those of the final binary on all 6,059 patches; a second run on the final binary,
+    on a loaded machine, gave 50.60 against 51.51 s, peak memory within 2 MiB, and the best
+    of three alternating runs of its two slowest-looking inputs equal: `items60-frag` 4.45
+    against 4.41 s, `dquote-newfile-lines` 1.04 against 1.03 s.) Memory on the reviewer's
+    shapes (`--rank`): within 0.4 % of round 17 on every shape (43,000 touching hunks 280
+    MB; with 60-byte context lines 451 MB; 200,000 chained hunks 193 MB); within 1.6 % (at
+    most 1.3 MB) in the second run.
+- **Round 16 of Vesper's review (NO-GO on one medium) and a ninth independent review
+  (GO-WITH-FIXES, nothing high): the end of a hunk side is read under one rule, and what
+  the joins do not see is declared.** Both reviews read the round 16 commit (`4391c1e`) and
+  found it never lower than release 0.8.3 or round 14 (the independent reviewer on about
+  130,000 patches of its own making), its joins the joins of round 14 where they should be,
+  its time linear. Each broke the claim that what a side ends on is read only where no
+  honest line ends so.
+  - *An edge form is read only where every continuation is the construct (VD3R16-M-1,
+    IR9-M-2, IR9-L-5).* Vesper compiled `const X: u8 = Command::` with `VERSION;` on the
+    next line; the `git diff -U0` of a change from `Other::` ends its hunk on `Command::`,
+    and round 16 reported a `process_spawn` in a file that spawns nothing. The independent
+    reviewer had rustfmt write `assert!(`, `true` and `&& "…".len() > limit` on three lines
+    (an assertion that can fail); a `-U0` hunk that changes the first two ends on
+    `assert!(true` and was a `trivial_assert`. And a line of a block comment that ends on
+    `todo!`, read from code because the hunk does not show the comment's opener, was a
+    `stub_added`. Rounds 15 and 16 argued "no honest line ends so" from 8.1 million lines;
+    a sample cannot show it, and twice it was false by grammar. **The rule now:** a form at
+    the end of a side is read only where the reader's own rule for the whole construct
+    fires on the tokens shown followed by ANY continuation the grammar allows, and where it
+    is not a plausible end of a sentence; a form whose next token decides whether it is
+    the construct is not read. One form is left: a method's name with `::` after it
+    (`.unwrap::`, `.expect::`, also with the `<`), after which only generic arguments and
+    the call's bracket can follow (a field has no generic arguments: the compiler refuses
+    `s.unwrap::<u8>` with no call). Everything else rounds 15 and 16 read there is gone:
+    `Command::`, `process::`, `TcpStream::`, `UdpSocket::` (a path names anything its
+    owner holds: `Command::VERSION`, `process::id()`); `assert!(true` and
+    `assert_eq!(true, true` (`&& x`, `== f()` can follow; with the comma after the `true`
+    the condition is over and `trivial_assert` reads it anywhere, so no form at an edge is
+    needed); `#[ignore` and `#[allow` and their `#![` forms (`#[ignore::case]` is an
+    attribute of a crate or module of that name; `#[ignore =` and `#[allow(` are read
+    anywhere; `#[ignore(…)]` is refused by the compiler and is not a form of the
+    attribute); `todo!` and `unimplemented!` (by grammar only a bracket follows, but a
+    sentence ends so, IR9-L-5; with the bracket `stub` reads it anywhere); and on the old
+    side `#[test`, `#[rstest`, `#[tokio`, `#[tokio::`, `#[tokio::test` (`#[rstest::fixture]`,
+    `#[tokio::main]`), so nothing is read at the end of an old side. The same rule removed
+    one older reading, by the coordinator's ruling: from round 13 to round 16 a `cfg_attr`
+    list that a side left open on `ignore` was taken to hold the skip (`Skips::end`);
+    `#[cfg_attr(miri, ignore::case)]` is no skip, so the bare `ignore` at a side's end is
+    not read any more (with `,`, `)` or `=` after it, it is). **This is the one place where
+    this round reports less than round 14** (release 0.8.3 reports nothing there): of the
+    6,035 patches compared below, three of this round's own making show it and none of the
+    6,002 of the list the rounds are measured on. Of the 265 cuts of 28 constructs into two
+    hunks behind two false numbers, 178 are found (round 16: 201): the cuts that leave a
+    construct whole in one half and the two after `.unwrap ::` and `.unwrap :: <`; with one
+    true number all 265 are, as before. Tests: the form that stays, with a generated set of
+    336 continuations (4 shown forms, 7 shapes of generic arguments, 4 calls, on one line
+    and on two), each read as one text by the rule for the whole; every form that went,
+    with its honest continuation, at "no signal" at the end of a side and as one text; the
+    reviewers' patches (`command-colon.patch`, `asserttrue-u0.patch`, `prose.patch`) at no
+    signal; the cuts as declared misses in the corpus and in the README's limits.
+  - *Hunks at old position 0 (IR9-M-1; declared).* `git apply --unidiff-zero` puts every
+    hunk at old position 0 at line 1, the one written later above the one written earlier,
+    and a hunk at old position 1 under them (Git 2.56.0: `twotop.patch` "Hunk #1 succeeded
+    at 1 (offset -2 lines)"; `topone.patch`, every number true, "Applied patch m.rs
+    cleanly"; plain `git apply` refuses both). Each such hunk is the top of its file to the
+    reader and is joined to nothing, so `opt.unwrap` in one and `()` in the next are not
+    read as a call. Declared, as the hunk an applier puts inside another was (one more
+    family of joins has cost a round each time): a sentence in the README's list of what
+    needs a writer, `twotop` and `topone` as declared misses in the corpus, and a test that
+    pins both with a control (`@@ -1,0 …` under the first, which is no top, is read
+    together). The README sentence "`--unidiff-zero` puts a hunk with no old line at its
+    new position" was false for old position 0 and says so now. The reviewer's suspicion,
+    built: a `-0,0` hunk that ends on `/*` and a `-1,1` hunk whose added line is
+    `// */ pub fn f() { … spawn … } /*` (`topcomment.patch`): `git apply --unidiff-zero`
+    applies it cleanly, rustc compiles the result and it holds the spawn; release 0.8.3,
+    round 14, round 16 and this round all score it 2. Declared with the same entry.
+  - *The released paths with a qualified name in angle brackets (VD3R16-L-1, IR9-L-2).*
+    `<std::net::TcpStream>::connect`, `<std::net::UdpSocket>::bind`, `<self::UdpSocket>::bind`
+    and `<p::Command>::new` (after `use std::process as p`) are read: the name in the
+    brackets may be the last name of a path, and the names before it (eight at most) are
+    passed over backwards in the tokens the reader already holds, with no new scan.
+    Vesper's `q.patch` scores 9 (round 16: 6, the spawn only); of the reviewer's seven
+    spellings three are read and four are declared and not read: in parentheses
+    (`<(Command)>::new`, `<(TcpStream)>::connect`), with an empty list of generic arguments
+    inside the brackets (`<Command<>>::new`), and as an associated type
+    (`<<Command as T>::Me>::new`).
+  - *Memory, stated as it is and held by a count (IR9-L-3, IR9-L-6).* Beside the patch a
+    scan holds one reading of one text at a time (a copy of each line for each side it is
+    on), so at most one reading of the longest text of a file, and that is the whole file
+    when its hunks touch. Each reading now counts its lines while it is alive, and a test
+    holds that the most alive at one time is one reading of the longest text (200 hunks
+    apart: 21 lines; the same touching: all 4,200 once; a hunk in six texts: 8);
+    `evidence_scan` holds that it is never more than the file's lines. `--rank`, peak
+    resident memory, release 0.8.3 | round 16 | now, on the reviewer's shapes:
+
+    | `--rank` of one file | release 0.8.3 | round 16 | now |
+    | --- | ---: | ---: | ---: |
+    | 43,000 touching hunks of 21 short lines | 106 MB | 279 MB | 280 MB (2.65 times) |
+    | the same with context lines of 60 bytes (54 MB of patch) | 197 MB | 450 MB | 451 MB (2.29 times) |
+    | 20,000 touching hunks of 41 empty lines | 69 MB | 175 MB | 176 MB (2.56 times) |
+    | the same 20,000 hunks apart | 68 MB | 71 MB | 72 MB (1.06 times) |
+    | 200,000 hunks whose numbers chain forward and backward | 89 MB | 193 MB | 194 MB (2.19 times) |
+    | 20,000 and 40,000 touching hunks of 21 lines | 51, 98 MB | 132, 260 MB | 133, 261 MB |
+
+    It is linear; the factor the request for round 16 stated (up to 2.0) was measured on
+    other shapes. The README states these shapes and factors.
+  - *Declared and stated (IR9-L-1, IR9-L-4, IR9-L-5).* A hunk of added lines is read as
+    going on from the last hunk before it that ends its file (where plain `git apply` puts
+    it), and in a `git diff -U0` the two can stand far apart: `assert!(` changed on line
+    10 and `true,` added on line 41 is a `trivial_assert`, and a changed `} catch (e) {`
+    with an added hunk far below that begins with `}` an `error_swallowed`. The README
+    names that cost (with the reviewer's figure: on the `-U0` history of two repositories,
+    10,333 Rust hunks, the joins add no label and take none), and the corpus has both as
+    declared false positives. The mirror of the declared decoy (a third hunk with lines
+    that says falsely that it BEGINS where two hunks touch, written between them) is named
+    beside it in the README, in the corpus (`mirror.rs`) and in a test with two controls
+    (its true numbers; written after both: found). The changelog's round 14 entry no longer
+    lets its fuzz rule 7 stand unmarked, the test comment says seven texts, not three.
+  - *Tests (IR9-L-6).* `rust_hunk_places` (38 seeds; 12 new, 2 renamed away with the forms
+    they cut at): rule 7 cuts only after `.unwrap::` and `.expect::<`; rule 9 adds the
+    honest ends of round 16's forms, honest forms over two lines (`assert!(` and `true`) and
+    removed lines (`#[rstest`); rule 11 is a removed attribute cut in two and joined by its
+    old numbers; rule 13 is the reviewer's `whole.py`: a change cut inside into touching
+    hunks with the numbers Git writes loses no item of the same change as one hunk; rule 14
+    is two hunks at old position 0 (declared: each keeps what it gives alone, and nothing
+    the release reports is lost); rule 15 is a hunk with lines that falsely claims the place
+    where two touch, written after both: it parts nothing. Each rule alone, the fuzz target
+    built as a plain program and run over the 38 seeds: on this round's code no rule fails a
+    seed; on round 16 rule 9 fails all 38. Planted: no joins on the hint of a number fails
+    rules 6, 10, 11 and 15 on all 38 seeds and rules 13, 14 and the rest on one; nothing
+    read at the end of a side, rule 7 on 35; `assert!(true` read at an edge again, rule 9 on
+    30; `Command::` and `process::`, rule 9 on 5; `todo!`, rule 9 on 1; the `cfg_attr` list
+    left open on `ignore` a skip again, rule 9 on 1; the last hunk of the patch taken among
+    those that end before a line, rule 15 on 11; a later hunk that is a top not read on its
+    own, rule 8 on 4 and rule 14 on 1. A top joined to the hunk before it by its numbers
+    fails no rule; two unit tests catch it (below). Planted in a scratch clone (`git clone
+    --no-local` and the round's changes, its own target), each of these fails the graph
+    crate's tests named: `Command::` and `process::` read at an edge again (3 tests, among
+    them `what_a_side_ends_on_with_another_continuation_is_no_item`); `assert!(true` (4);
+    `todo!` (3); nothing at all read at an edge, `.unwrap::` neither (4, among them
+    `every_continuation_of_a_form_read_at_an_edge_is_the_construct`); the `cfg_attr` list
+    left open on `ignore` a skip again (4, among them
+    `a_conditional_skip_applies_ignore_as_an_attribute_of_its_own`); the name alone in the
+    angle brackets, as in round 16, and any token before the name passed over (each
+    `the_released_paths_are_read_in_two_more_spellings`); the reading from code kept alive
+    while the further readings are made (`a_scan_holds_one_reading_of_one_text_at_a_time`);
+    a top joined by its numbers like any hunk
+    (`every_join_of_round_14_is_a_text_whatever_else_the_numbers_say`,
+    `what_the_joins_do_not_see_is_what_the_documents_declare`); a later top not read on its
+    own (`false_numbers_take_nothing_away_from_a_script`,
+    `no_header_number_hides_the_language_of_a_script`); the last hunk of the patch taken
+    (`a_later_hint_takes_no_earlier_join_away` and the round 14 join test); no joins on a
+    hint (11 tests). Unplanted, all 237 pass.
+  - *Corpus and comparisons.* 52 cases (new: `evidence/independent-review-9-20261115`, five
+    expected items, nine declared misses, two declared false positives, six hard negatives;
+    the seventh review's stub cut after `todo!` and spawn cut after `Command::` are declared
+    misses now): evidence precision 166 of 188 (was 163 of 183), recall 166 of 244 (was 163
+    of 230), 103 declared (was 90). On the final binary, 6,035 patches (the 6,002 the rounds
+    are measured on and this round's own), score, signals and items, plain and strict:
+    against release 0.8.3 one patch lower, the second section for one path (as in round 16),
+    2,507 with something gained; against round 14, nothing of the 6,002 lower, and three of
+    this round's own patches with the `ignore` above (strict: also the list of 32, as in
+    round 16); against round 16, 31 patches report less, every one an end form this entry
+    takes away, and 3 report more (the qualified spellings). Cost, the 51 inputs of round 16
+    (`--rank --json`, user and system seconds, the best of three, and peak memory, one
+    process at a time): as round 16 within the noise, 48.29 s in all for each, every input
+    within 3 % in time (those over 0.2 s) and in memory; the slowest, `items60-frag` (61
+    MB), 4.42 s and 403 MB (round 16: 4.42 s, 404 MB).
+
+- **An eighth independent review (GO-WITH-FIXES, nothing high): a hint of a later round takes
+  no join away that an earlier rule made; a view of hunks by path costs what it shows; what
+  is read at the end of a side, and what needs a true number, is said exactly.** The review
+  read the round 15 commit and found: never lower than release 0.8.3 (55,000 generated
+  patches in six languages with honest and false numbers, and the history of two
+  repositories at several context widths: score, signals, items, outline labels and
+  refusals, 0 lower), the language rule sound, rank and outline linear, the corpus saying
+  what the binary does. It broke three claims of that commit's request, each below, and
+  asked for the limits to be stated where they were not. This entry is the same round as
+  the one below it (round 16): that one answers Vesper, this one the independent
+  reviewer, and both stand on one commit.
+  - *A hunk of added lines took the place of the hunk that truly ended there (IR8-M-1;
+    lower than round 14, not lower than release 0.8.3; needs a writer who sets out to).*
+    Hunks are read together on the hint of a number: the hunk that begins at a line goes
+    after the hunk that says it ends before that line. Round 14 took, for a line, the first
+    hunk of the patch that has old lines and ends there. Round 15 let a hunk with no line on
+    the side stand for the line it names, kept ONE hunk for a line, the first of the patch,
+    and went through the hunks once. So a hunk of added lines written early
+    (`@@ -4,0 +60,1 @@`, one comment line) took the place of `@@ -3,2 +3,2 @@`, which ends
+    on `debug_assert!(`, and `@@ -5,3 +30,3 @@`, which changes the condition to `true,`,
+    was joined to the comment. Round 14 reported the assertion; round 15 did not, and did when
+    the `4` was written `20`, a number plain `git apply` never reads. Five of the review's
+    55,000 generated patches were lower than round 14 for this reason. A second form: a
+    hunk with no old line written BEFORE the hunk it follows found itself in the table and
+    gave up.
+    **The rule now: a hint that a later round adds takes no join away that an earlier rule
+    made.** Round 14's joins are made by round 14's rule, as it was, beside every later one
+    (a test holds a copy of that rule and asks, over 40,000 generated sections of two to six
+    hunks with every kind of number, that each run it makes is a text now). And the later
+    hints are taken in two ways that say what they model. *As plain Git places hunks*
+    (beside the joins Git must make): Git puts a hunk with no old line at the end of the
+    file and not between two others, so the hunks that have lines on the side choose first
+    and take a hunk with lines before one with none; a hunk with no line on a side takes no
+    place on that side that a hunk with lines asks for, as the one before or as the one
+    after. *By the numbers alone* (`git apply --unidiff-zero` and anything else that trusts
+    them): the hunks stand in the order of their positions, a hunk with no line on the side
+    between the hunk that ends before its place and the hunk that begins there, so the
+    three are one text. In both, a hunk is never its own predecessor, the next hunk that is
+    free is taken when the first is not, and of two hunks with no line on the side that
+    name one line the one written first stands first. A hunk now stands in at most seven
+    texts (six before): alone, in the run Git must make, in round 14's run, and in a run
+    for each number under each of the two ways; a run that two of them make is read once.
+    The review's patches: `decoy2.patch` is found again; `decoy.patch` and `triple.patch`,
+    which no round found (the comment hunk written first, or between the two), are found;
+    with code in the hunk of added lines that would part the assertion from its condition,
+    it is found too. On the review's 55,000 generated patches, round 14 to now: 0 lower in
+    score, signals, items and outline labels (9,608 with something gained).
+    *What stays, and is declared:* among several hunks that all HAVE lines on a side and
+    all say they end before one line, the first of the patch is taken by the first hunk
+    that begins there. A third hunk with old lines and a false old number, written first,
+    still parts two hunks that touch (the corpus has it as a declared miss). And against
+    round 15 itself the new order is not a superset: where a hunk with no line on a side
+    and a hunk with lines both name one line, round 15 joined the hunk that follows to
+    whichever was written first, and now the two ways above decide. Two of the 55,000
+    generated patches (hunks with random numbers, in a Python and a YAML file) report an
+    item or a label less in one hunk for that; 92 report more.
+  - *A view of hunks by path cost the square of the hunks for a file with no extension
+    (IR8-M-2; an ordinary diff only when very large, a writer at will).* Round 15 made the
+    language of a file with no extension depend on a shebang in ANY of its hunks, which is
+    a pass over every hunk, and the reader of one hunk (`hunk_signals_alone`) asked for it
+    again for every hunk a view showed. Rank and outline were not affected (they scan a
+    file once). Now the kinds of a file are worked out once (`FileKinds::of`) and handed to
+    the reader of a hunk; the views keep them beside the list of joined hunks. Wall time
+    of one page (16 MiB where the row does not say), best of three runs and for the two
+    rows of 50,000 hunks of five:
+
+    | Hunks shown, one page | release 0.8.3 | round 14 | round 15 | now |
+    | --- | ---: | ---: | ---: | ---: |
+    | `bin/tool.sh`, 12,500 hunks | 0.21 s | 0.21 s | 0.21 s | 0.21 s |
+    | `bin/tool` (no extension), 12,500 | 0.20 s | 0.20 s | 4.09 s | 0.20 s |
+    | `bin/tool.sh`, 25,000 | 0.43 s | 0.44 s | 0.44 s | 0.43 s |
+    | `bin/tool`, 25,000 | 0.41 s | 0.42 s | 16.08 s | 0.43 s |
+    | `bin/tool.sh`, 50,000 | 0.56 s | 0.56 s | 0.58 s | 0.56 s |
+    | `bin/tool`, 50,000 | 0.53 s | 0.53 s | 41.32 s | 0.54 s |
+    | `data/table` in 333,000 hunks, a page of 64 KiB (175 hunks) | 0.26 s | 0.32 s | 2.70 s | 0.36 s |
+    | the same, a page of 1 MiB (2,768 hunks) | 0.27 s | 0.32 s | 25.50 s | 0.31 s |
+
+    Nothing held this cost: no test and no fuzz target called `hunk_signals_alone` (the
+    views were its one caller), and the cost tests looked at rank. Now a test of the views
+    counts the passes over a file (`file_walks`, a counter in the library for tests): two
+    for a listing by path and for one by many addresses, for 600 hunks as for 30; a test
+    of the library holds that the reader of one hunk makes none and gives what the scan of
+    the file gives; and the fuzz target `evidence_scan` holds both for any text. The same
+    shape was looked for elsewhere: a view of ONE joined hunk goes through the headers of
+    its file a fixed number of times, which it must (to find the texts that hunk stands
+    in); no other caller asks anything of a file once for each of its hunks.
+  - *What the end of a side is read for, exactly (IR8-M-3).* The entry for round 15 says a
+    construct "is found when the cut stands beside its word, whatever the numbers and the
+    order of the hunks". That was not true when it was written (the word alone in a hunk
+    of its own, cut on both sides: `let v = opt.`, `unwrap`, `();`; a function passed as a
+    value, `Option::` and then `unwrap;`), and it is less true since the entry below
+    narrowed the forms. Said exactly: a construct cut in two by hunks that nothing joins is
+    found when one half holds a construct whole, or when the first half ends on one of the
+    forms the entry below lists (`todo!`, `assert!(true`, `#[ignore`, `#[allow`,
+    `Command::`, `process::`, `TcpStream::`, `UdpSocket::`, `.unwrap::`, a removed
+    `#[test`), and nowhere else; a cut anywhere else needs ONE true number in the header of
+    the second hunk, the old or the new, and then the join reads it. The review's
+    enumeration is a test now: 28 constructs cut between any two of their tokens, 265 cuts,
+    each as two hunks. With true numbers, with a false new number and with a false old
+    number, all 265 are found. With both false, 201 are (round 15: 242), and the 64 others
+    are the declared misses: after or before the bare word (`x.` / `unwrap()`, `x.unwrap` /
+    `()`, `Command` / `::new`, `todo` / `!()`), inside an assertion before its truth,
+    between `#` or `#[` and the attribute's name, inside a `cfg_attr` list, inside generic
+    arguments, and the function value cut before its name.
+  - *An applier that puts a hunk inside another (IR8-M-4; declared).* A hunk's lines are
+    read as lines that stand together. `git apply --unidiff-zero` puts a hunk of added
+    lines at its NEW number, and that can be between two lines an earlier hunk showed:
+    `@@ -1,3 +1,4 @@` with `let v = opt.unwrap` as its third line and a line of context
+    after it, then `@@ -3,0 +4,1 @@` with `();`. The result holds the call; plain Git puts
+    the second hunk at the end of the file; no reading here puts one hunk between the lines
+    of another. It is in the list of what needs a writer, and in the corpus as a declared
+    miss.
+  - *Two more spellings of the released paths (IR8-L-1; in release 0.8.3 too).*
+    `<Command>::new("true")` and `Command::<>::new("true")` are the path `Command::new` to
+    the compiler (the name alone in angle brackets; an empty list of generic arguments),
+    and so for `TcpStream::connect` and `UdpSocket::bind`. All four lines of the review's
+    file compile and run, and no version reported one. They are read now, as tokens.
+    `Vec::<Command>::new()`, `HashMap<String, TcpStream>` and `<Command as Default>::…` are
+    other paths and are not (the `<` there follows `::` or a name, or the brackets hold
+    more). On every line of 603 crates as a one-line hunk (7,911,652 lines) the answer is
+    item for item what it was: these spellings are in none of them.
+  - *Memory, for three shapes (IR8-L-2).* The entry for round 15 gives one figure, for a
+    file created as 499,000 hunks of one line, and says "now 263". It is right for that
+    shape and low for others. `--rank`, peak resident memory, release 0.8.3, round 14,
+    round 15, now:
+
+    | `--rank` of one file | release 0.8.3 | round 14 | round 15 | now |
+    | --- | ---: | ---: | ---: | ---: |
+    | created as 499,000 hunks of one line (the figure of the entry for round 15) | 176 MB, 0.60 s | 293 MB, 1.50 s | 263 MB, 1.58 s | 262 MB, 1.54 s |
+    | 333,000 hunks joined by hints, old numbers forward and new numbers backward, each line a string left open | 159 MB, 0.79 s | 334 MB, 2.77 s | 319 MB, 3.43 s | 317 MB, 3.43 s |
+    | 9,000 hunks that touch, each with nine long lines of context (51 MB of patch) | 111 MB, 0.95 s | 226 MB, 1.75 s | 226 MB, 1.69 s | 226 MB, 1.69 s |
+
+    So the factor over the release is up to about two, as the review said, and the seventh
+    text of this round costs nothing on these shapes (a run that two rules make is kept
+    once).
+  - *The same construct twice (IR8-L-3).* `std::process::` at the end of one hunk and
+    `Command::new("b")` in the next give two items, one on each line. The second is what
+    the next hunk gives read alone, and no reading is taken away for another; the score
+    counts a signal once. It is in the list of limits now. The other half of that finding
+    went with the entry below: the review's `e1` (a line that ends on `Kind::Command`) and
+    `e3` (one that ends on `self.todo`) are silent, and are hard negatives in the corpus;
+    and nothing is read at the beginning of a side any more, so the suspected case of a
+    side that begins inside a comment and then holds `unwrap(` cannot arise.
+  - *The list of what is still not found (IR8-L-4).* Added under what needs a writer: the
+    third hunk with lines that claims a place (above), the construct cut twice and the
+    function value cut before its name, the hunk an applier puts inside another. Added
+    under what an ordinary diff can do: a file with no extension none of whose hunks shows
+    a shebang has no language at all, so a `curl … | sh` and an `eval` added on line 20 of
+    a script named `deploy`, in a plain `git diff -U3`, are not reported (in no version;
+    full context shows line 1); a construct reported on two lines (above). Moved from
+    writer to ordinary: a space before the bracket of a call in the other languages
+    (`eval (source)`, `os.system (command)`, `fetch (u)`), which code that no formatter
+    has touched writes. And the README no longer says that everything is monotone from one
+    round of this branch to the next: a further reading only adds, and two changes took
+    something back on purpose (the forms of the entry below; the joins this entry puts
+    back).
+  - *Tests (IR8-L-5).* The fuzz target `rust_hunk_places` has three more rules. Rule 10: two
+    hunks that have old lines and touch by their old numbers, the new number of the second
+    false, and beside them up to three hunks of added lines that name the same line,
+    written before, between or after the two, with or without a hunk before them that ends
+    the file: the construct is found. Rule 11: a removed test's attribute cut after `#[test`,
+    `#[rstest`, `#[tokio`, `#[tokio::` or `#[tokio::test`, on removed lines (with the old
+    side's forms deleted no rule used to fail). Rule 12: a script's shebang on a removed
+    first line only, on an added one only, and a second hunk before or after it that begins
+    with another language's shebang, removed, added or context: every item of the script
+    with honest numbers is found. Its 28 seeds hold; on the sources of the commit before
+    (`ceb2e6f`) rule 10 fails on ten of them, its own four among them. `evidence_scan` reads
+    its lines as hunks of three as well (above). Planted in scratch copies, each of these
+    fails the tests named: round 14's rule left out (the two join tests); a hunk with no
+    line on the side counted like any other, in the order of the patch (the join test); a
+    hunk that ends the run it begins not passed over (its own test); the kinds of a file
+    worked out for each hunk, in the library and in the views (the two counting tests); the
+    name in angle brackets read whatever stands before the `<` (the spellings test). And
+    in the fuzz target, each rule run alone over the 28 seeds: with the old side's forms
+    deleted rule 11 fails on 25, with a shebang read on the new side only rule 12 on 4,
+    with a hunk that has no line on the side counted like any other rule 10 on 2. The
+    corpus has 51 cases (new: `evidence/independent-review-8-20261115`, seven expected
+    items, eight declared misses, four hard negatives): evidence precision 163 of 183 (was
+    156 of 176), recall 163 of 230 (was 156 of 215), 90 declared (was 82).
+  - *Compared, on the final binary.* 5,748 existing patches of every review and the corpus,
+    rank, full answer and the bounded list: against release 0.8.3, nothing lower in score,
+    2,424 patches with something gained, and one line of difference that is the two
+    entries of one path changing places (a second section for one path, as before);
+    against round 14, nothing lost in the full answer and one patch in the list (the
+    declared trade of the list of 32, which keeps the release's items); against round 15,
+    nine patches report less, every one of them a form the entry below took back (a bare
+    word at the end of a side, a call at its beginning, the first of two sections). The
+    review's 55,000 generated patches: against round 14, 0 lower in the full answer (in
+    the list of 32, 74, each a file whose list is cut on one side or both: the same
+    trade); against release 0.8.3 with the views checked against the rank, 0 lower (29,118
+    with something gained, and every view agrees with the rank); against round 15, 1,432
+    report less, and between the build that has only the change of the entry below and
+    the final one, 2 do (above). Every line of 603 crates, of this repository's sources and
+    of its history's changed lines as a one-line hunk, again: item for item what the entry
+    below measured, and what it is with no form read at the end of a side.
+- **Round 15 of Vesper's review (NO-GO on one finding): the end of a hunk side is read only
+  where it is evidence by itself.** Vesper found every finding of the two reviews before
+  closed, the memory figure accurate and the dependency on release 0.8.4 acceptably stated.
+  - *A bare name at the end of a side is no construct (VD3R15-M-1, an ordinary diff).* The
+    entry below read the end of a hunk side as the beginning of a construct for a list of
+    forms, among them the bare first name of a path release 0.8.3 keys a signal on. A file
+    with `struct Command;` and `pub fn command() -> Command`, its brace on the next line,
+    changed on that line: `git diff -U0` writes a one-line hunk that ends on `Command`, and
+    it was reported as `process_spawn`, weight 4, in a file that spawns nothing. The
+    measurement behind that list had no line of this shape: it cut files at fixed lines and
+    read history at three context widths, and a line of code that ends on a type's name with
+    nothing after it is rare in rustfmt's style and ordinary in others.
+  - *The rule now.* A form is read at the end of a side only when what the side shows is by
+    itself evidence of the construct: the word it is known by WITH the token that makes it
+    that construct, and no line of honest code ends that way. Every form the entry below
+    built was gone through with that question:
+
+    | Form at the end of a side | An honest line that ends so | Now |
+    | --- | --- | --- |
+    | `Command`, `TcpStream`, `UdpSocket`, `reqwest`, `ureq` (bare) | `pub fn command() -> Command` | not read |
+    | `Command::`, `process::`, `TcpStream::`, `UdpSocket::` | none | read |
+    | `.unwrap`, `.expect` | `let n = self.expect` (a field, at the head of a chain; such fields are in real crates) | not read |
+    | `::unwrap`, `::expect` | `Self::expect` (a function as the value of a block) | not read |
+    | `.unwrap::`, `.expect::`, also with `<` | none (no field has generic arguments) | read |
+    | `todo`, `unimplemented` (bare) | `let rest = todo` (a variable) | not read |
+    | `todo!`, `unimplemented!` | none | read |
+    | the name of an assertion, bare or with `!` | none with `!`; but it says nothing of an assertion that cannot fail | not read |
+    | `assert_eq!(true`, `assert_eq!(true,` | `assert_eq!(true,` with a value on the next line | not read |
+    | `assert!(true`, `assert_eq!(true, true` | none | read |
+    | `#[ignore`, `#![ignore`, `#[allow`, `#![allow` | none | read |
+    | old side: `#[test`, `#[rstest`, `#[tokio`, `#[tokio::`, `#[tokio::test` | none | read |
+
+    And the beginning of a side is not read as the end of a construct at all. The entry
+    below read `unwrap(`, `expect(`, `ignore]`, `ignore =`, `[ignore]`, `[allow(`,
+    `::Command` and, on the old side, `test]`, `test(` and `tokio::test` there. A line of
+    honest code begins with `expect(&value, 3);` (a function of the crate's own), with
+    `test(&[], 1);` and with `ignore = true;`, and none of the others shows the head that
+    makes it the construct.
+  - *Measured on the shape that makes edges.* Every line as a one-line hunk that removes
+    the line and adds it again (`@@ -N +N @@`, a one-line change in `git diff -U0`): every
+    line end and every line start is then an edge. 7,911,652 lines of 18,450 Rust files of
+    603 crates, the 93,551 lines of this repository's own Rust sources, and the 121,309
+    changed lines of its history. Fires of each form the entry below built or weighed
+    (crates, sources, history); none of them is an item the file has on that line:
+
+    | Form | Fires |
+    | --- | ---: |
+    | start `()` (weighed, not built) | 617, 1, 1 |
+    | start `!(` (weighed, not built) | 123, 1, 1 |
+    | start `test]` or `test(`, old side (built) | 70, 0, 0 |
+    | start `expect(` (built) | 58, 3, 3 |
+    | start `ignore =` (built) | 24, 0, 0 |
+    | end `ureq`, bare (built) | 1, 0, 0 |
+    | end `process`, bare (weighed) | 1, 0, 0 |
+    | every other form, built or weighed, at either edge | 0, 0, 0 |
+
+    So the forms that fired are gone, and so are those that an honest line can end with
+    though none of 8.1 million did: this set, too, has no line that ends on a bare `Command`
+    (Vesper's file has its brace on the next line, which rustfmt does not write), so the
+    measurement alone would not have caught Vesper's case: the question whether an honest
+    line can end so decided it. From now on a form is read only when BOTH hold: no line of
+    honest code can end that way, and the form does not fire on this set. With the forms
+    that are still read, the
+    answer on all three sets is the same item for item as with no edge read at all
+    (153,212 items on the crates, 4,801 on the sources, 3,164 on the history).
+  - *What is lost by it.* A construct cut by two hunks that nothing joins is found only when
+    the first half ends on a form that is still read. A call cut after `.unwrap` or
+    `.expect`, a path cut after its bare first name (`Command`, then `::new`), an assertion
+    cut before its `true`, and any construct cut before its word are declared misses again,
+    as they were before the entry below; so is what the first of two sections for one path
+    ends on. Each takes a writer who sets out to (both numbers of the second hunk false, or
+    a second section), and none is in an honest diff. One true number of the second hunk,
+    the old or the new, still joins the two hunks and finds the construct, and release 0.8.4
+    refuses the second section.
+  - *Tests.* The reader's tests hold every form that is read, the honest lines that are
+    not (Vesper's among them) and the beginning of a side; the file-level test holds the
+    cut pair for what is found and what is not, and Vesper's patch as Git wrote it; the
+    pinned test of the two sections expects nothing again. The fuzz target
+    `rust_hunk_places` cuts only the forms that are read (rule 7) and has a new rule 9: a
+    line of honest code as a one-line hunk, at any position, reports none of the signals
+    whose constructs its last or first word begins. Its 20 seeds hold; on the sources of the
+    commit before (`ceb2e6f`) rule 9 fails on every one of them. The corpus has the same 50
+    cases: the seventh review's case gained two expected items (a stub cut after `todo!`, a
+    spawn cut after `Command::`, both numbers false) and nine hard negatives (Vesper's
+    patch, a return type `TcpStream`, a field of type `UdpSocket`, a line that ends on
+    `reqwest`, a variable named `todo`, a field named `expect`, an assignment to `ignore`,
+    a removed call of `test`, a call of `expect`), lost its declared false positive for
+    that call, and three of its items and one of the sixth review's are declared misses
+    again: evidence precision 156 of 176 (was 158 of 179), recall 156 of 215 (was 158 of
+    213), 82 declared (was 79).
+- **Round 14 of Vesper's review and a seventh independent review (both NO-GO): no header
+  number decides what is found; the bounded list is claimed for what it is.** Both reviews
+  found the joins of the round before sound (no loss of the first build's kind in 587 crate
+  files cut four ways, 26,306 hunks with context, 483 history patches at three context
+  widths), and the released reading, the views against the rank, the cost and the corpus
+  figures as stated. What they broke: a number that was still believed, in a place that
+  round did not look (the language of a file); the model of `git apply` in the documents;
+  a claim about the list of 32 that a list of 32 cannot keep; and four ways a construct went
+  unreported that the list of remaining ways did not have.
+  - *The model of `git apply`, corrected (IR7-L-3).* The entry before this one, the README
+    and the doc comments said that plain `git apply` places a hunk by its OLD position and
+    never uses the new one. It is the other way round. Git 2.56.0, run in scratch
+    repositories: with the same four lines at 1 to 4 and at 9 to 12 of a file,
+    `@@ -9,4 +1,5 @@` is applied at line 1 and `@@ -2,4 +9,5 @@` at line 9, each with no
+    message; `@@ -30,4 +6,5 @@` "succeeded at 9 (offset 3 lines)", the nearer place to line
+    6; `@@ -1,4 +9,5 @@` "succeeded at 1 (offset -8 lines)". Git looks for the hunk's old
+    lines starting at the NEW position and going outward; the old position is read for one
+    thing, 0 or 1, which says the hunk must be at the beginning; a hunk whose last line is
+    not a context line must match at the end. A hunk of added lines only (`@@ -5,0 +6,1 @@`)
+    goes to the end of the file for plain Git ("succeeded at 15 (offset 9 lines)") and to
+    its NEW position with `--unidiff-zero` (line 6; written `+1`, line 1). The rule for the
+    top of a file (old position 0, or 1 with an old line; the first hunk of a creation) was
+    right and stays. Every sentence is corrected, and the wrong ones in the entry before
+    this one are marked there.
+  - *The language of a file (IR7-H-1, high; lower than release 0.8.3).* A file whose name
+    gives no language takes it from a shebang. Release 0.8.3 read the shebang from the first
+    hunk when the header said its new side starts at line 1; round 14 moved that to the
+    hunk Git must put at the top, which rests on the header's old number. A script's hunk
+    written `@@ -4,3 +1,5 @@`, which Git applies at line 1 in silence, then had no language
+    at all: a fetch and an `eval` that release 0.8.3 and round 13 report (score 9) went
+    unreported (score 2). The same hunk written `+4` was silent in every version, and so
+    was the shebang hunk written second in its section. Now no number decides it: the file
+    is read under the language release 0.8.3's rule gives, which is kept exactly as the
+    floor, and under every other language that a shebang names on the first line of the old
+    or the new side of ANY of its hunks; what the readings find is united, as for every
+    further reading. The cost is a text file with no extension in which a hunk begins on a
+    line that reads as a shebang: it is read as that language too.
+  - *The mark of release 0.8.3 outside Rust (IR7-L-1).* An item is that release's when that
+    release found it, under ITS rule for the language. Round 14 marked what today's reading
+    of the hunk alone finds; where the two disagree on the language (the script above with
+    `@@ -1,3 +5,39 @@`: no language to that release, shell today) 34 fetches were marked,
+    and the one item that release lists, a secret on the last line, was not in the list of
+    32. It is now.
+  - *Joins on the hint of either number (IR7-M-2, IR7-L-3).* Two hunks that touch are read
+    together when their old numbers say so or their new numbers do; round 14 took the old
+    one only, which is the one Git never reads past 1. A hunk with no line on a side counts
+    on that side as standing after the line it names, as an earlier hunk too
+    (`@@ -2,0 +3,1 @@` and then `@@ -3,1 +4,1 @@`, true numbers: plain Git refuses the pair,
+    `--unidiff-zero` puts them together; round 14 joined them only when they were written
+    the other way round). The hints are taken twice: beside the joins Git must make, where
+    a number that contradicts one is not taken, and alone, as an applier takes them that
+    goes by the numbers and puts nothing at the end of the file. A hunk stands in at most
+    six texts (three in the round before), and a run two hints make is read once: a patch
+    with true numbers and context is read as before. (Corrected 2026-11-15 after the eighth
+    independent review, IR8-M-1: as built here, a hunk with no line on a side could take
+    the place of the hunk that truly ended before a line, and joins that round 14 made
+    were lost. The entry for that review, above, has the rule that replaced this one;
+    seven texts since.)
+  - *Corrected 2026-11-15 (the entry above this one).* Of the forms listed under "The edge
+    of a side" below, only those are still read that are evidence by themselves, and
+    nothing is read at the beginning of a side: a bare `Command` at the end of an honest
+    line was reported as a spawn. The corpus figures and the fuzz controls of this entry
+    are those of its day.
+  - *The edge of a side (the declared false-position pair; the review's idea).* Two hunks
+    that touch behind numbers that do not say so are joined by nothing, and no rule built on
+    numbers or on the order of hunks can close that (`cutpair.patch`: one digit, no message
+    from Git). The start of a side was already read as unknown; now its end is too. A side
+    that ends on the word a construct is known by, with the rest missing, reports the
+    construct with basis `hunk`: `.unwrap`, `.expect`, `::unwrap` (also with `::` or `::<`
+    begun); `todo`, `unimplemented` and the assertions, alone or with `!`, and an assertion
+    as far as its `true`; `#[ignore`, `#[allow`; `Command`, `Command::`, `process::`,
+    `TcpStream`, `UdpSocket`, `reqwest`, `ureq`; on the old side a test's attribute as far
+    as it goes. And a side that begins with the word and what follows it, the head missing:
+    `unwrap(`, `expect(`; `ignore]` and `[ignore]`; `[allow(`; `::Command`; on the old side
+    `test]`, `tokio::test`. Measured before it was built, on 177,957 fragments of real
+    crate files in two cuts, this repository's history at `-U3`, `-U1` and `-U0`, and 603
+    crates as created files: no side ends in any of these ways, and two sides begin with a
+    call of a function of the crate's own named `expect` (`chrono`, `indexmap`), which are
+    the two false items the rule adds, when that line is a changed one. Forms that real
+    code does end or begin lines with were measured and NOT taken: `assert!(` at the end
+    (279 sides), a bare `#` or `#[` (16), a `cfg_attr(` list left open that does not end on
+    `ignore` (217), `(` at the start (4,279), `!(` at the start (2), and `allow(` or
+    `ignore,` at the start (a function and an argument can have those names). So the
+    construct is found when the cut stands beside its word, whatever the numbers and the
+    order of the hunks, and not when it stands after an assertion's bracket or inside a
+    `cfg_attr` list before its `ignore`. (That sentence was not true, and is withdrawn:
+    eighth independent review, IR8-M-3. A word cut on BOTH sides, alone in a hunk of its
+    own, was at no edge, and a function passed as a value was not read cut before its
+    name. The entry for that review, above, says exactly which cuts are found.)
+  - *The paths of release 0.8.3's signals, as tokens (IR7-M-3; in release 0.8.3 too).*
+    `process_spawn` and `network_fetch` are keyed on `Command::new`, `process::Command`,
+    `reqwest::`, `ureq::`, `TcpStream::connect` and `UdpSocket::bind`, each looked for as
+    one string on one line. `std::process :: Command :: new("sh")`, the path over three
+    lines, and `Command` with `::new` on the next line compile, run, and were reported by no
+    version. The reader of tokens now reads these paths, and `#[allow(` and `#![allow(`,
+    with white space, comments and line ends between their tokens, beside the one-line
+    rules, which stay as they are (they are the floor, and they also read the released
+    view). Nothing more is modelled than that release keyed on: an alias that never writes
+    the names (`Command as C`, `C::new`) is not read, there or here. On every set measured
+    the token reading of these paths adds no item: formatted code does not write them so.
+    Two spellings of a suppressed lint that were declared misses are found by it (a comment
+    inside the attribute, the attribute over two lines).
+  - *A second section for one path (IR7-H-2).* A file created as `let v = opt.unwrap`, and
+    a second `diff --git` for the same path whose hunk begins `();`: plain Git applies both
+    sections to the one file, and to this crate they are two files that nothing joins. The
+    fix is the parser's: release 0.8.4 refuses a path named by more than one section, and
+    this branch stands on 0.8.3. **This branch must not be merged before it stands on that
+    refusal**; the README and the head of `evidence.rs` say so, and a test pins today's
+    answer with what it must become after the rebase (the patch refused). Until then the
+    review's patch is found at the edge (the first section ends on `.unwrap`), and a second
+    section that goes on in a string or a comment the first left open is a declared miss
+    in the corpus. A rename of a file the patch creates, with a change to the new name, is
+    not another way to it: plain Git refuses that ("No such file or directory").
+  - *The raw-string start (IR7-M-1, an ordinary diff).* A side that began inside a raw
+    string was read with the count of `#` of its first quote that has any. A page kept in
+    `r##"…"##` holds `href="#top"`: the count was 1, the string ended at the wrong quote,
+    and with a link's `//` between quotes no other reading had the code after the string
+    either. The plain `git diff -U3` of such a test lost both its panic paths. The quote
+    that ends a raw string has more `#` after it than any quote of the string's own text,
+    so it is a quote that sets a record of `#` in the side; the side is now read from
+    inside a raw string once for each such record, four at most. On 7,758 hunks that begin
+    inside a raw string (every raw string with `#` that runs over lines in the `.rs` files
+    of the 603 crates, cut three lines before its end, with the six lines after it as the
+    change): 369 true items, 3 missed before and none now; false items 4 before and 4 now.
+    Of 177,957 fragment sides, 5,061 have one record, 65 two, 18 three, 5 four, none more.
+    Past four the string's end is not read: a declared miss, with a corpus section. The
+    entry before this one listed this limit under what "needs a writer"; it is ordinary.
+  - *The bounded list, claimed for what it is (VD3R14-M-1, IR7-L-5).* A list of 32 cannot
+    keep every item round 13 listed and every item release 0.8.3 listed. The rule stays
+    (that release's items first). The claim is: the full set of items, the signals and the
+    score are monotone, since every reading only adds; the list of at most 32 keeps release
+    0.8.3's items and is not a superset of an earlier round's list. The entry before this
+    one said that only one patch lists less than round 13 did; that comparison had been run
+    without the items of files whose list is cut short. With them, round 13 to round 14
+    loses listed items in 14 of 621 patches of the sixth review's set: one by the rule for
+    the top of a file, 13 by the bound (a panic path of `tests/repo_scripts.rs` gives its
+    place to the spawn on line 368 that release 0.8.3 listed). A test holds the trade as it
+    is.
+  - *A view of one hunk of a long run (IR7-L-2).* A view of one hunk that is read together
+    with others took its labels from the scan of the whole file, which reads every hunk
+    alone as well as in its runs. It now reads the texts that hunk stands in and no other
+    hunk. In a file of 330,000 hunks (CPU seconds, busy host; round 13, round 14, now):
+    created in that many hunks, 1.0, 4.1, 1.7; hunks of added lines only, the shape of
+    `git diff -U0`, 1.0, 4.4, 1.7; hunks that touch by their numbers, 1.0, 5.0, 2.7. What
+    is left is one reading of the run, whole: what stands before the hunk decides how it
+    starts, and what stands after it can complete a construct it begins and decides which
+    starts the run is read from, so stopping at the hunk would give another answer than the
+    rank. The library functions `hunk_signals` and `hunk_signals_alone` take the hunk's
+    place in its file: passed a copy of a hunk, they used to read it alone, or as no first
+    hunk, without a word.
+  - *The memory of a file of very many joined hunks.* A file created as 499,000 hunks of
+    one line (`--rank`, peak resident memory): release 0.8.3 176 MB, round 13 176, round 14
+    293, now 263. (Right for this shape and low for others: the entry for the eighth
+    independent review, above, has three shapes, IR8-L-2.) Round 14 held a text for every
+    hunk read alone beside the joined ones (now
+    none: each hunk is read alone as the scan goes over the file, and nothing is kept for it
+    but what it gives), a second table of answers for a file read as one kind (now one), and
+    in the views a set of the ids of the joined hunks (now one flag a hunk, and
+    `joined_hunks` gives those flags: a view of the file's hunks by path took 315 MB and
+    takes 270, the release 186). Through the protocol, where the request and the answer are
+    most of the memory, every view is within 2 MB of the release (a page of the outline 382
+    against 380; every hunk asked for by address in reverse order 724 against 724). What is
+    left over the release for `--rank` is the reading of the run itself: the code view of
+    every line of a text is held while the rules and the reader of tokens go over it, as
+    for any long hunk since round 13 (the same 499,000 lines written as one hunk: 54 MB in
+    the release, 131 in round 13, 120 in round 14 and now). A reading that hands each
+    line's view to the rules as the lexer makes it, and keeps the reader's window and one
+    line ahead, would end that for runs and long hunks alike; it changes how every reading
+    is plumbed and is not in this round.
+  - *Measured, against round 14.* On 177,957 fragments of real crate files in both cuts,
+    25,208 more whose true start is known, this repository's history at `-U3`, `-U1`, `-U0`
+    and full context (577 patches each) and 603 crates read as created files: nothing is
+    lost, and three items are new, all false: a call of a function of the crate's own named
+    `expect` or `unwrap` on a changed line that begins a side (two on the fragments, one on
+    the fragments with known starts). The language rule, the joins on either number, the
+    raw-string readings and the token reading of the released paths change no answer on any
+    of these sets. Against the published 0.8.3 binary on 3,062 patch files (the sets of
+    every review, the corpus and the seventh review's reproductions), with every listed
+    item compared also where a list is cut short and the score of every file: no patch has
+    a signal, a listed item or a score of that release that this version does not have (the
+    same comparison finds two such patches for round 14, one of them with a lower score).
+    Against round 14: no patch loses a signal or an item of a full list; 35 change, all by
+    gaining (the seventh review's 13; 19 in which a suppressed lint is now read as tokens;
+    the corpus sections whose declared misses are found; one hostile patch of 26,000 hunks
+    that are each the word `todo`, which is now a stub at an edge); and with cut lists
+    compared one patch lists one item less, by the bound (the script of IR7-L-1: a fetch
+    gives its place to the secret that release listed). Against round 13: without cut
+    lists, the two patches of the rule for the top of a file; with them, 157 of the 3,062
+    list fewer of round 13's items (round 14: 160), which is the bound and nothing else.
+    Cost (CPU seconds and peak memory, the best of three runs on a busy host, so the ratios
+    say more than the seconds; round 13, round 14, now). The sixth review's ten inputs and
+    three files of 330,000 joined hunks: between 0.6 and 1.5 times round 14's time, the
+    median the same, and its memory within 4%. The thirty-four hostile units of two
+    megabytes: the median the same as round 14, the slowest 1.8 s (2.2; 0.9). Where an input
+    asks for every reading this round adds: a file of 100,000 hunks that begin with the
+    shebangs of three languages in turn is read as each, 0.20, 0.22 and 1.26 s with 48, 59
+    and 86 MiB; a side with a quote for every count of `#` up to 1,400 is read for four of
+    them, 0.11, 0.26 and 0.30 s; 330,000 hunks that the old numbers chain one way and the
+    new numbers the other are read as each run, 2.6, 4.6 and 6.2 s with 173, 324 and 337
+    MiB; and 165,000 pairs of touching hunks take 1.7, 3.8 and 4.9 s with 174, 212 and 231
+    MiB. (As this round was first built, a run that a number made was looked for among all
+    the runs of its file, and those pairs did not finish in two minutes: found before any
+    commit. A run is now looked for among the runs that begin with its first hunk, and a
+    test holds the cost of 60,000 pairs.)
+  - *Tests.* Unit tests hold: the language of a script under five headers, with the shebang
+    hunk second, with the shebang on the old side only, with two languages, and its cost;
+    the mark of the release under its own language rule; as a property over 600 generated
+    scripts under five renumberings and reorderings, that what the true numbers give is
+    given and that the marked items are that release's; the joins on either number, the
+    pair in both orders, the run for each number and the bound; the records of a raw
+    string, the review's page and the bound; the released paths and `#[allow(` as tokens;
+    every form the end and the beginning of a side are read for, and the forms they are
+    not; a call cut by hunks that nothing joins; the second section, pinned; the list's
+    trade. The fuzz target `rust_hunk_places` (IR7-L-4 said what it could not see) has
+    three new rules: a construct only a join reads is found when either number says the
+    hunks touch, with the first hunk with or without an old line and in both orders (6); a
+    construct cut beside its word is found whatever the numbers and the order (7; that rule
+    and its sentence are withdrawn, as the sentence above is: rounds 16 and 17 narrowed what
+    the end of a side is read for, and since round 17 rule 7 holds only a call cut after
+    `.unwrap::` or `.expect::`, the one form left; ninth independent review, IR9-L-5); every
+    item of a script's hunk with honest numbers is found under false ones and with the hunk
+    written second (8). Rules 2 and 3 also run with removed lines, and a raw string's text
+    may hold quotes. It has 18 seeds. On the sources of the commit before (`87d1afd`), each
+    rule run alone: rules 6 and 7 fail on every seed, rule 8 on the two script seeds, and
+    the raw-string seed fails the older rules; the seed with removed lines holds there
+    too. The corpus has 50 cases (new:
+    `evidence/independent-review-7-20261115`, twenty items, two declared false positives,
+    five declared misses; three declared misses of the case before it are found, and one
+    item of the first independent review's case is new, an inner `#![allow(…)]` written as
+    `#!`, a comment and the rest): evidence precision 158 of 179 (was 134 of 153), recall
+    158 of 213 (was 134 of 187), 79 declared (was 75).
+  - *Where a number of a header still decides something.* The printed line of an item
+    (where it is reported, not whether). The joins on a hint (they add readings; every hunk
+    alone and the edges do not depend on them). The floor of the language (release 0.8.3's
+    rule, beside the rule that reads every hunk). And old position 0 or 1, which makes a
+    hunk the top of its file, read from code only: the one number plain Git obeys. A hunk
+    written `@@ -1,L` whose old lines stand lower is refused by plain Git and applied lower
+    by `--unidiff-zero` and `-C0`; it is the one declared limit that rests on a number.
+- **Round 13 of Vesper's review and a sixth independent review (both NO-GO): nothing about a
+  hunk's place or start is taken on trust.** Both reviews confirmed the model of round 13
+  (whole views, no mixture, a further view only adds, each view lexed as the compiler lexes
+  it, the other languages unchanged). What they broke is everything that round still took
+  from the patch on its word: the numbers in a hunk header, the boundaries between hunks, and
+  a guess at how a fragment starts. A third report, on the port of the Rust scanner to the
+  released line, showed that the new scanner reports less than release 0.8.3 on some hunks.
+  - *Corrected 2026-11-15 (the entry above this one).* Where this entry says that Git
+    places a hunk by its old position, that the new position is never used, or that
+    `@@ -9,4 +1,5 @@` "is applied at line 9", read: Git starts looking at the NEW position
+    and that hunk goes to line 9 only when its lines stand there and not at line 1. Where
+    it says that one patch lists less than round 13 did, read: 14 of 621 with the items of
+    cut lists compared. And a raw string whose text holds `"#` is no writer's work but an
+    ordinary diff's.
+  - *The rule.* Where a hunk sits is what plain `git apply` must do with it. Hunks with no
+    unseen line between them are one text, and every hunk is also a text of its own: a join
+    is a further reading and takes none away. Where the start of a text cannot be known,
+    every start that could be true is read, and what any reading finds is found. Every claim about
+    Git below was run with `git apply` 2.56.0 in scratch repositories, and the runs are
+    written into the doc comments of the tests that hold them.
+  - *The top of a file (IR6-H-1, high).* A side counted as the top of its file when its
+    first line had the number 1, and for the new side that number is the `+N` of the header.
+    Git never places a hunk by it: `@@ -9,4 +1,5 @@` is applied at line 9 ("succeeded at 9
+    (offset 8 lines)"). One digit switched the readings from inside a comment and a string
+    off and the shebang rule on, and a spawn on a line `#! ...` inside a macro call, which
+    every earlier version reported, was blank. The top of a file is now where Git must put
+    the hunk: old position 0, or old position 1 in a hunk that holds a line of the old file
+    (with any other, Git puts the hunk where it finds its old lines), and the first hunk of
+    a section that creates a file, whatever its header says. A hunk `@@ -1,0 +N @@` of added
+    lines only in an existing file is a fragment: its readings include the one from code,
+    and the one from the top of a file when its first line is a shebang, so nothing the top
+    reading gives is lost.
+    A hunk that says it is lower can still be the top (`@@ -3,2 +3,3 @@` whose lines are
+    the first of the file is applied at line 1), so a fragment whose first line is a shebang
+    is also read from the top of a file. The sentence in the entry before this one and in
+    the request for round 13, that `git apply` puts a hunk at line 1 by its new number
+    "unless it is run with `--unidiff-zero` or `-C0`", was wrong and is corrected. One
+    answer changes the other way and is right: a hunk `@@ -1,3 +7,4 @@` is the top of its
+    file, and a line `// */ call(); /*` in it is a line comment (the review's `asym.patch`).
+  - *Hunks Git must put together (IR6-H-3, high; in release 0.8.3 too).* Each hunk was read
+    alone, and Git accepts a file created as several hunks: a call whose name ended the
+    first hunk and whose `()` began the second left no item, and a comment opened in the
+    first hid a spawn in the second. A hunk whose last line is not a context line must match
+    at the end of its file, and a hunk of added lines only has nothing else to match, so
+    such a hunk stands straight after the last earlier hunk that ended the file whatever its
+    header says (`@@ -50,0 +90,1 @@` after `@@ -0,0 +1,2 @@` is line 3). A file created as
+    several hunks is therefore one text from line 1, and so is a run of such hunks at the
+    end of an existing file: the state of the lexer and the window of the reader of tokens
+    run across the join, and each item is reported with the hunk and the line it stands in.
+    Hunks whose old positions say they touch are read as one text too.
+    *Every hunk is also read on its own*, in every language and whatever joins it: what a
+    hunk gives when it is read alone is always in the answer. The applier modelled is plain
+    `git apply`; an applier that puts a hunk where its numbers say leaves such hunks apart,
+    each a fragment of its own, and the reading of every hunk alone is that reading. As this
+    round was first built (never committed), a Rust hunk that Git must put after another
+    was read only as its continuation, and that lost what round 13 reported: two hunks of
+    added lines only in an existing file, the first leaving a block comment open, the
+    second a spawn and a call. Plain `git apply` puts both at the end of the file ("Hunk #1
+    succeeded at 23 (offset 17 lines). Hunk #2 succeeded at 25"), where the second is the
+    text of that comment; `git apply --unidiff-zero`, which a `git diff -U0` patch needs,
+    puts each where its numbers say, and rustc compiles the second as code. Both readings
+    are made now. With every hunk a text of its own, a hunk stands in at most three texts
+    (itself, the run Git must make, the run the positions make), so the bound on joins by
+    position that the first build had (eight a file) is gone and nothing replaces it.
+    `git diff` with context lines writes neither touching hunks nor a creation in several
+    hunks: on the 481 per-commit patches of this repository no answer changes for this
+    reason. The views that show hunks take the labels
+    of a joined hunk from the one scan of its file; a hunk that is a text of its own is
+    still scanned alone (`hunk_signals_alone`, `joined_hunks`).
+  - *The starts of a fragment (IR6-H-2, high; LF-H-1).* The reading from inside a string
+    was made only for a side that, read from code, ENDED inside a string. An ordinary
+    `diff -U3` hunk between two strings over lines (the closing line of one above its
+    change, the opening line of the next below) ends in code, and every item of such a hunk
+    was lost, `#[ignore]` on a test among them, which rounds 10 to 12 had found; and a hunk
+    that began in a string whose text holds `crates/*/*/Cargo.toml` ends in a comment (two
+    opened, one closed), which lost a spawn that release 0.8.3 reports. The condition is now
+    that the reading from code carries anything over a line end: a string, a raw string or a
+    block comment. On the same condition a side that holds a quote with `#` after it is read
+    from inside a raw string too: a raw string takes no escapes and ends at the first quote
+    that as many `#` follow as opened it, and the count is that of the side's first such
+    quote, which is the string's closing quote unless its own text holds one (so one reading
+    serves any count; read as an ordinary string, a raw string whose text ends in a
+    backslash does not end where it ends).
+  - *Never less than the released version (LF-H-1, LF-M-1).* The scanner that follows the
+    compiler's lexer is right about text read from a known start, and a hunk has none: from
+    a start that is wrong, being exact goes wrong in other places than the old scanner did.
+    So the scanner of release 0.8.3 is back beside it, byte for byte as released (a private
+    module, `lexical/legacy_rust.rs`: lines 119 to 841 of `lexical.rs` at the tag's commit
+    `d4dbc91`), and every Rust hunk is read once more as that release read it: alone, from a
+    fresh state, by that release's own Rust rules. What it finds is united with the rest.
+    (Letting every rule of today read that view too was measured and not taken: it gains no
+    true item on any set, adds 5 false items on this repository's history and 16 on 603
+    crates read as created files, costs a third more time on created files, and it breaks
+    the rule the fuzz target `rust_tokens` has held since round 13, that strings on earlier
+    lines change none of the reader's signals.) Checked against the published 0.8.3
+    binary on every set named below (2,121 patch files that both binaries read): the list
+    of patches in which a signal of that release is reported by 0.8.3 and not by this
+    version is empty. The cost is what that scanner got wrong and the release also
+    reported: text of strings and comments taken for code (figures below), and about what
+    that release's scan took in time.
+  - *The general answer: do not guess the start.* A text that Git must put at the top of
+    its file is read from code and in no other way, and that reading is exact. So a patch
+    made with full context (`git diff -U<large>`) has no unknown start, and the
+    constructions that no reading of a bare fragment covers are found in that form (tests
+    and a pair of corpus sections hold four of them). The README says so to whoever builds
+    patches for a gate. The rule that was measured and NOT taken, "code may begin wherever a
+    comment or a string could end", closes every start-related construction and costs 2.8%
+    more items on real fragments and 10.7% on this repository's history, nearly all false
+    (doc examples in line comments); sparing line comments reopens them; and it needs a cap
+    with a known residue or a new reading engine.
+  - *One reading at a time (IR6-L-2).* A text's readings are made, read and dropped one
+    after another, and what is kept between them is what they found. On the review's inputs
+    (CPU seconds and peak memory, release builds; round 12, round 13, now): 999,000
+    one-byte lines below line 1, 0.74 s and 158 MiB, 0.81 s and 388 MiB, 1.23 s and 212 MiB;
+    a 60.9 MB fragment with an item on every line, 2.33 s and 328 MiB, 3.47 s and 626 MiB,
+    4.34 s and 404 MiB; the same as a created file, 2.33 s and 328 MiB, 2.23 s and 381 MiB,
+    3.09 s and 373 MiB. Memory is within a third of round 12's on every input (round 13: up
+    to 2.4 times).
+  - *Measured, against round 13.* On 177,957 fragments cut from 13,779 real crate files,
+    cut two ways. One hunk a section (no join): the 93 real items round 13 lost against
+    round 12 are all found, nothing is lost, and 26 false items are new (24 from the wider
+    condition for the reading from inside a string, none from the raw-string reading, 2
+    from the reading of release 0.8.3). As first cut, several hunks of added lines a file
+    (which Git and now this version also read together): nothing is lost either, the same
+    93 and 26, and the joins add 17 items: 10 real (`#[cfg_attr(…, ignore = …)]` written
+    over several lines and cut by a hunk boundary, which only the joined text shows) and 7
+    false (the further starts of a joined text: 5 from inside a string, 2 from inside a raw
+    string). On 25,208 fragments with their true starts known (the sixth
+    review's set): 0 misses in every start where round 13 had 20, all in fragments that
+    begin in a raw string; 37 added items where round 13 had 35. On the 481 commits of this
+    repository: 31 new items, one of them real (`json.rs:517`), 21 from the reading from
+    inside a string and 9 from the reading of release 0.8.3; nothing lost. On 603 crates
+    read as created files: 148 new items, all from the reading of release 0.8.3 and all
+    text of strings and comments (of the 164 such items that round 13 had removed against
+    round 12, the ones of that release's signals). Of 347 earlier reproduction patches 24
+    change: 22 gain what a review asked for, one gains back two false items (`union-fp`),
+    and one loses an item by the rule for the top of a file (`asym.patch`, above).
+    Time is not what it was: the reading of release 0.8.3 costs about what that release's
+    scan did, and a fragment has more readings. The review's ten inputs take 1.2 to 1.7
+    times round 13's CPU time, and of thirty-four hostile units of two megabytes the slowest
+    takes 1.4 s where it took 0.65 (900,000 lines of `"` below line 1; 700,000 lines of
+    `"#`, which get every reading, take 1.4 s where they took 0.5). The cost is linear as
+    before: a side of a text has at most five readings, a Rust hunk one more as release
+    0.8.3 read it, and a hunk stands in at most three texts. A file written as 330,000
+    hunks that are joined is read hunk by hunk and as its runs: created in that many hunks,
+    as that many hunks of added lines only, and as that many hunks whose positions say they
+    touch, 18 to 20 MB each, it takes 1.4, 1.35 and 1.8 times round 13's CPU time (3.5, 3.3
+    and 4.6 s on a busy host where round 13 took 2.4, 2.5 and 2.6) and 1.6, 1.6 and 1.9
+    times its memory (252, 260 and 324 MiB where it took 161, 162 and 173). The same
+    number of hunks apart from each other cost what they cost in the first build of this
+    round (measured side by side).
+  - *Limits that remain, declared, each as what it is.* A side that began inside a string
+    and that, read from code, carries nothing over a line end (`"; call(); // "`): it takes
+    a writer who sets out to; reading every fragment from inside a string would close it
+    for 457 false items on the fragments and 212 on the history (3.8% of its items), and
+    still would not close the next. A side that began two or more block comments deep is
+    read as one deep, and that reading can hide later code: the sentence "earlier than the
+    compiler does and never later" was false (VD3R13-M-1, IR6-L-1: `// */ //`, then
+    `// */ call(); /*`) and is gone from the code and the README, and marked in the entry
+    before this one. A raw
+    string whose own text holds a quote followed by `#`, or one opened with no `#` whose
+    closing quote follows a backslash. Two hunks that touch while the old position of the
+    second says they do not: Git finds a hunk by its context wherever its header says it
+    is (`@@ -40,1 +41,2 @@` "succeeded at 5 (offset -36 lines)"), and a construct cut in
+    two by such a pair is read in two halves. Two hunks that do touch, behind an earlier
+    hunk whose position falsely says it touches the first of them, are read together only
+    with that hunk in front. A hunk whose old position is 1 and that holds old lines is the
+    top of its file to plain `git apply`, which refuses it anywhere else, and is read so and
+    in no other way; `git apply --unidiff-zero` puts it lower when its old lines are lower
+    ("succeeded at 5 (offset 4 lines)"; `-C0` too, for a hunk that begins with a context
+    line). For hunks with no old line, which is what a `-U0` patch of added lines has, the
+    reading of every hunk alone covers the applier that believes positions. None of the 25,208 fragments with known
+    starts shows the first two. A suppressed lint is still read on one line (IR6-L-4): the
+    four spellings the review gives are declared misses, not code, in this round. Editions
+    before 2021, frontmatter and characters after Unicode 18: as in the entry before this
+    one (a spawn in one text of the older editions is now found, by the reading of release
+    0.8.3).
+  - *Tests.* Unit tests hold the top rule in both directions of a false header, the texts of
+    a file (every hunk alone, certain joins, joins on the word of positions, hunks out of
+    order), that a join takes no reading away (the two hunks above, and `@@ -1,0 +N @@`
+    read both ways) and the same as a property over 1,500 generated files cut four ways
+    (what a hunk gives alone is among what its file gives for it), every review reproduction as an assertion (`lie1` to `lie3`, `split2`, `split4`,
+    the three `newfile-depth` forms, `snap2`, `oldstr-both`, `strcmt`, `rawbs`, `glob-git`,
+    `apos-git`, `newfile-string-depth`), the full-context forms of four declared misses,
+    the labels of joined hunks in the graph and in the daemon's views, and, on 3,000
+    generated texts as a created file and as a fragment, added and removed, that nothing
+    release 0.8.3 reports is lost. The test that held the miss of IR6-H-2 as its expected
+    answer asserts the finding. A new fuzz target, `rust_hunk_places` (IR6-L-3), builds a
+    whole Rust file whose every line is in a known state and requires that the same change
+    written in other ways Git accepts loses no item: the file created as several hunks with
+    honest or false headers, a hunk cut out with the lines above and below unseen whatever
+    the cut left open, the same hunk with another new position, and what the scanner and
+    rules of release 0.8.3 find on any text; and that no join takes a reading away (what each
+    hunk gives as a patch of its own is among what the file gives for it, for a creation in
+    several hunks and for hunks of added lines apart in an existing file). Its ten seeds
+    hold. Nine of them fail on the sources of the commit before (`8f290e3`); the tenth,
+    the two hunks above, holds there and fails on this round as first built. Rule 5 of `rust_tokens` (a comment between
+    two tokens and strings on earlier lines change nothing) now asks of a hunk below line 1
+    that no signal is lost, where it asked for the same set: the further readings of a
+    fragment can add a signal from the text of a comment or a string, which is their
+    declared cost; in a created file the set must still be the same. The corpus has 49 cases (new:
+    `evidence/independent-review-6-20261114`, seventeen items, three declared false positives
+    and eight declared misses; one declared miss of the case before it is found): evidence
+    precision 134 of 153 (was 116 of 132), recall 134 of 187 (was 116 of 162), 75 declared
+    (was 65). Precision fell a little, on purpose: two of the three new false positives are
+    items release 0.8.3 reports. Recall rose a little, though four of the eight new misses
+    are spellings of a suppressed lint that no rule reads yet.
+  - *The bounded list keeps what release 0.8.3 listed (review of the same change on the
+    released line, VLF3-L-1).* `rank.v0` lists at most 32 items a file, and they were the
+    first 32 of all items. An item only this version finds, on an earlier line, pushed out
+    one that release showed: far more often here than on the released line, since the
+    signals this branch adds do it on ordinary history (a test file of this repository
+    spawns processes at five places and listed four of them, after the panic paths of its
+    tests took the rest of the room; on 2,990 patch files, 238 of the 620 files with more
+    than 32 items lacked an item that release listed). Score and signals were right and
+    `evidence_truncated` said so, but a reader of the list saw a spawn less than before.
+    The bound stays 32. The list now holds, while there is room: first the items release
+    0.8.3 listed, in its order (an item carries whether that release reported it: for Rust
+    what the reading of that release finds, for another language a signal it had, found in
+    the hunk read alone); then the first item of every signal with no item in the list yet,
+    the heavier signal first; then the others as they come. It is printed in the file's
+    order (hunk, line, signal) as before, and a file with 32 items or fewer prints what it
+    printed. Three orders for the items after the release's were measured on those 620
+    files. As they come: 189 files have a signal with no item in the list. The heavier
+    signal's items first: the same list in every one of the 620 (nearly all weights are 3).
+    A place for every signal first (taken): 180 such files, a different list in 9, each a
+    crate's file in which `test_skipped`, `stub_added` or `error_swallowed` gains its place;
+    on this repository's history the three give the same lists. In 177 of the 620 the
+    release's items fill all 32 places and a newer signal has no item in the list under any
+    order that keeps them (none on this repository's history): it is in `signals`, and the
+    list says it is cut short. Raising the bound would move that, not end it, and is not
+    done. The CLI and the daemon (and so MCP) take the list from one function
+    (`RankedFile::scored`); the views that show one hunk's labels are not bounded. Checked
+    against the published 0.8.3 binary on the 2,990 patch files, comparing every listed
+    item also where a list is cut short: no patch has an item that release lists and this
+    version does not (the same comparison finds 193 such patches for round 13's binary).
+    Tests: at the level of the rank, an item of a newer signal, and one of a newer reading,
+    on line 1 above 32 spawns (all 32 are listed); forty panic paths and a stub; the heavier
+    of two signals for the last place; and as a property over 1,200 generated files in Rust
+    and Python with many items, created in one hunk, in several, and changed by hunks of
+    added lines, that the items marked are exactly that release's, that what it printed is
+    printed, that the list is in the file's order and as long as the bound allows, and that
+    every signal has a place where there is room. Each fails under its control (the first
+    32 again; no place kept for a signal; no weight; a mark by signal alone; no mark).
+
+### Changed
+
+- **`basis` in `rank.v0` evidence is no longer always `lexical`.** An item carries the highest
+  rung that found it: `"hunk"` when a rule read a neighbouring line, `"syntax_fragment"` when
+  the parser read the construct. An item only a token finds is unchanged. The set of values
+  grows: a client that compared it with `lexical` should accept other values. *Superseded
+  before release: the values are `lexical` and `hunk`; `syntax_fragment` was never released
+  and is gone with the parser. `hunk` now also marks a Rust construct whose tokens stand on
+  several lines.*
+- **A hunk's evidence can depend on the hunks Git must put beside it.** A file created as
+  several hunks, a hunk of added lines after one that ends its file, and hunks whose old
+  positions say they touch are read as one text, and an item is reported in the hunk and on
+  the line it stands in. For a patch `git diff` writes nothing changes: every hunk is a text
+  of its own. The graph crate gains `joined_hunks` (the hunks of a file that are read with
+  another) and `hunk_signals_alone` (the scan of a hunk that is a text of its own);
+  `hunk_signals` answers for any hunk, at the cost of the texts it stands in.
+- **Every Rust hunk is also read as release 0.8.3 read it**, so a version after this one never
+  reports fewer items of that release's signals than the release did. Items of those
+  signals that the release reported in the text of a string or a comment, which rounds 12
+  and 13 had stopped reporting, are reported again.
+- **Existing Rust signals can be found where they were not before.** `test_skipped`,
+  `trivial_assert` and `stub_added` in a Rust hunk are now also found by the parser, so a
+  spelling the tokens missed is reported and raises the file's score. *Superseded before
+  release: they are found by reading the hunk's tokens across its lines, not by a parser;
+  `test_removed` is read the same way, so a removed `#[tokio::test(flavor = "…")]` or a
+  `#[test]` written over lines is reported.*
+
+- Path and shape weights are stated once, in `RiskSignal::weight`, and the scorer reads
+  them there. No score changes: the ranking of every input is the same as before.
+
+### Security
+
+- **A construct cut in two by a hunk boundary, or a comment carried over one, is read as Git
+  applies it** (sixth independent review of the integrity signals, IR6-H-3; in releases up to
+  0.8.3 too). Every hunk was read alone. Plain `git apply` accepts a file created as several
+  hunks, and a hunk of added lines after one that ends an existing file, and puts them one
+  straight after the other: a block comment opened in the first hunk hid a
+  `std::process::Command::new` in the second from `process_spawn` (the same for `unsafe`
+  and a network call), and a call whose name ended one hunk and whose `()` began the next
+  left no item. Hunks Git must put together are now one text. And a hunk header's NEW
+  position is no longer believed (IR6-H-1; the readings it switched off are not in a
+  release). Details and what stays open are in the Testing entry for round 13.
+- **Rust code after a nested block comment, or after a character literal with a long escape,
+  was hidden from every Rust rule** (second and fourth independent reviews of 2026-11-14,
+  IR2-H-3 and IR4-H-1; both reproduced on the released v0.8.3 binary with a control). Every
+  Rust rule reads a view of each line in which comments and literals are blank. That view
+  misread two things the compiler reads plainly, and what it took for a comment or a string
+  left no evidence: not `process_spawn`, `network_fetch`, `dynamic_eval` or `unsafe_added`,
+  and none of the integrity signals above.
+  - *Block comments.* Rust nests them. The view ended a comment at the first `*/`, so after
+    `/* /* */` a `//` cut the line where, for the compiler, the comment is still open and the
+    code behind its last `*/` runs:
+    `/* /* */ // */ std::process::Command::new("sh").arg("-c").arg(u).status().ok();`
+    was ranked as a line with no signal (v0.8.3: score 2, no signal; the same call written
+    plainly: `process_spawn`).
+  - *Character literals.* The view knew a literal by a closing quote two bytes on, or three
+    after a backslash. After `'\x41'`, `'\u{1F600}'` or any longer escape it was one quote
+    out of step: in `('\x41','"', "/*")` it took the `"` of `'"'` for the start of a string
+    and the `/*` of the real string for a comment that nothing closed, and the rest of the
+    hunk was blank (v0.8.3: no `unsafe_added` for an `unsafe` block under that line).
+  - *Since when.* Both readings are as old as the view: every release that has it, 0.5.0 to
+    0.8.3. Other languages are not affected: JavaScript, Go and C-like comments do not nest,
+    and no other language here has this form of literal.
+  - *The fix.* The Rust view no longer has rules of its own. It follows the compiler's lexer
+    (`rustc_lexer`) token by token, with that lexer's rule for where each token ends: block
+    comments nest, to any depth and over lines; a character or byte literal is read whole,
+    whatever its escape; a `'` before a name is a lifetime or a label; strings, byte strings
+    and C strings, and raw strings with any number of `#`, end where the lexer ends them, on
+    one line or over several; `r#fn` is a name; a literal's suffix and a number take the
+    letters that belong to them, so an `r` or a `b` before a quote is a prefix only where
+    the lexer says so; names past ASCII are read with the lexer's own tables (Unicode
+    18.0.0). Where an edition decides, the view takes edition 2021 and later (`cr"\"` is a
+    raw C string). What the lexer calls unterminated, and what it closes as a character
+    literal that no compiler accepts (`'ab'`, one over a line end), is passed over whole
+    and kept as text. The rule that a hunk may start inside a string stays: once a string
+    has run over a line end, the lines after it are read both ways and what either reading
+    finds code is code. One reading, the one that resumes every such string, is the
+    compiler's for text that starts in code; it is now kept apart and never dropped, however
+    many others there are. (A view that counts comment depth can pile up more readings than
+    it keeps: the oracle found a compiling text on which that one was dropped while this was
+    written.) Python, JavaScript and TypeScript, Go, shell and YAML are read exactly as
+    before.
+  - *How it is held.* A fuzz target, `rust_code_view`, compares the view with the compiler's
+    lexer itself (`ra-ap-rustc_lexer` 0.184.0, a dependency of the fuzz crate only) for any
+    text read as a file from its first line: every byte of a token that is code must stand
+    unchanged in the view, and where the view has one reading, every byte of a comment and
+    of a closed literal's text must be blank. One seed runs the comparison for every
+    character past ASCII, so the view's tables cannot fall behind the lexer's unseen. Unit
+    tests hold each rule above with what the compiler does, checked with rustc 1.99.1 in
+    editions 2015 to 2024. The corpus has 47 cases: `evidence/rust-code-view-20261114` holds
+    both hiding lines before a released signal each and before the integrity signals
+    (fourteen items, all expected), and the two calls after `/* /* */ // */` that were
+    declared misses are found (evidence precision 97 of 111, was 81 of 95; recall 97 of
+    139, was 81 of 125; 59 declared, was 61).
+  - *What changes for a reader of `rank.v0`.* Rust code that was hidden is evidence now, so
+    a file can rank higher than it did. A character literal with a long escape or of several
+    bytes (`'\u{2028}'`, `'é'`) is blank where it was shown. Nothing else in the output
+    changes.
+  - *Limits that remain.* A hunk that starts inside a string or a block comment is read as
+    code from its first line, as before. A shebang line, which the compiler skips, is read
+    as Rust. Before edition 2021 `cr"\"` is a name and an ordinary string; the view reads the
+    newer form. These known limits of the entries above are closed: the call after
+    `/* /* */ // */` (in plain code and in another macro's body) and the wrong `test_likely`
+    after `/* /* */ " */`.
+  - *Changed since (round 13, the last entry under Testing above).* A view is no longer a
+    union of readings: a side of a hunk is read as whole views, each from one stated start,
+    and their findings are united. The first two limits above are closed or narrowed there
+    (a hunk that starts inside a block comment, or inside a string its quotes betray; a
+    shebang line), and the limits that remain are listed there with their measured counts.
+
 ## [0.8.4] - 2026-11-16
 
 **Security release.** v0.8.3 and earlier could review a patch otherwise than `git apply`
@@ -2794,7 +5767,8 @@ A supply-chain & fuzz hardening pass then raised the release/CI posture:
   `--json`/`--jsonl` stability tests. Corrected the daemon's `lib.rs` doc from
   "thread-per-connection" to the true single-threaded sequential accept loop.
 
-[Unreleased]: https://gitlab.com/lukeomahoney/deep-diff-forge/-/compare/v0.8.4...main
+[Unreleased]: https://gitlab.com/lukeomahoney/deep-diff-forge/-/compare/v0.9.0...main
+[0.9.0]: https://gitlab.com/lukeomahoney/deep-diff-forge/-/tags/v0.9.0
 [0.8.4]: https://gitlab.com/lukeomahoney/deep-diff-forge/-/tags/v0.8.4
 [0.8.3]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.8.3
 [0.8.2]: https://github.com/Louranicas/deep-diff-forge/releases/tag/v0.8.2

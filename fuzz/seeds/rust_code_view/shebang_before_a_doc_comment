@@ -1,0 +1,2 @@
+#!/** doc */ [allow(dead_code)] "
+fn main() { unsafe { g() } }

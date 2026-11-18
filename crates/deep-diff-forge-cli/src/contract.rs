@@ -18,6 +18,13 @@ use std::process::{Command, Stdio};
 pub const RESULT_SCHEMA: &str = "ddf.result.v1";
 /// The exit-code registry's schema identifier.
 pub const EXIT_CODES_SCHEMA: &str = "ddf.exit-codes.v1";
+/// The signal vocabulary's schema identifier.
+pub const SIGNALS_SCHEMA: &str = "deep-diff-forge.signals.v0";
+/// The schema identifier of one signal's explanation.
+pub const SIGNAL_EXPLAIN_SCHEMA: &str = "deep-diff-forge.signal-explain.v0";
+/// The usage line of `explain`.
+pub const EXPLAIN_USAGE: &str =
+    "explain {<code> [--family engine|council] | signal <label>} [--json]";
 /// Captured stdout beyond this many bytes is cut and the envelope reports `truncated`.
 pub const STDOUT_CAP: usize = 16 * 1024 * 1024;
 /// Captured stderr beyond this many bytes is cut and the envelope reports `truncated`.
@@ -32,8 +39,12 @@ pub fn family_of(args: &[String]) -> &'static str {
     }
 }
 
-/// `explain <code> [--family engine|council] [--json]`: what an exit code means.
+/// `explain {<code> [--family engine|council] | signal <label>} [--json]`: what an exit code
+/// means, or why a signal matters and what answers it.
 pub fn explain(args: &[String]) -> Result<String, String> {
+    if args.first().map(String::as_str) == Some("signal") {
+        return explain_signal(&args[1..]);
+    }
     let mut family = "engine";
     let mut json = false;
     let mut code = None;
@@ -58,7 +69,7 @@ pub fn explain(args: &[String]) -> Result<String, String> {
             value => return Err(format!("unexpected argument: {value}")),
         }
     }
-    let code = code.ok_or("usage: explain <code> [--family engine|council] [--json]")?;
+    let code = code.ok_or_else(|| format!("usage: {EXPLAIN_USAGE}"))?;
     let entry = lookup(family, code)
         .ok_or_else(|| format!("exit code {code} is not documented for the {family} family"))?;
     Ok(if json {
@@ -71,7 +82,108 @@ pub fn explain(args: &[String]) -> Result<String, String> {
     })
 }
 
-/// `schema [result|exit-codes]`: the JSON Schema of the envelope, or the exit-code registry.
+/// The `tool` member every document of this binary carries.
+fn tool() -> Value {
+    json!({"name": "deep-diff-forge", "version": env!("CARGO_PKG_VERSION")})
+}
+
+/// One signal's facts, as the vocabulary document and an explanation both state them.
+fn signal_json(facts: &deep_diff_forge_graph::SignalFacts) -> Value {
+    json!({
+        "label": facts.label(),
+        "class": facts.class.label(),
+        "kind": facts.kind.label(),
+        "weight": facts.weight(),
+        "basis": facts.basis(),
+        "sides": facts.sides().iter().map(|s| s.label()).collect::<Vec<_>>(),
+        "since": facts.since,
+        "summary": facts.summary,
+    })
+}
+
+/// `explain signal <label> [--json]`: why a signal matters, what answers it, what does not, and
+/// the compiler or linter rules that prevent it.
+fn explain_signal(args: &[String]) -> Result<String, String> {
+    use std::fmt::Write as _;
+    let mut json = false;
+    let mut label = None;
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            value if label.is_none() => label = Some(value),
+            value => return Err(format!("unexpected argument: {value}")),
+        }
+    }
+    let label = label.ok_or_else(|| format!("usage: {EXPLAIN_USAGE}"))?;
+    let signal = deep_diff_forge_graph::signal_named(label).ok_or_else(|| {
+        format!(
+            "unknown signal: {} (deep-diff-forge schema signals lists them)",
+            deep_diff_forge_core::display_safe(label)
+        )
+    })?;
+    let facts = deep_diff_forge_graph::facts(signal);
+    let remedy = deep_diff_forge_graph::remedy(signal);
+    if json {
+        let mut value = signal_json(&facts);
+        value["schema"] = json!(SIGNAL_EXPLAIN_SCHEMA);
+        value["tool"] = tool();
+        value["why"] = json!(remedy.why);
+        value["accept"] = json!(remedy.accept);
+        value["not_accepted"] = remedy
+            .not_accepted
+            .iter()
+            .map(|n| json!({"substitute": n.substitute, "raises": n.raises}))
+            .collect();
+        value["native_lints"] = remedy
+            .native_lints
+            .iter()
+            .map(|l| json!({"language": l.language, "tool": l.tool, "rule": l.rule}))
+            .collect();
+        return Ok(format!("{value}\n"));
+    }
+    let mut text = String::new();
+    let _ = writeln!(
+        text,
+        "{} ({}, {}, weight {}): {}",
+        facts.label(),
+        facts.class.label(),
+        facts.kind.label(),
+        facts.weight(),
+        facts.summary
+    );
+    let _ = writeln!(text, "why: {}", remedy.why);
+    let _ = writeln!(text, "accept:");
+    for line in remedy.accept {
+        let _ = writeln!(text, "  - {line}");
+    }
+    if !remedy.not_accepted.is_empty() {
+        let _ = writeln!(text, "not accepted:");
+        for not in remedy.not_accepted {
+            match not.raises {
+                Some(raised) => {
+                    let _ = writeln!(text, "  - {} (raises {raised})", not.substitute);
+                }
+                None => {
+                    let _ = writeln!(
+                        text,
+                        "  - {} (no signal sees this yet; it is still not a repair)",
+                        not.substitute
+                    );
+                }
+            }
+        }
+    }
+    if !remedy.native_lints.is_empty() {
+        let _ = writeln!(text, "prevent:");
+        for lint in remedy.native_lints {
+            let _ = writeln!(text, "  - {}, {}: {}", lint.language, lint.tool, lint.rule);
+        }
+    }
+    Ok(text)
+}
+
+/// `schema [result|exit-codes|signals]`: the JSON Schema of the envelope, the exit-code registry,
+/// or the signal vocabulary.
 pub fn schema(args: &[String]) -> Result<String, String> {
     let value = match args.first().map(String::as_str) {
         None | Some("result") => result_schema(),
@@ -79,7 +191,16 @@ pub fn schema(args: &[String]) -> Result<String, String> {
             "schema": EXIT_CODES_SCHEMA,
             "codes": EXIT_CODES.iter().map(entry_json).collect::<Vec<_>>(),
         }),
-        Some(other) => return Err(format!("unknown schema: {other} (result|exit-codes)")),
+        Some("signals") => json!({
+            "schema": SIGNALS_SCHEMA,
+            "tool": tool(),
+            "signals": deep_diff_forge_graph::vocabulary().iter().map(signal_json).collect::<Vec<_>>(),
+        }),
+        Some(other) => {
+            return Err(format!(
+                "unknown schema: {other} (result|exit-codes|signals)"
+            ));
+        }
     };
     Ok(format!("{value:#}\n"))
 }
@@ -459,7 +580,113 @@ mod tests {
         assert_eq!(v["title"], RESULT_SCHEMA);
         let v: Value = serde_json::from_str(&schema(&args(&["exit-codes"])).unwrap()).unwrap();
         assert_eq!(v["codes"].as_array().unwrap().len(), EXIT_CODES.len());
-        assert!(schema(&args(&["other"])).is_err());
+        assert_eq!(
+            schema(&args(&["other"])).unwrap_err(),
+            "unknown schema: other (result|exit-codes|signals)"
+        );
+    }
+
+    /// The vocabulary document lists every signal a ranking can carry, with the facts a reader
+    /// needs to act on one: what it is about, how sure it is, what it weighs and how it was read.
+    #[test]
+    fn schema_signals_is_the_whole_vocabulary() {
+        let v: Value = serde_json::from_str(&schema(&args(&["signals"])).unwrap()).unwrap();
+        assert_eq!(v["schema"], SIGNALS_SCHEMA);
+        assert_eq!(v["tool"]["name"], "deep-diff-forge");
+        assert_eq!(v["tool"]["version"], env!("CARGO_PKG_VERSION"));
+        let signals = v["signals"].as_array().unwrap();
+        let vocabulary = deep_diff_forge_graph::vocabulary();
+        assert_eq!(signals.len(), vocabulary.len());
+        for (row, facts) in signals.iter().zip(&vocabulary) {
+            assert_eq!(row["label"], facts.label());
+            assert_eq!(row["weight"], facts.weight());
+            for member in ["class", "kind", "basis", "sides", "since", "summary"] {
+                assert!(!row[member].is_null(), "{}: {member}", facts.label());
+            }
+        }
+        let by = |label: &str| signals.iter().find(|s| s["label"] == label).unwrap();
+        assert_eq!(
+            *by("test_removed"),
+            json!({"label": "test_removed", "class": "integrity", "kind": "direct", "weight": 3,
+                   "basis": ["lexical", "hunk"], "sides": ["old"], "since": "0.5.0",
+                   "summary": "A removed line was a test."})
+        );
+        assert_eq!(by("public_api_surface")["basis"], json!(["path"]));
+        assert_eq!(by("public_api_surface")["sides"], json!([]));
+        // HR-L-6: read from the path and from every changed line, as the scorer reads it
+        assert_eq!(by("hazardous_text")["basis"], json!(["path", "lexical"]));
+        assert_eq!(by("hazardous_text")["sides"], json!(["new", "old"]));
+        assert_eq!(by("secret_like")["class"], "security");
+    }
+
+    #[test]
+    fn explain_signal_says_why_what_answers_it_and_what_does_not() {
+        let text = explain(&args(&["signal", "check_suppressed"])).unwrap();
+        assert!(
+            text.starts_with("check_suppressed (integrity, direct, weight 2): "),
+            "{text}"
+        );
+        for part in [
+            "\nwhy: ",
+            "\naccept:\n  - Fix what the check reports.\n",
+            "\nnot accepted:\n  - ",
+            "(no signal sees this yet; it is still not a repair)",
+            "\nprevent:\n  - Rust, clippy: allow_attributes_without_reason\n",
+        ] {
+            assert!(text.contains(part), "{part:?} in {text}");
+        }
+        // a substitute another signal sees is named
+        let spawn = explain(&args(&["signal", "process_spawn"])).unwrap();
+        assert!(spawn.contains("(raises dynamic_eval)"), "{spawn}");
+        // a signal that only orders the review has no "not accepted" and no "prevent" part
+        let new_file = explain(&args(&["signal", "new_file"])).unwrap();
+        assert!(!new_file.contains("not accepted:") && !new_file.contains("prevent:"));
+
+        let v: Value =
+            serde_json::from_str(&explain(&args(&["signal", "--json", "test_removed"])).unwrap())
+                .unwrap();
+        assert_eq!(v["schema"], SIGNAL_EXPLAIN_SCHEMA);
+        assert_eq!(v["label"], "test_removed");
+        assert_eq!(v["weight"], 3);
+        assert_eq!(v["sides"], json!(["old"]));
+        assert!(v["why"].as_str().is_some_and(|w| !w.is_empty()));
+        assert_eq!(v["accept"].as_array().unwrap().len(), 2);
+        // skipping the test raises test_skipped; emptying its body raises nothing (CI4)
+        assert_eq!(v["not_accepted"][0]["raises"], "test_skipped");
+        assert_eq!(v["not_accepted"][1]["raises"], Value::Null);
+        assert_eq!(v["native_lints"], json!([]));
+        let unsafe_added: Value =
+            serde_json::from_str(&explain(&args(&["signal", "unsafe_added", "--json"])).unwrap())
+                .unwrap();
+        assert_eq!(
+            unsafe_added["native_lints"],
+            json!([{"language": "Rust", "tool": "rustc", "rule": "unsafe_code"}])
+        );
+    }
+
+    #[test]
+    fn explain_signal_refuses_what_it_cannot_explain() {
+        assert_eq!(
+            explain(&args(&["signal"])).unwrap_err(),
+            format!("usage: {EXPLAIN_USAGE}")
+        );
+        assert_eq!(
+            explain(&args(&["signal", "no_such_signal"])).unwrap_err(),
+            "unknown signal: no_such_signal (deep-diff-forge schema signals lists them)"
+        );
+        assert_eq!(
+            explain(&args(&["signal", "new_file", "extra"])).unwrap_err(),
+            "unexpected argument: extra"
+        );
+        // a label is matched exactly, and a control character in it is not echoed raw
+        assert!(explain(&args(&["signal", "New_File"])).is_err());
+        let hostile = explain(&args(&["signal", "x\u{1b}[31m"])).unwrap_err();
+        assert!(!hostile.contains('\u{1b}'), "{hostile:?}");
+        // the exit-code form is unchanged
+        assert_eq!(
+            explain(&args(&[])).unwrap_err(),
+            format!("usage: {EXPLAIN_USAGE}")
+        );
     }
 
     #[test]

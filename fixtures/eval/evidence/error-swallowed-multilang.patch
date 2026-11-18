@@ -1,0 +1,35 @@
+diff --git a/a.py b/a.py
+--- a/a.py
++++ b/a.py
+@@ -1,1 +1,9 @@
+ import os
++try:
++    os.remove(p)
++except OSError:
++    pass
++try:
++    os.remove(q)
++except OSError as e:
++    log(e)
+diff --git a/web/a.ts b/web/a.ts
+--- a/web/a.ts
++++ b/web/a.ts
+@@ -1,1 +1,7 @@
+ export {};
++try { risky(); } catch (e) {}
++try {
++  risky();
++} catch {
++}
++promise.catch(() => {});
+diff --git a/srv/a.go b/srv/a.go
+--- a/srv/a.go
++++ b/srv/a.go
+@@ -1,1 +1,7 @@
+ package srv
++func f() error {
++	if err := g(); err != nil {
++	}
++	_ = err
++	return nil
++}

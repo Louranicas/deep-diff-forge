@@ -6,15 +6,23 @@ an exceptional one. This policy documents the maintained security boundary,
 the controls enforced by the repository, and the limits operators must account
 for.
 
-## Status 2026-11-16 (0.8.4 prepared)
+## Status 2026-11-18 (0.9.0 prepared)
 
-- 0.8.4 is a security release: v0.8.3 and earlier can review a patch otherwise than `git apply`
+- 0.9.0 adds five integrity signals and the agent hooks, and fixes two defects of 0.8.4 and
+  earlier ([DDF-2026-003](docs/advisories/DDF-2026-003.md)): a process spawn cut across two
+  sections of one path that Git applies in order was not found, and one long JavaScript word or
+  run of secret prefixes cost ranking time quadratic in its length. 0.9.0 is a release once the
+  signed tag `v0.9.0` exists; until then `v0.8.4` is the latest. It has no GitHub release: once
+  tagged it is published as a signed tag on GitLab, Gitea and Forgejo; binaries built locally
+  for Linux x86_64. A forge-warden that does not know the five new signals reads each as an
+  unknown signal and holds.
+- 0.8.4 (the signed tag `v0.8.4`, 2026-11-17; published on GitLab, Gitea and Forgejo on
+  2026-11-18), the release before 0.9.0, is a security release: v0.8.3 and earlier can review a patch otherwise than `git apply`
   writes it, for a `Files … differ` line (Git reads it as a binary marker and writes a blob from
   its object store) and for one path in several sections (Git applies them as a set): G1 and G2
   of the v0.8.3 rescore. They also hide Rust code after a nested block comment, a character
   literal with a long escape, or a comment an earlier hunk of a created file opened from the
-  Rust rules. 0.8.4 is a release once the signed tag `v0.8.4` exists; until then `v0.8.3` is
-  the latest. It has no GitHub release: once tagged it is published on GitLab
+  Rust rules. It has no GitHub release: it is published on GitLab
   (`https://gitlab.com/lukeomahoney/deep-diff-forge`), with mirrors on Gitea and Forgejo, as the
   signed tag and a Linux x86_64 binary built on the owner's machine
   ([local release](docs/RELEASE_AND_PUBLICATION.md#local-release-from-084)). Advisories:
@@ -40,9 +48,9 @@ for.
   Ubuntu 24.04, arm64 on Ubuntu 22.04 since v0.6.0; glibc 2.34 or newer, enforced
   by `scripts/check_glibc_floor.sh`), `aarch64-apple-darwin` and `x86_64-apple-darwin`.
   Every shipped binary is run in the release smoke test, the x86_64 macOS one under
-  Rosetta 2. 0.8.4 ships only `x86_64-unknown-linux-gnu`, built and smoke-tested on the owner's
+  Rosetta 2. From 0.8.4 a release ships only `x86_64-unknown-linux-gnu`, built and smoke-tested on the owner's
   machine (Fedora 44 toolbox) by `scripts/release_local.sh`; the other three targets are not
-  built for 0.8.4. Not claimed: musl, Windows, other architectures, crates.io packages,
+  built for 0.8.4 or 0.9.0. Not claimed: musl, Windows, other architectures, crates.io packages,
   or a daemon shared between users on one host
   ([supported platforms](README.md#supported-platforms)).
 - Known limits are listed under [Residual risks](#residual-risks-and-non-goals).
@@ -73,8 +81,9 @@ Fixes land on `main` first and reach users in the next tagged release.
 
 | Version | State | Security fixes |
 | --- | --- | --- |
-| `main` | 0.8.4 (a release once `v0.8.4` is tagged) | Land here first. |
-| `v0.8.3` (2026-11-11 UTC) | Published; superseded once `v0.8.4` is tagged | No. G1/G2 ([DDF-2026-001](docs/advisories/DDF-2026-001.md)) and the Rust code view ([DDF-2026-002](docs/advisories/DDF-2026-002.md)); 0.8.4 fixes them. |
+| `main` | 0.9.0 (a release once `v0.9.0` is tagged) | Land here first. |
+| `v0.8.4` (2026-11-17) | Published; superseded once `v0.9.0` is tagged | No. A process spawn cut across two sections of one path, and the cost of one long word or run of secret prefixes ([DDF-2026-003](docs/advisories/DDF-2026-003.md)); 0.9.0 fixes them. |
+| `v0.8.3` (2026-11-11 UTC) | Published, superseded | No. G1/G2 ([DDF-2026-001](docs/advisories/DDF-2026-001.md)) and the Rust code view ([DDF-2026-002](docs/advisories/DDF-2026-002.md)); 0.8.4 fixes them. |
 | `v0.8.2` (2026-11-10) | Published, superseded | No. It can show a change on a different file, or with a different mode or type, than `git apply` writes: a name left by a bare `diff --git` line before a binary line, a new file's mode overridden by `new mode`, or content under a mode Git reads as a submodule ([GHSA-rq5r-p3g9-phff](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-rq5r-p3g9-phff)); 0.8.3 fixes them. |
 | `v0.8.1` (2026-11-08) | Published, superseded | No. It can review a different file or mode than `git apply` writes: a copy, a `---`/`+++` name with nothing after its first component, repeated mode headers, a header after a binary line, or a carriage return in a move name (N1-N3 of the v0.8.1 rescore and F1-F2 of the rescore before the v0.8.2 tag, [GHSA-gp5v-m67f-gmgp](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-gp5v-m67f-gmgp)); 0.8.2 fixes them. |
 | `v0.8.0` (2026-11-07) | Published, superseded | No. It reviews a rename to a different destination than `git apply` writes when a non-header line comes between two `rename to` lines (F1 of the v0.8.0 rescore, high); 0.8.1 fixes it. |
@@ -282,6 +291,515 @@ every gate ran as root inside the container. Gates refuse to run unless
 - The stable FNV identifier is pseudonymous and dictionary-guessable, not a
   confidentiality primitive. Confidentiality comes from local access controls.
   Learning data is not uploaded by the project.
+
+### Agent hooks
+
+The hooks guard against an agent's honest mistakes and shortcuts: a credential it commits, a
+check it silences, a policy it loosens. They are **not** a boundary against an agent that sets
+out to evade them: it has a shell, so it can edit the settings, the session's state, or work
+in a copy. That boundary is the judge on the pull request (forge-warden on the server). The
+rule for every case below: an ordinary workflow must never end in a silent stop with unjudged
+work; a deliberate evasion is made visible where that is cheap, and is otherwise a stated
+limit.
+
+`agent hook` runs inside an agent's session, on the agent's own change. **A stop prints nothing
+only when every unit of the session (the uncommitted change, the staged change, each commit)
+has a pass; everything else that is true at a stop is said at that stop, every time, in a
+bounded form.** What it holds to:
+
+- **The change is attacker-controlled, and so is everything read from it.** A hook message
+  never repeats the text of a changed line. A path is shown quoted, with control characters
+  escaped, cut at 120 characters, and the message says that paths are data. Rule text comes
+  from the policy at the base commit and is escaped the same way.
+- **The session cannot move what is judged.** The project and the commit its changes are
+  measured from are fixed by the session's first hook and kept in its state: the directory
+  the client names (`CLAUDE_PROJECT_DIR`), else the one recorded, else the hook input's
+  `cwd`; and the commit `HEAD` named there. Before, both were read at every stop from things
+  the session itself moves. A `cd` into a nested repository, another repository or a
+  directory that was gone let the stop pass with no output, and so did committing the work;
+  a committed policy change was the policy for the rest of the session. A stop now judges
+  the project wherever the session's directory is, by the policy of the recorded commit. A
+  linked working tree the session's directory is in is judged as well.
+- **The unit that is judged is a commit, by its own change.** The session's first hook
+  records, with the base, the id of every commit that something names then: every ref, the
+  `HEAD` of every working tree, and the reflogs of those `HEAD`s and of the stash. A commit
+  is the session's when a branch, a tag, the stash, a `HEAD` or one of those reflogs leads
+  to it now and none of the recorded commits does. A stop has judged the uncommitted change
+  of the working tree (against that tree's `HEAD`) and each commit of the session that no
+  earlier stop judged, as the patch from its first parent to itself, the oldest first, as
+  many as its time allows; the rest are counted as UNJUDGED and judged at later stops.
+  Before, a stop judged for each ref the net patch from the base to its tip, over bounded
+  lists of refs. A credential that was committed and then reverted left an empty net patch
+  and a silent stop while the branch kept the commit; the untracked files of `git stash -u`
+  and the older entries of the stash were in no net patch; four patches of sixteen tips in
+  name order could leave out the session's own; a list of 4,096 refs dropped the stash of a
+  repository with more. None of these has a bound or an order by name now: the recorded
+  ids are a file of their own with no such limit, and no name of a ref is read or shown, so
+  a name that is not UTF-8 or that somebody else chose cannot matter. A commit that only a
+  remote-tracking ref names was fetched and is not the session's. A commit that is gone
+  from every ref and every reflog read is not found; that is a stated limit.
+- **What is staged is judged.** A stop judged the working tree and the commits; the index
+  was in neither. A credential that was staged and then repaired or deleted in the working
+  tree without `git add` was in no patch, the stop was silent, and the next plain
+  `git commit` recorded it. The change the index holds against the tree's `HEAD` is a unit
+  now ("Staged changes in" the path), judged when it is another change than the working
+  tree's. Its entries are read with `git ls-files --stage` and written into an index of the
+  scratch repository; the repository's own index is not written.
+- **Which commits of others are judged.** A commit that was in the repository when the
+  session began, named by any ref (remote-tracking ones included) or reflog, is not the
+  session's, also when the session pulls it, merges it by fast-forward, rebases onto it or
+  resets to it. One fetched during the session and brought onto a local branch is. The
+  documents said that a pull or a merge always makes commits the session's; every message
+  that names the range says the rule now, the advice after a tool call included.
+- **A stop's message never loses what blocks.** It holds, in this order: every unit that
+  blocks now, with its rules while there is room, then with the names of its rules (twenty
+  more), then counted; every unit that got no verdict, named, and the
+  count of commits that wait; new holds; what stands from before, as a count with three
+  names once there are more than three. Twelve units used to be listed, the oldest first:
+  with twelve failures standing, a commit that failed blocked the stop without being named,
+  and one that got no verdict was not said. The last two parts give way first when the
+  message is full, and it says how many it left out.
+- **No verdict is never "done".** A commit that got no verdict was written down as not
+  judgeable, said once, and then neither asked about nor named again: one transient failure
+  of the judge on a commit with a credential made every later stop silent. Now only a
+  verdict is an answer. A commit without one is named at every stop and asked about again,
+  at every stop for its first five attempts that count, then one such commit at each stop
+  in turn. It is never given up while the session lives: the cap of five used to end the
+  asking, so a judge that failed on one patch five times while it answered for others left
+  a commit with a credential UNJUDGED for good, and its failing verdict was never
+  obtained. And its turn is kept for it: every stop first asks about the commit that has
+  waited longest among those past five attempts, then about the one asked about least
+  recently among those with fewer, and only then about anything else. Every commit
+  without a verdict is so submitted at least once in as many stops as there are such
+  commits, whatever the judge answers for the others. The commit whose turn it was used
+  to be asked last: three commits in front of it that the judge gave no verdict for, with
+  no verdict on its probe either, ended the asking of every stop before it was reached,
+  for the rest of the session. Only
+  what the hook proves from the commit itself is final at once (a patch over the builder's
+  size), and is named at every stop too. A shallow clone's edge is not such a thing: the
+  clone can get the parent, so it is looked at again at every stop, and the commit is
+  judged once the history is there (it was written down as final and stayed unjudged after
+  `git fetch --unshallow`). What the judge holds and what stands are a line of every stop
+  as well, each with the names of its rules: a hold first seen at a stop that blocked for
+  something else was never shown again, and a rule the judge held for beside a rule that
+  failed was shown at no stop. A verdict that fails keeps the rules it holds for, and a
+  commit's answer keeps the names of its rules for the rest of the session.
+- **A message is bounded and what blocks keeps its rule.** At most 9,000 characters. The
+  lines of every stop (the commits with no verdict, what is held, what stands) are never
+  cut: each is a count and at most three names of a bounded length, their room is taken
+  first, and what is above them, with its own count of the commits that block, is made
+  inside what is left. Every unit of a stop is so named or counted. A text that is still
+  over the bound where it is finished is cut and ends with a line that says it was. (The
+  parts once added up to 9,005 characters; then the lines of every stop had 1,700 and
+  could need 1,787, and the cut that made room took the count of 43 commits that
+  blocked.) What
+  blocks is shown the staged change first, then the uncommitted one, then the commits the
+  newest first; a unit that does not fit whole is shown with each rule's name and first
+  path, then with its rules' names alone, then counted. Before, a unit whose rules were
+  longer than the room was shown with no rule, and 150 failing commits put the session's
+  own past where the client cuts the message.
+- **A failure is its lines, and what is left of one does not block again.** What is
+  remembered of an uncommitted or staged change is each rule, signal and path that failed,
+  with its number of items. A stop blocks for a line that has not blocked and for a
+  number that has grown, and says which lines are new and which stand; the lines that
+  have blocked stand when others beside them are repaired. The identity used to be one
+  digest over all the lines of a unit, so the part of a failure that was left untouched,
+  and had been told to a person, blocked again whenever another part was repaired.
+- **A staged failure is its own where the working tree does not have it.** What is staged
+  blocks for itself after the working tree was repaired, in the lines the working tree's
+  failure does not have; a staged line that the working tree's failure has too is that
+  failure. As a second identity it made a failure that stood block again after
+  `git add -A` and one more edit of any file, every other turn. A staged line that has
+  blocked stands for as long as the index holds it: it was forgotten while the working
+  tree's failure had the line again, and blocked a second time when the tree was repaired
+  again, with the index untouched.
+- **A commit with no verdict never stops the judging of others.** When the chain gives
+  verdicts and one patch is refused (a name that is not UTF-8, a size, a shallow clone's
+  edge), that commit is said once by its id, remembered as not judgeable, and the next is
+  asked about. Only a chain that gives no verdict ends the asking, for that stop, with
+  nothing remembered. Before, such a commit was asked about first at every stop, and three
+  of them ended the judging of every later commit for the session.
+- **A hook that cannot keep its state does not block for good.** A failing commit cannot
+  be repaired, and with a state that cannot be written it was judged, and blocked, at every
+  stop. When, and only when, the state could not be kept, the client's `stop_hook_active`
+  is honoured: the stop that follows a block is allowed, says FAIL STANDS and says why.
+  The next turn blocks again, which is said each time.
+- **A failing commit blocks once and stands; a failing uncommitted change blocks again when
+  it comes back.** A failing commit always blocks at the stop that first judges it: the
+  exception for one "committed as it is" after its failure had blocked is gone, because its
+  match (rule, signal, path, count) let another credential in the same file stand without
+  ever blocking. A commit is known by its id, so a branch switch or a new ref does not
+  make its failure block again, and a later commit cannot make it pass. The failure of an
+  uncommitted change is known by its rules, signals, paths and numbers of items, and is
+  remembered with the working tree it is in. It is forgotten only by a stop that looked at
+  that tree and found the change without it. Once it was remembered for the whole session,
+  so a failure that was repaired and then brought back never blocked; then it was
+  forgotten whenever its unit was absent from a stop, also when nothing had looked, so a
+  failure in a linked working tree blocked again each time the session's directory left
+  the tree and came back. A stop that does not look at a tree names it and says, at every
+  such stop, that a failure stands there.
+- **A working tree is what it is, not where it is.** A failure is remembered with the
+  working tree it is in, and a linked tree is known by its administrative directory under
+  the repository: its inode and its birth time, which no program can set. The file
+  `commondir` in it (its inode and modification time) stood there too, so a `touch` of
+  that file made an unchanged tree a new one whose failure blocked again; it is used now
+  only where the file system keeps no birth time, and there that limit remains. Nothing is
+  written to mark a tree, and nothing of a tree's identity is taken from a path, as a
+  message shows it or as Git records it: which trees a repository has is read from the
+  directories under `worktrees`, a listed tree is left out as judged by which tree it is
+  and not by its path (two listed entries with one path are two trees), and a path from
+  Git's files is read as bytes and from
+  the directory Git reads it from (a tree recorded by relative paths had another identity
+  from outside than from inside, and what had blocked in it was forgotten by every stop
+  made from the project).
+  That stays over `git worktree move`, over `mv` with `git worktree repair`, over
+  `git gc` and over a change of every time that can be set, and is
+  new for a tree made at the path of a removed one. A tree was known by its path: moved,
+  an unchanged failing tree blocked a second time; removed and made again at the same
+  path, a new tree inherited "has already blocked" and its failure never blocked; and two
+  trees whose long paths were cut to the same words shared one identity. What is
+  remembered of a tree that has no administrative directory any more is forgotten. Where
+  there is no birth time, modification times are whole seconds and inode numbers are
+  reused, a tree removed and made again within one second can be taken for the old one.
+- **What "the same failure" is, and what it is not.** For a change that is not committed
+  it is the judge's lines: a rule, a signal, a path and a number of items. That is all a
+  verdict gives that stays the same from one stop to the next (its evidence is a hunk's
+  address and a line number, which change when the file is edited above). So a finding
+  that is removed and replaced by another under the same rule in the same file between
+  two stops is not told apart: the stop says that the failure stands, and says in a line
+  of that message what "stands" means, whatever heads the message. The limit reaches one turn: a line that was gone at any stop that
+  looked is forgotten. The post-tool advice, which is keyed by the text of a line, does
+  show the new finding.
+- **The memory of failures is bounded, and nothing leaves it in silence.** A session keeps
+  2,048 failing lines of uncommitted and staged changes. The list was cut from its front
+  with no word, so nine working trees with large failures made the first one's unchanged
+  failure block again. Now a change whose lines do not fit is kept as one digest of all
+  of them (the largest changes that the stop is not looking at first): it stands
+  unchanged and blocks as a whole on any change, and the block says that it is not all
+  new. Only with more than 2,048 failing changes is any memory given up, and the stop at
+  which that happens says for how many. What a failure is remembered by is not what two
+  verdicts of one stop are compared by: which of the staged lines the working tree's
+  failure has too, and which lines of a failure that has grown are new, is asked line by
+  line whatever their number. It was asked of the digest, which covers no single line: past
+  256 lines every partial `git add` of an unchanged failure blocked again. The lines kept
+  for a staged change (they have blocked as its own, and the tree's failure has them too
+  now) are shortened into a digest of everything that has blocked for it, and kept while
+  that can be checked against what the index holds; they were let go with no word. Where
+  such a digest cannot be kept, the stop says so. A digest that is exactly what the index
+  holds says that every staged line has blocked: then nothing staged is new, whatever
+  part of it the working tree's failure has too (it was asked only whether the staged
+  change's own failure is exactly it, and a large staged failure blocked again when the
+  tree was repaired in part with the index untouched). The rule: with the index untouched
+  and the state writable, what is staged does not block twice unless a stop said that its
+  memory of it could not be kept; and each such sentence says what happened at that stop.
+- **"Could not be read" is not "nothing there".** Whatever a stop reads of a working tree
+  (its uncommitted change, its index, whether another tree has changes, whether the clone
+  is shallow, which trees there are) has three answers: read and nothing there, read and
+  this, not read and why. Only the first forgets anything. A tree that could not be read
+  came with "no staged change", so one stop at which Git failed, or a file could not be
+  opened, forgot what had blocked of the staged change, and it blocked a second time.
+  And a look is not a reading: a stop made from another tree looks at a tree with `git
+  status`, which does not show a file marked assume-unchanged nor what a clean filter or
+  the line-ending settings hide, all of which the judge's patch has. Where a failure had
+  blocked in such a tree, a stop from the project's tree forgot it and printed nothing,
+  and the unchanged failure blocked again on return. Only the reader the judge's patch is
+  made by may say that a tree where something is remembered has nothing there. Two limits
+  follow. Where nothing is remembered of a tree, `git status` alone decides whether a stop
+  from another tree names it: a linked tree whose only change is in a file marked
+  assume-unchanged, with nothing blocked there yet, is not named. And that reading must end
+  within the tree's share of the six seconds a stop has for looking (all six for a single
+  other tree): a tree too large for it is named "could not be looked at", its failure
+  standing, at each stop made from elsewhere, also after a repair, and each such stop takes
+  about that much longer (10,000 files, 314 MB read in 0.9 seconds with a warm cache).
+- **The tree a stop is in is the one Git says.** A directory under the Git common
+  directory was taken for one of Git's own files, and Git was not asked: in a bare
+  repository with its working trees inside it, a stop made from a linked tree did not
+  judge that tree's uncommitted work at all. Git is asked first; and a directory Git
+  cannot place is never taken for one of Git's own files. That was concluded from any
+  failure of Git for the tree the session is in, so a tree pruned while its directory was
+  away, with credentials in it, was a silent stop; then from no `.git` entry above the
+  directory, and then from where it lies, under one of seventeen names Git uses in its
+  directory (`hooks`, `logs`, `svn` …), and each time a tree whose `.git` file and
+  administrative directory had both been removed, its files left in place, was a silent
+  stop that forgot the failure that had blocked in it: `git worktree add` makes a tree
+  under any name in the Git directory. Such a stop is UNJUDGED with Git's words first,
+  wherever its directory lies, also from inside a Git directory (`.git/hooks`, a bare
+  repository's own directory), where the reason says so; it forgets nothing because a tree
+  is no longer listed (a tree the judge's own reading finds clean is forgotten, as at
+  every stop), and the tree the directory is under is never named as one the session is
+  not in (also when the session's directory cannot be resolved, under a directory that
+  cannot be searched: a relative path is taken from the hook's own directory and a `..`
+  after a link from where the link leads; where that cannot be done, every tree may be the
+  one). A session directory that was removed is asked about at the nearest directory above
+  it that is there, a relative one after it is taken from the hook's own directory: where
+  the session is, is found one way for every use of it. What Git answers is believed only
+  as a pair that names one tree of the repository's records: the top level it names must
+  be the one the Git directory it names records (a linked tree's `gitdir` file; for the
+  main Git directory, its parent when it is named `.git`, and where it was made apart under
+  another name and records no top, the project's top when the session began in the main
+  tree), and must contain the session's directory. A main Git directory named `.git` that
+  does not lie at the tree's top (`--separate-git-dir=…/.git`, or a `.git` link to it)
+  therefore makes every stop from the main tree UNJUDGED, said and never silent. A
+  `core.worktree` that points Git at the project, at an outer tree, or at a subdirectory
+  of the tree, and a copy of a linked tree made with `cp -a`, make the stop UNJUDGED;
+  nothing of either tree is forgotten and neither directory is judged as that tree. What
+  is read of every other tree counts as that tree's only when Git names that tree there,
+  at every stop. And a tree does not move while the directory it is remembered at stands:
+  where Git and the records pair a tree something has blocked in with another top than
+  the one the state records for it, and the tree stands at that directory (its `.git` file
+  names the tree's own administrative directory, or is a file that is not a `gitdir: ` line
+  naming a path, such as an empty one) or it cannot be looked at,
+  neither directory is read as that tree (UNJUDGED from it, named from elsewhere, both
+  paths said, nothing forgotten) until `git worktree repair` is run in the directory that
+  stands or it is removed; where it is gone or holds something else (a tree, a clone or a
+  build directory made at the old path of a tree moved with `git worktree move`), the tree
+  was moved and is read where it is. Two cases Git's own commands make are stated limits:
+  `git worktree repair` run in a copy of a linked tree before anything blocked there makes
+  the copy the tree, and the directory copied is then no tree of the project (nothing in it
+  is judged; a stop from inside it is UNJUDGED); and a tree moved with `mv` whose entry Git
+  then ends (`git worktree prune`, or `git worktree add -f` at its old path) is forgotten,
+  with what blocked there (a stop from the moved directory is UNJUDGED). Where a failure
+  stands in a gone tree, its note advises `git worktree repair`, not prune; the remedy for
+  `mv` is said only where the directory moved from is gone. A stop made from a submodule's Git directory (`.git/modules/<name>`) is
+  UNJUDGED: Git names the submodule's working tree there, which does not contain the
+  session's directory, and the reason says so. The caller's `GIT_CEILING_DIRECTORIES` is
+  kept without the entries at or under one of the project's trees, each compared with its
+  `..` and its links resolved: a ceiling hides nothing of the project, and a repository
+  the user hides above it stays hidden, also when its entry is written through the
+  project's path. Where Git stops at a file-system boundary
+  (`GIT_DISCOVERY_ACROSS_FILESYSTEM` unset) that a linked tree of the project lies across,
+  the stop is UNJUDGED with Git's words, never "no repository".
+- **What blocked in a tree is not forgotten while its directory stands.** A linked tree
+  the repository no longer lists (both records removed, or its `.git` file removed and
+  `git worktree prune`) was forgotten at the next stop, and Git places its directory in no
+  repository: the stop from inside it was silent with credentials there. The state (schema
+  `v10`) records the top level of each linked tree it remembers a failure of; while that
+  directory stands the tree is named at every stop and a stop from inside it is UNJUDGED.
+  It is forgotten when the directory is gone, or when it is a tree again and the judge's
+  own reading finds it clean, a reading of that tree that Git names there. A `v9` state is
+  read with no tree recorded and written back as `v10` by the first hook that reads it and
+  keeps its state, changed or not.
+- **A repository the hooks cannot list the commits of is still judged for what is not
+  committed.** With more than 256 working trees (or a million named commits) the commits
+  that were there when a session begins cannot be listed. The start recorded nothing
+  then, and every stop was wholly UNJUDGED. It records the project and the commit the
+  session began from, and that there is no list: the session's commits are UNJUDGED at
+  every stop, and the working tree's own changes are judged. The list is never taken
+  later in the session: a commit made before then would pass as one that was there.
+- **No run of the judge can take the time of what the stop owes after it.** A stop owes
+  three asks about commits at most (the one whose turn it is, the one with fewer attempts
+  asked about longest ago, the oldest never asked about); each leaves five seconds for
+  each one after it, and a run on a working tree's change leaves them what they need. The last
+  owed ask had all that was left, and a run that would have had under three seconds too:
+  a judge that hangs on two commits took every stop between them, and a commit with a
+  credential that had never been asked about was never submitted.
+- **A session's state is changed by one hook at a time.** Every stop holds a lock
+  (`flock`) on a file beside the session's state, named from the session's id, from before
+  it reads the state until it has written it; so does the stop that is the session's
+  first hook, which took none while there was no state yet (two such stops both judged,
+  both blocked for one failure and both wrote). A second stop of the same session waits
+  three seconds, then says UNJUDGED and that another hook is running. A session-start
+  hook holds the lock for its reading and recording. An advice hook takes it for its
+  write alone, re-reads the state under it and adds only what it has said: it wrote back
+  its whole older copy, and with it a failure that a stop had meanwhile seen repaired and
+  forgotten, which then did not block when it came back. The lock ends with its process:
+  a hook that is killed holds nothing. A hook that leaves its session with no state (no
+  repository) takes its lock file away again.
+- **The project is a repository at a path.** It is recorded with the inode of its Git common
+  directory and its top level. What stands at that path with another inode is not the
+  project (a clean clone put there used to be judged in its place, in silence), and neither
+  is the project once it was moved: the stop is UNJUDGED, says which, and names the remedy,
+  a new session. The device number stood in the identity before and is left out: it is
+  given at mount time, and a session resumed after a reboot was refused for good, with a
+  reason that was not true.
+- **The first stop of a session whose start was not recorded says so.** When no
+  session-start hook recorded the project and the base, they were recorded by the first stop
+  or by an advice hook before it (the hook after the tool call that commits always runs
+  first), and nothing is known of what the session did before. That stop says that
+  the session's start was not recorded and that work committed before was not judged,
+  whatever the judge says of what is left (a pass or an empty change is allowed with that
+  message; a fail, a hold and UNJUDGED carry it too), and every later stop of the session
+  says it again, in one line: it stays true. A stop stays
+  silent only where no project can be found at all: Git says there is no repository around
+  the session's directory, the client names none, and none is recorded.
+- **What the hooks do not judge, and what they name.** They judge the uncommitted and the
+  staged change of the project's working tree and of a linked working tree the session's
+  directory is in, and the session's commits. Another working tree of the project that has
+  changes which are not committed is named as not judged, and so is one that was
+  removed by hand (sixteen are looked at, after everything that is judged and in six
+  seconds of their own, the ones where a failure stands first; how many were not looked
+  at, and in how many of those a failure stands, is said). Named the same way: another repository the
+  session's directory is in at a stop, a submodule with changes that are not committed in
+  it, a nested repository in the project's tree, which is left out of the patch (Git cannot
+  even stage one that has no commit), a directory there that Git places in this repository
+  with a Git directory whose records name another directory (a copy of a linked tree made
+  inside the project: named as no working tree by the records), and another working tree
+  of the project that lies inside its tree (named as that). Each of these is said at every stop while it is true:
+  in full the first time, afterwards in one line that counts such things and names the
+  first three (five are said in full at one stop and a session remembers 32 as said in
+  full; the others are in that line). Before, each was said once in a session, and a stop
+  where every unit passed was then silent beside something known and not judged. None of
+  them blocks. Not judged and not named, for the judge on
+  the pull request: a commit that only a remote-tracking ref names; a commit that is gone
+  from every ref and from the reflogs that are read (those of each working tree's `HEAD`
+  and of the stash); a commit that was in the repository when the session began;
+  and work in a copy. An agent can make a stop UNJUDGED by breaking what the judge needs (an
+  unreadable file; a path marked skip-worktree): never a pass, always visible, and never a
+  block. Advice after a tool call covers the project's tree only. "No repository" is read
+  from Git's English message under `LC_ALL=C`; any other wording is a failure and is said.
+  The cleanup of a killed hook's scratch directory needs `/proc`. The state file and the
+  list of commits beside it are the agent's to edit, as below: whoever edits them can move
+  the base or make a commit count as there before the session.
+- **Neither the repository's configuration nor the user's shapes the patch.** The working
+  tree is staged, and the patch diffed, in a new, empty Git directory that only borrows the
+  object store: the repository's own configuration and its `info/attributes` are never read,
+  so no filter it defines exists and making the patch runs no program the repository chose.
+  Staging and the diff both run with system and user configuration off, no configuration
+  passed down by a parent Git and no attributes file of the user or the system; the diff
+  takes its attributes from the empty tree, with fixed options. A filter in the user's
+  configuration used to run on every staged file, and the judge was given its output. One
+  value of the user's is passed on by hand: `core.excludesFile`, the user's own ignore file,
+  when it is an absolute path. What is read from under the Git directory is the object
+  store, the list of paths in the index (a file added with `git add -f` is staged whatever
+  an ignore rule says, as a commit would hold it) and `info/exclude` (which files are left
+  out, copied up to 1 MiB). A `.gitattributes` in the working tree converts content as Git's
+  built-in rules say, and is in the patch the judge reads. Tests plant a hostile
+  configuration, an attribute that hides source as binary, a filter of the repository and
+  one of the user, an `info/attributes` line and `core.autocrlf`, and require the same bytes
+  and no run.
+- **Nothing in the repository is written.** The index that is filled and the objects that are
+  written are in a scratch directory under the Git common directory (`deep-diff-forge/`),
+  removed when the hook ends; the repository's index, object store and configuration are only
+  read. A scratch directory that a killed hook left (`tmp-<pid>`) is removed by the next hook
+  once `/proc` says its process is gone: only a directory directly under `deep-diff-forge/`,
+  never what a link of that name points at. Two hooks in different process-id namespaces
+  that share one repository can take each other's process for gone; the hook that loses its
+  directory then reports UNJUDGED, not a pass.
+- **Up to three files per session, in the user's state directory.** `deep-diff-forge/hooks` under
+  an absolute `$XDG_STATE_HOME`, else under `~/.local/state`. They are there, and not in
+  the repository, so that they are found by the session's id alone: before the repository
+  is found, and when Git cannot find it. The session id is hashed and never chooses a file
+  name. The state file holds the project's top level and the inode of its Git directory,
+  the commit the session began from (a full commit id, or that there was none), the keys of
+  findings already said, the reasons already given for not running and the things a stop
+  named (hashed), the failures of uncommitted changes that have blocked a stop (each as a
+  SHA-256 and a count), and the SHA-256 and the length of each of the other two files. Every list is bounded when it is
+  written, so the largest state is far under the 4 MiB a hook reads back. The second file
+  is the list of commit ids that were named when the session began, one a line (up to a
+  million; a repository that names more cannot be recorded, which is said). The third is
+  the list of the session's commits that have their answer, one `id:outcome` a line in the
+  order they got it, with no bound that makes one be forgotten (the state kept the last
+  4,096, and what a forgotten one led to counted as judged, an unjudged ancestor included);
+  the state names its first lines by digest and count, and what stands after them is not
+  read. The reflogs are read with `git rev-list --walk-reflogs`, which prints ids alone: a
+  user's `log.showSignature` made every session one that could not be recorded. A state file
+  that is there and is not a state the hooks can read (a link, another kind of file, too
+  large, another schema than `v10` or the `v9` before it, a project that is not whole) is
+  never read as "no state", and a
+  list that is missing, is a link, or is not the text the state names by its SHA-256 and
+  length is never read as another list: the stop is UNJUDGED with the reason and nothing is
+  recorded over either. Before, a block with thousands of violations wrote a state the next
+  hook would not read, and the session forgot its base. A state directory inside the
+  project's working tree is refused the same way. When the state cannot be kept, a stop
+  says so every time and the advice hook once, marked by an empty file beside the scratch
+  directory.
+- **Each directory of the hooks is a directory of its own.** `deep-diff-forge/` under the Git
+  common directory and `deep-diff-forge/hooks` in the state directory are made with mode
+  0700; when a symbolic link or a file stands at either the hook does not run and says so. A
+  state file is opened without following a link, must be a regular file of at most 4 MiB
+  (the list of commits beside it: 65 MiB), and is written to a new file of mode 0600 that
+  is moved into place. These are checks by
+  path: whoever can swap the directory between a check and a use can already write wherever
+  this account can.
+- **The policy is read from the commit the session began from**, never from the working tree
+  and never from a later commit, and only when it is a regular file there.
+- **A failure is never "nothing to judge".** Only two things are: no commit when the session
+  began (and none since: nothing is judged then, and while the repository holds files
+  every stop says that they are not judged), and no change. One more is silent because there is nothing to
+  look at: Git ran and found no repository around a session that has no project recorded.
+  Everything else is said. Git missing from `PATH`, Git refusing the repository for its
+  owner, a session directory inside `.git` or gone with nothing recorded, a base commit that
+  can no longer be read, an orphan branch in a repository that has commits, a first commit
+  made after the session began, and a patch that cannot be made (Git fails, a file cannot be
+  prepared, paths marked skip-worktree as in a sparse checkout) each make a stop UNJUDGED
+  with the reason, make the start of a session say that stops will not be judged, and are
+  told once per session by the advice hook. Before, each of these let a stop pass in
+  silence. "No repository" is read from Git's own words in the `C` locale; any other failure
+  of Git is a failure.
+- **A hook exits 0, always.** Claude Code reads exit 2 from a `Stop` hook as a block with the
+  hook's error stream as the reason. A command line the hook cannot read (an unknown, doubled
+  or valueless option, no event, another client) used to end with exit 2, so a mistyped
+  settings entry held every stop. It is said in the client's JSON now, with exit 0: the hook
+  did not run, and for a stop UNJUDGED.
+- **A stop has one deadline.** Git, the helper that hashes the rankers and every run of the
+  judge, for every working tree, share 45 seconds; the client waits 60 and `agent doctor
+  --gate` fails a registered timeout under 50. Each step is given the time that is left.
+  Before, the steps' own limits added up to several minutes, and a client that ended the
+  hook dropped its answer, which reads as a pass.
+- **Text from the judge is data.** When a verdict fails or holds for something that is not a
+  rule (an expired waiver, a note), the message repeats the judge's own words for it: at
+  most twelve, each cut at 400 characters, escaped like every other text the hook did not
+  write, and marked as the judge's words and not instructions. A note's path is shown as
+  every path is.
+- **`agent doctor --gate` reads a registered stop hook only in the form `agent setup --hooks`
+  prints.** One program and its arguments, written with plain characters and single quotes:
+  no comment, second command, pipe, redirection or substitution. The program word must be
+  this binary's own absolute path, the word itself and not what it leads to: a shell runs
+  `A=ddf agent …` as the program `agent`, and a link can be pointed elsewhere later. The
+  judge must be named, by the absolute path the gate checked; the policy and the rankers
+  must be the gate's. The entry is read whole: its type must be `command`, a timeout it sets
+  must leave a stop its time, and `disableAllHooks` in the settings file that wins (the
+  project's local file, the project's shared file, then the user's) fails the gate. The gate
+  also makes the patch a stop would make, so a tree a stop cannot judge is found by it; it
+  checks that the session-start hook and the hook after a tool call are registered for this
+  program with no matcher that narrows them; and that the state directory can be used.
+  Settings an administrator manages are not read.
+- **The judge decides, by its exit code and its document together.** DDF starts
+  `forge-warden` under a deadline and output caps. Exit 0, 7 or 8 is a verdict only with a
+  whole `forge-warden.verdict.v2` document, checked member by member against the schema
+  forge-warden ships (`cli/src/verdict_v2.rs`): every required member and nested member, its
+  pattern or closed set of values, lists the schema says are never empty, the `exit` triple
+  that belongs to the `verdict`, a `summary` that counts the `rules`; no key given twice at
+  any depth. It must agree with the process exit, hold no rule stricter than the verdict,
+  carry the SHA-256 of the policy, of the patch and of the ranker this hook gave, be on a
+  ranking the judge produced, and be on a Git whose admission is `approved`. Open on purpose:
+  members a later forge-warden adds, and a rule `kind` or note `code` this version does not
+  know. A member the schema makes optional is checked when it is present. Not checked: the
+  date the judge evaluated on (a verdict for the same policy, patch and ranker is the same
+  verdict tomorrow).
+- **A ranker is hashed under bounds.** To seal a verdict to the ranker it gave, the hook
+  hashes each candidate in pieces: a regular file of at most 256 MiB. Listing the ranker
+  directory and hashing are done by a helper the hook starts as a child (`agent hook
+  seal-rankers`, not an event of a client) and kills when 8 seconds have passed, since a
+  stalled file system can hold one read for as long as it likes. A candidate that is larger
+  or not a regular file is not offered and is named with its reason; a helper that does not
+  come back makes the stop UNJUDGED. A read the kernel will not interrupt even for a kill
+  (a hard-mounted network file system that has gone away) is beyond this bound. A code
+  without that, a code that is not a verdict, a missing judge or policy, or a ranker the
+  policy does not admit is UNJUDGED: never a pass, and never a block. The seals bind an
+  answer to its inputs; they do not authenticate the program.
+- **Which program is the judge is decided at setup.** `agent setup --hooks` prints the judge
+  it finds as an absolute `--judge PATH`. Without `--judge`, only directories of `PATH` named
+  by an absolute path are searched. A judge inside the repository it would judge is refused.
+  A directory outside the repository that a change can also write to is not detected: keep
+  the judge where the session's tools cannot write.
+- **What the state can and cannot do.** The state file holds the session's project and base,
+  which findings were said and which failures have blocked. A removed file makes the next
+  hook the session's first: the base becomes the commit `HEAD` names then, the first stop
+  says that the start was not recorded, a finding can be said twice and a failure can block
+  once more. A failure blocks once in a session: one that has blocked is said to stand at
+  every later stop. A verdict is always fresh, so no
+  state turns a judged fail into a pass; but whoever edits the file can move the base, and
+  with it what is judged. A base in the file is believed only as a full commit id. "The same
+  failure" is the rule, the signal, the path and the number of items the judge cites: a new
+  item blocks again. A state that cannot be kept is said with the stop's decision.
+- **Not a boundary:** the agent runs as the user. It can edit the settings that install the
+  hooks, the state file, or the judge on `PATH`. An agent that edits Git's own
+  administrative files (`gitdir`, `commondir`, `core.worktree`, a tree's `.git` file) can make one tree be read
+  as another; the hooks make this visible where a remembered directory still stands (the
+  stop is UNJUDGED and both directories are named), and otherwise it is a stated limit, as
+  editing the state file is. The hooks guard against honest mistakes; CI running the judge
+  in authority mode is the authority.
 
 ### Supply chain and releases
 

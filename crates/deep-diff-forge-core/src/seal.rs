@@ -162,6 +162,91 @@ pub fn sha256(bytes: &[u8]) -> [u8; 32] {
     out
 }
 
+/// SHA-256 over bytes that arrive in pieces: the digest [`sha256`] gives for all of them
+/// together, with a 64-byte buffer whatever their total. For input that must not be held in
+/// memory at once, such as a file of unknown size.
+#[derive(Debug, Clone)]
+pub struct Sha256 {
+    state: [u32; 8],
+    /// The bytes taken so far that do not yet make a whole block.
+    pending: [u8; 64],
+    held: usize,
+    /// How many bytes were taken in all.
+    taken: u64,
+}
+
+impl Default for Sha256 {
+    fn default() -> Self {
+        Self {
+            state: H0,
+            pending: [0; 64],
+            held: 0,
+            taken: 0,
+        }
+    }
+}
+
+impl Sha256 {
+    /// A hasher that has taken nothing.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Take the next `bytes`.
+    pub fn update(&mut self, mut bytes: &[u8]) {
+        self.taken = self
+            .taken
+            .wrapping_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+        if self.held > 0 {
+            let fill = (64 - self.held).min(bytes.len());
+            self.pending[self.held..self.held + fill].copy_from_slice(&bytes[..fill]);
+            self.held += fill;
+            bytes = &bytes[fill..];
+            if self.held < 64 {
+                return;
+            }
+            compress(&mut self.state, &self.pending);
+            self.held = 0;
+        }
+        let (blocks, rest) = bytes.as_chunks::<64>();
+        for block in blocks {
+            compress(&mut self.state, block);
+        }
+        self.pending[..rest.len()].copy_from_slice(rest);
+        self.held = rest.len();
+    }
+
+    /// The digest of everything taken.
+    #[must_use]
+    pub fn finish(mut self) -> [u8; 32] {
+        // The same padding as `sha256`: 0x80, zeros to 56 mod 64, the bit length.
+        let mut tail = [0u8; 128];
+        tail[..self.held].copy_from_slice(&self.pending[..self.held]);
+        tail[self.held] = 0x80;
+        let tail_len = if self.held < 56 { 64 } else { 128 };
+        tail[tail_len - 8..tail_len].copy_from_slice(&self.taken.wrapping_shl(3).to_be_bytes());
+        for block in tail[..tail_len].as_chunks::<64>().0 {
+            compress(&mut self.state, block);
+        }
+        let mut out = [0u8; 32];
+        for (chunk, word) in out.as_chunks_mut::<4>().0.iter_mut().zip(self.state) {
+            *chunk = word.to_be_bytes();
+        }
+        out
+    }
+
+    /// The digest of everything taken, as lowercase hex.
+    #[must_use]
+    pub fn finish_hex(self) -> String {
+        let mut out = String::with_capacity(64);
+        for byte in self.finish() {
+            let _ = write!(out, "{byte:02x}");
+        }
+        out
+    }
+}
+
 /// Lowercase hex SHA-256 of `bytes` — the `input_sha256` wire form.
 #[must_use]
 pub fn sha256_hex(bytes: &[u8]) -> String {
@@ -285,6 +370,36 @@ mod tests {
         let a = sha256_hex(b"--- a/x\n+++ b/x\n");
         assert_eq!(a, sha256_hex(b"--- a/x\n+++ b/x\n"));
         assert_ne!(a, sha256_hex(b"--- a/x\n+++ b/x"));
+    }
+
+    /// The hasher that takes pieces gives the digest of the whole, however the input is cut:
+    /// at, before and after the block and padding boundaries.
+    #[test]
+    fn pieces_give_the_digest_of_the_whole() {
+        for len in [
+            0usize, 1, 55, 56, 57, 63, 64, 65, 119, 120, 127, 128, 129, 1000,
+        ] {
+            let input: Vec<u8> = (0..len).map(|i| u8::try_from(i % 251).unwrap()).collect();
+            let whole = sha256_hex(&input);
+            for cut in [1usize, 3, 55, 56, 63, 64, 65, 200, 4096] {
+                let mut pieces = Sha256::new();
+                for piece in input.chunks(cut) {
+                    pieces.update(piece);
+                }
+                assert_eq!(pieces.finish_hex(), whole, "{len} bytes in pieces of {cut}");
+            }
+            // empty pieces between real ones change nothing
+            let mut gaps = Sha256::new();
+            gaps.update(&[]);
+            gaps.update(&input);
+            gaps.update(&[]);
+            assert_eq!(
+                gaps.finish(),
+                sha256(&input),
+                "{len} bytes with empty pieces"
+            );
+        }
+        assert_eq!(Sha256::new().finish(), sha256(b""));
     }
 
     #[test]

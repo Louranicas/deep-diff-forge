@@ -1,0 +1,79 @@
+diff --git a/src/whole_new.rs b/src/whole_new.rs
+new file mode 100644
+--- /dev/null
++++ b/src/whole_new.rs
+@@ -0,0 +1,11 @@
++pub fn real() -> u32 {
++    7
++}
++
++#[cfg(test)]
++mod tests {
++    #[test]
++    fn it_is_seven() {
++        let seven = super::checked().unwrap();
++    }
++}
+diff --git a/src/comment_opener.rs b/src/comment_opener.rs
+new file mode 100644
+--- /dev/null
++++ b/src/comment_opener.rs
+@@ -0,0 +1,4 @@
++/* //* */ #[cfg(test)] // */
++pub mod t {
++    pub fn production() -> u32 { crate::b().unwrap() }
++}
+diff --git a/src/paths.rs b/src/paths.rs
+--- a/src/paths.rs
++++ b/src/paths.rs
+@@ -1,3 +1,14 @@
+ use a::X;
++use a::expect;
+ fn all(it: I, x: X) -> u32 {
++    let a = X::
++        unwrap(x);
++    let b = it.map(X::unwrap);
++    let c = Option::<u32>::
++        expect;
++    let d = a::unwrap::b(x);
++    /* /* */ // */ let e = Result::unwrap(x);
++    outer! {
++        /* /* */ // */ let f = x.unwrap();
++    }
+     0
+diff --git a/tests/nested_skip.rs b/tests/nested_skip.rs
+--- a/tests/nested_skip.rs
++++ b/tests/nested_skip.rs
+@@ -1,2 +1,3 @@
+ #[test]
++#[cfg_attr(all(), cfg_attr(all(), ignore))]
+ fn slow() {
+diff --git a/tests/condition.rs b/tests/condition.rs
+--- a/tests/condition.rs
++++ b/tests/condition.rs
+@@ -1,6 +1,6 @@
+ #[test]
+ #[cfg_attr(
+-    all(miri),
++    all(),
+     ignore
+ )]
+ fn slow() {
+diff --git a/tests/respaced.rs b/tests/respaced.rs
+--- a/tests/respaced.rs
++++ b/tests/respaced.rs
+@@ -1,6 +1,6 @@
+ #[test]
+ #[cfg_attr(
+-    all(miri),
++    all( miri ),
+     ignore
+ )]
+ fn slow() {
+diff --git a/tests/raw_removed.rs b/tests/raw_removed.rs
+--- a/tests/raw_removed.rs
++++ b/tests/raw_removed.rs
+@@ -1,3 +1,2 @@
+-#[r#test]
+ fn check() {}
+ fn stays() {}

@@ -1,57 +1,72 @@
 #![no_main]
-// The lexer reading of Rust against the compiler's own lexer.
+// The Rust code view against the compiler's own lexer (review rounds 12 and 13, 2026-11-14).
 //
 // Every Rust rule reads views of each line in which comments and literals are blank. Up to
-// 0.8.3 there was one view (`lexical::code_view`), and twice it blanked text the compiler
+// 0.8.3 there was one view (`lexical::code_view`, kept as it was), and twice it blanked text the compiler
 // compiles: after a nested block comment, and after a character literal with a long escape.
-// Both hid code from every rule. The rules now also read a second view,
-// `lexical::rust_lexer_view`, and this target holds that view to the lexer the compiler uses
-// (`rustc_lexer`, as published for rust-analyzer: `ra-ap-rustc_lexer`), for any text read as a
-// whole Rust file from its first line. (The first view is kept as it was, so that nothing
-// 0.8.3 found is lost; nothing here is about it.)
+// Both hid code from every rule, in released versions. This target holds the view to the lexer
+// the compiler uses (`rustc_lexer`, as published for rust-analyzer: `ra-ap-rustc_lexer`).
 //
-// The oracle reads the text as the compiler does: the lexer's tokens, and where the lexer
-// offers `#"` or `##` as one token (reserved in edition 2024, which refuses it), a `#` and the
-// rest read again, as the compiler does in every edition that accepts the text; and where it
-// offers `k#name` as one token (a token no edition of rustc 1.99.1 has: 2021 and 2024 refuse
-// the prefix, earlier ones read `k`, `#`, `name`), a `k` and the rest read again. A C string is
-// one token (edition 2021 and later). The view gets the same text one line at a time, cut at
+// A view is one exact reading of a text from a stated start. Four starts are held here.
+//
+// FROM CODE (`RustStart::Code`), the text read as a whole Rust file. The oracle reads it as
+// rustc 1.99.1 does in editions 2021 and 2024: the lexer's tokens; where the lexer offers `#"`
+// or `##` as one token (reserved in edition 2024, which refuses it), a `#` and the rest read
+// again; and where it offers `k#name` as one token (a token no edition of that compiler has:
+// 2021 and 2024 refuse the prefix, earlier ones read `k`, `#`, `name`), a `k` and the rest
+// read again. A C string is one token. The view gets the same text one line at a time, cut at
 // `\n` only, as a hunk gives it.
+// - SAFETY: a byte of a token that is code stands unchanged in the view. Code is every token
+//   but a comment and a string, byte string, C string, raw string, character or byte literal.
+//   Held more strictly than that: a literal's suffix is code, and so is the token the lexer
+//   makes of `r#` and a character that is no quote (it is no string).
+// - PRECISION, on every line: a byte of a comment, or between the quotes of a closed literal,
+//   is blank (or past the end of a view that a line comment cut). Of what the lexer closes as
+//   a character or byte literal, only what can be one is blank: one character between the
+//   quotes, or text that starts with a backslash, on one line. `'ab'`, `''` and a literal over
+//   a line end, which the lexer closes and the compiler refuses, are kept as text.
+// - UNTERMINATED tokens: an unterminated block comment is a comment to the end of the text;
+//   an unterminated string or raw string is a literal to the end of the text and blank; an
+//   unterminated character literal ends where the lexer ends it (before a `/`, or at the
+//   line end) and is kept as text. What follows any of them is read as the lexer reads it.
+// - The view is as long as its line, or ends at the start of the line's line comment, and two
+//   readings agree.
 //
-// SAFETY, for every input: a byte of a token that is code stands unchanged in the view. Code
-// is every token but a comment and a string, byte string, C string, raw string, character or
-// byte literal. Held more strictly than that: a literal's suffix is code, and so is the token
-// the lexer makes of `r#` and a character that is no quote (it is no string).
+// FROM INSIDE A BLOCK COMMENT (`RustStart::Comment`): the views are those of the same text
+// with `/*` put before it, read from code. That is what the start means, and it puts the
+// second reading of a hunk under the same oracle.
 //
-// PRECISION, where the view has one reading: a byte of a comment, or between the quotes of a
-// closed literal, is blank (or past the end of a view that a line comment cut). It is checked
-// on every line up to the first on which a literal runs over the line end, and after that on
-// every line the scanner reaches with nothing carried. It is not checked elsewhere, by design:
-// a hunk may start inside a string, so once a literal has run over a line end the view keeps
-// what any reading of the lines after it finds code. And of what the lexer closes as a
-// character or byte literal, only what can be one is blank: one character between the quotes,
-// or text that starts with a backslash, on one line. `'ab'`, `''` and a literal over a line
-// end, which the lexer closes and the compiler refuses, are kept as text.
+// FROM INSIDE A STRING (`RustStart::Str`): the views are those of the same text with `"` put
+// before it, read from code. And a side says that it ends inside a string exactly when the
+// lexer's last token is a string or raw string that is not terminated.
 //
-// UNTERMINATED tokens: an unterminated block comment is a comment to the end of the text; an
-// unterminated string or raw string is a literal to the end of the text (blank on its first
-// line; the lines after it are read both ways); an unterminated character literal ends where
-// the lexer ends it (before a `/`, or at the line end) and is kept as text. What follows any
-// of them is read as the lexer reads it.
+// FROM LINE 1 OF A FILE (`RustStart::FileStart`): when the compiler's rule calls the first
+// line a shebang (`rustc_lexer::strip_shebang`, after a byte order mark, which the compiler
+// drops first), the line is blank and the rest reads as from code; when not, the whole text
+// reads as from code.
 //
-// Also: the view is as long as its line, or ends at or after the start of the line's line
-// comment; and two scans of the same lines agree, views and states.
+// LINE BY LINE (`lexical::rust_lexer_view`, the second reading of a Rust line in release 0.8.4,
+// beside the reading of 0.8.3, `lexical::code_view`, which nothing here is about): the text
+// read one line at a time from its first line. SAFETY as above, for every input. PRECISION
+// where the view has one reading: on every line up to the first on which a literal runs over
+// the line end, and after that on every line the scanner reaches with nothing carried. It is
+// not checked elsewhere, by design: that reading takes a literal over a line end both as
+// carried and as not, so the view keeps what any reading of the lines after it finds code. The
+// view is as long as its line, or ends at or after the start of the line's line comment; and
+// two scans of the same lines agree, views and states.
 //
 // The seed `every_character` (those bytes exactly) runs one more check, once in a process: for
 // every character past ASCII, three short texts whose reading depends on whether the character
 // may start a name, go on in one, or is an emoji. The view has those three tables of its own,
 // and this is what fails when they fall behind the lexer's.
 
-use deep_diff_forge_graph::lexical::{RustLexerState, rust_lexer_view};
+use deep_diff_forge_graph::lexical::{
+    RustLexerState, RustStart, rust_lexer_view, rust_side, rust_views,
+};
 use libfuzzer_sys::fuzz_target;
 use ra_ap_rustc_lexer::{
     Cursor, FrontmatterAllowed, LiteralKind, RawStrError, TokenKind, is_id_continue, is_id_start,
-    validate_raw_str,
+    strip_shebang, validate_raw_str,
 };
 
 /// What the compiler makes of one byte of the text.
@@ -59,9 +74,9 @@ use ra_ap_rustc_lexer::{
 enum Class {
     /// In a token that is code: it must stand in the view.
     Code,
-    /// In a comment: blank, where the view is precise.
+    /// In a comment: blank.
     Comment,
-    /// Between the quotes of a closed literal: blank, where the view is precise.
+    /// Between the quotes of a closed literal: blank.
     Text,
     /// The rest of a literal (its prefix and quotes, and all of one that is unterminated or a
     /// character literal over a line end): the view may keep it or blank it.
@@ -182,8 +197,67 @@ fn literal(kind: LiteralKind, body: &str, piece: &str) -> (Class, Option<(usize,
     }
 }
 
-/// Hold the view of `text`, read line by line from its first line, to the compiler's reading.
+/// The lines of `text`, cut at `\n` only.
+fn lines_of(text: &str) -> Vec<&str> {
+    text.split('\n').collect()
+}
+
+/// Hold the view of `text`, read from code as a whole file, to the compiler's reading.
 fn check(text: &str) {
+    let truth = truth(text);
+    let lines = lines_of(text);
+    let views = rust_views(&lines, RustStart::Code);
+    assert_eq!(
+        views,
+        rust_views(&lines, RustStart::Code),
+        "two readings differ"
+    );
+    let mut comments = truth.line_comments.iter().copied().peekable();
+    let mut start = 0;
+    for (number, (line, view)) in lines.iter().zip(&views).enumerate() {
+        let end = start + line.len();
+
+        while comments.next_if(|at| *at < start).is_some() {}
+        match comments.peek() {
+            Some(comment) if *comment < end => assert_eq!(
+                view.len(),
+                comment - start,
+                "line {}: the view does not end where the line comment starts: {line:?} -> {view:?}",
+                number + 1
+            ),
+            _ => assert_eq!(
+                view.len(),
+                line.len(),
+                "line {}: the view is not as long as the line: {line:?} -> {view:?}",
+                number + 1
+            ),
+        }
+
+        let shown = view.as_bytes();
+        for (at, (byte, class)) in line.bytes().zip(&truth.classes[start..end]).enumerate() {
+            match class {
+                Class::Code => assert_eq!(
+                    shown.get(at),
+                    Some(&byte),
+                    "SAFETY: line {} byte {}: code is hidden: {line:?} -> {view:?}",
+                    number + 1,
+                    at
+                ),
+                Class::Comment | Class::Text => assert!(
+                    matches!(shown.get(at), None | Some(b' ')),
+                    "PRECISION: line {} byte {}: {class:?} is shown: {line:?} -> {view:?}",
+                    number + 1,
+                    at
+                ),
+                Class::Free => {}
+            }
+        }
+        start = end + 1;
+    }
+}
+
+/// Hold the view of `text`, read line by line from its first line, to the compiler's reading.
+fn check_line_by_line(text: &str) {
     let truth = truth(text);
     let (mut state, mut again) = (RustLexerState::default(), RustLexerState::default());
     let mut comments = truth.line_comments.iter().copied().peekable();
@@ -245,6 +319,119 @@ fn check(text: &str) {
             }
         }
         start = end + 1;
+    }
+}
+
+/// Read from inside one block comment, `text` has the views of `/*` and `text` read from code
+/// (less the two blanks of the `/*`).
+fn check_from_a_comment(text: &str) {
+    let opened = format!("/*{text}");
+    let mut from_code = rust_views(&lines_of(&opened), RustStart::Code);
+    assert!(
+        from_code[0].starts_with("  "),
+        "a comment's opener is not blank: {:?}",
+        from_code[0]
+    );
+    from_code[0].drain(..2);
+    assert_eq!(
+        rust_views(&lines_of(text), RustStart::Comment),
+        from_code,
+        "read from inside a comment, the text is not `/*` and the text read from code"
+    );
+}
+
+/// Read from inside an ordinary string, `text` has the views of `"` and `text` read from code
+/// (less the quote). And read from code, it says it ends inside a string exactly when the
+/// compiler's last token is an unterminated string or raw string.
+fn check_from_a_string(text: &str) {
+    let opened = format!("\"{text}");
+    let mut from_code = rust_views(&lines_of(&opened), RustStart::Code);
+    assert!(
+        from_code[0].starts_with('"'),
+        "a string's quote is not kept: {:?}",
+        from_code[0]
+    );
+    from_code[0].remove(0);
+    assert_eq!(
+        rust_views(&lines_of(text), RustStart::Str),
+        from_code,
+        "read from inside a string, the text is not `\"` and the text read from code"
+    );
+
+    let mut last = None;
+    let mut at = 0;
+    let mut cursor = Cursor::new(text, FrontmatterAllowed::No);
+    loop {
+        let token = cursor.advance_token();
+        match token.kind {
+            TokenKind::Eof => break,
+            TokenKind::GuardedStrPrefix | TokenKind::ForcedKeywordIdent => {
+                cursor = Cursor::new(&text[at + 1..], FrontmatterAllowed::No);
+                at += 1;
+                last = Some(false);
+            }
+            TokenKind::Literal { kind, .. } => {
+                let piece = &text[at..at + token.len as usize];
+                last = Some(match kind {
+                    LiteralKind::Str { terminated }
+                    | LiteralKind::ByteStr { terminated }
+                    | LiteralKind::CStr { terminated } => !terminated,
+                    LiteralKind::RawStr { n_hashes: None } => {
+                        matches!(
+                            validate_raw_str(piece, 1),
+                            Err(RawStrError::NoTerminator { .. })
+                        )
+                    }
+                    LiteralKind::RawByteStr { n_hashes: None }
+                    | LiteralKind::RawCStr { n_hashes: None } => {
+                        matches!(
+                            validate_raw_str(piece, 2),
+                            Err(RawStrError::NoTerminator { .. })
+                        )
+                    }
+                    _ => false,
+                });
+                at += token.len as usize;
+            }
+            _ => {
+                at += token.len as usize;
+                last = Some(false);
+            }
+        }
+    }
+    assert_eq!(
+        rust_side(&lines_of(text), RustStart::Code).ends_in_string,
+        last == Some(true),
+        "whether the text ends inside a string"
+    );
+}
+
+/// Read from line 1 of a file, `text` is blank on a shebang line and read from code after it,
+/// or read from code throughout. The compiler's rule says which: it drops a byte order mark,
+/// then asks `strip_shebang`.
+fn check_from_line_one(text: &str) {
+    let lines = lines_of(text);
+    let views = rust_views(&lines, RustStart::FileStart);
+    if strip_shebang(text.strip_prefix('\u{feff}').unwrap_or(text)).is_some() {
+        assert_eq!(
+            views[0],
+            " ".repeat(lines[0].len()),
+            "the shebang line is not blank: {:?}",
+            lines[0]
+        );
+        assert_eq!(
+            views[1..],
+            rust_views(&lines[1..], RustStart::Code),
+            "a shebang line left something open: {:?}",
+            lines[0]
+        );
+    } else {
+        assert_eq!(
+            views,
+            rust_views(&lines, RustStart::Code),
+            "no shebang, and line 1 is not read as code: {:?}",
+            lines[0]
+        );
     }
 }
 
@@ -352,5 +539,10 @@ fuzz_target!(|data: &[u8]| {
     if data.len() > 64 * 1024 {
         return;
     }
-    check(&String::from_utf8_lossy(data));
+    let text = String::from_utf8_lossy(data);
+    check(&text);
+    check_line_by_line(&text);
+    check_from_a_comment(&text);
+    check_from_a_string(&text);
+    check_from_line_one(&text);
 });

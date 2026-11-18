@@ -41,6 +41,9 @@ pub fn run_risk_cluster(
     parallelism: Parallelism,
     join: JoinPolicy,
 ) -> ClusterRun {
+    // The shares of the patch's carried reading are worked out from the whole patch before any
+    // lane runs, and nothing else is shared between files, so every worker count gives the
+    // same answer.
     let shares = CarriedShares::of(files);
     let scored: Vec<RankedFile> = run_lane(files, parallelism, |index, file| {
         RankedFile::scored_in_patch(file, &shares, index)
@@ -186,13 +189,21 @@ mod tests {
 
     /// The lanes score each file with its share of the patch's carried reading, worked out
     /// once from the whole patch, as the rank does, whatever the worker count: the fifth file
-    /// is past the budget and has none of the spawns only the carried reading finds.
+    /// is past the budget and the reading of 0.8.4 gives it none of the spawns only its
+    /// carried reading finds (the readings of the integrity signals find them).
     #[test]
     fn cluster_lanes_share_the_patch_bound_as_the_rank_does() {
         let files = five_creations();
         let ranked = deep_diff_forge_graph::rank(&files);
         let fifth = ranked.iter().find(|r| r.path == "src/c4.rs").unwrap();
-        assert!(fifth.evidence.is_empty(), "{:?}", fifth.evidence);
+        // The reading of release 0.8.4 gives the fifth file, past the budget, none of the
+        // spawns only its carried reading finds.
+        let shares = CarriedShares::of(&files);
+        let mut labels = deep_diff_forge_graph::HunkLabels::in_patch(&files[4], &shares, 4, &[]);
+        assert!((0..32).all(|h| labels.of(h).is_empty()));
+        // Since the merge with the integrity signals the rank finds them all the same: their
+        // reading of a creation as one text has no budget. (Was `fifth.evidence.is_empty()`.)
+        assert_eq!(fifth.evidence.len(), 31, "{:?}", fifth.evidence);
         for path in ["src/c0.rs", "src/c1.js", "src/c3.js"] {
             let read = ranked.iter().find(|r| r.path == path).unwrap();
             assert_eq!(read.evidence.len(), 31, "{path}");
@@ -383,6 +394,50 @@ mod tests {
         );
         for (file, ranked) in files.iter().zip(run.ranked.iter()) {
             assert_eq!(ranked.score, deep_diff_forge_graph::score_file(file).0);
+        }
+    }
+
+    /// Independent review 2026-11-14, weak tests: every fixture here was `-a` / `+b`, so any
+    /// way of scoring passed every test. While a parser read the hunks under a budget, the
+    /// cluster had to score under the plan of the whole review, and this test held a review
+    /// in which the fourth and fifth file were past the budget (each said `syntax_unchecked`,
+    /// and alone each gave its item). There is no budget now: the same review, where every
+    /// file gives its item, for every worker count, and the same as scored alone.
+    #[test]
+    fn the_cluster_scores_each_file_as_it_scores_alone() {
+        use deep_diff_forge_graph::EvidenceSignal;
+        let evidence = |ranked: &RankedFile| -> Vec<EvidenceSignal> {
+            ranked.evidence.iter().map(|item| item.signal).collect()
+        };
+        // each hunk is about 12 KB and holds an assertion over three lines
+        let pad = "a".repeat(12_000);
+        let mut review = Vec::new();
+        for index in 0..5 {
+            let text = format!(
+                "--- a/tests/t{index}.rs\n+++ b/tests/t{index}.rs\n@@ -1,1 +1,5 @@\n fn t() {{\n+    assert!(\n+        true\n+    );\n+    // {pad}\n"
+            );
+            review.extend(parse(&text).unwrap());
+        }
+        for parallelism in [
+            Parallelism::Serial,
+            Parallelism::Fixed(1),
+            Parallelism::Fixed(2),
+            Parallelism::Fixed(8),
+            Parallelism::Auto,
+        ] {
+            let run = run_risk_cluster(&review, parallelism, JoinPolicy::DeterministicInputOrder);
+            for (index, file) in review.iter().enumerate() {
+                assert_eq!(
+                    evidence(&run.ranked[index]),
+                    [EvidenceSignal::TrivialAssert],
+                    "{parallelism:?}, file {index}"
+                );
+                assert_eq!(
+                    run.ranked[index],
+                    RankedFile::scored(file),
+                    "{parallelism:?}, file {index}"
+                );
+            }
         }
     }
 

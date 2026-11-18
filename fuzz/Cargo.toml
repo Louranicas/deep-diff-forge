@@ -9,13 +9,13 @@ license = "MIT OR Apache-2.0"
 cargo-fuzz = true
 
 [dependencies]
-deep-diff-forge-review = { path = "../crates/deep-diff-forge-review", version = "0.8.4" }
-deep-diff-forge-agent = { path = "../crates/deep-diff-forge-agent", version = "0.8.4" }
-deep-diff-forge-core = { path = "../crates/deep-diff-forge-core", version = "0.8.4" }
-deep-diff-forge-daemon = { path = "../crates/deep-diff-forge-daemon", version = "0.8.4" }
-deep-diff-forge-graph = { path = "../crates/deep-diff-forge-graph", version = "0.8.4" }
-deep-diff-forge-patch = { path = "../crates/deep-diff-forge-patch", version = "0.8.4", features = ["json"] }
-deep-diff-forge-syntax = { path = "../crates/deep-diff-forge-syntax", version = "0.8.4" }
+deep-diff-forge-review = { path = "../crates/deep-diff-forge-review", version = "0.9.0" }
+deep-diff-forge-agent = { path = "../crates/deep-diff-forge-agent", version = "0.9.0" }
+deep-diff-forge-core = { path = "../crates/deep-diff-forge-core", version = "0.9.0" }
+deep-diff-forge-daemon = { path = "../crates/deep-diff-forge-daemon", version = "0.9.0" }
+deep-diff-forge-graph = { path = "../crates/deep-diff-forge-graph", version = "0.9.0" }
+deep-diff-forge-patch = { path = "../crates/deep-diff-forge-patch", version = "0.9.0", features = ["json"] }
+deep-diff-forge-syntax = { path = "../crates/deep-diff-forge-syntax", version = "0.9.0" }
 libfuzzer-sys = "0.4"
 # The compiler's own lexer, as published for rust-analyzer: the oracle of `rust_code_view`. A
 # dependency of this crate only, never of one that ships. Its tables are Unicode 18.0.0 with
@@ -103,8 +103,36 @@ doc = false
 bench = false
 
 [[bin]]
+name = "rust_tokens"
+path = "fuzz_targets/rust_tokens.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "rust_code_view"
 path = "fuzz_targets/rust_code_view.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rust_hunk_places"
+path = "fuzz_targets/rust_hunk_places.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hook_input"
+path = "fuzz_targets/hook_input.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "judge_patch"
+path = "fuzz_targets/judge_patch.rs"
 test = false
 doc = false
 bench = false

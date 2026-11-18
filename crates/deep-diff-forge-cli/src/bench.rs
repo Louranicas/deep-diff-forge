@@ -134,6 +134,72 @@ fn findings_by_address(patch: &str, per_hunk: usize) -> String {
     out
 }
 
+/// A patch that adds one Rust line of about 4 MiB, made of words one byte away from what the
+/// evidence rules look for. A rule reads a line once per word it knows, so one very long line is
+/// the costliest thing to rank per byte; a consumer gives the ranker a fixed time for up to
+/// 64 MiB (review V3 round 1, VD3-H-2: measured 2026-11-13 on a release build, a 60 MiB line
+/// ranks in 1.9 s).
+#[must_use]
+pub fn long_line_patch() -> String {
+    const UNIT: &str =
+        "unsafe_x .unwrap_y todo!x assert!(truex Err(_) => {x #[ignorex Command::newx ";
+    let mut text = String::from(
+        "diff --git a/src/long.rs b/src/long.rs\nnew file mode 100644\n--- /dev/null\n+++ b/src/long.rs\n@@ -0,0 +1 @@\n+",
+    );
+    text.push_str(&UNIT.repeat(4 * 1024 * 1024 / UNIT.len()));
+    text.push('\n');
+    text
+}
+
+/// A patch of 64 new Rust files, each one line of about 60 KB that is a sum of thirty thousand
+/// terms: as many tokens as source of that size gets. It was the costliest input per byte for
+/// the parser that read Rust hunks until 2026-11-14 (review V3 round 2, VD3R2-H-2), and then,
+/// under that parser's budgets, a workload in which nothing was parsed (third independent
+/// review, IR3-L-2). The reader of tokens that replaced the parser reads every hunk whole,
+/// whatever its size, so the workload holds that cost: 3.8 MB of text, one token for every
+/// byte or two.
+#[must_use]
+pub fn many_fragments_patch() -> String {
+    let line = format!("{}a;", "a+".repeat(30_000));
+    let mut text = String::new();
+    for n in 0..64 {
+        let _ = writeln!(
+            text,
+            "diff --git a/src/n{n}.rs b/src/n{n}.rs\nnew file mode 100644\n--- /dev/null\n+++ b/src/n{n}.rs\n@@ -0,0 +1 @@\n+{line}"
+        );
+    }
+    text
+}
+
+/// Ranking `patch`, parsed once outside the timing.
+fn rank_workload(name: &'static str, patch: String) -> Workload {
+    Workload {
+        name,
+        run: Box::new({
+            let files = review(&patch).files().to_vec();
+            move |_| {
+                let _ = deep_diff_forge_graph::rank(&files);
+            }
+        }),
+        input: patch,
+    }
+}
+
+/// Ranking [`long_line_patch`].
+fn long_line_workload() -> Workload {
+    let long_line = long_line_patch();
+    Workload {
+        name: "rank_long_line",
+        run: Box::new({
+            let files = review(&long_line).files().to_vec();
+            move |_| {
+                let _ = deep_diff_forge_graph::rank(&files);
+            }
+        }),
+        input: long_line,
+    }
+}
+
 fn workloads() -> Vec<Workload> {
     let patch = generated_patch(200, 4, 20);
     let (old, new) = generated_sources(400);
@@ -161,6 +227,8 @@ fn workloads() -> Vec<Workload> {
                 }
             }),
         },
+        long_line_workload(),
+        rank_workload("rank_many_fragments", many_fragments_patch()),
         Workload {
             name: "outline_page",
             input: patch.clone(),
@@ -364,6 +432,14 @@ mod tests {
                 "22da2a2e81a542149830dee499b67b90897ce7ba5cc0a46d509281a253032358",
             ),
             (
+                "rank_long_line",
+                "d309048c12e3e4b42890354620456ec296638424de2fa8fc2c2e61a21425d6fb",
+            ),
+            (
+                "rank_many_fragments",
+                "e6bffeb836bce2b041d40ba98ceeb8269c999a66ab0e41118373fbe57ba3a7e0",
+            ),
+            (
                 "outline_page",
                 "22da2a2e81a542149830dee499b67b90897ce7ba5cc0a46d509281a253032358",
             ),
@@ -458,6 +534,8 @@ mod tests {
             [
                 "parse_seal",
                 "rank_with_evidence",
+                "rank_long_line",
+                "rank_many_fragments",
                 "outline_page",
                 "findings_verify",
                 "findings_by_address",

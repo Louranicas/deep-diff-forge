@@ -1138,13 +1138,18 @@ fn ranked_json(ranked: &[RankedFile]) -> Value {
                         .evidence
                         .iter()
                         .map(|e| {
-                            json!({
+                            let mut item = json!({
                                 "signal": e.signal.label(),
                                 "address": e.address,
                                 "side": e.side.label(),
                                 "line": e.line,
-                                "basis": deep_diff_forge_graph::EVIDENCE_BASIS,
-                            })
+                                "basis": e.basis.label(),
+                            });
+                            // Present only when true, as `evidence_truncated` is.
+                            if e.test_likely {
+                                item["test_likely"] = json!(true);
+                            }
+                            item
                         })
                         .collect();
                 }

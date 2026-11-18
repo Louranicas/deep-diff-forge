@@ -1,0 +1,56 @@
+diff --git a/src/custom_test_attr.rs b/src/custom_test_attr.rs
+new file mode 100644
+--- /dev/null
++++ b/src/custom_test_attr.rs
+@@ -0,0 +1,4 @@
++#[my_framework::test]
++pub fn production() {
++    load().unwrap();
++}
+diff --git a/src/raw_test_attr.rs b/src/raw_test_attr.rs
+new file mode 100644
+--- /dev/null
++++ b/src/raw_test_attr.rs
+@@ -0,0 +1,4 @@
++#[r#test]
++fn actual_test() {
++    load().unwrap();
++}
+diff --git a/src/todo_message.rs b/src/todo_message.rs
+--- a/src/todo_message.rs
++++ b/src/todo_message.rs
+@@ -1,5 +1,5 @@
+ fn later() {
+     todo!(
+-        "old message"
++        "new message"
+     )
+ }
+diff --git a/tests/assert_message.rs b/tests/assert_message.rs
+--- a/tests/assert_message.rs
++++ b/tests/assert_message.rs
+@@ -1,6 +1,6 @@
+ fn check() {
+     assert!(
+         true,
+-        "old message"
++        "new message"
+     );
+ }
+diff --git a/web/callbacks.ts b/web/callbacks.ts
+new file mode 100644
+--- /dev/null
++++ b/web/callbacks.ts
+@@ -0,0 +1,3 @@
++run().catch((error = fallback()) => {});
++run().catch(function (error = fallback()) {});
++run().catch(async (error = fallback()) => {});
+diff --git a/src/cfg_test_fn.rs b/src/cfg_test_fn.rs
+new file mode 100644
+--- /dev/null
++++ b/src/cfg_test_fn.rs
+@@ -0,0 +1,4 @@
++#[cfg(test)]
++fn helper() {
++    load().unwrap();
++}

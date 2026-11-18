@@ -1,0 +1,3 @@
+#!/* open
+   still */ x "
+fn main() { unsafe { g() } } // "

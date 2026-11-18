@@ -194,6 +194,11 @@ fn code_phrase(signal: EvidenceSignal) -> &'static str {
         EvidenceSignal::SecretLike => "Looks like a credential.",
         EvidenceSignal::CheckSuppressed => "A lint, type or coverage check is switched off.",
         EvidenceSignal::TestRemoved => "A test is removed.",
+        EvidenceSignal::TestSkipped => "A test is switched off.",
+        EvidenceSignal::TrivialAssert => "An assertion that cannot fail.",
+        EvidenceSignal::StubAdded => "A placeholder where code should be.",
+        EvidenceSignal::ErrorSwallowed => "An error is caught and dropped.",
+        EvidenceSignal::PanicPathAdded => "A call that panics on failure is added.",
     }
 }
 
@@ -216,17 +221,22 @@ fn evidence_notes(file: &ReviewFile, ranked: &RankedFile) -> Vec<AgentAnnotation
                 hunk_id: item.hunk,
             },
             body: format!(
-                "{} ({} line {})",
+                "{} ({} line {}){}",
                 code_phrase(item.signal),
                 item.side.label(),
-                item.line
+                item.line,
+                if item.test_likely {
+                    " Under a test attribute: likely test code, which the patch does not prove."
+                } else {
+                    ""
+                }
             ),
             provenance: AnnotationProvenance {
                 agent: SYSTEM_AGENT_ID.to_string(),
                 model: None,
                 evidence: vec![
                     item.signal.label().to_string(),
-                    format!("basis:{}", deep_diff_forge_graph::EVIDENCE_BASIS),
+                    format!("basis:{}", item.basis.label()),
                 ],
             },
             grounded: true,
@@ -302,6 +312,11 @@ mod tests {
                 "Looks like a credential.",
                 "A lint, type or coverage check is switched off.",
                 "A test is removed.",
+                "A test is switched off.",
+                "An assertion that cannot fail.",
+                "A placeholder where code should be.",
+                "An error is caught and dropped.",
+                "A call that panics on failure is added.",
             ]
         );
     }
