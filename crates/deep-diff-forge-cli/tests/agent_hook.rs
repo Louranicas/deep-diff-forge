@@ -2843,6 +2843,49 @@ fn a_large_tool_answer_is_read_and_one_over_the_cap_is_refused_by_name() {
     );
 }
 
+/// Integrated review of 0.9.0, VI1-L-3 and CI5: the fuzz target `hook_input` cannot reach the
+/// hook's reading of bytes, so for bytes that are not UTF-8 it checks only the form of the
+/// refusal. Here the hook itself reads them, for each event: a JSON object that names the
+/// event, with one byte that is not UTF-8, is refused in the hooks' own words, never judged.
+#[test]
+fn bytes_that_are_not_utf8_are_refused_by_every_event() {
+    let scratch = Scratch::new("hook-not-utf8");
+    let root = repository(&scratch);
+    for (event, name) in [
+        ("session-start", "SessionStart"),
+        ("post-tool", "PostToolUse"),
+        ("stop", "Stop"),
+    ] {
+        let mut bytes = input(name, &root, "s", false).to_string().into_bytes();
+        let at = bytes.windows(3).position(|w| w == b"\"s\"").unwrap() + 1;
+        bytes[at] = 0xff;
+        let mut child = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+            .envs(ISOLATE)
+            .env("HOME", home())
+            .args(["agent", "hook", event, "--client", "claude"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(&bytes).unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(out.status.code(), Some(0), "{event}");
+        assert!(out.stderr.is_empty(), "{event}");
+        let said = system_message(std::str::from_utf8(&out.stdout).unwrap());
+        let reason = "did not run: its input could not be read: stream did not contain valid UTF-8";
+        assert!(
+            said.contains(reason) && said.contains("Nothing was judged"),
+            "{event}: {said}"
+        );
+        assert_eq!(
+            said.starts_with("deep-diff-forge: UNJUDGED. ") && said.ends_with("not a pass."),
+            event == "stop",
+            "{event}: {said}"
+        );
+    }
+}
+
 /// The state of a session is found by the session's id alone, in the user's state directory:
 /// `$XDG_STATE_HOME` when it is absolute, else `.local/state` of the home directory. Without
 /// either there is nowhere to remember the project and the base, and the hook says that it did

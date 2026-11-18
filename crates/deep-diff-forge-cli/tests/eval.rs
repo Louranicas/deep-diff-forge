@@ -172,13 +172,20 @@ use std::process::Command;
 /// also read as one file: precision 179 of 205, recall 179 of 260. The seventh review's two
 /// items of a second section for one path (`src/n.rs`, `src/two.rs`, IR7-H-2) went from
 /// declared misses to expected, so both floors rose.
+/// Measured again 2026-11-18 on 56 cases, after the integrated review of 0.9.0 (no code that
+/// finds an item changed): precision 179 of 207, recall 179 of 260. The new case,
+/// `evidence/integrated-review-1-20261118`, has two declared false positives (CI1), both of
+/// reading the sections of one path as one file: an honest `git diff -U0` series whose second
+/// section's old number is read in the coordinates of one file, and a created file followed by
+/// a section that adds a line above its context. The precision floor fell, on purpose: what was
+/// found is declared, not new to this round.
 const RANKING_PAIRS_FLOOR: u64 = 800_000;
-const EVIDENCE_PRECISION_FLOOR: u64 = 873_170;
+const EVIDENCE_PRECISION_FLOOR: u64 = 864_734;
 const EVIDENCE_RECALL_FLOOR: u64 = 688_461;
 const FINDINGS_FLOOR: u64 = 1_000_000;
 /// Declared misses (plan N4): each counts as wrong in its metric above. The receipt's
 /// `known_misses` keeps its first meaning, the evidence `known_miss` items; `declared` lists all.
-const DECLARED: u64 = 110;
+const DECLARED: u64 = 112;
 const EVIDENCE_KNOWN_MISSES: u64 = 81;
 /// The smallest corpus the gate accepts, and the fewest cases of each kind.
 const MIN_CASES: usize = 30;
@@ -299,14 +306,14 @@ fn the_summary_names_each_metric_and_each_failure() {
     let (code, text) = run(&corpus());
     assert_eq!(code, Some(0), "{text}");
     assert!(
-        text.starts_with("deep-diff-forge eval: 55 cases\n"),
+        text.starts_with("deep-diff-forge eval: 56 cases\n"),
         "{text}"
     );
     for line in [
         "  ranking_pairs        12/15",
-        "  evidence_precision   179/205",
+        "  evidence_precision   179/207",
         "  evidence_recall      179/260",
-        "  declared             110",
+        "  declared             112",
         "  KNOWN ranking/auth-check-removed: src/handlers/delete.rs ranks below docs/CHANGES.md",
         "  KNOWN evidence/shell-heredoc: reports (\"scripts/docs.sh\", \"network_fetch\", \"new\", 3)",
     ] {
@@ -675,7 +682,7 @@ fn a_declared_miss_must_still_be_a_miss() {
     );
     assert_eq!(
         metrics["evidence_precision"],
-        serde_json::json!({"right": 179, "total": 205, "ppm": 873_170})
+        serde_json::json!({"right": 179, "total": 207, "ppm": 864_734})
     );
 
     // A declared false positive that is also expected.
@@ -752,4 +759,48 @@ fn a_corpus_file_over_the_limit_is_refused() {
             "{size}: {stderr}"
         );
     }
+}
+
+/// Integrated review of 0.9.0, VI1-L-2 and CI3: `schema signals` gave `"basis": ["lexical"]`
+/// for labels whose items carry `"hunk"`. Every evidence item ranked from a patch of the corpus
+/// carries a basis that the vocabulary lists for its label, so the two cannot drift apart; and
+/// the corpus has items on both rungs, so the check is not empty.
+#[test]
+fn every_item_of_the_corpus_has_a_basis_the_vocabulary_lists() {
+    let binary = env!("CARGO_BIN_EXE_deep-diff-forge");
+    let schema = Command::new(binary)
+        .args(["schema", "signals"])
+        .output()
+        .expect("run");
+    let schema: Value = serde_json::from_slice(&schema.stdout).unwrap();
+    let listed = |label: &str| -> Vec<Value> {
+        let facts = schema["signals"].as_array().unwrap().iter();
+        let mut facts = facts.filter(|facts| facts["label"] == label);
+        facts.next().unwrap()["basis"].as_array().unwrap().clone()
+    };
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(corpus().join("MANIFEST.json")).unwrap()).unwrap();
+    let mut rungs = std::collections::BTreeSet::new();
+    for case in manifest["cases"].as_array().unwrap() {
+        let patch = corpus().join(case["patch"].as_str().unwrap());
+        let out = Command::new(binary)
+            .args(["--stdin-patch", "--rank", "--json"])
+            .stdin(std::fs::File::open(&patch).unwrap())
+            .output()
+            .expect("run");
+        assert!(out.status.success(), "{}", patch.display());
+        let ranking: Value = serde_json::from_slice(&out.stdout).unwrap();
+        for file in ranking["ranked"].as_array().unwrap() {
+            for item in file["evidence"].as_array().into_iter().flatten() {
+                let label = item["signal"].as_str().unwrap();
+                assert!(
+                    listed(label).contains(&item["basis"]),
+                    "{}: {item} has a basis `schema signals` does not list for {label}",
+                    patch.display()
+                );
+                rungs.insert(item["basis"].as_str().unwrap().to_owned());
+            }
+        }
+    }
+    assert_eq!(rungs.into_iter().collect::<Vec<_>>(), ["hunk", "lexical"]);
 }

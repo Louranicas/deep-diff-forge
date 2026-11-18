@@ -2378,6 +2378,28 @@
         }
       ],
       "sha256": "5ee746068298582cc8096ec06370c97a3697fde16cc5eefa18bc95d7920e700f"
+    },
+    {
+      "id": "evidence/integrated-review-1-20261118",
+      "kind": "evidence",
+      "patch": "evidence/integrated-review-1-20261118.patch",
+      "origin": "internal: the integrated review of 0.9.0 by a Claude reviewer (CI1), 2026-11-18, reproduced on the frozen int090-4 binary; declared, not fixed (the coordinator's rulings 1 of 2026-11-18). Two declared false positives, both from reading the sections of one path as one file: (1) n.rs, an honest `git diff -U0` series of two commits (the review's `u0-series.patch`): section 1 replaces line 10 with `// x` and `let v = opt.unwrap`, section 2 adds `();` after line 10 of its own parent, above the `unwrap` line; `git apply --unidiff-zero` writes no call (plain `git apply` refuses the patch), but section 2's old number is read as old line 10 of one file, where section 1's hunk ends, and `opt.unwrap` and `();` are joined (panic_path_added at new line 11, on section 2). (2) src/n.rs, a created file (`pub fn f(…) {`, `let v = opt.unwrap`) followed by a section `@@ -1,2 +1,3 @@` that adds `();` above its two context lines (the review's `create-then-top.patch`); plain `git apply` puts `();` at the top, but the joined copy keeps the creation's rule of hunks joined in the order written, so `();` is read after `opt.unwrap` (panic_path_added at new line 2, on the creation). Releases 0.8.4 and 0.8.3 and the signals line (v3r19) report neither. A change that removes either item fails this case until it is moved.",
+      "expect": [],
+      "known_false_positive": [
+        {
+          "path": "n.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 11
+        },
+        {
+          "path": "src/n.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "sha256": "3da61c0f9ec4510a379ef3bed2de9d57cbf25180487b4c19170e2120b198199c"
     }
   ]
 }

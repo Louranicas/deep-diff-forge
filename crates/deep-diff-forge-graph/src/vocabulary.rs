@@ -100,15 +100,18 @@ impl SignalFacts {
     }
 
     /// What the signal is read from: the path, status, modes or size of a change
-    /// ([`PATH_BASIS`]), the text of its lines (the `basis` an item of a code-evidence signal
-    /// carries), or both.
+    /// ([`PATH_BASIS`]), the text of its lines (for a code-evidence signal, every `basis` an
+    /// item of it can carry, from the rules that set it: `crate::evidence::signal_bases`), or
+    /// both.
     ///
     /// `hazardous_text` is both: the scorer looks at the path and at every changed line. It
-    /// was listed as read from the path alone (independent review of the hooks, HR-L-6).
+    /// was listed as read from the path alone (independent review of the hooks, HR-L-6). A
+    /// code-evidence signal whose items can stand on `hunk` was listed as `lexical` alone
+    /// (integrated review of 0.9.0, VI1-L-2 and CI3).
     #[must_use]
-    pub const fn basis(&self) -> &'static [&'static str] {
+    pub fn basis(&self) -> &'static [&'static str] {
         match self.signal {
-            RiskSignal::Code(_) => &[crate::evidence::EVIDENCE_BASIS],
+            RiskSignal::Code(signal) => crate::evidence::signal_bases(signal),
             RiskSignal::HazardousText => &[PATH_BASIS, crate::evidence::EVIDENCE_BASIS],
             _ => &[PATH_BASIS],
         }
@@ -497,11 +500,11 @@ pub const fn remedy(signal: RiskSignal) -> Remedy {
             ],
             not_accepted: &[
                 NotAccepted {
-                    substitute: "Keeping the test but skipping it, or emptying its body.",
-                    raises: None,
+                    substitute: "Keeping the test but skipping it.",
+                    raises: Some("test_skipped"),
                 },
                 NotAccepted {
-                    substitute: "Renaming it so that the test runner no longer collects it.",
+                    substitute: "Keeping the test but emptying its body.",
                     raises: None,
                 },
             ],
@@ -519,7 +522,7 @@ pub const fn remedy(signal: RiskSignal) -> Remedy {
                     raises: Some("test_removed"),
                 },
                 NotAccepted {
-                    substitute: "Keeping the test running but making its assertions always true.",
+                    substitute: "Keeping the test running but asserting `true` (`assert!(true)`, `assert_eq!(true, true)`); other spellings of an assertion that cannot fail are not seen yet.",
                     raises: Some("trivial_assert"),
                 },
             ],
@@ -668,6 +671,10 @@ mod tests {
         assert_eq!(by("check_suppressed").weight(), 2);
         assert_eq!(by("new_file").basis(), ["path"]);
         assert_eq!(by("unsafe_added").basis(), ["lexical"]);
+        // a handler and its body, or a Rust construct over several lines (VI1-L-2, CI3)
+        assert_eq!(by("panic_path_added").basis(), ["lexical", "hunk"]);
+        assert_eq!(by("error_swallowed").basis(), ["lexical", "hunk"]);
+        assert_eq!(by("dynamic_eval").basis(), ["lexical"]);
         assert_eq!(by("new_file").sides(), []);
         assert_eq!(by("hazardous_text").basis(), ["path", "lexical"]);
         assert_eq!(by("hazardous_text").sides(), [Side::New, Side::Old]);
@@ -833,14 +840,18 @@ mod tests {
             in_path.contains(&RiskSignal::HazardousText)
                 && !plain.contains(&RiskSignal::HazardousText)
         );
-        // and a code-evidence signal reads lines only
+        // and a code-evidence signal reads lines only, on one line or over several
         for signal in EvidenceSignal::ALL {
             let facts = facts(RiskSignal::Code(signal));
-            assert_eq!(
-                facts.basis(),
-                [crate::evidence::EVIDENCE_BASIS],
-                "{}",
-                facts.label()
+            assert!(
+                !facts.basis().is_empty()
+                    && facts
+                        .basis()
+                        .iter()
+                        .all(|basis| ["lexical", "hunk"].contains(basis)),
+                "{}: {:?}",
+                facts.label(),
+                facts.basis()
             );
             assert_eq!(facts.sides(), signal_sides(signal), "{}", facts.label());
         }

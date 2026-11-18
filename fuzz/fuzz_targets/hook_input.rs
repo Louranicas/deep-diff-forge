@@ -3,10 +3,14 @@
 // read by the CLI's own `hook` module (compiled here from its source, as the stdio targets do).
 // Design/status: docs/TESTING_GOLD_STANDARD.md (fuzz targets).
 //
-// The property: no panic and no hang on any bytes, and an input the hook cannot read is refused
-// with the hooks' own refusal (`did_not_run_output`), which says that nothing was judged and,
-// for a stop, UNJUDGED and "not a pass". An input is read only when it is a JSON object that
-// names the event and a session and a directory, which this target checks on its own.
+// The property, for any byte string up to 256 KiB (the hook reads up to 32 MiB; larger inputs
+// are skipped here): no panic and no hang, and UTF-8 text the hook's reading (`parse_input`)
+// cannot read is refused with the hooks' own refusal (`did_not_run_output`), which says that
+// nothing was judged and, for a stop, UNJUDGED and "not a pass". Text is read only when it is
+// a JSON object that names the event and a session and a directory, which this target checks
+// on its own. Bytes that are not UTF-8 are refused before `parse_input`, in `hook_run`, which
+// this target cannot reach: for them it checks only the form of the refusal the hook writes,
+// and the CLI test `bytes_that_are_not_utf8_are_refused_by_every_event` holds the hook to it.
 use libfuzzer_sys::fuzz_target;
 use serde_json::Value;
 

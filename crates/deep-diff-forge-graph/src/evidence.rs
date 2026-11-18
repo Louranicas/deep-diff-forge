@@ -3796,6 +3796,29 @@ const SECRET_PREFIXES: [SecretPrefix; 11] = {
     ]
 };
 
+/// The rungs an item of `signal` can stand on, as labels in the order of [`Basis`]: each rule of
+/// the tables gives its match's rung ([`Match::basis`]), and the reader of a Rust hunk's tokens
+/// gives both, `lexical` for a construct on one line and `hunk` for one over several. For the
+/// vocabulary's `basis` of a code-evidence signal, so it cannot disagree with an item
+/// (integrated review of 0.9.0, VI1-L-2 and CI3).
+pub(crate) fn signal_bases(signal: EvidenceSignal) -> &'static [&'static str] {
+    const LEXICAL: &str = Basis::Lexical.label();
+    const HUNK: &str = Basis::Hunk.label();
+    let read = rust_tokens::reads(signal, false) || rust_tokens::reads(signal, true);
+    let on = |basis: Basis| {
+        read || RULES
+            .iter()
+            .chain(RELEASED_RULES)
+            .any(|r| r.signal == signal && r.matches.basis() == basis)
+    };
+    match (on(Basis::Lexical), on(Basis::Hunk)) {
+        (true, true) => &[LEXICAL, HUNK],
+        (true, false) => &[LEXICAL],
+        (false, true) => &[HUNK],
+        (false, false) => &[],
+    }
+}
+
 /// The sides of a hunk on which some rule looks for `signal`: added lines ([`Side::New`]),
 /// removed lines ([`Side::Old`]), or both, in that order. Read from the rule tables (today's
 /// and that of release 0.8.4) and from the reader of a Rust hunk's tokens, which looks for

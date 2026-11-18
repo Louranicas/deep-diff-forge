@@ -608,7 +608,7 @@ mod tests {
         assert_eq!(
             *by("test_removed"),
             json!({"label": "test_removed", "class": "integrity", "kind": "direct", "weight": 3,
-                   "basis": ["lexical"], "sides": ["old"], "since": "0.5.0",
+                   "basis": ["lexical", "hunk"], "sides": ["old"], "since": "0.5.0",
                    "summary": "A removed line was a test."})
         );
         assert_eq!(by("public_api_surface")["basis"], json!(["path"]));
@@ -651,7 +651,9 @@ mod tests {
         assert_eq!(v["sides"], json!(["old"]));
         assert!(v["why"].as_str().is_some_and(|w| !w.is_empty()));
         assert_eq!(v["accept"].as_array().unwrap().len(), 2);
-        assert_eq!(v["not_accepted"][0]["raises"], Value::Null);
+        // skipping the test raises test_skipped; emptying its body raises nothing (CI4)
+        assert_eq!(v["not_accepted"][0]["raises"], "test_skipped");
+        assert_eq!(v["not_accepted"][1]["raises"], Value::Null);
         assert_eq!(v["native_lints"], json!([]));
         let unsafe_added: Value =
             serde_json::from_str(&explain(&args(&["signal", "unsafe_added", "--json"])).unwrap())
