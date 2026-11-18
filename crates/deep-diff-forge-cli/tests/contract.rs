@@ -210,7 +210,10 @@ fn risk_ranking_signal_tables_match_the_vocabulary() {
         }
     }
     let all: std::collections::BTreeSet<&str> = weights.keys().copied().collect();
-    assert_eq!(seen, all, "the README tables and the vocabulary differ");
+    assert_eq!(
+        seen, all,
+        "the tables of docs/reference/risk-ranking.md and the vocabulary differ"
+    );
 }
 
 /// The exit-code tables of `docs/reference/output-and-exit-codes.md` (once the README's "Exit
@@ -269,7 +272,7 @@ fn exit_code_tables_match_the_registry() {
             );
             assert!(
                 section.contains(&format!("- `{}`: ", row.2)),
-                "the README does not explain the action {}",
+                "docs/reference/output-and-exit-codes.md does not explain the action {}",
                 row.2
             );
         }

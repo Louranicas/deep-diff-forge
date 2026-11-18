@@ -10074,7 +10074,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(" ")
                 .contains(&stated),
-            "README does not state: {stated}"
+            "docs/reference/agent-hooks.md does not state: {stated}"
         );
     }
 

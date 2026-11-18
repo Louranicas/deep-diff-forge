@@ -115,7 +115,7 @@ and the MCP tools report it as `action`, with `may_be_transient`, which is true 
 - `review_evidence`: read the evidence the council reported and decide; rerunning does not change it.
 - `report_bug`: report the command and its input; do not retry blindly.
 
-Both tables come from one registry in the binary, and a test fails if this README drifts from it.
+Both tables come from one registry in the binary, and a test fails if this document drifts from it.
 
 ### Machine contract (`ddf.result.v1`)
 
