@@ -36,7 +36,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     shows, at the place Git's own anchor rule gives: a hunk with no trailing context at the end
     of the file, one at old line 0 or 1 at its start (with both, the whole file), any other by
     Git's search outward from the new-side line its header names, over lines no earlier hunk of
-    the patch wrote (the review does not say which of several equal places Git takes). A
+    the same section wrote (a later section for the same path is applied to the earlier
+    section's result, where no line is skipped; the review does not say which of several equal
+    places Git takes). A
     header's line numbers and `@@` text are the patch's claims, true on the tree Git made the
     patch from. A hand-written patch can name one copy of some lines while Git changes another
     (a last hunk with leading context only, on a file whose end repeats its lines), so the
@@ -47,8 +49,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     described in the MCP tools and daemon methods that serve them with both anchors, as the
     patch's claim (the JSON carries no mark). Checking the place against the tree,
     when DDF has one, is not built. The test oracle places each hunk by Git's anchors, and the
-    generated differential writes such hunks by hand (row `hunk-anchor`). To keep the promise,
-    two kinds of patch are refused:
+    generated differential writes such hunks by hand (row `hunk-anchor`). Two kinds of patch
+    are refused (the paragraph after the list says which the promise needs):
     - a hunk Git places by an anchor its header does not set (`HunkPlacedElsewhere`): a hunk
       with no context past line 1, which plain `git apply` places at the end of the file, and
       a hunk after one with no trailing context. Plain `git apply` tries no other place
@@ -61,6 +63,12 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
       bytes or is in a binary body, and one path that is both a file and the directory of
       another (two paths the patch writes, or a copy's source the patch keeps and a path
       written under it or at its directory).
+
+    The restated promise does not need the first of these refusals: a hunk with no context
+    past line 1 would be stated as placed at the end of the file. DDF refuses such hunks
+    (`HunkPlacedElsewhere`) because plain `git apply` places them at the end of the file
+    whatever their author meant (`git diff -U0` output is read by `git apply --unidiff-zero`,
+    not by plain apply). `GitCannotWrite` is what the promise's second outcome needs.
 
     One hunk layout no Git writes is read: a creation whose hunks all start at line 0. Git
     writes the first hunk into the empty file and refuses the whole patch at the second, while
@@ -83,7 +91,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
       file or a directory already in the tree where the patch writes), which can leave the tree
       half-written;
     - hunks out of order, overlapping, or with a new-side start the earlier counts do not give:
-      read, and placed by Git's search;
+      read; Git either places each hunk by its own rule or refuses the whole patch and writes
+      nothing, and the review states neither which;
     - another tree, where the place Git's rule finds (an offset, or the end of the file) can be
       another copy of the hunk's lines than the one its header names;
     - attributes in the target tree (`eol`, `ident`, `working-tree-encoding`);

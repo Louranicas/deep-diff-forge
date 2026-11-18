@@ -429,11 +429,12 @@ DDF records for an implied move (DDF-HUNT-PATCH-6), not lines from the input.
 
 Where Git places a hunk (no member states it; the hunk's lines settle it, `CONFORMANCE.md`):
 `old_start` 0 or 1: at the start of the file; last line not context: at the end (both: the whole
-file); else Git's search outward from `new_start` over lines no earlier hunk wrote. `old_start`,
-`old_lines`, `new_start` and `new_lines` are documented as the patch's own claim (no member marks
-it). In `review-outline.v0` they come without lines (only the start anchor shows there): fetch the
-lines with `review.hunks`; a hunk split across pages carries `complete: false` on each page but
-its last, which has `complete: true` and the hunk's last line.
+file); else Git's search outward from `new_start` over lines no earlier hunk of the same section
+wrote (a later section for the same path starts from the earlier one's result, nothing skipped).
+`old_start`, `old_lines`, `new_start` and `new_lines` are documented as the patch's own claim (no
+member marks it). In `review-outline.v0` they come without lines (only the start anchor shows
+there): fetch the lines with `review.hunks`; a hunk split across pages carries `complete: false` on
+each page but its last, which has `complete: true` and the hunk's last line.
 
 Planned: separate version numbers for the model, the projection and agent
 annotations.
