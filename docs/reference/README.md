@@ -16,3 +16,4 @@ file and moved word for word. The [README](../../README.md#reference) says what 
 - [Architecture](architecture-overview.md#architecture)
 - [Quality gates](quality-gates.md#quality-gates)
 - [Review council and evidence gates](quality-gates.md#review-council-and-evidence-gates)
+- [Supported platforms: measurements](supported-platforms.md)

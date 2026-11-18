@@ -3,8 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Louranicas/deep-diff-forge/actions/workflows/ci.yml"><img src="https://github.com/Louranicas/deep-diff-forge/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
-  <a href="https://github.com/Louranicas/deep-diff-forge/releases"><img src="https://img.shields.io/github/v/release/Louranicas/deep-diff-forge?label=release" alt="Latest release"></a>
+  <a href="https://gitlab.com/lukeomahoney/deep-diff-forge/-/releases"><img src="https://img.shields.io/gitlab/v/release/lukeomahoney%2Fdeep-diff-forge?label=release" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/rust-1.88%2B-orange" alt="Rust 1.88+">
   <img src="https://img.shields.io/badge/unsafe-forbidden-success" alt="unsafe forbidden">
   <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue" alt="MIT or Apache-2.0"></a>
@@ -174,8 +173,8 @@ curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.8.3/
 sha256sum -c deep-diff-forge-v0.8.3-x86_64-unknown-linux-gnu.tar.gz.sha256
 ```
 
-**0.8.4** (the signed tag `v0.8.4`, 2026-11-17) and **0.9.0** (once the owner's signed tag
-`v0.9.0` exists) are published on GitLab, <https://gitlab.com/lukeomahoney/deep-diff-forge>:
+**0.8.4** (the signed tag `v0.8.4`, 2026-11-17) and **0.9.0** (the signed tag `v0.9.0`,
+2026-11-18) are published on GitLab, <https://gitlab.com/lukeomahoney/deep-diff-forge>:
 the tag and a Linux x86_64 archive (`deep-diff-forge-v0.9.0-x86_64-unknown-linux-gnu.tar.gz`
 for 0.9.0) with its `.sha256`, the SBOM, the build receipt, `SHA256SUMS` and the owner's
 signature of it, `SHA256SUMS.sig`. There is no arm64 Linux or macOS binary of either. Check the
@@ -211,27 +210,9 @@ binaries for them remain on the GitHub releases page.
 | `aarch64-apple-darwin` | not built | `macos-26` (arm64) | macOS 11 or newer | the whole suite (`macOS tests`, required); the launchd agent (`macOS launchd agent`, not required; skipped in releases) |
 | `x86_64-apple-darwin` | not built | cross-built on `macos-26`, run under Rosetta 2 | macOS 10.12 or newer | none (the release smoke only) |
 
-- **The glibc floor, glibc 2.34**, is enforced: `scripts/check_glibc_floor.sh` fails the release
-  smoke when a Linux binary requires a newer `GLIBC_` symbol version. Measured 2026-10-31: the
-  v0.5.0 x86_64 binary requires at most `GLIBC_2.34`; it ran a review on AlmaLinux 9 (glibc
-  2.34), Ubuntu 22.04 (2.35) and Debian 12 (2.36), and the loader refused it on Debian 11 (2.31).
-  The arm64 binary, built on `ubuntu-22.04-arm`, passes the same check in CI (measured; built on
-  `ubuntu-24.04-arm` it needed `GLIBC_2.39`, PR #79); it has not been run on an older arm64
-  distribution (unmeasured). The 0.8.4 x86_64 binary, built on Fedora 44 (glibc 2.43) with the
-  rustup toolchain's LLD, requires at most `GLIBC_2.34` (`readelf`, 2026-11-16; `GLIBC_2.39`
-  only as the two weak symbols below); it has not been run on an older system.
-- **On glibc 2.34 to 2.38 the loader prints one warning line to stderr per run**,
-  ``weak version `GLIBC_2.39' not found``. The output and exit code are unchanged (measured on the
-  three systems above). Rust's standard library references `pidfd_spawnp` and `pidfd_getpid`
-  (glibc 2.39) as optional symbols; glibc 2.39 or newer prints nothing. Building from source on
-  such a system also avoids it.
-- **A source build is for the system that built it.** Linked with GNU ld on glibc 2.39 or newer
-  (a distribution's own Rust package, for example), the binary requires `GLIBC_2.39` outright
-  and does not start on an older glibc (measured 2026-11-10: built on Fedora 44, refused by the
-  loader on Ubuntu 22.04). The release smoke holds every Linux release binary to the floor.
-- **macOS minimums** are the ones the v0.5.0 binaries declare (`LC_BUILD_VERSION` minos 11.0 for
-  arm64, `LC_VERSION_MIN_MACOSX` 10.12 for x86_64, read 2026-10-31). They are run only on the
-  runner's current macOS, not on those versions.
+The glibc floor and how it is held, the loader warning on glibc 2.34 to 2.38, source builds and
+the macOS minimums are measured in [supported platforms: measurements](docs/reference/supported-platforms.md).
+
 - **Not supported:** musl (Alpine and other musl distributions) is neither built nor tested: the
   syntax layer compiles C (tree-sitter), which needs a musl C toolchain, and nothing would run
   the result. Windows is not supported (the daemon needs Unix domain sockets; the CLI does not
@@ -298,41 +279,29 @@ git diff | deep-diff-forge --stdin-patch --rank --json --require-files --require
 ### For agents: hooks
 
 With Claude Code's hooks, this binary tells the agent what its own change looks like while it is
-still working, and asks a judge before it stops. The hooks guard against an agent's honest
-mistakes and shortcuts: a credential it commits, a check it silences, a policy it loosens.
-`agent setup --hooks` prints the settings for `.claude/settings.json` and writes nothing:
-
-```bash
-deep-diff-forge agent setup --client claude --hooks
-```
-
-The hooks are not a boundary against an agent that sets out to evade them: that boundary is the
-judge on the pull request. The events, the rule of the stop hook and the stated limits are in
-[the agent hooks reference](docs/reference/agent-hooks.md).
+still working, and asks a judge before it stops.
+`deep-diff-forge agent setup --client claude --hooks` prints the settings and writes nothing. The
+hooks guard against an agent's honest mistakes and shortcuts; they are not a boundary against an
+agent that sets out to evade them (that boundary is the judge on the pull request). The events,
+the rule of the stop hook and the stated limits are in [the agent hooks reference](docs/reference/agent-hooks.md).
 
 ## Reference
 
-The reference sections that stood on this page until 0.9.0 are in their own files under
-[`docs/reference/`](docs/reference/), moved word for word. They live in this repository under
-`docs/`, at <https://gitlab.com/lukeomahoney/deep-diff-forge/-/tree/main/docs>; the release
-archive ships this README alone, so read them from a clone or from GitLab.
+The sections that stood on this page until 0.9.0 are in [`docs/reference/`](docs/reference/),
+moved word for word. The release archive ships this README alone: read them in a clone or at
+<https://gitlab.com/lukeomahoney/deep-diff-forge/-/tree/main/docs>.
 
-| Section | What is there |
+| Sections | What is there |
 | --- | --- |
 | [For agents: told while it works, judged when it stops](docs/reference/agent-hooks.md#for-agents-told-while-it-works-judged-when-it-stops) | The agent hooks: what each event gives the agent, the rule of the stop hook, what a stop judges, and the stated limits. |
 | [Command reference](docs/reference/commands.md#command-reference) | Every command by task: review a change, compare two files, the review cockpit, source files, machine surfaces, learning, analysis, deployment and diagnostics, and the review council. |
-| [Output formats and schemas](docs/reference/output-and-exit-codes.md#output-formats-and-schemas) | Every machine document names its schema; what `--json` and `--jsonl` print, and where results and diagnostics go. |
-| [Exit codes](docs/reference/output-and-exit-codes.md#exit-codes) | Each exit code of the engine and of the review council, its meaning, and the next action. |
-| [Machine contract (`ddf.result.v1`)](docs/reference/output-and-exit-codes.md#machine-contract-ddfresultv1) | `envelope`: any command as one `ddf.result.v1` object, with `schema` and `explain`. |
-| [MCP server](docs/reference/mcp-sdk-daemon.md#mcp-server) | Read-only Model Context Protocol tools over stdio, one JSON-RPC message per line, and their limits. |
-| [SDKs](docs/reference/mcp-sdk-daemon.md#sdks) | The Rust `deep-diff-forge-sdk` crate, and the Python client, which drives the binary over `rpc` or a running daemon's socket. |
-| [The optional daemon](docs/reference/mcp-sdk-daemon.md#the-optional-daemon) | A JSON-RPC 2.0 server on an owner-private Unix domain socket for repeated review and multi-client workflows; never required. |
+| [Output formats and schemas](docs/reference/output-and-exit-codes.md#output-formats-and-schemas) · [Exit codes](docs/reference/output-and-exit-codes.md#exit-codes) · [Machine contract (`ddf.result.v1`)](docs/reference/output-and-exit-codes.md#machine-contract-ddfresultv1) | The schema each machine document names; each exit code, its meaning and next action; the `ddf.result.v1` envelope. |
+| [MCP server](docs/reference/mcp-sdk-daemon.md#mcp-server) · [SDKs](docs/reference/mcp-sdk-daemon.md#sdks) · [The optional daemon](docs/reference/mcp-sdk-daemon.md#the-optional-daemon) | Read-only MCP tools over stdio; the Rust `deep-diff-forge-sdk` crate and the Python client; a JSON-RPC 2.0 server on an owner-private Unix domain socket, never required. |
 | [Verified agent findings](docs/reference/verified-agent-findings.md#verified-agent-findings) | Agent findings, one JSON object per line, checked against patch truth before anyone reads them. |
 | [Benchmarks and evaluation](docs/reference/evaluation.md#benchmarks-and-evaluation) | `bench`, which times the hot paths on generated inputs, and `eval`, which scores the engine against the labelled corpus in `fixtures/eval`. |
 | [Risk ranking](docs/reference/risk-ranking.md#risk-ranking) | The one deterministic, additive score per file that `--rank`, `--cluster`, the cockpit and `rank_patch` share, with its signal tables. |
 | [Architecture](docs/reference/architecture-overview.md#architecture) | The 14 narrow crates with one-way dependencies; `core` is pure vocabulary. |
-| [Quality gates](docs/reference/quality-gates.md#quality-gates) | The required checks up to 0.8.3, and the local gate (`scripts/ci_local.sh`) that a release commit passes from 0.8.4. |
-| [Review council and evidence gates](docs/reference/quality-gates.md#review-council-and-evidence-gates) | A map of the review council; `docs/REVIEW_COUNCIL.md` holds the full design, threat model and per-round history. |
+| [Quality gates](docs/reference/quality-gates.md#quality-gates) · [Review council and evidence gates](docs/reference/quality-gates.md#review-council-and-evidence-gates) | The required checks up to 0.8.3 and the local gate a release commit passes from 0.8.4; a map of the review council (`docs/REVIEW_COUNCIL.md` has the full design). |
 
 ---
 
@@ -340,12 +309,11 @@ archive ships this README alone, so read them from a clone or from GitLab.
 
 - **Released:** 0.9.0 (2026-11-18), a signed tag on GitLab, Gitea and Forgejo; from 0.8.4 a
   release is built only for `x86_64-unknown-linux-gnu` ([supported platforms](#supported-platforms)).
-- **Readiness:** 0.9.0 is not production-ready yet (verdict of 2026-11-18); neither 0.8.4 nor
-  0.9.0 has had an independent rescore.
+- **Readiness:** 0.9.0 is not production-ready yet (verdict of 2026-11-18); neither 0.8.4 nor 0.9.0 has had an independent rescore.
 - **Not claimed:** crates.io publication (on hold), and multi-user or shared-host daemon
   deployment; the known limits are in the [0.9.0 notes](docs/release-notes/0.9.0.md#status-at-release).
-- **History:** the notes of every release, and the dated history of this section, are in
-  [`docs/release-notes/`](docs/release-notes/README.md).
+- **History:** the notes of every release, and the dated history of this section, are in [`docs/release-notes/`](docs/release-notes/README.md).
+- **Known issues:** issues found after a release are listed on its [release page](https://gitlab.com/lukeomahoney/deep-diff-forge/-/releases).
 
 ## Contributing
 
@@ -356,8 +324,7 @@ someone else's pull request.
 
 1. Read [CONTRIBUTING.md](CONTRIBUTING.md). It covers setup in three commands, the quality bar
    and the open problems.
-2. Pick an issue labelled [`good first issue`](https://github.com/Louranicas/deep-diff-forge/labels/good%20first%20issue)
-   or [`help wanted`](https://github.com/Louranicas/deep-diff-forge/labels/help%20wanted), or
+2. Pick an [open issue on GitLab](https://gitlab.com/lukeomahoney/deep-diff-forge/-/issues), or
    [open your own](https://gitlab.com/lukeomahoney/deep-diff-forge/-/issues/new).
 3. Send a pull request. CI tells you everything a reviewer would check mechanically, so the
    human review can focus on ideas.
@@ -374,13 +341,9 @@ through a confidential issue on GitLab ([SECURITY.md](SECURITY.md#reporting-a-vu
 | Understand the design | [`ARCHITECTURE`](docs/ARCHITECTURE.md) · [`SCHEMATICS`](docs/SCHEMATICS.md) · [`VISION`](docs/VISION.md) · [`PIONEER_FEATURE_SPECS`](docs/PIONEER_FEATURE_SPECS.md) · [`ROADMAP`](docs/ROADMAP.md) |
 | Hold the quality bar | [`TESTING_GOLD_STANDARD`](docs/TESTING_GOLD_STANDARD.md) · [`DEPLOYMENT_FRAMEWORK`](docs/DEPLOYMENT_FRAMEWORK.md) · [`REVIEW_COUNCIL`](docs/REVIEW_COUNCIL.md) · [`SECURITY`](SECURITY.md) |
 | See the record | [`CHANGELOG`](CHANGELOG.md) · [`EVIDENCE`](EVIDENCE.md) · [`NOTES`](NOTES.md) · [`DEPLOYMENT_GAP_ANALYSIS`](docs/DEPLOYMENT_GAP_ANALYSIS.md) · [`PRODUCTION_READINESS`](docs/PRODUCTION_READINESS.md) · [`RECOMMENDATION_INTEGRATION`](docs/RECOMMENDATION_INTEGRATION.md) |
-| Use the commands, outputs and surfaces | [`commands`](docs/reference/commands.md) · [`output-and-exit-codes`](docs/reference/output-and-exit-codes.md) · [`mcp-sdk-daemon`](docs/reference/mcp-sdk-daemon.md) · [`agent-hooks`](docs/reference/agent-hooks.md) |
-| Read how it ranks, measures and gates | [`risk-ranking`](docs/reference/risk-ranking.md) · [`evaluation`](docs/reference/evaluation.md) · [`verified-agent-findings`](docs/reference/verified-agent-findings.md) · [`architecture-overview`](docs/reference/architecture-overview.md) · [`quality-gates`](docs/reference/quality-gates.md) |
-| See what each release changed | [`release-notes`](docs/release-notes/README.md) |
+| Read the reference sections and every release's notes | [`docs/reference`](docs/reference/README.md) · [`docs/release-notes`](docs/release-notes/README.md) |
 
 ## License
 
 Licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) at your option.
 Unless you state otherwise, contributions are dual-licensed the same way.
-
-<sub>Maintainer navigation (owner's local Obsidian vault): [module notes](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2FREADME) · [council hub](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FReview%20Council).</sub>
