@@ -988,8 +988,11 @@ fn envelope_exits_128_plus_the_signal_that_ended_the_command() {
 /// 2026-11-18): `README.md` is under 400 lines and links both indexes; every relative link, inline
 /// or reference-style, in `README.md`, `CHANGELOG.md`, `docs/release-notes/*.md` and
 /// `docs/reference/*.md` stays inside the repository, names a file that exists and, with a
-/// fragment, a heading of that file; every version heading of the changelog has a file in
-/// `docs/release-notes/` whose first line names the version.
+/// fragment, a heading of that file; every document in the two directories but their
+/// `README.md` indexes is linked from `README.md`, `CHANGELOG.md` or an index; and the version
+/// headings of the changelog and the `X.Y.Z.md` files of `docs/release-notes/` correspond both
+/// ways, each file non-empty and beginning with a line that names its version. It does not check
+/// external URLs, or whether a host renders an anchor differently from the rule of `headings`.
 #[test]
 fn the_front_page_stays_short_and_its_documents_stay_linked() {
     use std::path::{Path, PathBuf};
@@ -1014,6 +1017,14 @@ fn the_front_page_stays_short_and_its_documents_stay_linked() {
     }
     let mut anchors = std::collections::BTreeMap::new();
     let mut from_readme = std::collections::BTreeSet::new();
+    let mut from_front = std::collections::BTreeSet::new();
+    let front = [
+        "README.md",
+        "CHANGELOG.md",
+        "docs/reference/README.md",
+        "docs/release-notes/README.md",
+    ]
+    .map(|path| root.join(path));
     let mut checked = 0;
     for file in &files {
         let text = std::fs::read_to_string(file).unwrap();
@@ -1041,6 +1052,9 @@ fn the_front_page_stays_short_and_its_documents_stay_linked() {
                 if *file == root.join("README.md") {
                     from_readme.insert(resolved.clone());
                 }
+                if front.contains(file) {
+                    from_front.insert(resolved.clone());
+                }
                 let markdown = resolved.extension().is_some_and(|ext| ext == "md");
                 if fragment.is_empty() || !markdown || NO_HEADING.contains(&fragment) {
                     continue;
@@ -1059,30 +1073,52 @@ fn the_front_page_stays_short_and_its_documents_stay_linked() {
             "README.md does not link {index}"
         );
     }
+    for file in files.iter().skip(2).filter(|file| !front.contains(file)) {
+        assert!(
+            from_front.contains(file),
+            "{} is linked from no index",
+            file.display()
+        );
+    }
+    release_notes_match_the_changelog(&root);
+}
+
+/// The version headings of `CHANGELOG.md` and the `X.Y.Z.md` files of `docs/release-notes/`
+/// correspond both ways; each such file is non-empty and its first line names its version.
+fn release_notes_match_the_changelog(root: &std::path::Path) {
     let changelog = std::fs::read_to_string(root.join("CHANGELOG.md")).unwrap();
-    let mut versions = 0;
-    for line in changelog.lines() {
-        let Some(rest) = line.strip_prefix("## [") else {
-            continue;
-        };
-        let version = rest.split(']').next().unwrap();
-        if version == "Unreleased" {
-            continue;
-        }
-        versions += 1;
+    let versions: Vec<&str> = changelog
+        .lines()
+        .filter_map(|line| line.strip_prefix("## [")?.split(']').next())
+        .filter(|version| *version != "Unreleased")
+        .collect();
+    assert!(!versions.is_empty(), "the changelog names no version");
+    for version in &versions {
         let notes = root.join(format!("docs/release-notes/{version}.md"));
         assert!(
             notes.is_file(),
             "{version} has no file in docs/release-notes/"
         );
-        let text = std::fs::read_to_string(&notes).unwrap();
+    }
+    for entry in std::fs::read_dir(root.join("docs/release-notes")).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let Some(version) = name.strip_suffix(".md") else {
+            continue;
+        };
+        if version.split('.').count() != 3 || !version.split('.').all(|n| n.parse::<u32>().is_ok())
+        {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.trim().is_empty(), "{name} is empty");
         let first = text.lines().next().unwrap_or("");
+        assert!(first.contains(version), "{name} begins {first:?}");
         assert!(
-            first.contains(version),
-            "the notes of {version} begin {first:?}"
+            versions.contains(&version),
+            "{name} has no heading in the changelog"
         );
     }
-    assert!(versions > 0, "the changelog names no version");
 }
 
 /// The path a link names from `dir`, resolved by its components under `root`; `None` when it
@@ -1108,7 +1144,9 @@ fn inside(root: &std::path::Path, dir: &std::path::Path, path: &str) -> Option<s
 
 /// The anchors of a Markdown text: each heading by the slug rule GitHub and GitLab use (lower
 /// case; letters, digits, `-` and `_` kept, a space made `-`, the rest dropped; a repeated slug
-/// gains `-1`, `-2`, ...), and each `<a id="...">` or `<a name="...">`.
+/// gains `-1`, `-2`, ...), and each `<a id="...">` or `<a name="...">`. The rule was checked
+/// against GitLab's rendering on 2026-11-18: `Reconciled score: 86 / 100` is
+/// `reconciled-score-86--100`, both hyphens kept.
 fn headings(text: &str) -> std::collections::BTreeSet<String> {
     let mut out = std::collections::BTreeSet::new();
     let mut fence = false;
