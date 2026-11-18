@@ -39,8 +39,8 @@ for Linux x86_64.
 
 - **Three evidence signals for a change that weakens its own checks**
 - **`error_swallowed`, and evidence that says how it was found**
-- **Rust hunks are read by the parser, and `panic_path_added`**
 - **The signal vocabulary as data: `deep-diff-forge schema signals`.**
+- **`deep-diff-forge explain signal <label> [--json]`**
 - **The agent loop: `deep-diff-forge agent hook session-start|post-tool|stop --client claude`.**
 - **`deep-diff-forge agent doctor --gate`**
 - and 27 more, in the full notes
@@ -51,10 +51,10 @@ Tests, corpora and the review record are in the full notes.
 
 ### Changed
 
-- **`basis` in `rank.v0` evidence is no longer always `lexical`.**
+- **`basis` in `rank.v0` evidence is no longer always `lexical`.** (superseded before release; see the full notes)
 - **A hunk's evidence can depend on the hunks Git must put beside it.**
 - **Every Rust hunk is also read as release 0.8.3 read it**
-- **Existing Rust signals can be found where they were not before.**
+- **Existing Rust signals can be found where they were not before.** (superseded before release; see the full notes)
 - and 1 more, in the full notes
 
 ### Security
