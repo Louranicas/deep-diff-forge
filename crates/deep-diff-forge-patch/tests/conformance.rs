@@ -69,7 +69,8 @@ impl Seen {
 }
 
 /// The tree before every case: `x` holds `a`, `y` holds `y`, `e` is empty, `d/x` holds `dx`, and
-/// `m` has two sections with one line in common.
+/// `m` has two sections with one line in common, `f` ends with two of its earlier lines
+/// again and `g` does not.
 fn before() -> Tree {
     [
         ("x", &b"a\n"[..]),
@@ -77,6 +78,8 @@ fn before() -> Tree {
         ("e", b""),
         ("d/x", b"dx\n"),
         ("m", b"[prod]\nallow = false\n[test]\nallow = false\n"),
+        ("f", b"x\na\nb\nc\na\nb\n"),
+        ("g", b"x\na\nb\nc\nd\n"),
     ]
     .into_iter()
     .map(|(path, content)| (path.to_owned(), regular(content)))
@@ -753,6 +756,56 @@ fn row_hunk_placement() {
         s.git_tree()["m"],
         file("[prod]\nallow = true\n[test]\nallow = false\n", false)
     );
+}
+
+#[test]
+fn row_hunk_anchor() {
+    let r = rig("hunk-anchor");
+    let one = |path: &str, hunk: &str| {
+        let s = see(
+            &r,
+            &format!("diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n{hunk}"),
+        );
+        let anchor = s.read()[0].patch_twin.hunks[0].git_anchor();
+        (s, anchor)
+    };
+    let end = Some("Git places this hunk at the end of the file");
+    // The reproduction: leading context only, header at line 2, on a file whose end repeats
+    // the lines. Read; Git changes the LAST `b`, and the review says the hunk is at the end.
+    for (hunk, what) in [
+        (
+            "@@ -2,2 +2,2 @@\n a\n-b\n+B\n",
+            "the header names the earlier copy",
+        ),
+        ("@@ -5,2 +5,2 @@\n a\n-b\n+B\n", "the header names the end"),
+    ] {
+        let (s, anchor) = one("f", hunk);
+        assert_eq!(
+            s.git_tree()["f"],
+            file("x\na\nb\nc\na\nB\n", false),
+            "{what}"
+        );
+        assert_eq!(anchor, end, "{what}");
+    }
+    // Where the end does not hold the lines, Git refuses the whole patch.
+    let (s, anchor) = one("g", "@@ -2,2 +2,2 @@\n a\n-b\n+B\n");
+    s.git_writes_nothing();
+    assert_eq!(anchor, end);
+    // At line 1 with no trailing context the hunk must be the whole file: on a longer file Git
+    // refuses it whole. With trailing context it is placed at the start.
+    let (s, anchor) = one("f", "@@ -1,2 +1,2 @@\n x\n-a\n+A\n");
+    s.git_writes_nothing();
+    assert_eq!(anchor, Some("Git places this hunk on the whole file"));
+    let (s, anchor) = one("f", "@@ -1,3 +1,3 @@\n x\n-a\n+A\n b\n");
+    assert_eq!(s.git_tree()["f"], file("x\nA\nb\nc\na\nb\n", false));
+    assert_eq!(
+        anchor,
+        Some("Git places this hunk at the start of the file")
+    );
+    // Context on both sides: no anchor, and Git places the hunk at the header's line.
+    let (s, anchor) = one("f", "@@ -2,3 +2,3 @@\n a\n-b\n+B\n c\n");
+    assert_eq!(s.git_tree()["f"], file("x\na\nB\nc\na\nb\n", false));
+    assert_eq!(anchor, None);
 }
 
 /// Patches `git apply` fails to write after it has begun, or writes otherwise than the review

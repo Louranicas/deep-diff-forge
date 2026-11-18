@@ -4,9 +4,10 @@
 //! A scratch repository whose object store holds every blob a patch may name, Git run with no
 //! user or system configuration, no hooks and no external diff, and the comparison of the tree a
 //! real `git apply` writes with the tree DDF's review describes. `reviewed_tree` and `agree`
-//! follow `git_differential.rs`'s `real_apply` (kept the same there); here `patched` also checks
-//! each removed and context line against the file, so a review whose hunks do not fit the file
-//! it names describes no tree.
+//! follow `git_differential.rs`'s `real_apply`, whose fixed cases are made on their base tree;
+//! here `patched` places each hunk by Git's anchors, as `CONFORMANCE.md` promises, and checks
+//! each removed and context line against the file, so a review whose hunks fit nowhere Git
+//! would place them describes no tree.
 
 use deep_diff_forge_core::{FileStatus, PatchLineKind, ReviewFile};
 use deep_diff_forge_patch::old_path;
@@ -217,47 +218,66 @@ fn read_tree(root: &Path, dir: &Path, into: &mut Tree) -> io::Result<()> {
     Ok(())
 }
 
-/// `old` with the file's hunks applied at the lines they name, or `None` when a removed or
-/// context line is not the line of `old` it names (Git would not apply the hunk there).
+/// `old` with the file's hunks applied where plain `git apply` places them, or `None` when Git
+/// finds no place for one. Git's rule (`apply_one_fragment`, `find_pos`, `match_fragment`):
+/// a hunk at old line 0 or 1 must match at the start of the file, one with no trailing context
+/// at its end (both: the whole file); any other is tried at its header's new line, then one
+/// line after, one before, two after and so on. Its context and removed lines must equal the
+/// file's there, and no line an earlier hunk wrote may match again. Without `-C` Git tries
+/// nothing else.
 fn patched(old: &[u8], file: &ReviewFile) -> Option<Vec<u8>> {
-    let old: Vec<&[u8]> = old.split_inclusive(|&b| b == b'\n').collect();
-    let (mut at, mut out) = (0, Vec::new());
+    let mut image: Vec<(Vec<u8>, bool)> = old
+        .split_inclusive(|&b| b == b'\n')
+        .map(|l| (l.to_vec(), false))
+        .collect();
     for hunk in &file.patch_twin.hunks {
-        // A hunk with no old lines inserts after line `old_start` (`-U0`); any other starts at it.
-        let old_lines = hunk
+        let text = |kind: PatchLineKind| -> Vec<Vec<u8>> {
+            hunk.lines
+                .iter()
+                .filter(|l| l.kind != kind)
+                .map(|l| {
+                    let mut t = l.text.as_bytes().to_vec();
+                    if !l.no_newline {
+                        t.push(b'\n');
+                    }
+                    t
+                })
+                .collect()
+        };
+        let (pre, post) = (text(PatchLineKind::Added), text(PatchLineKind::Removed));
+        let start = hunk.old_start.unwrap_or(0) <= 1;
+        let end = hunk
             .lines
-            .iter()
-            .filter(|l| l.kind != PatchLineKind::Added)
-            .count();
-        let start =
-            (hunk.old_start.unwrap_or(0) as usize).saturating_sub(usize::from(old_lines > 0));
-        while at < start && at < old.len() {
-            out.extend_from_slice(old[at]);
-            at += 1;
-        }
-        for line in &hunk.lines {
-            let mut text = line.text.as_bytes().to_vec();
-            if !line.no_newline {
-                text.push(b'\n');
-            }
-            match line.kind {
-                PatchLineKind::Context | PatchLineKind::Removed => {
-                    if old.get(at).copied() != Some(text.as_slice()) {
-                        return None;
-                    }
-                    if line.kind == PatchLineKind::Context {
-                        out.extend_from_slice(&text);
-                    }
-                    at += 1;
-                }
-                PatchLineKind::Added => out.extend_from_slice(&text),
-            }
-        }
+            .last()
+            .is_none_or(|l| l.kind != PatchLineKind::Context);
+        let line = if start {
+            0
+        } else if end {
+            image.len().checked_sub(pre.len()).unwrap_or(image.len())
+        } else {
+            (hunk.new_start.unwrap_or(0) as usize)
+                .saturating_sub(1)
+                .min(image.len())
+        };
+        let fits = |at: usize| {
+            at + pre.len() <= image.len()
+                && (!end || at + pre.len() == image.len())
+                && (!start || at == 0)
+                && pre
+                    .iter()
+                    .zip(&image[at..])
+                    .all(|(p, (l, done))| !done && p == l)
+        };
+        let after = (1..=image.len()).flat_map(|d| [Some(line + d), line.checked_sub(d)]);
+        let at = std::iter::once(Some(line))
+            .chain(after)
+            .flatten()
+            .filter(|&at| at <= image.len())
+            .find(|&at| fits(at))?;
+        let written = post.into_iter().map(|l| (l, true));
+        image.splice(at..at + pre.len(), written);
     }
-    for line in old.iter().skip(at) {
-        out.extend_from_slice(line);
-    }
-    Some(out)
+    Some(image.into_iter().flat_map(|(l, _)| l).collect())
 }
 
 /// What a binary section writes, as its `index` line names it: nothing for the null id, else the

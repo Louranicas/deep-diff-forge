@@ -63,7 +63,8 @@ impl Rng {
 }
 
 /// The tree every patch is applied to: `x` and `w` both hold `a` (so a hunk meant for one also
-/// fits the other), `y` holds `y`, `e` is empty, `d/x` holds `dx` (for doubled slashes).
+/// fits the other), `y` holds `y`, `e` is empty, `d/x` holds `dx` (for doubled slashes), `f` ends
+/// with two of its earlier lines again (for hunks Git anchors at the end).
 fn before() -> Tree {
     [
         ("x", &b"a\n"[..]),
@@ -72,6 +73,7 @@ fn before() -> Tree {
         ("e", b""),
         ("d/x", b"dx\n"),
         ("m", b"[prod]\nallow = false\n[test]\nallow = false\n"),
+        ("f", b"x\na\nb\nc\na\nb\n"),
     ]
     .into_iter()
     .map(|(path, content)| (path.to_owned(), regular(content)))
@@ -80,10 +82,10 @@ fn before() -> Tree {
 
 /// The blobs of the object store, named in the sections as `@OLD@` (`a`), `@NEW@` (`stored`),
 /// `@Y@`, `@E@` (empty), `@T@` (`y` with no line feed, a symlink's target), `@DX@` and `@M@` (two
-/// sections, for hunks with little context); `…7@` is
+/// sections, for hunks with little context), `@F@`; `…7@` is
 /// the seven-digit abbreviation, `@ZERO@` the null id and `@SUB@` a submodule's commit id, each
 /// as long as the repository's ids (SHA-1 or SHA-256).
-const BLOBS: [(&str, &[u8]); 7] = [
+const BLOBS: [(&str, &[u8]); 8] = [
     ("OLD", b"a\n"),
     ("NEW", b"stored\n"),
     ("Y", b"y\n"),
@@ -91,6 +93,7 @@ const BLOBS: [(&str, &[u8]); 7] = [
     ("T", b"y"),
     ("DX", b"dx\n"),
     ("M", b"[prod]\nallow = false\n[test]\nallow = false\n"),
+    ("F", b"x\na\nb\nc\na\nb\n"),
 ];
 
 /// Sections Git writes for changes to `before()`, as `git diff` writes them (a change of type is
@@ -142,6 +145,14 @@ const WRITTEN: &[&str] = &[
 const WRITTEN_U0: &[&str] = &[
     "diff --git a/m b/m\nindex @M7@..@NEW7@ 100644\n--- a/m\n+++ b/m\n@@ -2 +2 @@\n-allow = false\n+allow = true\n",
     "diff --git a/m b/m\nindex @M7@..@NEW7@ 100644\n--- a/m\n+++ b/m\n@@ -2,0 +3 @@\n+x = 1\n",
+];
+
+/// Sections written by hand that Git anchors at the end of the file (no trailing context), the
+/// first with a header that names the earlier copy of its lines: Git changes the last copy, and
+/// the review must describe that tree (`CONFORMANCE.md`, row `hunk-anchor`).
+const END_ANCHORED: &[&str] = &[
+    "diff --git a/f b/f\nindex @F7@..@NEW7@ 100644\n--- a/f\n+++ b/f\n@@ -2,2 +2,2 @@\n a\n-b\n+B\n",
+    "diff --git a/f b/f\nindex @F7@..@NEW7@ 100644\n--- a/f\n+++ b/f\n@@ -5,2 +5,2 @@\n a\n-b\n+B\n",
 ];
 
 /// Header lines of other rows, put into a section by the `insert` move.
@@ -424,12 +435,20 @@ struct Generated {
     written: bool,
     /// One of its sections is from [`WRITTEN_U0`].
     unanchored: bool,
+    /// One of its sections is from [`END_ANCHORED`].
+    end_anchored: bool,
 }
 
 fn generate(rng: &mut Rng) -> Generated {
-    let pool: Vec<&str> = WRITTEN.iter().chain(WRITTEN_U0).copied().collect();
+    let pool: Vec<&str> = WRITTEN
+        .iter()
+        .chain(WRITTEN_U0)
+        .chain(END_ANCHORED)
+        .copied()
+        .collect();
     let groups: Vec<&str> = (0..=rng.below(3)).map(|_| *rng.pick(&pool)).collect();
     let unanchored = groups.iter().any(|g| WRITTEN_U0.contains(g));
+    let end_anchored = groups.iter().any(|g| END_ANCHORED.contains(g));
     let mut paths: Vec<String> = Vec::new();
     let mut distinct = true;
     for group in &groups {
@@ -453,9 +472,10 @@ fn generate(rng: &mut Rng) -> Generated {
     }
     Generated {
         text,
-        written: moves.is_empty() && distinct,
+        written: moves.is_empty() && distinct && !end_anchored,
         moves,
         unanchored,
+        end_anchored,
     }
 }
 
@@ -480,6 +500,9 @@ struct Tally {
     /// Git applies, DDF refuses by design: a `git diff -U0` hunk Git places elsewhere than its
     /// header says ([`WRITTEN_U0`], `HunkPlacedElsewhere`).
     unanchored: usize,
+    /// DDF reads and Git applies as reviewed: a hand-written hunk Git anchors at the end
+    /// ([`END_ANCHORED`]).
+    end_anchored: usize,
     failures: Vec<String>,
 }
 
@@ -568,7 +591,10 @@ fn run(seeds: &[u64], tag: &str, format: &str) -> Tally {
                         continue;
                     }
                     match reviewed_tree(&before, files, &repo.contents) {
-                        Some(reviewed) if agree(&git, &reviewed) => tally.applied_as_read += 1,
+                        Some(reviewed) if agree(&git, &reviewed) => {
+                            tally.applied_as_read += 1;
+                            tally.end_anchored += usize::from(generated.end_anchored);
+                        }
                         reviewed => tally.failures.push(format!(
                             "git apply writes otherwise than DDF reads: {case}\n git: {git:?}\n ddf: {reviewed:?}"
                         )),
@@ -626,6 +652,7 @@ fn every_generated_patch_ddf_reads_is_applied_by_git_as_reviewed() {
         total.submodule_diff += tally.submodule_diff;
         total.refused_whole += tally.refused_whole;
         total.unanchored += tally.unanchored;
+        total.end_anchored += tally.end_anchored;
         for (shape, n) in tally.git_only {
             *total.git_only.entry(shape).or_default() += n;
         }
@@ -647,6 +674,10 @@ fn every_generated_patch_ddf_reads_is_applied_by_git_as_reviewed() {
     eprintln!(
         "  Git writes, git apply places elsewhere, DDF refuses by design: -U0 hunks {}",
         total.unanchored
+    );
+    eprintln!(
+        "  written by hand, Git anchors at the end, applied as reviewed: {}",
+        total.end_anchored
     );
     for failure in total.failures.iter().take(40) {
         eprintln!("  FAIL {}", failure.lines().next().unwrap_or_default());
@@ -676,6 +707,7 @@ fn every_generated_patch_ddf_reads_is_applied_by_git_as_reviewed() {
         "no abbreviated binary diff was generated"
     );
     assert!(total.unanchored > 0, "no -U0 hunk was generated");
+    assert!(total.end_anchored > 0, "no end-anchored hunk was applied");
     assert!(
         total.applied_as_read * 4 >= total.patches,
         "only {} of {} patches were read and applied",
