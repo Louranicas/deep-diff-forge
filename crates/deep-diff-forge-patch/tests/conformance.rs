@@ -70,7 +70,7 @@ impl Seen {
 
 /// The tree before every case: `x` holds `a`, `y` holds `y`, `e` is empty, `d/x` holds `dx`, and
 /// `m` has two sections with one line in common, `f` ends with two of its earlier lines
-/// again and `g` does not.
+/// again and `g` does not, `t` and `u` repeat three lines (Git's search, S3C-L-1).
 fn before() -> Tree {
     [
         ("x", &b"a\n"[..]),
@@ -80,6 +80,8 @@ fn before() -> Tree {
         ("m", b"[prod]\nallow = false\n[test]\nallow = false\n"),
         ("f", b"x\na\nb\nc\na\nb\n"),
         ("g", b"x\na\nb\nc\nd\n"),
+        ("t", b"a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nb\nX\nd\nk\nl\n"),
+        ("u", b"a\nM\nx\nQ\nb\nc\nd\nM\nx\nQ\ne\n"),
     ]
     .into_iter()
     .map(|(path, content)| (path.to_owned(), regular(content)))
@@ -806,6 +808,51 @@ fn row_hunk_anchor() {
     let (s, anchor) = one("f", "@@ -2,3 +2,3 @@\n a\n-b\n+B\n c\n");
     assert_eq!(s.git_tree()["f"], file("x\na\nB\nc\na\nb\n", false));
     assert_eq!(anchor, None);
+    // Neither anchor: Git searches from `+c` outward over lines no earlier hunk wrote (`see`
+    // holds the oracle, which does the same, to Git's tree). The review cases of S3C-L-1:
+    // t2, the second hunk skips the copy the first hunk wrote and changes line 12;
+    let (s, _) = one(
+        "t",
+        "@@ -2,3 +2,3 @@\n b\n-c\n+X\n d\n@@ -5,3 +5,3 @@\n b\n-X\n+Y\n d\n",
+    );
+    let t = "a\nb\nX\nd\ne\nf\ng\nh\ni\nj\nb\nY\nd\nk\nl\n";
+    assert_eq!(s.git_tree()["t"], file(t, false));
+    // t3, two copies equally near: Git takes the later; t4, a `+c` the `-a` does not give:
+    // Git searches from `+c`.
+    for (hunk, u) in [
+        (
+            "@@ -5,3 +5,3 @@\n M\n-x\n+y\n Q\n",
+            "a\nM\nx\nQ\nb\nc\nd\nM\ny\nQ\ne\n",
+        ),
+        (
+            "@@ -8,3 +2,3 @@\n M\n-x\n+y\n Q\n",
+            "a\nM\ny\nQ\nb\nc\nd\nM\nx\nQ\ne\n",
+        ),
+    ] {
+        let (s, anchor) = one("u", hunk);
+        assert_eq!(
+            (&s.git_tree()["u"], anchor),
+            (&file(u, false), None),
+            "{hunk}"
+        );
+    }
+}
+
+/// A partial write the tree decides (S3C-X-1), outside the promise: the patch deletes `y` and
+/// creates `x/b` where the tree holds a file `x`. DDF reads it, `git apply --check` passes, and
+/// Git deletes `y`, then fails.
+#[test]
+fn a_partial_write_the_tree_decides_is_outside_the_promise() {
+    let r = rig("tree-partial");
+    let patch = "diff --git a/y b/y\ndeleted file mode 100644\n--- a/y\n+++ /dev/null\n@@ -1 +0,0 @@\n-y\ndiff --git a/x/b b/x/b\nnew file mode 100644\n--- /dev/null\n+++ b/x/b\n@@ -0,0 +1 @@\n+bar\n";
+    assert!(parse_decoded(&decode(patch.as_bytes()), ParseOptions::default()).is_ok());
+    r.reset(&before());
+    assert!(r.checks(patch.as_bytes()), "git apply --check passes");
+    let (ok, _, after) = r.apply_outcome(&before(), patch.as_bytes());
+    assert!(
+        !ok && !after.contains_key("y") && after["x"] == before()["x"],
+        "{after:?}"
+    );
 }
 
 /// Patches `git apply` fails to write after it has begun, or writes otherwise than the review

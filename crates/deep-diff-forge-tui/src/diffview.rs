@@ -202,7 +202,9 @@ fn file_section(
                 rows.extend(note_box(note, palette, width));
             }
         }
-        rows.push(|| hunk_header(hunk, palette));
+        for line in hunk_header(hunk, palette, width) {
+            rows.push(|| line);
+        }
         push_rows(
             rows,
             hunk,
@@ -545,20 +547,27 @@ fn rule(palette: &Palette, width: usize) -> Line<'static> {
     ))
 }
 
-fn hunk_header(hunk: &PatchHunk, palette: &Palette) -> Line<'static> {
+/// The hunk header, then where Git anchors the hunk (the header's lines are the patch's claim):
+/// on the header line when it fits in `width`, else whole on wrapped lines of its own.
+fn hunk_header(hunk: &PatchHunk, palette: &Palette, width: usize) -> Vec<Line<'static>> {
     let old = hunk.old_start.unwrap_or(0);
     let new = hunk.new_start.unwrap_or(0);
-    // The header's lines are the patch's claim; where Git anchors the hunk is said.
-    let anchor = hunk
-        .git_anchor()
-        .map(|a| format!(" ({a})"))
-        .unwrap_or_default();
-    Line::from(Span::styled(
-        format!("@@ -{old} +{new} @@{anchor}"),
-        Style::default()
-            .fg(palette.accent)
-            .add_modifier(Modifier::DIM),
-    ))
+    let mut header = format!("@@ -{old} +{new} @@");
+    let mut below = Vec::new();
+    match hunk.git_anchor().map(|a| format!("({a})")) {
+        Some(a) if cell_width(&header) + 1 + cell_width(&a) <= width => {
+            header = format!("{header} {a}");
+        }
+        Some(a) => below = wrap(&a, width),
+        None => {}
+    }
+    let style = Style::default()
+        .fg(palette.accent)
+        .add_modifier(Modifier::DIM);
+    std::iter::once(header)
+        .chain(below)
+        .map(|t| Line::from(Span::styled(t, style)))
+        .collect()
 }
 
 fn fold_marker(count: usize, palette: &Palette) -> Line<'static> {
@@ -905,6 +914,26 @@ mod tests {
         assert!(!render(&a, 100).contains('\u{1b}'));
         a.handle(AppEvent::ToggleLayout);
         assert!(!render(&a, 100).contains('\u{1b}'));
+    }
+
+    /// The anchor statement is never cut: on the header line when it fits, else wrapped whole.
+    #[test]
+    fn the_anchor_statement_is_whole_at_any_width() {
+        let files = parse("--- a/f\n+++ b/f\n@@ -2,2 +2,2 @@\n a\n-b\n+B\n").unwrap();
+        let a = ReviewApp::from_review(&files);
+        let wide = render(&a, 60);
+        assert!(
+            wide.contains("@@ -2 +2 @@ (Git places this hunk at the end of the file)"),
+            "{wide}"
+        );
+        let narrow = render(&a, 30);
+        let lines: Vec<&str> = narrow.lines().map(str::trim_end).collect();
+        let at = lines.iter().position(|l| *l == "@@ -2 +2 @@").unwrap();
+        let said = lines[at + 1..at + 3].join(" ");
+        assert_eq!(
+            said, "(Git places this hunk at the end of the file)",
+            "{narrow}"
+        );
     }
 
     #[test]
