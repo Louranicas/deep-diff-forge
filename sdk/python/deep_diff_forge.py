@@ -177,7 +177,7 @@ class StdioClient(_Client):
                         previous = len(self._buffer)
                         self._buffer.extend(chunk)
                         newline = self._buffer.find(b"\n", previous)
-        line = bytes(self._buffer[:newline])
+        line = self._buffer[:newline]
         del self._buffer[:newline + 1]
         if pending:
             # It answered before taking the whole request: the unsent tail would garble the next
@@ -286,4 +286,4 @@ class SocketClient(_Client):
             if len(answer) > MAX_REQUEST_BYTES:
                 raise TransportError("the answer exceeds the daemon's maximum size")
             raise TransportError("the daemon closed without a complete answer")
-        return answer[:-1]
+        return answer

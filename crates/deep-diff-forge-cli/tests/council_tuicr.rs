@@ -986,6 +986,24 @@ fn import_journals_human_dispositions_with_actor_and_revision_and_rerun_is_a_noo
     assert_eq!(dry["events"], serde_json::json!([]));
     assert!(!checkpoints.exists());
     assert_eq!(fs::read(f.journal()).unwrap(), journal);
+    let limited = Command::new("python3")
+        .args([
+            "-c",
+            "import os, resource, sys\n\
+             resource.setrlimit(resource.RLIMIT_FSIZE, (32, 32))\n\
+             os.execv(sys.argv[1], sys.argv[1:])",
+            env!("CARGO_BIN_EXE_deep-diff-forge"),
+            "council",
+            "import-tuicr",
+        ])
+        .arg(&f.run)
+        .arg("--session")
+        .arg(&session)
+        .arg("--execute")
+        .output()
+        .unwrap();
+    assert_eq!(limited.status.code(), Some(4), "{}", stderr(&limited));
+    assert_eq!(fs::read_dir(&checkpoints).unwrap().count(), 0);
     let again = json(&f.import(&session, &["--execute"]));
     assert_eq!(again["events"], serde_json::json!([]));
     assert_eq!(again["journal_events"], 4);

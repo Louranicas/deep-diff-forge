@@ -1097,14 +1097,9 @@ fn encode(verified_len: u64, events: &[DecisionEvent]) -> Result<Vec<u8>> {
     }
     Ok(lines)
 }
-/// Append the [`encode`]d `lines` of `events` to the verified journal of `verified_len` bytes, then
+/// Append the [`encode`]d `lines` to the verified journal of `verified_len` bytes, then
 /// record a checkpoint.
-fn append(
-    directory: &Path,
-    verified_len: u64,
-    lines: &[u8],
-    events: &[DecisionEvent],
-) -> Result<()> {
+fn append(directory: &Path, verified_len: u64, lines: &[u8], last: &DecisionEvent) -> Result<()> {
     let path = directory.join(JOURNAL_FILE);
     let mut file = OpenOptions::new()
         .append(true)
@@ -1117,16 +1112,12 @@ fn append(
         ));
     }
     file.write_all(lines)?;
-    file.sync_all()?;
-    fs::File::open(directory)?.sync_all()?;
-    ensure_checkpoint(directory, events.last())
+    ensure_checkpoint(directory, &file, last)
 }
 
-/// Ensure the durable journal head has its create-new checkpoint.
-fn ensure_checkpoint(directory: &Path, last: Option<&DecisionEvent>) -> Result<()> {
-    let Some(last) = last else {
-        return Ok(());
-    };
+fn ensure_checkpoint(directory: &Path, journal: &fs::File, last: &DecisionEvent) -> Result<()> {
+    journal.sync_all()?;
+    fs::File::open(directory)?.sync_all()?;
     let checkpoints = directory.join(CHECKPOINT_DIR);
     if !checkpoints.exists() {
         storage::make_dir(&checkpoints)?;
@@ -1134,16 +1125,23 @@ fn ensure_checkpoint(directory: &Path, last: Option<&DecisionEvent>) -> Result<(
     let path = checkpoints.join(format!("{:020}.json", last.seq));
     if path.exists() {
         fs::File::open(&path)?.sync_all()?;
-        fs::File::open(&checkpoints)?.sync_all()?;
     } else {
+        let staging = directory.join("decisions.checkpoint.tmp");
+        match fs::remove_file(&staging) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => {}
+        }
         storage::write_json(
-            &path,
+            &staging,
             &Checkpoint {
                 seq: last.seq,
                 hash: last.hash.clone(),
             },
         )?;
+        fs::hard_link(&staging, &path)?;
+        fs::remove_file(staging)?;
     }
+    fs::File::open(&checkpoints)?.sync_all()?;
     fs::File::open(directory)?.sync_all()?;
     Ok(())
 }
@@ -1231,10 +1229,11 @@ pub fn import_tuicr(
     plan_files(&mut planner, &inputs)?;
     let lines = encode(journal.bytes, &planner.events)?;
     if options.execute {
-        if planner.events.is_empty() {
-            ensure_checkpoint(&directory, journal.events.last())?;
-        } else {
-            append(&directory, journal.bytes, &lines, &planner.events)?;
+        if let Some(last) = planner.events.last() {
+            append(&directory, journal.bytes, &lines, last)?;
+        } else if let Some(last) = journal.events.last() {
+            let file = fs::File::open(directory.join(JOURNAL_FILE))?;
+            ensure_checkpoint(&directory, &file, last)?;
         }
     }
     Ok(TuicrImport {
@@ -1469,7 +1468,7 @@ mod tests {
                 .set_len(verified_len)
                 .unwrap();
             let result = encode(verified_len, &events)
-                .and_then(|lines| append(dir.path(), verified_len, &lines, &events));
+                .and_then(|lines| append(dir.path(), verified_len, &lines, &events[0]));
             let after = fs::metadata(&path).unwrap().len();
             if fits {
                 assert!(result.is_ok(), "{result:?}");
@@ -1494,7 +1493,7 @@ mod tests {
 
         // Make checkpoint creation fail after append() has synced the journal.
         fs::write(dir.path().join(CHECKPOINT_DIR), b"not a directory").unwrap();
-        assert!(append(dir.path(), 0, &lines, &p.events).is_err());
+        assert!(append(dir.path(), 0, &lines, p.events.last().unwrap()).is_err());
         assert_eq!(fs::read(dir.path().join(JOURNAL_FILE)).unwrap(), lines);
     }
 
