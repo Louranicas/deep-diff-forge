@@ -1645,14 +1645,31 @@ mod tests {
         );
     }
 
+    fn single_event_receipt(event: &DecisionEvent) -> PendingImport {
+        PendingImport {
+            first_seq: event.seq,
+            prev: event.prev.clone(),
+            head: Checkpoint {
+                seq: event.seq,
+                hash: event.hash.clone(),
+            },
+            evidence: ImportEvidence {
+                session_sha256: sha256_hex(br#"{"id":"s"}"#),
+            },
+        }
+    }
+
     /// The writer keeps to the reader's cap: an import whose events would take the journal past it
     /// is refused before a byte is written, so the run stays importable.
     #[test]
     fn a_batch_that_would_pass_the_journal_cap_is_refused_before_writing() {
         // The documented 64 MiB, written out so the test does not move with the constant.
         let cap: u64 = 64 << 20;
-        let events = [planner().blank(EventKind::CommentAdded, user())];
-        let size = encode(0, &events).unwrap().len() as u64;
+        let mut p = planner();
+        p.push(p.blank(EventKind::CommentAdded, user())).unwrap();
+        let event = &p.events[0];
+        let pending = single_event_receipt(event);
+        let size = encode(0, &p.events).unwrap().len() as u64;
         for (verified_len, fits) in [(cap - size, true), (cap - size + 1, false)] {
             let dir = Scratch::new("journal");
             let path = dir.join(JOURNAL_FILE);
@@ -1660,9 +1677,15 @@ mod tests {
                 .unwrap()
                 .set_len(verified_len)
                 .unwrap();
-            let result = encode(verified_len, &events)
-                .and_then(|lines| append(dir.path(), verified_len, &lines, &events[0]));
+            // The sparse prefix stands in for the verified byte count at this boundary.
+            let journal = Journal {
+                bytes: verified_len,
+                ..Journal::default()
+            };
+            let result = encode(journal.bytes, &p.events)
+                .and_then(|lines| append(dir.path(), &journal, &lines, event, &pending));
             let after = fs::metadata(&path).unwrap().len();
+            assert!(!dir.join(PENDING_FILE).exists());
             if fits {
                 assert!(result.is_ok(), "{result:?}");
                 assert_eq!(after, cap);
@@ -1682,12 +1705,29 @@ mod tests {
         let dir = Scratch::new("journal-checkpoint-retry");
         let mut p = planner();
         p.push(p.blank(EventKind::CommentAdded, user())).unwrap();
-        let lines = encode(0, &p.events).unwrap();
+        let prefix = encode(0, &p.events).unwrap();
+        fs::write(dir.join(JOURNAL_FILE), &prefix).unwrap();
+        let journal = load_journal(dir.path(), p.run_id).unwrap();
+        p.push(p.blank(EventKind::Deleted, user())).unwrap();
+        let event = &p.events[1];
+        let lines = encode(journal.bytes, std::slice::from_ref(event)).unwrap();
+        let pending = single_event_receipt(event);
 
         // Make checkpoint creation fail after append() has synced the journal.
         fs::write(dir.path().join(CHECKPOINT_DIR), b"not a directory").unwrap();
-        assert!(append(dir.path(), 0, &lines, p.events.last().unwrap()).is_err());
-        assert_eq!(fs::read(dir.path().join(JOURNAL_FILE)).unwrap(), lines);
+        assert!(append(dir.path(), &journal, &lines, event, &pending).is_err());
+        assert_eq!(
+            fs::read(dir.join(JOURNAL_FILE)).unwrap(),
+            [prefix, lines].concat()
+        );
+        let receipt: PendingImport = storage::read_json(&dir.join(PENDING_FILE), 4096).unwrap();
+        assert_eq!((receipt.first_seq, receipt.prev), journal.head());
+        assert_eq!(receipt.head.seq, event.seq);
+        assert_eq!(receipt.head.hash, event.hash);
+        assert_eq!(
+            receipt.evidence.session_sha256,
+            pending.evidence.session_sha256
+        );
     }
 
     #[test]
