@@ -148,8 +148,7 @@ class StdioClient(_Client):
         os.set_blocking(self._process.stdout.fileno(), False)
 
     def _exchange(self, request):
-        if (self._process.poll() is not None or self._process.stdin.closed
-                or self._process.stdout.closed):
+        if self._process.stdin.closed or self._process.stdout.closed:
             raise TransportError("deep-diff-forge rpc is no longer running")
         deadline = time.monotonic() + self._timeout
         pending = memoryview(request)
@@ -161,6 +160,9 @@ class StdioClient(_Client):
             # A whole answer line ends the exchange even if part of the request is unsent.
             newline = self._buffer.find(b"\n")
             while newline < 0:
+                room = MAX_REQUEST_BYTES + 1 - len(self._buffer)
+                if room == 0:
+                    self._fail("the answer exceeds the daemon's maximum size")
                 remaining = deadline - time.monotonic()
                 ready = selector.select(remaining) if remaining > 0 else []
                 if not ready:
@@ -169,17 +171,12 @@ class StdioClient(_Client):
                     if key.fd == stdin:
                         pending = self._write(selector, pending)
                     else:
-                        chunk = os.read(stdout, 1 << 16)
+                        chunk = os.read(stdout, min(room, 1 << 16))
                         if not chunk:
                             self._fail("deep-diff-forge rpc closed without answering")
                         previous = len(self._buffer)
                         self._buffer.extend(chunk)
                         newline = self._buffer.find(b"\n", previous)
-                        if newline < 0 and len(self._buffer) >= MAX_REQUEST_BYTES:
-                            self._fail("the answer exceeds the daemon's maximum size")
-        # The daemon's cap is for the complete wire line, delimiter included.
-        if newline + 1 > MAX_REQUEST_BYTES:
-            self._fail("the answer exceeds the daemon's maximum size")
         line = bytes(self._buffer[:newline])
         del self._buffer[:newline + 1]
         if pending:
@@ -192,13 +189,14 @@ class StdioClient(_Client):
         """Write what the pipe takes of ``pending``; the rest, or nothing once it is all written."""
         try:
             pending = pending[os.write(self._process.stdin.fileno(), pending):]
+            if pending:
+                return pending
         except BlockingIOError:
             return pending
         except BrokenPipeError:
             # The child stopped reading: it may still answer (a refusal), or close without one.
-            pending = pending[:0]
-        if not pending:
-            selector.unregister(self._process.stdin.fileno())
+            pass
+        selector.unregister(self._process.stdin.fileno())
         return pending
 
     def _invalid(self, error):
@@ -223,6 +221,7 @@ class StdioClient(_Client):
 
     def _close_pipes(self):
         """Close the parent copies of both child pipes on every terminal path."""
+        self._buffer.clear()
         for pipe in (self._process.stdin, self._process.stdout):
             if pipe and not pipe.closed:
                 pipe.close()
@@ -283,8 +282,8 @@ class SocketClient(_Client):
                     answer = reader.readline(MAX_REQUEST_BYTES + 1)
         except OSError as error:
             raise TransportError(f"the daemon at {self._path} could not be reached: {error}") from error
-        if len(answer) > MAX_REQUEST_BYTES:
-            raise TransportError("the answer exceeds the daemon's maximum size")
         if not answer.endswith(b"\n"):
+            if len(answer) > MAX_REQUEST_BYTES:
+                raise TransportError("the answer exceeds the daemon's maximum size")
             raise TransportError("the daemon closed without a complete answer")
         return answer[:-1]

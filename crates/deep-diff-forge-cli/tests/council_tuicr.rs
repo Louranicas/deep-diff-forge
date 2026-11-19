@@ -976,6 +976,16 @@ fn import_journals_human_dispositions_with_actor_and_revision_and_rerun_is_a_noo
     }
 
     let journal = fs::read(f.journal()).unwrap();
+    let head = events.last().unwrap();
+    let seq = head["seq"].as_u64().unwrap();
+    let checkpoints = f.run.join("decisions.checkpoints");
+    let checkpoint = checkpoints.join(format!("{seq:020}.json"));
+    fs::remove_file(&checkpoint).unwrap();
+    fs::remove_dir(&checkpoints).unwrap();
+    let dry = json(&f.import(&session, &[]));
+    assert_eq!(dry["events"], serde_json::json!([]));
+    assert!(!checkpoints.exists());
+    assert_eq!(fs::read(f.journal()).unwrap(), journal);
     let again = json(&f.import(&session, &["--execute"]));
     assert_eq!(again["events"], serde_json::json!([]));
     assert_eq!(again["journal_events"], 4);
@@ -984,12 +994,13 @@ fn import_journals_human_dispositions_with_actor_and_revision_and_rerun_is_a_noo
         journal,
         "rerun appends nothing"
     );
+    let restored: serde_json::Value =
+        serde_json::from_slice(&fs::read(checkpoint).unwrap()).unwrap();
     assert_eq!(
-        fs::read_dir(f.run.join("decisions.checkpoints"))
-            .unwrap()
-            .count(),
-        1
+        restored,
+        serde_json::json!({"seq": seq, "hash": head["hash"]})
     );
+    assert_eq!(fs::read_dir(checkpoints).unwrap().count(), 1);
 }
 
 #[test]
@@ -1066,17 +1077,23 @@ fn reviewed_marks_need_the_journaled_content_hash() {
         serde_json::json!({"type": "file", "file": "x.rs"})
     );
     assert_eq!(mark["actor"]["basis"], "unrecorded");
+    let checkpoint = f
+        .run
+        .join("decisions.checkpoints/00000000000000000000.json");
+    fs::remove_file(&checkpoint).unwrap();
     // A further mark under a different tuicr diff hash is refused.
     edit_session(&session, |s| {
         s["files"]["x.rs"]["reviewed_hunks"] = serde_json::json!(["h1"]);
         s["files"]["x.rs"]["content_hash"] = 222.into();
     });
     refused(&f.import(&session, &["--execute"]), "stale review mark");
+    assert!(!checkpoint.exists());
     // Positive control: the same mark under the journaled hash is accepted and supersedes the first.
     edit_session(&session, |s| {
         s["files"]["x.rs"]["content_hash"] = 111.into();
     });
     let second = json(&f.import(&session, &["--execute"]));
+    assert!(!checkpoint.exists());
     assert_eq!(
         second["events"][0]["reviewed_hunks"],
         serde_json::json!(["h1"])

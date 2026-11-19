@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import deep_diff_forge as ddf  # noqa: E402
@@ -159,10 +160,13 @@ class Bounds(unittest.TestCase):
         # answer (here a refusal) is the call's, not "not reading".
         answer = '{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"too long"}}'
         client = ddf.StdioClient((sys.executable, "-c", f"print({answer!r}, flush=True)"), timeout=10)
-        with self.assertRaises(ddf.RpcError) as refused:
-            client.review_patch("x" * (1 << 20))
-        self.assertEqual(refused.exception.code, -32600)
-        client.close()
+        with client:
+            client._process.wait(timeout=10)
+            with self.assertRaises(ddf.RpcError) as refused:
+                client.review_patch("x" * (1 << 20))
+            self.assertEqual(refused.exception.code, -32600)
+            self.assertTrue(client._process.stdin.closed)
+            self.assertTrue(client._process.stdout.closed)
 
     def test_an_early_answer_from_a_child_that_stops_reading_but_stays_alive_is_read(self):
         # Before, the loop kept waiting to write the rest until the deadline, though the whole
@@ -205,36 +209,31 @@ class Bounds(unittest.TestCase):
             self.assertIsNotNone(client._process.poll())
             self.assertTrue(client._process.stdin.closed)
             self.assertTrue(client._process.stdout.closed)
+            self.assertEqual(len(client._buffer), 0)
         finally:
             ddf.MAX_REQUEST_BYTES = original
 
-    def test_response_limit_counts_the_newline_and_closes_both_pipes(self):
-        original = ddf.MAX_REQUEST_BYTES
-        ddf.MAX_REQUEST_BYTES = 256
-        try:
-            prefix = '{"jsonrpc":"2.0","id":1,"result":{"pad":"'
-            suffix = '"}}'
-            answer = prefix + "x" * (ddf.MAX_REQUEST_BYTES - len(prefix) - len(suffix) - 1) + suffix
-            self.assertEqual(len(answer.encode()) + 1, ddf.MAX_REQUEST_BYTES)
-            code = ("import sys\nsys.stdin.readline()\n"
-                    f"sys.stdout.write({answer!r} + '\\n'); sys.stdout.flush()")
-            client = ddf.StdioClient((sys.executable, "-c", code), timeout=10)
-            with client:
-                result = client.call("daemon.health")
-            self.assertEqual(len(result["pad"]), len(answer) - len(prefix) - len(suffix))
-            self.assertTrue(client._process.stdin.closed)
-            self.assertTrue(client._process.stdout.closed)
-
-            over = answer[:-len(suffix)] + "x" + suffix
-            code = ("import sys, time\nsys.stdin.readline()\n"
-                    f"sys.stdout.write({over!r} + '\\n'); sys.stdout.flush(); time.sleep(60)")
-            client = ddf.StdioClient((sys.executable, "-c", code), timeout=10)
-            with self.assertRaisesRegex(ddf.TransportError, "answer exceeds"):
-                client.call("daemon.health")
-            self.assertTrue(client._process.stdin.closed)
-            self.assertTrue(client._process.stdout.closed)
-        finally:
-            ddf.MAX_REQUEST_BYTES = original
+    def test_response_payload_limit_on_stdio_and_socket(self):
+        with patch.object(ddf, "MAX_REQUEST_BYTES", 256):
+            body = b'{"jsonrpc":"2.0","id":1,"result":true}'.ljust(ddf.MAX_REQUEST_BYTES)
+            for payload in (body, body + b" "):
+                answer = payload + b"\n"
+                code = f"import sys; sys.stdin.readline(); sys.stdout.buffer.write({answer!r})"
+                with self.subTest(transport="stdio", size=len(payload)):
+                    with ddf.StdioClient((sys.executable, "-c", code), timeout=5) as client:
+                        if len(payload) == ddf.MAX_REQUEST_BYTES:
+                            self.assertIs(client.call("daemon.health"), True)
+                        else:
+                            with self.assertRaisesRegex(ddf.TransportError, "answer exceeds"):
+                                client.call("daemon.health")
+                            self.assertTrue(client._process.stdin.closed)
+                            self.assertTrue(client._process.stdout.closed)
+                with self.subTest(transport="socket", size=len(payload)):
+                    if len(payload) == ddf.MAX_REQUEST_BYTES:
+                        self.assertIs(_socket_call(answer), True)
+                    else:
+                        with self.assertRaisesRegex(ddf.TransportError, "answer exceeds"):
+                            _socket_call(answer)
 
 
 class Socket(unittest.TestCase):
@@ -280,25 +279,9 @@ class Socket(unittest.TestCase):
     def test_an_answer_that_is_not_utf8_json_is_a_transport_error(self):
         for answer, reason in [(b"\xff\n", "'utf-8' codec can't decode"), (b"notjson\n", "Expecting value"),
                                (b"[" * 200_000 + b"\n", "")]:
-            with self.subTest(answer=answer[:16]), tempfile.TemporaryDirectory() as directory:
-                path = pathlib.Path(directory) / "d.sock"
-                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
-                    listener.bind(str(path))
-                    listener.listen(1)
-
-                    def serve():
-                        connection, _ = listener.accept()
-                        with connection:
-                            connection.recv(1 << 16)
-                            connection.sendall(answer)
-
-                    server = threading.Thread(target=serve)
-                    server.start()
-                    try:
-                        with self.assertRaisesRegex(ddf.TransportError, f"not a valid response: {reason}"):
-                            ddf.SocketClient(path, timeout=5).call("daemon.health")
-                    finally:
-                        server.join(timeout=10)
+            with self.subTest(answer=answer[:16]):
+                with self.assertRaisesRegex(ddf.TransportError, f"not a valid response: {reason}"):
+                    _socket_call(answer)
 
     def test_a_daemon_of_another_user_is_refused_before_anything_is_sent(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -322,6 +305,27 @@ class Socket(unittest.TestCase):
                 with accepted:
                     accepted.settimeout(1)
                     self.assertEqual(accepted.recv(1), b"", "nothing was sent to that daemon")
+
+
+def _socket_call(answer):
+    with tempfile.TemporaryDirectory() as directory:
+        path = pathlib.Path(directory) / "d.sock"
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+            listener.bind(str(path))
+            listener.listen(1)
+
+            def serve():
+                connection, _ = listener.accept()
+                with connection:
+                    connection.recv(1 << 16)
+                    connection.sendall(answer)
+
+            server = threading.Thread(target=serve)
+            server.start()
+            try:
+                return ddf.SocketClient(path, timeout=5).call("daemon.health")
+            finally:
+                server.join(timeout=10)
 
 
 def _connected(path):

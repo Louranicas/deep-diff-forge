@@ -1122,10 +1122,7 @@ fn append(
     ensure_checkpoint(directory, events.last())
 }
 
-/// Ensure the durable journal head has its create-new checkpoint. The journal is the commit
-/// record: if appending and syncing it succeeded but checkpoint creation did not, an unchanged
-/// retry plans no new events. Repairing the missing checkpoint before planning makes that retry
-/// complete the interrupted import without duplicating the decision.
+/// Ensure the durable journal head has its create-new checkpoint.
 fn ensure_checkpoint(directory: &Path, last: Option<&DecisionEvent>) -> Result<()> {
     let Some(last) = last else {
         return Ok(());
@@ -1136,15 +1133,18 @@ fn ensure_checkpoint(directory: &Path, last: Option<&DecisionEvent>) -> Result<(
     }
     let path = checkpoints.join(format!("{:020}.json", last.seq));
     if path.exists() {
-        return Ok(());
+        fs::File::open(&path)?.sync_all()?;
+        fs::File::open(&checkpoints)?.sync_all()?;
+    } else {
+        storage::write_json(
+            &path,
+            &Checkpoint {
+                seq: last.seq,
+                hash: last.hash.clone(),
+            },
+        )?;
     }
-    storage::write_json(
-        &path,
-        &Checkpoint {
-            seq: last.seq,
-            hash: last.hash.clone(),
-        },
-    )?;
+    fs::File::open(directory)?.sync_all()?;
     Ok(())
 }
 
@@ -1195,9 +1195,6 @@ pub fn import_tuicr(
         None
     };
     let journal = load_journal(&directory, &manifest.run_id)?;
-    if options.execute {
-        ensure_checkpoint(&directory, journal.events.last())?;
-    }
     let binding = Binding {
         directory: &directory,
         manifest: &manifest,
@@ -1233,8 +1230,12 @@ pub fn import_tuicr(
     plan_tombstones(&mut planner, &inputs)?;
     plan_files(&mut planner, &inputs)?;
     let lines = encode(journal.bytes, &planner.events)?;
-    if options.execute && !planner.events.is_empty() {
-        append(&directory, journal.bytes, &lines, &planner.events)?;
+    if options.execute {
+        if planner.events.is_empty() {
+            ensure_checkpoint(&directory, journal.events.last())?;
+        } else {
+            append(&directory, journal.bytes, &lines, &planner.events)?;
+        }
     }
     Ok(TuicrImport {
         schema: "deep-diff-forge.tuicr-import.v1",
@@ -1485,7 +1486,7 @@ mod tests {
     }
 
     #[test]
-    fn retry_repairs_checkpoint_after_the_journal_commit() {
+    fn checkpoint_failure_leaves_the_appended_journal_intact() {
         let dir = Scratch::new("journal-checkpoint-retry");
         let mut p = planner();
         p.push(p.blank(EventKind::CommentAdded, user())).unwrap();
@@ -1495,21 +1496,6 @@ mod tests {
         fs::write(dir.path().join(CHECKPOINT_DIR), b"not a directory").unwrap();
         assert!(append(dir.path(), 0, &lines, &p.events).is_err());
         assert_eq!(fs::read(dir.path().join(JOURNAL_FILE)).unwrap(), lines);
-
-        // The obstruction is an ordinary storage failure. Once it is cleared, the unchanged
-        // retry reads the committed event and creates its missing checkpoint without appending.
-        fs::remove_file(dir.path().join(CHECKPOINT_DIR)).unwrap();
-        let journal = load_journal(dir.path(), "run").unwrap();
-        ensure_checkpoint(dir.path(), journal.events.last()).unwrap();
-        let after = load_journal(dir.path(), "run").unwrap();
-        assert_eq!(after.events.len(), 1);
-        assert_eq!(fs::read(dir.path().join(JOURNAL_FILE)).unwrap(), lines);
-        assert!(
-            dir.path()
-                .join(CHECKPOINT_DIR)
-                .join("00000000000000000000.json")
-                .is_file()
-        );
     }
 
     #[test]
