@@ -138,7 +138,7 @@ class StdioClient(_Client):
     def __init__(self, command=("deep-diff-forge", "rpc"), timeout=30.0):
         super().__init__()
         self._timeout = timeout
-        self._buffer = b""
+        self._buffer = bytearray()
         self._process = subprocess.Popen(list(command), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                          stderr=subprocess.DEVNULL)
         # Both pipes are non-blocking and driven by one selector under one deadline: a blocking
@@ -148,6 +148,9 @@ class StdioClient(_Client):
         os.set_blocking(self._process.stdout.fileno(), False)
 
     def _exchange(self, request):
+        if (self._process.poll() is not None or self._process.stdin.closed
+                or self._process.stdout.closed):
+            raise TransportError("deep-diff-forge rpc is no longer running")
         deadline = time.monotonic() + self._timeout
         pending = memoryview(request)
         stdin, stdout = self._process.stdin.fileno(), self._process.stdout.fileno()
@@ -156,9 +159,8 @@ class StdioClient(_Client):
             selector.register(stdout, selectors.EVENT_READ)
             # Read while writing, so a child that answers (or refuses) early cannot deadlock us.
             # A whole answer line ends the exchange even if part of the request is unsent.
-            while b"\n" not in self._buffer:
-                if len(self._buffer) > MAX_REQUEST_BYTES:
-                    self._fail("the answer exceeds the daemon's maximum size")
+            newline = self._buffer.find(b"\n")
+            while newline < 0:
                 remaining = deadline - time.monotonic()
                 ready = selector.select(remaining) if remaining > 0 else []
                 if not ready:
@@ -170,13 +172,20 @@ class StdioClient(_Client):
                         chunk = os.read(stdout, 1 << 16)
                         if not chunk:
                             self._fail("deep-diff-forge rpc closed without answering")
-                        self._buffer += chunk
-        line, _, self._buffer = self._buffer.partition(b"\n")
+                        previous = len(self._buffer)
+                        self._buffer.extend(chunk)
+                        newline = self._buffer.find(b"\n", previous)
+                        if newline < 0 and len(self._buffer) >= MAX_REQUEST_BYTES:
+                            self._fail("the answer exceeds the daemon's maximum size")
+        # The daemon's cap is for the complete wire line, delimiter included.
+        if newline + 1 > MAX_REQUEST_BYTES:
+            self._fail("the answer exceeds the daemon's maximum size")
+        line = bytes(self._buffer[:newline])
+        del self._buffer[:newline + 1]
         if pending:
             # It answered before taking the whole request: the unsent tail would garble the next
             # one, so the out-of-step child is killed and the next call is a TransportError.
-            self._process.kill()
-            self._process.wait()
+            self._terminate()
         return line
 
     def _write(self, selector, pending):
@@ -193,8 +202,7 @@ class StdioClient(_Client):
         return pending
 
     def _invalid(self, error):
-        self._process.kill()
-        self._process.wait()
+        self._terminate()
         raise error
 
     def _fail(self, message):
@@ -209,8 +217,22 @@ class StdioClient(_Client):
         try:
             self._process.wait(timeout=self._timeout)
         except subprocess.TimeoutExpired:
+            self._terminate()
+        else:
+            self._close_pipes()
+
+    def _close_pipes(self):
+        """Close the parent copies of both child pipes on every terminal path."""
+        for pipe in (self._process.stdin, self._process.stdout):
+            if pipe and not pipe.closed:
+                pipe.close()
+
+    def _terminate(self):
+        """Reap the child and release its pipes; safe after an earlier exit."""
+        if self._process.poll() is None:
             self._process.kill()
-            self._process.wait()
+        self._process.wait()
+        self._close_pipes()
 
     def __enter__(self):
         return self
@@ -261,6 +283,8 @@ class SocketClient(_Client):
                     answer = reader.readline(MAX_REQUEST_BYTES + 1)
         except OSError as error:
             raise TransportError(f"the daemon at {self._path} could not be reached: {error}") from error
+        if len(answer) > MAX_REQUEST_BYTES:
+            raise TransportError("the answer exceeds the daemon's maximum size")
         if not answer.endswith(b"\n"):
             raise TransportError("the daemon closed without a complete answer")
-        return answer
+        return answer[:-1]

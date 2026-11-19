@@ -1119,15 +1119,27 @@ fn append(
     file.write_all(lines)?;
     file.sync_all()?;
     fs::File::open(directory)?.sync_all()?;
-    let Some(last) = events.last() else {
+    ensure_checkpoint(directory, events.last())
+}
+
+/// Ensure the durable journal head has its create-new checkpoint. The journal is the commit
+/// record: if appending and syncing it succeeded but checkpoint creation did not, an unchanged
+/// retry plans no new events. Repairing the missing checkpoint before planning makes that retry
+/// complete the interrupted import without duplicating the decision.
+fn ensure_checkpoint(directory: &Path, last: Option<&DecisionEvent>) -> Result<()> {
+    let Some(last) = last else {
         return Ok(());
     };
     let checkpoints = directory.join(CHECKPOINT_DIR);
     if !checkpoints.exists() {
         storage::make_dir(&checkpoints)?;
     }
+    let path = checkpoints.join(format!("{:020}.json", last.seq));
+    if path.exists() {
+        return Ok(());
+    }
     storage::write_json(
-        &checkpoints.join(format!("{:020}.json", last.seq)),
+        &path,
         &Checkpoint {
             seq: last.seq,
             hash: last.hash.clone(),
@@ -1183,6 +1195,9 @@ pub fn import_tuicr(
         None
     };
     let journal = load_journal(&directory, &manifest.run_id)?;
+    if options.execute {
+        ensure_checkpoint(&directory, journal.events.last())?;
+    }
     let binding = Binding {
         directory: &directory,
         manifest: &manifest,
@@ -1467,6 +1482,34 @@ mod tests {
                 assert!(!dir.join(CHECKPOINT_DIR).exists());
             }
         }
+    }
+
+    #[test]
+    fn retry_repairs_checkpoint_after_the_journal_commit() {
+        let dir = Scratch::new("journal-checkpoint-retry");
+        let mut p = planner();
+        p.push(p.blank(EventKind::CommentAdded, user())).unwrap();
+        let lines = encode(0, &p.events).unwrap();
+
+        // Make checkpoint creation fail after append() has synced the journal.
+        fs::write(dir.path().join(CHECKPOINT_DIR), b"not a directory").unwrap();
+        assert!(append(dir.path(), 0, &lines, &p.events).is_err());
+        assert_eq!(fs::read(dir.path().join(JOURNAL_FILE)).unwrap(), lines);
+
+        // The obstruction is an ordinary storage failure. Once it is cleared, the unchanged
+        // retry reads the committed event and creates its missing checkpoint without appending.
+        fs::remove_file(dir.path().join(CHECKPOINT_DIR)).unwrap();
+        let journal = load_journal(dir.path(), "run").unwrap();
+        ensure_checkpoint(dir.path(), journal.events.last()).unwrap();
+        let after = load_journal(dir.path(), "run").unwrap();
+        assert_eq!(after.events.len(), 1);
+        assert_eq!(fs::read(dir.path().join(JOURNAL_FILE)).unwrap(), lines);
+        assert!(
+            dir.path()
+                .join(CHECKPOINT_DIR)
+                .join("00000000000000000000.json")
+                .is_file()
+        );
     }
 
     #[test]

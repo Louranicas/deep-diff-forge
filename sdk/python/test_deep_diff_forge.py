@@ -142,6 +142,8 @@ class Bounds(unittest.TestCase):
             client.call("daemon.health")
         self.assertLess(time.monotonic() - started, 10)
         self.assertIsNotNone(client._process.poll())
+        self.assertTrue(client._process.stdin.closed)
+        self.assertTrue(client._process.stdout.closed)
 
     def test_a_child_that_stops_reading_cannot_block_a_large_request(self):
         # Before, the write blocked once the pipe buffer filled, before any deadline was armed.
@@ -201,6 +203,36 @@ class Bounds(unittest.TestCase):
             with self.assertRaises(ddf.TransportError):
                 client.call("daemon.health")
             self.assertIsNotNone(client._process.poll())
+            self.assertTrue(client._process.stdin.closed)
+            self.assertTrue(client._process.stdout.closed)
+        finally:
+            ddf.MAX_REQUEST_BYTES = original
+
+    def test_response_limit_counts_the_newline_and_closes_both_pipes(self):
+        original = ddf.MAX_REQUEST_BYTES
+        ddf.MAX_REQUEST_BYTES = 256
+        try:
+            prefix = '{"jsonrpc":"2.0","id":1,"result":{"pad":"'
+            suffix = '"}}'
+            answer = prefix + "x" * (ddf.MAX_REQUEST_BYTES - len(prefix) - len(suffix) - 1) + suffix
+            self.assertEqual(len(answer.encode()) + 1, ddf.MAX_REQUEST_BYTES)
+            code = ("import sys\nsys.stdin.readline()\n"
+                    f"sys.stdout.write({answer!r} + '\\n'); sys.stdout.flush()")
+            client = ddf.StdioClient((sys.executable, "-c", code), timeout=10)
+            with client:
+                result = client.call("daemon.health")
+            self.assertEqual(len(result["pad"]), len(answer) - len(prefix) - len(suffix))
+            self.assertTrue(client._process.stdin.closed)
+            self.assertTrue(client._process.stdout.closed)
+
+            over = answer[:-len(suffix)] + "x" + suffix
+            code = ("import sys, time\nsys.stdin.readline()\n"
+                    f"sys.stdout.write({over!r} + '\\n'); sys.stdout.flush(); time.sleep(60)")
+            client = ddf.StdioClient((sys.executable, "-c", code), timeout=10)
+            with self.assertRaisesRegex(ddf.TransportError, "answer exceeds"):
+                client.call("daemon.health")
+            self.assertTrue(client._process.stdin.closed)
+            self.assertTrue(client._process.stdout.closed)
         finally:
             ddf.MAX_REQUEST_BYTES = original
 
