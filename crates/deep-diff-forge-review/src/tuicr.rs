@@ -248,7 +248,7 @@ pub(crate) struct Session {
     #[serde(default)]
     pub(crate) diff_source: Option<String>,
     #[serde(default)]
-    pub(crate) commit_range: Option<Vec<String>>,
+    commit_range: Option<Vec<String>>,
     #[serde(default)]
     pr_session_key: Option<serde_json::Value>,
     files: BTreeMap<String, serde_json::Value>,

@@ -824,17 +824,18 @@ impl Fixture {
         let receipt = self.run.join("decisions.pending.json");
         if directory.exists() {
             let before = fs::read(self.journal()).unwrap();
-            let failed = self.limited_import(session, before.len() as u64);
-            assert_eq!(failed.status.code(), Some(4), "{}", stderr(&failed));
-            assert_eq!(fs::read(self.journal()).unwrap(), before);
-            let proof = fs::read(&receipt).unwrap();
-            fs::remove_file(&receipt).unwrap();
             let out = json(&self.import(session, &["--execute"]));
+            let complete = fs::read(self.journal()).unwrap();
             let seq = out["events"].as_array().unwrap().last().unwrap()["seq"]
                 .as_u64()
                 .unwrap();
-            fs::write(&receipt, proof).unwrap();
             fs::remove_file(directory.join(format!("{seq:020}.json"))).unwrap();
+            fs::write(self.journal(), &before).unwrap();
+            let limit = before.len() + 1;
+            let failed = self.limited_import(session, limit as u64);
+            assert_eq!(failed.status.code(), Some(4), "{}", stderr(&failed));
+            assert_eq!(fs::read(self.journal()).unwrap(), complete[..limit]);
+            fs::write(self.journal(), complete).unwrap();
         } else {
             std::os::unix::fs::symlink(self.root.join("absent"), &directory).unwrap();
             let failed = self.import(session, &["--execute"]);
@@ -908,6 +909,60 @@ fn comment_mut<'a>(session: &'a mut serde_json::Value, id: &str) -> &'a mut serd
 }
 fn kinds(events: &[serde_json::Value]) -> Vec<&str> {
     events.iter().map(|e| e["kind"].as_str().unwrap()).collect()
+}
+
+#[test]
+fn append_failures_retain_the_receipt_only_after_a_partial_write() {
+    let f = Fixture::new();
+    let session = f.session("append.json", |s| {
+        s["review_comments"] = serde_json::json!([human("first", "Ana", "note", "First")]);
+    });
+    let receipt = f.run.join("decisions.pending.json");
+    let journal = f.journal();
+    std::os::unix::fs::symlink(f.root.join("missing/decisions.jsonl"), &journal).unwrap();
+    let open_failure = f.import(&session, &["--execute"]);
+    assert_eq!(
+        open_failure.status.code(),
+        Some(4),
+        "{}",
+        stderr(&open_failure)
+    );
+    assert!(!receipt.try_exists().unwrap());
+    fs::remove_file(&journal).unwrap();
+    json(&f.import(&session, &["--execute"]));
+
+    let before = fs::read(&journal).unwrap();
+    edit_session(&session, |s| {
+        s["review_comments"]
+            .as_array_mut()
+            .unwrap()
+            .push(human("next", "Ana", "note", "Next"));
+    });
+    let zero = f.limited_import(&session, before.len() as u64);
+    assert_eq!(zero.status.code(), Some(4), "{}", stderr(&zero));
+    assert_eq!(fs::read(&journal).unwrap(), before);
+    assert!(!receipt.try_exists().unwrap());
+    assert_eq!(
+        kinds(
+            json(&f.import(&session, &["--execute"]))["events"]
+                .as_array()
+                .unwrap()
+        ),
+        ["comment_added"]
+    );
+
+    let before = fs::read(&journal).unwrap();
+    edit_session(&session, |s| {
+        comment_mut(s, "next")["content"] = "Revised".into()
+    });
+    let partial = f.limited_import(&session, before.len() as u64 + 1);
+    assert_eq!(partial.status.code(), Some(4), "{}", stderr(&partial));
+    let torn = fs::read(&journal).unwrap();
+    assert_eq!(torn.strip_suffix(b"{").unwrap(), before);
+    let proof = fs::read(&receipt).unwrap();
+    f.refuse_both(&session, "incomplete");
+    assert_eq!(fs::read(&receipt).unwrap(), proof);
+    assert_eq!(fs::read(&journal).unwrap(), torn);
 }
 
 /// Human comments: an anchored issue, a tagged praise, an unlinked note and a bogus tag.
@@ -1337,6 +1392,10 @@ fn checkpoint_recovery_binds_exact_bytes_and_survives_interrupted_publication() 
     let journal = fs::read(f.journal()).unwrap();
     let receipt = f.run.join("decisions.pending.json");
     let proof = fs::read(&receipt).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&proof).unwrap()["evidence"],
+        serde_json::json!({"session_sha256": deep_diff_forge_core::sha256_hex(&bytes)})
+    );
     let v1_fields: std::collections::BTreeSet<_> =
         "schema seq prev run_id session_id revision kind actor comment_id ddf_authored comment_type lifecycle_state previous_lifecycle_state anchor content_hash content_sha256 content links reviewed reviewed_hunks conflict supersedes hash"
             .split_whitespace()

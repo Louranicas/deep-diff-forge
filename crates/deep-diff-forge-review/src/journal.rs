@@ -1077,23 +1077,9 @@ fn plan_files(p: &mut Planner<'_>, x: &Inputs<'_>) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Serialize, Deserialize)]
 struct ImportEvidence {
     session_sha256: String,
-    revision_sha256: String,
-}
-
-impl ImportEvidence {
-    fn new(bytes: &[u8], revision: &SessionRevision, x: &Inputs<'_>) -> Result<Self> {
-        Ok(Self {
-            session_sha256: sha256_hex(bytes),
-            revision_sha256: sha256_hex(&serde_json::to_vec(&(
-                revision,
-                &x.binding.session.commit_range,
-            ))?),
-        })
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1136,7 +1122,7 @@ impl PendingImport {
         {
             return Err(mismatch());
         }
-        if self.evidence != ImportEvidence::new(bytes, &planner.revision, x)? {
+        if self.evidence.session_sha256 != sha256_hex(bytes) {
             return Err(TuicrImportError::Journal(
                 "import does not match the pending recovery receipt".into(),
             ));
@@ -1208,25 +1194,54 @@ fn encode(verified_len: u64, events: &[DecisionEvent]) -> Result<Vec<u8>> {
     }
     Ok(lines)
 }
-/// Append the [`encode`]d `lines` to the verified journal of `verified_len` bytes, then
-/// record a checkpoint.
-fn append(directory: &Path, verified_len: u64, lines: &[u8], last: &DecisionEvent) -> Result<()> {
+fn append(
+    directory: &Path,
+    journal: &Journal,
+    lines: &[u8],
+    last: &DecisionEvent,
+    pending: &PendingImport,
+) -> Result<()> {
     let path = directory.join(JOURNAL_FILE);
     let mut file = OpenOptions::new()
         .append(true)
         .create(true)
+        .custom_flags(nix::libc::O_NOFOLLOW)
         .mode(0o600)
         .open(&path)?;
-    if file.metadata()?.len() != verified_len {
+    if file.metadata()?.len() != journal.bytes {
         return Err(TuicrImportError::Journal(
             "the journal changed while this import was planned".into(),
         ));
     }
-    file.write_all(lines)?;
-    ensure_checkpoint(directory, &file, last)
+    let staging = link_staged_json(directory, &directory.join(PENDING_FILE), pending)?;
+    let mut written = 0;
+    let result = (|| -> std::io::Result<()> {
+        fs::remove_file(staging)?;
+        fs::File::open(directory)?.sync_all()?;
+        while written < lines.len() {
+            match file.write(&lines[written..]) {
+                Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+                Ok(count) => written += count,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        if written == 0 && fs::metadata(&path)?.len() == journal.bytes {
+            let current = load_journal(directory, &last.run_id)?;
+            if current.bytes == journal.bytes && current.head() == journal.head() {
+                retire_receipt(directory)?;
+            }
+        }
+        return Err(error.into());
+    }
+    ensure_checkpoint(directory, &file, last)?;
+    retire_receipt(directory)
 }
 
-fn publish_json(directory: &Path, path: &Path, value: &impl Serialize) -> Result<()> {
+fn link_staged_json(directory: &Path, path: &Path, value: &impl Serialize) -> Result<PathBuf> {
     let bytes = serde_json::to_vec_pretty(value)?;
     let (fd, staging) = nix::unistd::mkstemp(&directory.join("decisions.stage.XXXXXX"))
         .map_err(std::io::Error::from)?;
@@ -1235,10 +1250,11 @@ fn publish_json(directory: &Path, path: &Path, value: &impl Serialize) -> Result
         .write_all(&bytes)
         .and_then(|()| file.sync_all())
         .and_then(|()| fs::hard_link(&staging, path));
-    let cleanup = fs::remove_file(staging);
-    published?;
-    cleanup?;
-    Ok(())
+    if let Err(error) = published {
+        fs::remove_file(staging)?;
+        return Err(error.into());
+    }
+    Ok(staging)
 }
 
 fn checkpoint_path(directory: &Path, seq: u64) -> PathBuf {
@@ -1258,7 +1274,7 @@ fn ensure_checkpoint(directory: &Path, journal: &fs::File, last: &DecisionEvent)
         if !checkpoints.try_exists()? {
             storage::make_dir(&checkpoints)?;
         }
-        publish_json(
+        let staging = link_staged_json(
             directory,
             &path,
             &Checkpoint {
@@ -1266,6 +1282,7 @@ fn ensure_checkpoint(directory: &Path, journal: &fs::File, last: &DecisionEvent)
                 hash: last.hash.clone(),
             },
         )?;
+        fs::remove_file(staging)?;
     }
     fs::File::open(&checkpoints)?.sync_all()?;
     fs::File::open(directory)?.sync_all()?;
@@ -1318,7 +1335,7 @@ fn process_import(
     }
     plan_events(planner, x)?;
     let lines = encode(x.journal.bytes, &planner.events)?;
-    if let (Some(first), Some(head)) = (planner.events.first(), planner.events.last()) {
+    if execute && let (Some(first), Some(head)) = (planner.events.first(), planner.events.last()) {
         let pending = PendingImport {
             first_seq: first.seq,
             prev: first.prev.clone(),
@@ -1326,14 +1343,11 @@ fn process_import(
                 seq: head.seq,
                 hash: head.hash.clone(),
             },
-            evidence: ImportEvidence::new(bytes, &planner.revision, x)?,
+            evidence: ImportEvidence {
+                session_sha256: sha256_hex(bytes),
+            },
         };
-        if execute {
-            publish_json(directory, &receipt, &pending)?;
-            fs::File::open(directory)?.sync_all()?;
-            append(directory, x.journal.bytes, &lines, head)?;
-            retire_receipt(directory)?;
-        }
+        append(directory, x.journal, &lines, head, &pending)?;
     }
     Ok(())
 }
