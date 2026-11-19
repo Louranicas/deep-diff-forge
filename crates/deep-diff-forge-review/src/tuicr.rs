@@ -16,6 +16,7 @@ use crate::{
 use deep_diff_forge_core::sha256_hex;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::{
     error::Error,
@@ -493,12 +494,23 @@ impl Binding<'_> {
                 let file = self.repository.join(path);
                 let canonical = match fs::canonicalize(&file) {
                     Ok(path) => path,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        if storage::untrusted_metadata(&self.repository, Path::new(path))
-                            .map_err(|e| e.to_string())?
-                            .is_none()
-                        {
-                            return Ok(None);
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                        ) =>
+                    {
+                        let mut prefix = self.repository.clone();
+                        for component in Path::new(path).components() {
+                            prefix.push(component);
+                            match fs::symlink_metadata(&prefix) {
+                                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                                    return Ok(None);
+                                }
+                                Ok(meta) if meta.is_dir() => continue,
+                                Ok(meta) if meta.is_file() && prefix != file => return Ok(None),
+                                _ => break,
+                            }
                         }
                         return Err(e.to_string());
                     }
@@ -506,6 +518,12 @@ impl Binding<'_> {
                 };
                 if !canonical.starts_with(&self.repository) {
                     return Err("working-tree path escapes the repository".into());
+                }
+                if fs::symlink_metadata(&file)
+                    .map_err(|e| e.to_string())?
+                    .is_dir()
+                {
+                    return Ok(None);
                 }
                 return storage::read_bytes(&file, SOURCE_CAP)
                     .map(Some)
@@ -516,7 +534,7 @@ impl Binding<'_> {
                 vec![
                     "--literal-pathspecs",
                     "ls-files",
-                    "--cached",
+                    "--stage",
                     "-z",
                     "--",
                     path,
@@ -539,10 +557,18 @@ impl Binding<'_> {
             Err(error) => {
                 let entries = storage::git_bytes(&self.repository, &listing, SOURCE_CAP)
                     .map_err(|e| e.to_string())?;
-                if entries.is_empty() {
-                    Ok(None)
-                } else {
+                let has_file = entries.split(|&b| b == 0).any(|entry| {
+                    let mut fields = entry.splitn(2, |&b| b == b'\t');
+                    let metadata = fields.next().unwrap_or_default();
+                    fields.next().is_some_and(|name| {
+                        Path::new(std::ffi::OsStr::from_bytes(name)) == Path::new(path)
+                            && !metadata.starts_with(b"040000 ")
+                    })
+                });
+                if has_file {
                     Err(error.to_string())
+                } else {
+                    Ok(None)
                 }
             }
         }

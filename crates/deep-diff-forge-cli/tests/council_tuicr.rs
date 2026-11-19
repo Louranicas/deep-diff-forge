@@ -1286,6 +1286,39 @@ fn checkpoint_recovery_rechecks_cleared_file_and_hunk_marks() {
 }
 
 #[test]
+fn review_scope_accepts_file_directory_replacements_in_each_revision() {
+    let f = Fixture::with_repository(|repo| {
+        fs::create_dir(repo.join("src")).unwrap();
+        fs::write(repo.join("src/old.rs"), "old child").unwrap();
+        fs::write(repo.join("lib"), "old file").unwrap();
+        git(repo, &["add", "src", "lib"]);
+        git(repo, &["commit", "-qm", "before replacements"]);
+        fs::remove_file(repo.join("src/old.rs")).unwrap();
+        fs::remove_dir(repo.join("src")).unwrap();
+        fs::write(repo.join("src"), "new file").unwrap();
+        fs::remove_file(repo.join("lib")).unwrap();
+        fs::create_dir(repo.join("lib")).unwrap();
+        fs::write(repo.join("lib/new.rs"), "new child").unwrap();
+        git(repo, &["add", "-A"]);
+        git(repo, &["commit", "-qm", "replace file and directory"]);
+    });
+    for source in ["working_tree", "staged", "commit_range"] {
+        let session = f.session("replacements.json", |s| {
+            s["diff_source"] = source.into();
+            if source == "commit_range" {
+                s["commit_range"] = serde_json::json!([s["base_commit"]]);
+            }
+            for path in ["src/old.rs", "src", "lib", "lib/new.rs"] {
+                s["files"][path] = serde_json::json!({ "path": path });
+            }
+            s["review_comments"] = serde_json::json!([human("scope", "Ana", "note", "Reviewed")]);
+        });
+        let plan = json(&f.import(&session, &[]));
+        assert_eq!(kinds(plan["events"].as_array().unwrap()), ["comment_added"]);
+    }
+}
+
+#[test]
 fn checkpoint_recovery_binds_exact_bytes_and_survives_interrupted_publication() {
     let f = Fixture::with_repository(|repo| {
         git(repo, &["commit", "--allow-empty", "-qm", "second"]);
@@ -1321,6 +1354,22 @@ fn checkpoint_recovery_binds_exact_bytes_and_survives_interrupted_publication() 
     let checkpoint = f
         .run
         .join("decisions.checkpoints/00000000000000000001.json");
+    let refuse_whitespace_edit = |expected_checkpoint: Option<&[u8]>| {
+        let mut edited = bytes.clone();
+        edited.push(b' ');
+        fs::write(&session, edited).unwrap();
+        for flags in [&[][..], &["--execute"][..]] {
+            refused(&f.import(&session, flags), "pending recovery receipt");
+            assert_eq!(fs::read(f.journal()).unwrap(), journal);
+            assert_eq!(fs::read(&receipt).unwrap(), proof);
+            match expected_checkpoint {
+                Some(expected) => assert_eq!(fs::read(&checkpoint).unwrap(), expected),
+                None => assert!(!checkpoint.try_exists().unwrap()),
+            }
+        }
+        fs::write(&session, &bytes).unwrap();
+    };
+    refuse_whitespace_edit(None);
     for reorder in [true, false] {
         fs::write(&session, &bytes).unwrap();
         edit_session(&session, |s| {
@@ -1366,13 +1415,7 @@ fn checkpoint_recovery_binds_exact_bytes_and_survives_interrupted_publication() 
     assert!(!receipt.exists());
     let published = fs::read(&checkpoint).unwrap();
     fs::write(&receipt, &proof).unwrap();
-    edit_session(&session, |s| {
-        s["review_comments"].as_array_mut().unwrap().reverse()
-    });
-    f.refuse_both(&session, "pending recovery receipt");
-    assert_eq!(fs::read(&receipt).unwrap(), proof);
-    assert_eq!(fs::read(&checkpoint).unwrap(), published);
-    fs::write(&session, &bytes).unwrap();
+    refuse_whitespace_edit(Some(&published));
     assert_eq!(
         json(&f.import(&session, &[]))["events"],
         serde_json::json!([])
