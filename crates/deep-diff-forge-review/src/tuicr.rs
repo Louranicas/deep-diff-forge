@@ -247,7 +247,7 @@ pub(crate) struct Session {
     #[serde(default)]
     pub(crate) diff_source: Option<String>,
     #[serde(default)]
-    commit_range: Option<Vec<String>>,
+    pub(crate) commit_range: Option<Vec<String>>,
     #[serde(default)]
     pr_session_key: Option<serde_json::Value>,
     files: BTreeMap<String, serde_json::Value>,
@@ -534,15 +534,18 @@ impl Binding<'_> {
                 ],
             ),
         };
-        if storage::git_bytes(&self.repository, &listing, SOURCE_CAP)
-            .map_err(|e| e.to_string())?
-            .is_empty()
-        {
-            return Ok(None);
+        match storage::git_bytes(&self.repository, &["cat-file", "blob", &object], SOURCE_CAP) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(error) => {
+                let entries = storage::git_bytes(&self.repository, &listing, SOURCE_CAP)
+                    .map_err(|e| e.to_string())?;
+                if entries.is_empty() {
+                    Ok(None)
+                } else {
+                    Err(error.to_string())
+                }
+            }
         }
-        storage::git_bytes(&self.repository, &["cat-file", "blob", &object], SOURCE_CAP)
-            .map(Some)
-            .map_err(|e| e.to_string())
     }
     /// Resolve a finding's target: the first candidate-file citation, verified against sealed bytes.
     fn target(&self, finding: &crate::Finding) -> Result<Target> {
