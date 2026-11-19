@@ -805,20 +805,43 @@ impl Fixture {
             .output()
             .unwrap()
     }
+    fn refuse_both(&self, session: &Path, reason: &str) {
+        refused(&self.import(session, &[]), reason);
+        refused(&self.import(session, &["--execute"]), reason);
+    }
+
+    fn limited_import(&self, session: &Path, limit: u64) -> Output {
+        Command::new("python3")
+            .args(["-c", "import os, resource, sys\nn = int(sys.argv[1])\nresource.setrlimit(resource.RLIMIT_FSIZE, (n, n))\nos.execv(sys.argv[2], sys.argv[2:])"])
+            .arg(limit.to_string())
+            .args([env!("CARGO_BIN_EXE_deep-diff-forge"), "council", "import-tuicr"])
+            .arg(&self.run).arg("--session").arg(session).arg("--execute")
+            .output().unwrap()
+    }
+
     fn interrupt_checkpoint(&self, session: &Path) {
         let directory = self.run.join("decisions.checkpoints");
-        let backup = self.root.join("saved-checkpoints");
+        let receipt = self.run.join("decisions.pending.json");
         if directory.exists() {
-            fs::rename(&directory, &backup).unwrap();
+            let before = fs::read(self.journal()).unwrap();
+            let failed = self.limited_import(session, before.len() as u64);
+            assert_eq!(failed.status.code(), Some(4), "{}", stderr(&failed));
+            assert_eq!(fs::read(self.journal()).unwrap(), before);
+            let proof = fs::read(&receipt).unwrap();
+            fs::remove_file(&receipt).unwrap();
+            let out = json(&self.import(session, &["--execute"]));
+            let seq = out["events"].as_array().unwrap().last().unwrap()["seq"]
+                .as_u64()
+                .unwrap();
+            fs::write(&receipt, proof).unwrap();
+            fs::remove_file(directory.join(format!("{seq:020}.json"))).unwrap();
+        } else {
+            std::os::unix::fs::symlink(self.root.join("absent"), &directory).unwrap();
+            let failed = self.import(session, &["--execute"]);
+            fs::remove_file(directory).unwrap();
+            assert_eq!(failed.status.code(), Some(4), "{}", stderr(&failed));
         }
-        std::os::unix::fs::symlink(self.root.join("absent"), &directory).unwrap();
-        let failed = self.import(session, &["--execute"]);
-        fs::remove_file(&directory).unwrap();
-        if backup.exists() {
-            fs::rename(backup, directory).unwrap();
-        }
-        assert_eq!(failed.status.code(), Some(4), "{}", stderr(&failed));
-        assert!(self.run.join("decisions.pending.json").is_file());
+        assert!(receipt.is_file());
     }
     fn journal(&self) -> PathBuf {
         self.run.join("decisions.jsonl")
@@ -997,36 +1020,38 @@ fn import_journals_human_dispositions_with_actor_and_revision_and_rerun_is_a_noo
     assert!(!checkpoints.exists());
     assert_eq!(fs::read(f.journal()).unwrap(), journal);
     fs::write(f.repository.join("x.rs"), "changed").unwrap();
-    refused(&f.import(&session, &["--execute"]), "stale file");
+    f.refuse_both(&session, "stale file");
     assert!(!checkpoint.exists());
     fs::write(f.repository.join("x.rs"), SOURCE).unwrap();
     edit_session(&session, |s| {
         comment_mut(s, "h-issue")["line_range"] = serde_json::json!({"start": 4, "end": 4});
     });
-    assert_eq!(
-        json(&f.import(&session, &["--execute"]))["events"],
-        serde_json::json!([])
-    );
+    f.refuse_both(&session, "pending recovery receipt");
     assert!(!checkpoint.exists());
     fs::write(&session, &before).unwrap();
-    let limited = Command::new("python3")
-        .args([
-            "-c",
-            "import os, resource, sys\n\
-             resource.setrlimit(resource.RLIMIT_FSIZE, (32, 32))\n\
-             os.execv(sys.argv[1], sys.argv[1:])",
-            env!("CARGO_BIN_EXE_deep-diff-forge"),
-            "council",
-            "import-tuicr",
-        ])
-        .arg(&f.run)
-        .arg("--session")
-        .arg(&session)
-        .arg("--execute")
-        .output()
-        .unwrap();
+    let limited = f.limited_import(&session, 32);
     assert_eq!(limited.status.code(), Some(4), "{}", stderr(&limited));
     assert_eq!(fs::read_dir(&checkpoints).unwrap().count(), 0);
+    let ledger = f
+        .run
+        .join("exports/tuicr")
+        .join(head["session_id"].as_str().unwrap());
+    let rename_key = |old: &str, new: &str| {
+        let name = |key: &str| {
+            ledger.join(format!(
+                "{}.json",
+                deep_diff_forge_core::sha256_hex(key.as_bytes())
+            ))
+        };
+        let record = name(old);
+        edit_session(&record, |entry| entry["key"] = new.into());
+        fs::rename(record, name(new)).unwrap();
+    };
+    rename_key(RANGE_KEY, "other/finding/range");
+    f.refuse_both(&session, "replanned batch disagrees");
+    assert!(!checkpoint.exists());
+    rename_key("other/finding/range", RANGE_KEY);
+    rename_key("correctness-codex/independent/summary", "renamed/summary");
     let again = json(&f.import(&session, &["--execute"]));
     assert_eq!(again["events"], serde_json::json!([]));
     assert_eq!(again["journal_events"], 4);
@@ -1117,36 +1142,27 @@ fn checkpoint_repair_requires_the_same_session_revision_and_valid_marks() {
     let other = f.session("other.json", |s| {
         s["id"] = "00000000-0000-4000-8000-000000000002".into();
     });
-    assert_eq!(
-        json(&f.import(&other, &["--execute"]))["events"],
-        serde_json::json!([])
-    );
+    f.refuse_both(&other, "pending recovery receipt");
     assert!(!checkpoint.exists());
     for source in ["unstaged", "staged"] {
         fs::copy(&session, &other).unwrap();
         edit_session(&other, |s| s["diff_source"] = source.into());
-        assert_eq!(
-            json(&f.import(&other, &["--execute"]))["events"],
-            serde_json::json!([])
-        );
+        f.refuse_both(&other, "pending recovery receipt");
         assert!(!checkpoint.exists());
     }
     fs::copy(&session, &other).unwrap();
     edit_session(&other, |s| s["files"] = serde_json::json!({}));
-    assert_eq!(
-        json(&f.import(&other, &["--execute"]))["events"],
-        serde_json::json!([])
-    );
+    f.refuse_both(&other, "pending recovery receipt");
     assert!(!checkpoint.exists());
 
     fs::copy(&session, &other).unwrap();
     for hash in [serde_json::json!(222), serde_json::Value::Null] {
         edit_session(&other, |s| s["files"]["x.rs"]["content_hash"] = hash);
-        refused(&f.import(&other, &["--execute"]), "stale review mark");
+        f.refuse_both(&other, "pending recovery receipt");
         assert!(!checkpoint.exists());
     }
     fs::write(f.repository.join("x.rs"), "fn changed() {}\n").unwrap();
-    refused(&f.import(&session, &["--execute"]), "stale file");
+    f.refuse_both(&session, "stale file");
     assert!(!checkpoint.exists());
 
     fs::write(f.repository.join("x.rs"), SOURCE).unwrap();
@@ -1182,6 +1198,16 @@ fn checkpoint_repair_uses_the_head_import_file_set() {
             "line_comments": {}, "reviewed_hunks": [], "content_hash": 0
         });
     });
+    let before = fs::read(f.journal()).unwrap();
+    f.refuse_both(&session, "stale file");
+    fs::write(f.repository.join("x.rs"), SOURCE).unwrap();
+    edit_session(&session, |s| {
+        s["files"]["x.rs"]["content_hash"] = 222.into()
+    });
+    f.refuse_both(&session, "stale review mark");
+    assert_eq!(fs::read(f.journal()).unwrap(), before);
+    assert!(!f.run.join("decisions.pending.json").exists());
+    edit_session(&session, |s| s["files"]["x.rs"]["content_hash"] = 0.into());
     let dry = json(&f.import(&session, &[]));
     assert_eq!(kinds(dry["events"].as_array().unwrap()), ["comment_added"]);
     f.interrupt_checkpoint(&session);
@@ -1236,18 +1262,25 @@ fn checkpoint_recovery_rechecks_cleared_file_and_hunk_marks() {
         });
         f.interrupt_checkpoint(&session);
         fs::write(f.repository.join("x.rs"), "changed").unwrap();
-        refused(&f.import(&session, &["--execute"]), "stale file");
+        f.refuse_both(&session, "stale file");
         let checkpoint = f
             .run
             .join("decisions.checkpoints/00000000000000000001.json");
         assert!(!checkpoint.exists());
         fs::write(f.repository.join("x.rs"), SOURCE).unwrap();
         let journal = fs::read(f.journal()).unwrap();
+        let receipt = f.run.join("decisions.pending.json");
+        let proof = fs::read(&receipt).unwrap();
         assert_eq!(
             json(&f.import(&session, &["--execute"]))["events"],
             serde_json::json!([])
         );
-        assert!(checkpoint.exists());
+        let published = fs::read(&checkpoint).unwrap();
+        fs::write(&receipt, &proof).unwrap();
+        fs::write(f.repository.join("x.rs"), "stale after publication").unwrap();
+        f.refuse_both(&session, "stale file");
+        assert_eq!(fs::read(receipt).unwrap(), proof);
+        assert_eq!(fs::read(checkpoint).unwrap(), published);
         assert_eq!(fs::read(f.journal()).unwrap(), journal);
     }
 }
@@ -1297,10 +1330,7 @@ fn checkpoint_recovery_binds_exact_bytes_and_survives_interrupted_publication() 
                 s["commit_range"].as_array_mut().unwrap().remove(0);
             }
         });
-        assert_eq!(
-            json(&f.import(&session, &["--execute"]))["events"],
-            serde_json::json!([])
-        );
+        f.refuse_both(&session, "pending recovery receipt");
         assert!(!checkpoint.exists());
         assert_eq!(fs::read(&receipt).unwrap(), proof);
     }
@@ -1313,39 +1343,108 @@ fn checkpoint_recovery_binds_exact_bytes_and_survives_interrupted_publication() 
                 r["prev"] = "f".repeat(64).into();
             }
         });
-        refused(&f.import(&session, &["--execute"]), "receipt disagrees");
+        f.refuse_both(&session, "receipt disagrees");
         assert!(!checkpoint.exists());
         fs::write(&receipt, &proof).unwrap();
     }
     let first_line = journal.iter().position(|&byte| byte == b'\n').unwrap() + 1;
     fs::write(f.journal(), &journal[..first_line - 1]).unwrap();
-    refused(&f.import(&session, &["--execute"]), "incomplete");
+    f.refuse_both(&session, "incomplete");
     assert_eq!(fs::read(&receipt).unwrap(), proof);
-    for (length, count) in [(first_line, 1), (0, 2)] {
+    for length in [first_line, 0] {
         fs::write(f.journal(), &journal[..length]).unwrap();
-        let out = json(&f.import(&session, &["--execute"]));
-        assert_eq!(out["events"].as_array().unwrap().len(), count);
-        assert_eq!(fs::read(f.journal()).unwrap(), journal);
-        assert!(!receipt.exists());
-        assert!(checkpoint.is_file());
-        if length > 0 {
-            fs::remove_file(&checkpoint).unwrap();
-            fs::write(&receipt, &proof).unwrap();
-        }
+        f.refuse_both(&session, "receipt disagrees");
+        assert_eq!(fs::read(f.journal()).unwrap(), journal[..length]);
+        assert_eq!(fs::read(&receipt).unwrap(), proof);
+        assert!(!checkpoint.exists());
     }
+    fs::write(f.journal(), &journal).unwrap();
+    assert_eq!(
+        json(&f.import(&session, &["--execute"]))["events"],
+        serde_json::json!([])
+    );
+    assert!(!receipt.exists());
+    let published = fs::read(&checkpoint).unwrap();
     fs::write(&receipt, &proof).unwrap();
+    edit_session(&session, |s| {
+        s["review_comments"].as_array_mut().unwrap().reverse()
+    });
+    f.refuse_both(&session, "pending recovery receipt");
+    assert_eq!(fs::read(&receipt).unwrap(), proof);
+    assert_eq!(fs::read(&checkpoint).unwrap(), published);
+    fs::write(&session, &bytes).unwrap();
+    assert_eq!(
+        json(&f.import(&session, &[]))["events"],
+        serde_json::json!([])
+    );
+    assert_eq!(fs::read(&receipt).unwrap(), proof);
     assert_eq!(
         json(&f.import(&session, &["--execute"]))["events"],
         serde_json::json!([])
     );
     assert!(!receipt.exists());
     fs::remove_file(&checkpoint).unwrap();
-    refused(
-        &f.import(&session, &["--execute"]),
-        "without a pending recovery receipt",
-    );
+    let reason = "without a pending recovery receipt";
+    f.refuse_both(&session, reason);
+    edit_session(&session, |s| {
+        s["review_comments"]
+            .as_array_mut()
+            .unwrap()
+            .push(human("new", "Ana", "note", "New"))
+    });
+    f.refuse_both(&session, reason);
+    let foreign = f.session("foreign.json", |s| s["id"] = "other".into());
+    f.refuse_both(&foreign, reason);
+    edit_session(&foreign, |s| {
+        s["review_comments"] = serde_json::json!([human("new", "Ana", "note", "New")])
+    });
+    f.refuse_both(&foreign, reason);
     assert!(!checkpoint.exists());
     assert_eq!(fs::read(f.journal()).unwrap(), journal);
+    fs::write(&checkpoint, &published).unwrap();
+    json(&f.import(&session, &["--execute"]));
+    let advanced = fs::read(f.journal()).unwrap();
+    fs::write(&receipt, &proof).unwrap();
+    fs::write(&session, &bytes).unwrap();
+    f.refuse_both(&session, "receipt disagrees");
+    assert_eq!(fs::read(receipt).unwrap(), proof);
+    assert_eq!(fs::read(f.journal()).unwrap(), advanced);
+}
+
+#[test]
+fn checkpoint_recovery_refuses_a_missing_lifecycle_event() {
+    let f = Fixture::new();
+    let session = f.session("lifecycle.json", |s| {
+        s["review_comments"] = serde_json::json!([human("one", "Ana", "note", "One")]);
+    });
+    json(&f.import(&session, &["--execute"]));
+    edit_session(&session, |s| {
+        let comment = comment_mut(s, "one");
+        comment["content"] = "Revised".into();
+        comment["lifecycle_state"] = "submitted".into();
+    });
+    f.interrupt_checkpoint(&session);
+    assert_eq!(
+        kinds(&f.events()),
+        ["comment_added", "revised", "lifecycle"]
+    );
+    let journal = fs::read(f.journal()).unwrap();
+    let end = journal[..journal.len() - 1]
+        .iter()
+        .rposition(|&b| b == b'\n')
+        .unwrap()
+        + 1;
+    fs::write(f.journal(), &journal[..end]).unwrap();
+    let receipt = f.run.join("decisions.pending.json");
+    let proof = fs::read(&receipt).unwrap();
+    f.refuse_both(&session, "receipt disagrees");
+    assert_eq!(fs::read(f.journal()).unwrap(), journal[..end]);
+    assert_eq!(fs::read(receipt).unwrap(), proof);
+    assert!(
+        !f.run
+            .join("decisions.checkpoints/00000000000000000002.json")
+            .exists()
+    );
 }
 
 #[test]
@@ -1373,20 +1472,20 @@ fn reviewed_marks_need_the_journaled_content_hash() {
     let checkpoint = f
         .run
         .join("decisions.checkpoints/00000000000000000000.json");
-    fs::remove_file(&checkpoint).unwrap();
+    assert!(checkpoint.exists());
     // A further mark under a different tuicr diff hash is refused.
     edit_session(&session, |s| {
         s["files"]["x.rs"]["reviewed_hunks"] = serde_json::json!(["h1"]);
         s["files"]["x.rs"]["content_hash"] = 222.into();
     });
     refused(&f.import(&session, &["--execute"]), "stale review mark");
-    assert!(!checkpoint.exists());
+    assert!(checkpoint.exists());
     // Positive control: the same mark under the journaled hash is accepted and supersedes the first.
     edit_session(&session, |s| {
         s["files"]["x.rs"]["content_hash"] = 111.into();
     });
     let second = json(&f.import(&session, &["--execute"]));
-    assert!(!checkpoint.exists());
+    assert!(checkpoint.exists());
     assert_eq!(
         second["events"][0]["reviewed_hunks"],
         serde_json::json!(["h1"])

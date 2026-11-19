@@ -1016,24 +1016,30 @@ fn plan_tombstones(p: &mut Planner<'_>, x: &Inputs<'_>) -> Result<()> {
     }
     Ok(())
 }
-fn check_mark(path: &str, file: &RawFile, pinned: Option<u64>) -> Result<()> {
-    if file.reviewed || !file.reviewed_hunks.is_empty() {
-        let refuse = |reason: String| TuicrImportError::StaleReviewMark {
-            path: path.to_owned(),
+fn validate_positive_marks(x: &Inputs<'_>, session_id: &str) -> Result<()> {
+    for (path, file) in x.files {
+        if !file.reviewed && file.reviewed_hunks.is_empty() {
+            continue;
+        }
+        let refuse = |reason| TuicrImportError::StaleReviewMark {
+            path: path.clone(),
             reason,
         };
-        let Some(hash) = file.content_hash else {
-            return Err(refuse(
-                "the reviewed mark carries no tuicr content_hash".into(),
-            ));
-        };
-        if let Some(pinned) = pinned
-            && pinned != hash
+        let hash = file
+            .content_hash
+            .ok_or_else(|| refuse("the reviewed mark carries no tuicr content_hash".into()))?;
+        if let Some(pinned) = x
+            .journal
+            .files
+            .get(&(session_id.to_owned(), path.clone()))
+            .and_then(|prior| prior.pinned)
+            && hash != pinned
         {
             return Err(refuse(format!(
                 "tuicr content_hash {hash} differs from {pinned} journaled for this file; the mark was made on a different diff"
             )));
         }
+        check_file(x.binding, x.sealed, path)?;
     }
     Ok(())
 }
@@ -1050,8 +1056,9 @@ fn plan_files(p: &mut Planner<'_>, x: &Inputs<'_>) -> Result<()> {
         if prior.reviewed == file.reviewed && prior.hunks == file.reviewed_hunks {
             continue;
         }
-        check_mark(path, file, prior.pinned)?;
-        check_file(x.binding, x.sealed, path)?;
+        if !file.reviewed && file.reviewed_hunks.is_empty() {
+            check_file(x.binding, x.sealed, path)?;
+        }
         p.push(DecisionEvent {
             anchor: Some(Anchor::File { file: path.clone() }),
             content_hash: file.content_hash,
@@ -1075,24 +1082,16 @@ fn plan_files(p: &mut Planner<'_>, x: &Inputs<'_>) -> Result<()> {
 struct ImportEvidence {
     session_sha256: String,
     revision_sha256: String,
-    ledger_sha256: String,
 }
 
 impl ImportEvidence {
     fn new(bytes: &[u8], revision: &SessionRevision, x: &Inputs<'_>) -> Result<Self> {
-        let ledger: Vec<_> = x
-            .ledger
-            .by_comment
-            .values()
-            .map(|entry| (&entry.tuicr_comment_id, &entry.key, &entry.content_sha256))
-            .collect();
         Ok(Self {
             session_sha256: sha256_hex(bytes),
             revision_sha256: sha256_hex(&serde_json::to_vec(&(
                 revision,
                 &x.binding.session.commit_range,
             ))?),
-            ledger_sha256: sha256_hex(&serde_json::to_vec(&ledger)?),
         })
     }
 }
@@ -1100,94 +1099,75 @@ impl ImportEvidence {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PendingImport {
-    run_id: String,
-    session_id: String,
     first_seq: u64,
     prev: String,
     head: Checkpoint,
     evidence: ImportEvidence,
 }
 
+fn plan_events(planner: &mut Planner<'_>, x: &Inputs<'_>) -> Result<()> {
+    plan_comments(planner, x)?;
+    plan_tombstones(planner, x)?;
+    plan_files(planner, x)?;
+    if !planner.events.is_empty() {
+        validate_positive_marks(x, planner.session_id)?;
+    }
+    Ok(())
+}
+
 impl PendingImport {
-    fn recorded_batch<'a>(
+    fn validate<'a>(
         &self,
-        journal: &'a Journal,
-        run_id: &str,
-    ) -> Result<&'a [DecisionEvent]> {
+        x: &Inputs<'a>,
+        planner: &Planner<'_>,
+        bytes: &[u8],
+    ) -> Result<&'a DecisionEvent> {
         let mismatch = || {
             TuicrImportError::Journal("pending receipt disagrees with the verified journal".into())
         };
         let start = usize::try_from(self.first_seq).map_err(|_| mismatch())?;
-        let end = usize::try_from(self.head.seq)
-            .ok()
-            .and_then(|n| n.checked_add(1))
+        let (prefix, recorded) = x
+            .journal
+            .events
+            .split_at_checked(start)
             .ok_or_else(mismatch)?;
-        let prefix = journal.events.get(..start).ok_or_else(mismatch)?;
-        let prev = prefix.last().map_or_else(genesis, |e| e.hash.clone());
-        if self.run_id != run_id || self.prev != prev || end <= start {
-            return Err(mismatch());
-        }
-        let batch = &journal.events[start..end.min(journal.events.len())];
-        if batch.iter().any(|e| e.session_id != self.session_id)
-            || journal
-                .events
-                .get(end - 1)
-                .is_some_and(|e| e.hash != self.head.hash)
+        let head = recorded.last().ok_or_else(mismatch)?;
+        if head.seq != self.head.seq || head.hash != self.head.hash || recorded[0].prev != self.prev
         {
             return Err(mismatch());
         }
-        Ok(batch)
+        if self.evidence != ImportEvidence::new(bytes, &planner.revision, x)? {
+            return Err(TuicrImportError::Journal(
+                "import does not match the pending recovery receipt".into(),
+            ));
+        }
+        let mut prior = Journal::default();
+        for event in prefix {
+            prior.replay(event);
+            prior.events.push(event.clone());
+        }
+        let mut replay = Planner {
+            run_id: planner.run_id,
+            session_id: planner.session_id,
+            revision: planner.revision.clone(),
+            next: self.first_seq,
+            prev: self.prev.clone(),
+            events: Vec::new(),
+        };
+        plan_events(
+            &mut replay,
+            &Inputs {
+                journal: &prior,
+                ..*x
+            },
+        )?;
+        if replay.events != recorded {
+            return Err(TuicrImportError::Journal(
+                "replanned batch disagrees with the pending recovery receipt".into(),
+            ));
+        }
+        Ok(head)
     }
-}
-
-fn plan_events(planner: &mut Planner<'_>, x: &Inputs<'_>) -> Result<()> {
-    plan_comments(planner, x)?;
-    plan_tombstones(planner, x)?;
-    plan_files(planner, x)
-}
-
-fn replay_batch(
-    x: &Inputs<'_>,
-    pending: &PendingImport,
-    revision: &SessionRevision,
-    recorded: &[DecisionEvent],
-) -> Result<Vec<DecisionEvent>> {
-    let mut prior = Journal::default();
-    for event in x
-        .journal
-        .events
-        .iter()
-        .take_while(|e| e.seq < pending.first_seq)
-    {
-        prior.replay(event);
-        prior.events.push(event.clone());
-    }
-    let mut replay = Planner {
-        run_id: &pending.run_id,
-        session_id: &pending.session_id,
-        revision: revision.clone(),
-        next: pending.first_seq,
-        prev: pending.prev.clone(),
-        events: Vec::new(),
-    };
-    plan_events(
-        &mut replay,
-        &Inputs {
-            journal: &prior,
-            ..*x
-        },
-    )?;
-    if !replay.events.starts_with(recorded)
-        || !replay
-            .events
-            .last()
-            .is_some_and(|head| head.seq == pending.head.seq && head.hash == pending.head.hash)
-    {
-        return Err(TuicrImportError::Journal(
-            "replanned batch disagrees with the pending recovery receipt".into(),
-        ));
-    }
-    Ok(replay.events.split_off(recorded.len()))
 }
 
 /// Holds `<run>/decisions.lock` (create-new) for the duration of an executing import.
@@ -1298,105 +1278,64 @@ fn retire_receipt(directory: &Path) -> Result<()> {
     Ok(())
 }
 
-fn execute_import(
+fn process_import(
     x: &Inputs<'_>,
     planner: &mut Planner<'_>,
     bytes: &[u8],
-    mut lines: Vec<u8>,
+    execute: bool,
 ) -> Result<()> {
     let directory = x.binding.directory;
     let receipt = directory.join(PENDING_FILE);
-    let existing = x.journal.events.last();
-    let mut resuming = false;
-    if receipt.try_exists()? {
-        let pending: PendingImport = storage::read_json(&receipt, 4096)?;
-        let batch = pending.recorded_batch(x.journal, planner.run_id)?;
-        let completed = batch.last().filter(|e| e.seq == pending.head.seq);
-        if let Some(head) = completed
-            && checkpoint_path(directory, head.seq).try_exists()?
-        {
-            ensure_checkpoint(
-                directory,
-                &fs::File::open(directory.join(JOURNAL_FILE))?,
-                head,
-            )?;
-            retire_receipt(directory)?;
-        } else {
-            let mismatch = || {
-                TuicrImportError::Journal(
-                    "import does not match the pending recovery receipt".into(),
-                )
-            };
-            if completed.is_some_and(|e| existing.is_some_and(|last| e.seq != last.seq)) {
-                return Err(mismatch());
+    match fs::symlink_metadata(&receipt) {
+        Ok(_) => {
+            let pending: PendingImport = storage::read_json(&receipt, 4096)?;
+            let head = pending.validate(x, planner, bytes)?;
+            plan_events(planner, x)?;
+            if !planner.events.is_empty() {
+                return Err(TuicrImportError::Journal(
+                    "pending checkpoint repair requires an unchanged plan".into(),
+                ));
             }
-            let evidence = ImportEvidence::new(bytes, &planner.revision, x)?;
-            if pending.session_id == planner.session_id
-                && pending.evidence.revision_sha256 == evidence.revision_sha256
-            {
-                for (path, file) in x.files {
-                    let prior = x
-                        .journal
-                        .files
-                        .get(&(pending.session_id.clone(), path.clone()));
-                    check_mark(path, file, prior.and_then(|mark| mark.pinned))?;
-                }
+            if execute {
+                ensure_checkpoint(
+                    directory,
+                    &fs::File::open(directory.join(JOURNAL_FILE))?,
+                    head,
+                )?;
+                retire_receipt(directory)?;
             }
-            if pending.session_id != planner.session_id || pending.evidence != evidence {
-                return if planner.events.is_empty() {
-                    Ok(())
-                } else {
-                    Err(mismatch())
-                };
-            }
-            if completed.is_some() && !planner.events.is_empty() {
-                return Err(mismatch());
-            }
-            planner.events = replay_batch(x, &pending, &planner.revision, batch)?;
-            lines = encode(x.journal.bytes, &planner.events)?;
-            fs::File::open(&receipt)?.sync_all()?;
-            resuming = true;
-        }
-    }
-    if let Some(head) = planner.events.last() {
-        if !resuming {
-            let first = &planner.events[0];
-            let pending = PendingImport {
-                run_id: head.run_id.clone(),
-                session_id: head.session_id.clone(),
-                first_seq: first.seq,
-                prev: first.prev.clone(),
-                head: Checkpoint {
-                    seq: head.seq,
-                    hash: head.hash.clone(),
-                },
-                evidence: ImportEvidence::new(bytes, &planner.revision, x)?,
-            };
-            publish_json(directory, &receipt, &pending)?;
-        }
-        fs::File::open(directory)?.sync_all()?;
-        append(directory, x.journal.bytes, &lines, head)?;
-    } else if let Some(head) = existing
-        && head.session_id == planner.session_id
-        && head.revision == planner.revision
-    {
-        if !resuming && !checkpoint_path(directory, head.seq).try_exists()? {
-            return Err(TuicrImportError::Journal(
-                "cannot repair the missing checkpoint without a pending recovery receipt".into(),
-            ));
-        }
-        ensure_checkpoint(
-            directory,
-            &fs::File::open(directory.join(JOURNAL_FILE))?,
-            head,
-        )?;
-        if !resuming {
             return Ok(());
         }
-    } else {
-        return Ok(());
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
     }
-    retire_receipt(directory)
+    if let Some(head) = x.journal.events.last()
+        && !checkpoint_path(directory, head.seq).try_exists()?
+    {
+        return Err(TuicrImportError::Journal(
+            "cannot repair the missing checkpoint without a pending recovery receipt".into(),
+        ));
+    }
+    plan_events(planner, x)?;
+    let lines = encode(x.journal.bytes, &planner.events)?;
+    if let (Some(first), Some(head)) = (planner.events.first(), planner.events.last()) {
+        let pending = PendingImport {
+            first_seq: first.seq,
+            prev: first.prev.clone(),
+            head: Checkpoint {
+                seq: head.seq,
+                hash: head.hash.clone(),
+            },
+            evidence: ImportEvidence::new(bytes, &planner.revision, x)?,
+        };
+        if execute {
+            publish_json(directory, &receipt, &pending)?;
+            fs::File::open(directory)?.sync_all()?;
+            append(directory, x.journal.bytes, &lines, head)?;
+            retire_receipt(directory)?;
+        }
+    }
+    Ok(())
 }
 
 /// Import human dispositions from the tuicr session file `session_path` into the run's decision journal.
@@ -1477,11 +1416,7 @@ pub fn import_tuicr(
         comments: &comments,
         files: &files,
     };
-    plan_events(&mut planner, &inputs)?;
-    let lines = encode(journal.bytes, &planner.events)?;
-    if options.execute {
-        execute_import(&inputs, &mut planner, &bytes, lines)?;
-    }
+    process_import(&inputs, &mut planner, &bytes, options.execute)?;
     Ok(TuicrImport {
         schema: "deep-diff-forge.tuicr-import.v1",
         run_id: manifest.run_id.clone(),
