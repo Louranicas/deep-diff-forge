@@ -919,7 +919,8 @@ fn append_failures_retain_the_receipt_only_after_a_partial_write() {
     });
     let receipt = f.run.join("decisions.pending.json");
     let journal = f.journal();
-    std::os::unix::fs::symlink(f.root.join("missing/decisions.jsonl"), &journal).unwrap();
+    let target = f.root.join("redirected-journal.jsonl");
+    std::os::unix::fs::symlink(&target, &journal).unwrap();
     let open_failure = f.import(&session, &["--execute"]);
     assert_eq!(
         open_failure.status.code(),
@@ -927,6 +928,7 @@ fn append_failures_retain_the_receipt_only_after_a_partial_write() {
         "{}",
         stderr(&open_failure)
     );
+    assert!(!target.try_exists().unwrap());
     assert!(!receipt.try_exists().unwrap());
     fs::remove_file(&journal).unwrap();
     json(&f.import(&session, &["--execute"]));

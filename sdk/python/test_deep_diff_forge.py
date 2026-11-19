@@ -214,6 +214,11 @@ class Bounds(unittest.TestCase):
             ddf.MAX_REQUEST_BYTES = original
 
     def test_response_payload_limit_on_stdio_and_socket(self):
+        pipe_read = os.read
+
+        def read_one_byte(fd, size):
+            return pipe_read(fd, min(size, 1))
+
         with patch.object(ddf, "MAX_REQUEST_BYTES", 256):
             body = b'{"jsonrpc":"2.0","id":1,"result":true}'.ljust(ddf.MAX_REQUEST_BYTES)
             for payload in (body, body + b" "):
@@ -222,7 +227,8 @@ class Bounds(unittest.TestCase):
                 with self.subTest(transport="stdio", size=len(payload)):
                     with ddf.StdioClient((sys.executable, "-c", code), timeout=5) as client:
                         if len(payload) == ddf.MAX_REQUEST_BYTES:
-                            self.assertIs(client.call("daemon.health"), True)
+                            with patch.object(ddf.os, "read", read_one_byte):
+                                self.assertIs(client.call("daemon.health"), True)
                         else:
                             with self.assertRaisesRegex(ddf.TransportError, "answer exceeds"):
                                 client.call("daemon.health")
