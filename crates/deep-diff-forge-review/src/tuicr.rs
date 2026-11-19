@@ -487,30 +487,62 @@ pub(crate) struct Binding<'a> {
     pub(crate) revision: Revision,
 }
 impl Binding<'_> {
-    /// Bytes the session reviews for `path`, or why there are none.
-    pub(crate) fn session_bytes(&self, path: &str) -> std::result::Result<Vec<u8>, String> {
-        match &self.revision {
+    pub(crate) fn session_bytes(&self, path: &str) -> std::result::Result<Option<Vec<u8>>, String> {
+        let (object, listing) = match &self.revision {
             Revision::WorkingTree => {
                 let file = self.repository.join(path);
-                let canonical = fs::canonicalize(&file).map_err(|e| e.to_string())?;
+                let canonical = match fs::canonicalize(&file) {
+                    Ok(path) => path,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        if storage::untrusted_metadata(&self.repository, Path::new(path))
+                            .map_err(|e| e.to_string())?
+                            .is_none()
+                        {
+                            return Ok(None);
+                        }
+                        return Err(e.to_string());
+                    }
+                    Err(e) => return Err(e.to_string()),
+                };
                 if !canonical.starts_with(&self.repository) {
                     return Err("working-tree path escapes the repository".into());
                 }
-                storage::read_bytes(&file, SOURCE_CAP).map_err(|e| e.to_string())
+                return storage::read_bytes(&file, SOURCE_CAP)
+                    .map(Some)
+                    .map_err(|e| e.to_string());
             }
-            Revision::Index => storage::git_bytes(
-                &self.repository,
-                &["cat-file", "blob", &format!(":{path}")],
-                SOURCE_CAP,
-            )
-            .map_err(|e| format!("index has no blob: {e}")),
-            Revision::Commit(sha) => storage::git_bytes(
-                &self.repository,
-                &["cat-file", "blob", &format!("{sha}:{path}")],
-                SOURCE_CAP,
-            )
-            .map_err(|e| format!("commit {sha} has no blob: {e}")),
+            Revision::Index => (
+                format!(":0:{path}"),
+                vec![
+                    "--literal-pathspecs",
+                    "ls-files",
+                    "--cached",
+                    "-z",
+                    "--",
+                    path,
+                ],
+            ),
+            Revision::Commit(sha) => (
+                format!("{sha}:{path}"),
+                vec![
+                    "--literal-pathspecs",
+                    "ls-tree",
+                    "-z",
+                    sha.as_str(),
+                    "--",
+                    path,
+                ],
+            ),
+        };
+        if storage::git_bytes(&self.repository, &listing, SOURCE_CAP)
+            .map_err(|e| e.to_string())?
+            .is_empty()
+        {
+            return Ok(None);
         }
+        storage::git_bytes(&self.repository, &["cat-file", "blob", &object], SOURCE_CAP)
+            .map(Some)
+            .map_err(|e| e.to_string())
     }
     /// Resolve a finding's target: the first candidate-file citation, verified against sealed bytes.
     fn target(&self, finding: &crate::Finding) -> Result<Target> {
@@ -543,7 +575,10 @@ impl Binding<'_> {
         if !self.session.files.contains_key(path) {
             return Err(unanchored("the session does not list this file"));
         }
-        let reviewed = self.session_bytes(path).map_err(|e| unanchored(&e))?;
+        let reviewed = self
+            .session_bytes(path)
+            .map_err(|e| unanchored(&e))?
+            .ok_or_else(|| unanchored("absent from the session revision"))?;
         if reviewed != sealed {
             return Err(unanchored(&format!(
                 "the {} bytes the session reviews differ from the sealed snapshot",

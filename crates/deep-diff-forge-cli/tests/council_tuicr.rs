@@ -986,6 +986,19 @@ fn import_journals_human_dispositions_with_actor_and_revision_and_rerun_is_a_noo
     assert_eq!(dry["events"], serde_json::json!([]));
     assert!(!checkpoints.exists());
     assert_eq!(fs::read(f.journal()).unwrap(), journal);
+    fs::write(f.repository.join("x.rs"), "changed").unwrap();
+    refused(&f.import(&session, &["--execute"]), "stale file");
+    assert!(!checkpoint.exists());
+    fs::write(f.repository.join("x.rs"), SOURCE).unwrap();
+    edit_session(&session, |s| {
+        comment_mut(s, "h-issue")["line_range"] = serde_json::json!({"start": 4, "end": 4});
+    });
+    assert_eq!(
+        json(&f.import(&session, &["--execute"]))["events"],
+        serde_json::json!([])
+    );
+    assert!(!checkpoint.exists());
+    fs::write(&session, &before).unwrap();
     let limited = Command::new("python3")
         .args([
             "-c",
@@ -1134,6 +1147,53 @@ fn checkpoint_repair_requires_the_same_session_revision_and_valid_marks() {
     assert_eq!(fs::read(checkpoint).unwrap(), expected);
     assert_eq!(fs::read(f.journal()).unwrap(), journal);
     assert_eq!(fs::read(session).unwrap(), original);
+}
+
+#[test]
+fn checkpoint_repair_uses_the_head_import_file_set() {
+    let f = Fixture::with_repository(|repo| {
+        fs::write(repo.join("y.rs"), "fn y() {}\n").unwrap();
+        git(repo, &["add", "y.rs"]);
+        git(repo, &["commit", "-qm", "y"]);
+    });
+    let session = f.session("session.json", |s| {
+        s["files"]["x.rs"]["reviewed"] = true.into()
+    });
+    json(&f.import(&session, &["--execute"]));
+    fs::write(f.repository.join("x.rs"), "stale").unwrap();
+    edit_session(&session, |s| {
+        s["files"]["y.rs"] = serde_json::json!({
+            "path": "y.rs", "status": "modified", "reviewed": false,
+            "file_comments": [human("y", "Ana", "note", "Checked y.")],
+            "line_comments": {}, "reviewed_hunks": [], "content_hash": 0
+        });
+    });
+    let dry = json(&f.import(&session, &[]));
+    assert_eq!(kinds(dry["events"].as_array().unwrap()), ["comment_added"]);
+    assert_eq!(
+        json(&f.import(&session, &["--execute"]))["events"],
+        dry["events"]
+    );
+
+    edit_session(&session, |s| {
+        s["files"].as_object_mut().unwrap().remove("x.rs");
+        s["review_comments"] = serde_json::json!([human("scope", "Ana", "note", "Reviewed y.")]);
+    });
+    let out = json(&f.import(&session, &["--execute"]));
+    let seq = out["events"][0]["seq"].as_u64().unwrap();
+    let checkpoint = f
+        .run
+        .join("decisions.checkpoints")
+        .join(format!("{seq:020}.json"));
+    let expected = fs::read(&checkpoint).unwrap();
+    let journal = fs::read(f.journal()).unwrap();
+    fs::remove_file(&checkpoint).unwrap();
+    assert_eq!(
+        json(&f.import(&session, &["--execute"]))["events"],
+        serde_json::json!([])
+    );
+    assert_eq!(fs::read(checkpoint).unwrap(), expected);
+    assert_eq!(fs::read(f.journal()).unwrap(), journal);
 }
 
 #[test]
@@ -1499,6 +1559,17 @@ fn dispositions_need_the_file_on_both_sides_or_neither() {
         ["comment_added"]
     );
     assert!(!f.journal().exists(), "dry runs write nothing");
+    json(&f.import(&deleted, &["--execute"]));
+    let checkpoint = f
+        .run
+        .join("decisions.checkpoints/00000000000000000000.json");
+    fs::remove_file(&checkpoint).unwrap();
+    fs::File::create(f.repository.join("gone.rs"))
+        .unwrap()
+        .set_len((64 << 20) + 1)
+        .unwrap();
+    refused(&f.import(&deleted, &["--execute"]), "stale file");
+    assert!(!checkpoint.exists());
 }
 
 #[test]

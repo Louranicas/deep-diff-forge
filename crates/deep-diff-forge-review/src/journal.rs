@@ -269,6 +269,8 @@ pub struct DecisionEvent {
     pub conflict: Option<String>,
     /// Hash of the latest earlier event about the same comment or file, if any.
     pub supersedes: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import_sha256: Option<String>,
     pub hash: String,
 }
 impl DecisionEvent {
@@ -352,9 +354,10 @@ struct RawSession {
 }
 
 /// One comment as observed in the session, with its anchor and its file's tuicr content hash.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 struct Observed {
     id: String,
+    #[serde(skip)]
     content: String,
     sha256: String,
     comment_type: Option<String>,
@@ -748,10 +751,10 @@ fn check_file(binding: &Binding<'_>, sealed: &Sealed, path: &str) -> Result<()> 
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         _ => Some(storage::read_bytes(&copy, SOURCE_CAP)?),
     };
-    match (snapshot, binding.session_bytes(path)) {
-        (Some(_), Err(e)) => Err(stale(e)),
-        (None, Ok(_)) => Err(stale("absent from the sealed snapshot".into())),
-        (Some(a), Ok(b)) if a != b => Err(stale(format!(
+    match (snapshot, binding.session_bytes(path).map_err(stale)?) {
+        (Some(_), None) => Err(stale("absent from the session revision".into())),
+        (None, Some(_)) => Err(stale("absent from the sealed snapshot".into())),
+        (Some(a), Some(b)) if a != b => Err(stale(format!(
             "the {} bytes the session reviews differ from the sealed snapshot",
             binding.revision.label()
         ))),
@@ -770,7 +773,14 @@ fn check_scope(
     for path in files.keys() {
         if sealed.inventory.contains(path) {
             check_file(binding, sealed, path)?;
-        } else if binding.session_bytes(path).is_ok() {
+        } else if binding
+            .session_bytes(path)
+            .map_err(|reason| TuicrImportError::StaleFile {
+                path: path.clone(),
+                reason,
+            })?
+            .is_some()
+        {
             return Err(TuicrImportError::StaleFile {
                 path: path.clone(),
                 reason: "the session shows a file outside the run's sealed source inventory".into(),
@@ -814,6 +824,7 @@ impl Planner<'_> {
             reviewed_hunks: None,
             conflict: None,
             supersedes: None,
+            import_sha256: None,
             hash: String::new(),
         }
     }
@@ -1008,6 +1019,27 @@ fn plan_tombstones(p: &mut Planner<'_>, x: &Inputs<'_>) -> Result<()> {
     }
     Ok(())
 }
+fn check_mark(path: &str, file: &RawFile, pinned: Option<u64>) -> Result<()> {
+    if file.reviewed || !file.reviewed_hunks.is_empty() {
+        let refuse = |reason: String| TuicrImportError::StaleReviewMark {
+            path: path.to_owned(),
+            reason,
+        };
+        let Some(hash) = file.content_hash else {
+            return Err(refuse(
+                "the reviewed mark carries no tuicr content_hash".into(),
+            ));
+        };
+        if let Some(pinned) = pinned
+            && pinned != hash
+        {
+            return Err(refuse(format!(
+                "tuicr content_hash {hash} differs from {pinned} journaled for this file; the mark was made on a different diff"
+            )));
+        }
+    }
+    Ok(())
+}
 /// Reviewed-mark changes per file. A positive mark needs tuicr's content hash, equal to the one
 /// pinned by the first journaled positive mark for that file, and the sealed bytes.
 fn plan_files(p: &mut Planner<'_>, x: &Inputs<'_>) -> Result<()> {
@@ -1018,32 +1050,11 @@ fn plan_files(p: &mut Planner<'_>, x: &Inputs<'_>) -> Result<()> {
             .get(&(p.session_id.to_owned(), path.clone()))
             .cloned()
             .unwrap_or_default();
-        let changed = prior.reviewed != file.reviewed || prior.hunks != file.reviewed_hunks;
-        let positive = file.reviewed || !file.reviewed_hunks.is_empty();
-        if positive {
-            let refuse = |reason: String| TuicrImportError::StaleReviewMark {
-                path: path.clone(),
-                reason,
-            };
-            let Some(hash) = file.content_hash else {
-                return Err(refuse(
-                    "the reviewed mark carries no tuicr content_hash".into(),
-                ));
-            };
-            if let Some(pinned) = prior.pinned
-                && pinned != hash
-            {
-                return Err(refuse(format!(
-                    "tuicr content_hash {hash} differs from {pinned} journaled for this file; the mark was made on a different diff"
-                )));
-            }
-        }
-        if positive || changed {
-            check_file(x.binding, x.sealed, path)?;
-        }
-        if !changed {
+        if prior.reviewed == file.reviewed && prior.hunks == file.reviewed_hunks {
             continue;
         }
+        check_mark(path, file, prior.pinned)?;
+        check_file(x.binding, x.sealed, path)?;
         p.push(DecisionEvent {
             anchor: Some(Anchor::File { file: path.clone() }),
             content_hash: file.content_hash,
@@ -1060,6 +1071,61 @@ fn plan_files(p: &mut Planner<'_>, x: &Inputs<'_>) -> Result<()> {
         })?;
     }
     Ok(())
+}
+
+fn import_digest(x: &Inputs<'_>) -> Result<String> {
+    let comments: BTreeMap<_, _> = x.comments.iter().map(|c| (&c.id, c)).collect();
+    let files: Vec<_> = x
+        .files
+        .iter()
+        .map(|(path, f)| (path, f.reviewed, &f.reviewed_hunks, f.content_hash))
+        .collect();
+    let ledger: Vec<_> = x
+        .ledger
+        .by_comment
+        .values()
+        .map(|entry| (&entry.tuicr_comment_id, &entry.key, &entry.content_sha256))
+        .collect();
+    Ok(sha256_hex(&serde_json::to_vec(&(comments, files, ledger))?))
+}
+
+fn validate_retry(x: &Inputs<'_>, head: &DecisionEvent) -> Result<bool> {
+    let expected = head.import_sha256.as_ref().ok_or_else(|| {
+        TuicrImportError::Journal(
+            "cannot repair the missing checkpoint: the journal head has no import evidence".into(),
+        )
+    })?;
+    let mut paths = BTreeSet::new();
+    for (path, file) in x.files {
+        if file.reviewed || !file.reviewed_hunks.is_empty() {
+            let prior = x
+                .journal
+                .files
+                .get(&(head.session_id.clone(), path.clone()));
+            check_mark(path, file, prior.and_then(|mark| mark.pinned))?;
+            paths.insert(path.as_str());
+        }
+    }
+    if &import_digest(x)? != expected {
+        return Ok(false);
+    }
+    for c in x.comments {
+        if x.journal
+            .comments
+            .contains_key(&(head.session_id.clone(), c.id.clone()))
+        {
+            if let Some(path) = c.anchor.file() {
+                paths.insert(path);
+            } else {
+                check_scope(x.binding, x.sealed, x.files)?;
+                return Ok(true);
+            }
+        }
+    }
+    for path in paths {
+        check_file(x.binding, x.sealed, path)?;
+    }
+    Ok(true)
 }
 
 /// Holds `<run>/decisions.lock` (create-new) for the duration of an executing import.
@@ -1115,20 +1181,32 @@ fn append(directory: &Path, verified_len: u64, lines: &[u8], last: &DecisionEven
         ));
     }
     file.write_all(lines)?;
-    ensure_checkpoint(directory, &file, last)
+    ensure_checkpoint(directory, &file, last, None)
 }
 
-fn ensure_checkpoint(directory: &Path, journal: &fs::File, last: &DecisionEvent) -> Result<()> {
+fn ensure_checkpoint(
+    directory: &Path,
+    journal: &fs::File,
+    last: &DecisionEvent,
+    retry: Option<&Inputs<'_>>,
+) -> Result<()> {
     journal.sync_all()?;
     fs::File::open(directory)?.sync_all()?;
     let checkpoints = directory.join(CHECKPOINT_DIR);
-    if !checkpoints.exists() {
-        storage::make_dir(&checkpoints)?;
-    }
     let path = checkpoints.join(format!("{:020}.json", last.seq));
-    if path.exists() {
+    let exists = path.try_exists()?;
+    if !exists
+        && let Some(inputs) = retry
+        && !validate_retry(inputs, last)?
+    {
+        return Ok(());
+    }
+    if exists {
         fs::File::open(&path)?.sync_all()?;
     } else {
+        if !checkpoints.try_exists()? {
+            storage::make_dir(&checkpoints)?;
+        }
         let bytes = serde_json::to_vec_pretty(&Checkpoint {
             seq: last.seq,
             hash: last.hash.clone(),
@@ -1230,6 +1308,10 @@ pub fn import_tuicr(
     plan_comments(&mut planner, &inputs)?;
     plan_tombstones(&mut planner, &inputs)?;
     plan_files(&mut planner, &inputs)?;
+    if let Some(head) = planner.events.last_mut() {
+        head.import_sha256 = Some(import_digest(&inputs)?);
+        head.hash = head.digest()?;
+    }
     let lines = encode(journal.bytes, &planner.events)?;
     if options.execute {
         if let Some(last) = planner.events.last() {
@@ -1237,14 +1319,9 @@ pub fn import_tuicr(
         } else if let Some(last) = journal.events.last()
             && last.session_id == planner.session_id
             && last.revision == planner.revision
-            && journal.files.iter().all(|((id, path), mark)| {
-                id != planner.session_id
-                    || (!mark.reviewed && mark.hunks.is_empty())
-                    || files.contains_key(path)
-            })
         {
             let file = fs::File::open(directory.join(JOURNAL_FILE))?;
-            ensure_checkpoint(&directory, &file, last)?;
+            ensure_checkpoint(&directory, &file, last, Some(&inputs))?;
         }
     }
     Ok(TuicrImport {
