@@ -5,7 +5,7 @@
 //! and reviewed marks in a local tuicr session become actor-attributed events in `<run>/decisions.jsonl`.
 //!
 //! The journal is append-only and hash-chained: each event names the hash of the one before it, and
-//! create-new checkpoints record the head after every import, so a rewritten or truncated journal
+//! create-new checkpoints record the head after each completed append, so a rewritten or truncated journal
 //! is refused on the next import. Nothing here writes to tuicr. Session content is untrusted data:
 //! it is size-capped, its ids and paths are validated, and a disposition is recorded only while the
 //! session still shows the revision and bytes the run sealed; otherwise the whole import is refused.
@@ -35,7 +35,7 @@ const JOURNAL_CAP: u64 = 64 * 1024 * 1024;
 const ENTRY_CAP: usize = 100_000;
 const TAG_CAP: usize = 256;
 
-/// Typed refusal of a tuicr import. Every variant is a refusal to append.
+/// Failure during tuicr import validation or journal publication.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum TuicrImportError {
@@ -283,7 +283,7 @@ impl DecisionEvent {
 /// Caller choices for [`import_tuicr`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ImportOptions {
-    /// Append the planned events; without it the import is a pure dry run.
+    /// Apply the validated import, including any pending checkpoint repair. Defaults to a dry run.
     pub execute: bool,
 }
 
@@ -761,8 +761,7 @@ fn check_file(binding: &Binding<'_>, sealed: &Sealed, path: &str) -> Result<()> 
     }
 }
 /// A review-level disposition is about the whole session, so every file it lists must still be
-/// the sealed bytes. Files the inventory lacks are refused when the session can show bytes for
-/// them (a new file), and skipped otherwise (tuicr pseudo-files such as commit messages).
+/// the sealed bytes. A tuicr pseudo-file can be skipped only after confirming its absence.
 fn check_scope(
     binding: &Binding<'_>,
     sealed: &Sealed,
@@ -1353,14 +1352,14 @@ fn process_import(
 
 /// Import human dispositions from the tuicr session file `session_path` into the run's decision journal.
 ///
-/// Without `options.execute` this is a dry run: it performs every check and reports the events it
-/// would append, and writes nothing. Re-running with no session change plans no events.
+/// A dry run validates the import and reports the events it would append without writing.
 /// # Errors
 /// Refuses a run, session or export ledger that fails the shared identity checks; a session whose
 /// `base_commit` is not the run's sealed HEAD; dispositions on files whose reviewed bytes differ from
 /// the sealed snapshot; reviewed marks without, or with a changed, tuicr content hash; unsafe
 /// session content; a malformed, rewritten, truncated or oversized journal; events that would take
-/// the journal past its 64 MiB cap; and a held import lock.
+/// the journal past its 64 MiB cap; or a checkpoint that cannot be reconciled with the receipt.
+/// Executing an import also requires the import lock.
 pub fn import_tuicr(
     directory: &Path,
     session_path: &Path,

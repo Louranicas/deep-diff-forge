@@ -1366,11 +1366,9 @@ with StdioClient() as client:
     document = client.review_patch(patch, require_files=True, require_hunks=True)
 ```
 
-`deep-diff-forge rpc` answers each stdin line with the socket server's own handler and framing:
-an 80 MiB cap that counts the newline, with an oversized request refused at once. It stops at
-`daemon.shutdown`. The Python client checks every answer's version and id, bounds each answer's
-size and time, and kills a child that exceeds either. CI runs the Python tests against the
-built binary over both transports.
+`deep-diff-forge rpc` uses the socket server's handler and framing, refuses oversized requests
+at once, and stops at `daemon.shutdown`. CI exercises both Python transports against the built
+binary. See the [SDK reference](docs/API_AND_IPC.md#sdks) for response limits and error handling.
 
 ## The optional daemon
 
@@ -1397,9 +1395,8 @@ server on an owner-private Unix domain socket.
   requests run in parallel. The request bytes in flight are capped at 128 MiB, first come,
   first served, so a heavy request waits rather than multiplying peak memory, and a waiting
   request is never overtaken.
-- **Bounded I/O.** Each request line has an absolute read deadline, each response write a
-  per-write timeout, and both are capped at 80 MiB. A response over the cap becomes a
-  `RESOURCE_EXHAUSTED` (8) error for the same id.
+- **Bounded I/O.** A response over the payload cap becomes a `RESOURCE_EXHAUSTED` (8)
+  error. See the [wire limits and deadlines](docs/API_AND_IPC.md#socket-security-rules).
 - **No repository unless allowed.** `review.change` reads Git only in a repository whose
   canonical path and Git top level are both at or under a root named with
   `daemon start --allow-repo PATH` (also `rpc` and `mcp`). Without one it reads nothing.

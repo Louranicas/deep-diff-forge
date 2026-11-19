@@ -1101,8 +1101,12 @@ fn import_journals_human_dispositions_with_actor_and_revision_and_rerun_is_a_noo
             ))
         };
         let record = name(old);
+        let renamed = name(new);
+        let marker = record.with_extension("pending");
+        fs::write(&marker, new.as_bytes()).unwrap();
+        fs::rename(marker, renamed.with_extension("pending")).unwrap();
         edit_session(&record, |entry| entry["key"] = new.into());
-        fs::rename(record, name(new)).unwrap();
+        fs::rename(record, renamed).unwrap();
     };
     rename_key(RANGE_KEY, "other/finding/range");
     f.refuse_both(&session, "replanned batch disagrees");

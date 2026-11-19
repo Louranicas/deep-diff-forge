@@ -204,7 +204,7 @@ ddf-integration-20261025 council import-tuicr /absolute/run-directory --session 
 ddf-integration-20261025 council import-tuicr /absolute/run-directory --session <session.json> --execute
 ```
 
-Exit 0 means the import completed. Exit 7 means the events include a conflict; they are still appended in `--execute` mode. Exit 4 is a refusal, and nothing is appended. Rules, each covered by [the journal tests](../crates/deep-diff-forge-cli/tests/council_tuicr.rs):
+Exit 0 means the import completed. Exit 7 means the events include a conflict; they are still appended in `--execute` mode. Exit 4 can indicate a validation refusal before append or an I/O failure during publication. The [journal tests](../crates/deep-diff-forge-cli/tests/council_tuicr.rs) cover the following rules.
 
 - **Event schema** (`deep-diff-forge.decision.v1`, one JSON object per line):
   - Identity: `seq`, `prev`, `run_id`, `session_id`, `revision` (`diff_source`, `base_commit`, `new_side`), `comment_id`, and `content_sha256` of the comment text.
@@ -231,22 +231,24 @@ Exit 0 means the import completed. Exit 7 means the events include a conflict; t
   - Earlier events are never changed or removed. A comment that disappears gets a `deleted` tombstone.
 - **Chain and tamper evidence.**
   - `prev` chains every event to the one before it. The first event's `prev` is 64 zeros.
-  - Each import that appends also writes a create-new checkpoint `<run>/decisions.checkpoints/<seq>.json` holding the head hash.
+  - Before appending a batch, an executing import saves `<run>/decisions.pending.json`. This receipt binds the exact session-file bytes, the journal position before the append, and the intended final sequence and hash. After syncing the journal and its create-new head checkpoint at `<run>/decisions.checkpoints/<seq>.json`, the importer retires the receipt.
+  - If the receipt remains, retry with the original session file, byte for byte, even if the checkpoint is already visible. A dry run rechecks the revision, source bytes and reviewed marks, verifies that replay matches the complete recorded batch, and requires zero new events. With the same checks, `--execute` creates or syncs the checkpoint and retires the receipt. The journal stays byte-identical.
+  - Both modes refuse an incomplete batch or a missing head checkpoint without a receipt. Recovery never reconstructs journal events.
   - Before planning, the whole journal is verified: each line must be the event's own canonical serialization, `seq` must be consecutive, every `prev` and `hash` must recompute, and `run_id` must match. Every checkpoint must still name an event the journal holds.
   - An edited, reordered, partially written or truncated journal is refused. This includes a deleted journal whose checkpoints remain.
   - Appends use `O_APPEND` after checking that the file length still equals the verified length, under a create-new `decisions.lock`.
   - These are local consistency checks, not signatures. A same-uid process that rewrites the journal, its checkpoints and all hashes together is not detected.
-- **Stale revision refusal.** All refusals reject the whole import, and nothing is appended.
+- **Stale revision refusal.** Revision and source-byte checks run before append.
   - The session must pass the export's identity checks: version, no forge session, and the same repository.
   - Its `base_commit` must be a full commit id equal to the HEAD in the run's `source-inventory.json`. That inventory and the sealed snapshot are first re-verified against the manifest's `source_tree` fingerprint.
   - Every event anchored to a file requires the bytes the session shows for that file to equal `<run>/source/<path>`. These bytes are resolved per `diff_source`, as in the export. The file must also be in the inventory.
-  - A review-level event requires this for every file the session lists. A listed file outside the inventory is refused if the session can show bytes for it, and is otherwise skipped (for example, tuicr's commit-message pseudo-files).
+  - A review-level event checks every file the session lists. A path outside the inventory is skipped only when the session revision confirms there is no file at that exact path, as with tuicr's commit-message pseudo-files. A present file or an unreadable entry causes refusal.
 - **Reviewed marks.** tuicr's `content_hash` is an FNV-1a hash over its own rendered diff hunks, so DDF cannot recompute it from the snapshot. A positive mark (`reviewed` or any `reviewed_hunks`) is therefore refused in two cases:
   - It has no `content_hash`.
   - Its `content_hash` differs from the one pinned by the first journaled positive mark for that file.
 
-  The byte check above also applies to the mark.
-- **Idempotency and bounds.** Re-running against an unchanged session plans and appends nothing.
+  Whenever the import plans events, it checks the source bytes and hash of every positive mark, including marks unchanged since the last import.
+- **Idempotency and bounds.** A successful retry against an unchanged session appends zero events.
   - The session file is capped at 32 MiB and the journal at 64 MiB. An import whose events would take the journal past 64 MiB is refused before anything is written, in a dry run as in an execute, so the journal never grows past what the next import can read.
   - Comment ids must be short identifiers and must be unique across the session.
   - File keys must be relative paths with only normal components.

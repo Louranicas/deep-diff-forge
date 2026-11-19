@@ -310,13 +310,17 @@ pins the public signatures.
 `rank_patch(patch, require_files=False, require_hunks=False)` (`diff.rank`),
 `verify_findings(patch, findings, require_files=False, require_hunks=False)`
 (`findings.verify`, protocol 2) and `methods()`.
-A JSON-RPC error raises `RpcError` (with the daemon's `code`); a transport
-failure, including an answer that is not UTF-8 JSON or not a response to the
-request, raises `TransportError`. `StdioClient`'s `timeout` covers the whole
-exchange, writing the request as well as reading the answer; on expiry, or on an
-invalid answer (including one nested too deeply to decode), the child is killed. An
-answer that arrives before the whole request is taken is returned, and the child,
-now out of step, is killed. A request holding a string UTF-8 cannot
+A JSON-RPC error raises `RpcError` with the daemon's `code`. Both clients raise
+`TransportError` for an oversized or incomplete frame, invalid UTF-8 JSON, or a
+response that fails validation. See the [wire limits](#socket-security-rules).
+
+`StdioClient`'s timeout covers the request write and the response read together.
+On timeout or invalid response (including JSON nested too deeply to decode), it
+terminates and reaps the child, closes both pipes and releases the receive buffer.
+If the child answers while request bytes remain unsent, the client still returns
+the valid result or raises the daemon's `RpcError`, even if the child has already
+exited. The exchange closes the transport and later calls raise `TransportError`.
+A request holding a string UTF-8 cannot
 carry (a lone surrogate) raises `ValueError` before anything is sent, naming the
 finding's index for `verify_findings`.
 
@@ -373,10 +377,12 @@ process. A client may call `engine.initialize` first but does not have to.
 - One daemon per socket: `daemon start` holds an exclusive lock on
   `<socket>.lock` from before the stale-socket probe until it exits.
 - Treat request fields and agent annotations as untrusted input.
-- Limits (`serve.rs`, `handler.rs`): 80 MiB request and response lines (an error
-  answer too, measured as written, with its message cut at 4 KiB, as is every
-  MCP tool and protocol error), a
-  30-second absolute read deadline per line, 30 seconds for a client to read each whole
+- A request line can occupy up to 80 MiB including its terminating LF. A response
+  can contain up to 80 MiB of serialized JSON followed by one LF byte. The same
+  payload limit applies to error responses. Error messages are cut at 4 KiB,
+  including MCP tool and protocol errors.
+- Other limits (`serve.rs`, `handler.rs`) include a 30-second absolute read
+  deadline per line, 30 seconds for a client to read each whole
   response (the time left is re-armed before every write, so reading a byte at a time does not
   extend it; a request's bytes go back to the read budget once its answer is ready), eight
   concurrent connections, 64 retained sessions (least recently used evicted

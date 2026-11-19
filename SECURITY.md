@@ -220,8 +220,8 @@ flowchart LR
   regular file at the path refused, exit 6.
 - JSON-RPC envelopes are shape-checked, including protocol version, method,
   identifier, and parameter types.
-- Request and response lines are capped at 80 MiB (`MAX_REQUEST_BYTES`,
-  `MAX_RESPONSE_BYTES`). An oversized request gets one `INVALID_REQUEST` error
+- The daemon enforces the [wire limits](docs/API_AND_IPC.md#socket-security-rules)
+  with `MAX_REQUEST_BYTES` and `MAX_RESPONSE_BYTES`. An oversized request gets one `INVALID_REQUEST` error
   and the connection closes. A response over the cap is replaced by a
   `RESOURCE_EXHAUSTED` (8) error naming its size (`bounded_response`); before
   2026-10-28 the server sent it and the client failed. Since 2026-11-01 an error

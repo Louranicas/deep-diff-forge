@@ -15,8 +15,8 @@ What exists today, checked against `crates/deep-diff-forge-daemon/src/` and the
   `session.snapshot`, `session.close` and, since protocol 2, `daemon.metrics` and
   `findings.verify`. `deep-diff-forge rpc` speaks the same protocol over stdio without a daemon.
 - At most eight connections, their requests run in parallel under a 128 MiB
-  cap on the request bytes in flight ([concurrency](#concurrency)). Line cap 80 MiB each way; a response over it
-  becomes `RESOURCE_EXHAUSTED` (8). 30-second absolute read deadline per line.
+  cap on the request bytes in flight ([concurrency](#concurrency)). A response over
+  the payload cap becomes `RESOURCE_EXHAUSTED` (8). See the [wire limits and deadlines](API_AND_IPC.md#socket-security-rules).
 - A second `start` at a live socket is refused (`AddrInUse`, exit 6); a stale
   socket (connect refused) is replaced; a non-socket file is never deleted.
 - A stop drains (since 2026-10-31): the requests in progress are answered first, for up to 30 s,
@@ -345,7 +345,7 @@ deep-diff-forge cache prune --max-size 20GiB
 | Existing socket | In an owner-private parent, replace only a stale socket; never a live one or a non-socket file. | Implemented: live socket refused with `AddrInUse`, non-socket refused, stale socket removed. |
 | Cache decode failure | Ignore entry, record fallback, continue. | No cache exists. |
 | Parser panic | Catch at worker boundary, mark semantic fallback. | A dispatch panic is caught per request, counted in `daemon.metrics` and answered `INTERNAL_ERROR`; only a panic while the session table was held empties the table and clears its poison, otherwise sessions are kept. |
-| Oversized payload | Reject with structured error. | Request over 80 MiB: `INVALID_REQUEST`, then the connection closes. Response over 80 MiB, an error included, measured as written: `RESOURCE_EXHAUSTED` (8). An error message is cut at 4 KiB (`MAX_ERROR_MESSAGE_BYTES`), on the socket and in the MCP server's tool and protocol errors. |
+| Oversized payload | Reject with structured error. | An oversized request gets `INVALID_REQUEST` and the connection closes. An oversized response becomes `RESOURCE_EXHAUSTED` (8). See the [wire and error-message limits](API_AND_IPC.md#socket-security-rules). |
 | Client disconnect | Cancel session subscription, keep shared cache. | No subscriptions or cache; the worker ends and frees its slot. |
 | Out of budget | Preserve patch twin and record semantic fallback. | Patch input over its byte or line budget is refused (exit 4 on the CLI). |
 | Ninth connection | Apply backpressure. | Since DDF-HUNT-DAEMON-7 (2026-11-03) two control slots sit beyond the eight data slots. A connection on one gets one request of at most 4 KiB, read within 5 s. `daemon.health`, `daemon.status`, `daemon.metrics` and `daemon.shutdown` are answered; any other method is refused `RESOURCE_EXHAUSTED` (8) with "connection limit"; then the connection closes. So `daemon health` and `daemon stop` work while eight clients hold every data slot. With the control slots taken as well, a connection is accepted and closed at once, with no response, and the CLI reports `no answer from the daemon at PATH (it may be at its connection limit; retry)`, exit 6, not `no daemon at`. SIGTERM or SIGINT always stops the daemon cleanly. |
