@@ -964,7 +964,7 @@ fn plan_comments(p: &mut Planner<'_>, x: &Inputs<'_>) -> Result<()> {
     Ok(())
 }
 /// Tombstones for journaled or exported comments that are no longer in the session.
-fn plan_tombstones(p: &mut Planner<'_>, x: &Inputs<'_>) -> Result<()> {
+fn plan_tombstones(p: &mut Planner<'_>, x: &Inputs<'_>, history: &[DecisionEvent]) -> Result<()> {
     let present: BTreeSet<&str> = x.comments.iter().map(|c| c.id.as_str()).collect();
     // Comment id -> hash of its latest event (None for an exported note never journaled).
     let mut gone: BTreeMap<String, Option<String>> = BTreeMap::new();
@@ -991,9 +991,7 @@ fn plan_tombstones(p: &mut Planner<'_>, x: &Inputs<'_>) -> Result<()> {
             }
         } else {
             // The last journaled author of the comment.
-            let name = x
-                .journal
-                .events
+            let name = history
                 .iter()
                 .rev()
                 .find(|e| {
@@ -1078,6 +1076,7 @@ fn plan_files(p: &mut Planner<'_>, x: &Inputs<'_>) -> Result<()> {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ImportEvidence {
     session_sha256: String,
 }
@@ -1091,9 +1090,9 @@ struct PendingImport {
     evidence: ImportEvidence,
 }
 
-fn plan_events(planner: &mut Planner<'_>, x: &Inputs<'_>) -> Result<()> {
+fn plan_events(planner: &mut Planner<'_>, x: &Inputs<'_>, history: &[DecisionEvent]) -> Result<()> {
     plan_comments(planner, x)?;
-    plan_tombstones(planner, x)?;
+    plan_tombstones(planner, x, history)?;
     plan_files(planner, x)?;
     if !planner.events.is_empty() {
         validate_positive_marks(x, planner.session_id)?;
@@ -1130,7 +1129,6 @@ impl PendingImport {
         let mut prior = Journal::default();
         for event in prefix {
             prior.replay(event);
-            prior.events.push(event.clone());
         }
         let mut replay = Planner {
             run_id: planner.run_id,
@@ -1146,6 +1144,7 @@ impl PendingImport {
                 journal: &prior,
                 ..*x
             },
+            prefix,
         )?;
         if replay.events != recorded {
             return Err(TuicrImportError::Journal(
@@ -1307,7 +1306,7 @@ fn process_import(
         Ok(_) => {
             let pending: PendingImport = storage::read_json(&receipt, 4096)?;
             let head = pending.validate(x, planner, bytes)?;
-            plan_events(planner, x)?;
+            plan_events(planner, x, &x.journal.events)?;
             if !planner.events.is_empty() {
                 return Err(TuicrImportError::Journal(
                     "pending checkpoint repair requires an unchanged plan".into(),
@@ -1333,7 +1332,7 @@ fn process_import(
             "cannot repair the missing checkpoint without a pending recovery receipt".into(),
         ));
     }
-    plan_events(planner, x)?;
+    plan_events(planner, x, &x.journal.events)?;
     let lines = encode(x.journal.bytes, &planner.events)?;
     if execute && let (Some(first), Some(head)) = (planner.events.first(), planner.events.last()) {
         let pending = PendingImport {

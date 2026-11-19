@@ -1413,22 +1413,29 @@ fn checkpoint_recovery_binds_exact_bytes_and_survives_interrupted_publication() 
     let checkpoint = f
         .run
         .join("decisions.checkpoints/00000000000000000001.json");
-    let refuse_whitespace_edit = |expected_checkpoint: Option<&[u8]>| {
+    let refuse_invalid_retries = |expected_checkpoint: Option<&[u8]>| {
+        let assert_refused = |reason: &str, expected_receipt: &[u8]| {
+            for flags in [&[][..], &["--execute"][..]] {
+                refused(&f.import(&session, flags), reason);
+                assert_eq!(fs::read(f.journal()).unwrap(), journal);
+                assert_eq!(fs::read(&receipt).unwrap(), expected_receipt);
+                match expected_checkpoint {
+                    Some(expected) => assert_eq!(fs::read(&checkpoint).unwrap(), expected),
+                    None => assert!(!checkpoint.try_exists().unwrap()),
+                }
+            }
+        };
         let mut edited = bytes.clone();
         edited.push(b' ');
         fs::write(&session, edited).unwrap();
-        for flags in [&[][..], &["--execute"][..]] {
-            refused(&f.import(&session, flags), "pending recovery receipt");
-            assert_eq!(fs::read(f.journal()).unwrap(), journal);
-            assert_eq!(fs::read(&receipt).unwrap(), proof);
-            match expected_checkpoint {
-                Some(expected) => assert_eq!(fs::read(&checkpoint).unwrap(), expected),
-                None => assert!(!checkpoint.try_exists().unwrap()),
-            }
-        }
+        assert_refused("pending recovery receipt", &proof);
         fs::write(&session, &bytes).unwrap();
+
+        edit_session(&receipt, |r| r["evidence"]["unexpected"] = true.into());
+        assert_refused("unknown field `unexpected`", &fs::read(&receipt).unwrap());
+        fs::write(&receipt, &proof).unwrap();
     };
-    refuse_whitespace_edit(None);
+    refuse_invalid_retries(None);
     for reorder in [true, false] {
         fs::write(&session, &bytes).unwrap();
         edit_session(&session, |s| {
@@ -1474,7 +1481,7 @@ fn checkpoint_recovery_binds_exact_bytes_and_survives_interrupted_publication() 
     assert!(!receipt.exists());
     let published = fs::read(&checkpoint).unwrap();
     fs::write(&receipt, &proof).unwrap();
-    refuse_whitespace_edit(Some(&published));
+    refuse_invalid_retries(Some(&published));
     assert_eq!(
         json(&f.import(&session, &[]))["events"],
         serde_json::json!([])
@@ -1776,7 +1783,8 @@ fn deleted_comments_become_tombstones_and_can_be_restored() {
         reviews.push(human("h-2", "Ana", "note", "Unrelated."));
     });
     json(&f.import(&session, &["--execute"]));
-    let added = f.events()[0].clone();
+    let before_deletion = f.events();
+    let added = &before_deletion[0];
     assert_eq!(added["comment_id"], "h-1");
     let original = fs::read(&session).unwrap();
     edit_session(&session, |s| {
@@ -1794,8 +1802,9 @@ fn deleted_comments_become_tombstones_and_can_be_restored() {
                 .retain(|c| c["id"] != line_id.as_str());
         }
     });
-    let out = json(&f.import(&session, &["--execute"]));
-    let events = out["events"].as_array().unwrap();
+    f.interrupt_checkpoint(&session);
+    let recorded = f.events();
+    let events = &recorded[before_deletion.len()..];
     assert_eq!(kinds(events), ["deleted", "deleted"]);
     let human_tomb = events.iter().find(|e| e["comment_id"] == "h-1").unwrap();
     assert_eq!(human_tomb["supersedes"], added["hash"]);
@@ -1810,6 +1819,7 @@ fn deleted_comments_become_tombstones_and_can_be_restored() {
         json(&f.import(&session, &["--execute"]))["events"],
         serde_json::json!([])
     );
+    assert!(!f.run.join("decisions.pending.json").exists());
     fs::write(&session, original).unwrap();
     let restored = json(&f.import(&session, &["--execute"]));
     let back = restored["events"].as_array().unwrap();
