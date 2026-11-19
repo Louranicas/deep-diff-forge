@@ -1018,9 +1018,7 @@ fn plan_files(p: &mut Planner<'_>, x: &Inputs<'_>) -> Result<()> {
             .get(&(p.session_id.to_owned(), path.clone()))
             .cloned()
             .unwrap_or_default();
-        if prior.reviewed == file.reviewed && prior.hunks == file.reviewed_hunks {
-            continue;
-        }
+        let changed = prior.reviewed != file.reviewed || prior.hunks != file.reviewed_hunks;
         let positive = file.reviewed || !file.reviewed_hunks.is_empty();
         if positive {
             let refuse = |reason: String| TuicrImportError::StaleReviewMark {
@@ -1040,7 +1038,12 @@ fn plan_files(p: &mut Planner<'_>, x: &Inputs<'_>) -> Result<()> {
                 )));
             }
         }
-        check_file(x.binding, x.sealed, path)?;
+        if positive || changed {
+            check_file(x.binding, x.sealed, path)?;
+        }
+        if !changed {
+            continue;
+        }
         p.push(DecisionEvent {
             anchor: Some(Anchor::File { file: path.clone() }),
             content_hash: file.content_hash,
@@ -1126,20 +1129,20 @@ fn ensure_checkpoint(directory: &Path, journal: &fs::File, last: &DecisionEvent)
     if path.exists() {
         fs::File::open(&path)?.sync_all()?;
     } else {
-        let staging = directory.join("decisions.checkpoint.tmp");
-        match fs::remove_file(&staging) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
-            _ => {}
-        }
-        storage::write_json(
-            &staging,
-            &Checkpoint {
-                seq: last.seq,
-                hash: last.hash.clone(),
-            },
-        )?;
-        fs::hard_link(&staging, &path)?;
-        fs::remove_file(staging)?;
+        let bytes = serde_json::to_vec_pretty(&Checkpoint {
+            seq: last.seq,
+            hash: last.hash.clone(),
+        })?;
+        let (fd, staging) = nix::unistd::mkstemp(&directory.join("decisions.checkpoint.XXXXXX"))
+            .map_err(std::io::Error::from)?;
+        let mut file = fs::File::from(fd);
+        let published = file
+            .write_all(&bytes)
+            .and_then(|()| file.sync_all())
+            .and_then(|()| fs::hard_link(&staging, &path));
+        let cleanup = fs::remove_file(staging);
+        published?;
+        cleanup?;
     }
     fs::File::open(&checkpoints)?.sync_all()?;
     fs::File::open(directory)?.sync_all()?;
@@ -1231,7 +1234,15 @@ pub fn import_tuicr(
     if options.execute {
         if let Some(last) = planner.events.last() {
             append(&directory, journal.bytes, &lines, last)?;
-        } else if let Some(last) = journal.events.last() {
+        } else if let Some(last) = journal.events.last()
+            && last.session_id == planner.session_id
+            && last.revision == planner.revision
+            && journal.files.iter().all(|((id, path), mark)| {
+                id != planner.session_id
+                    || (!mark.reviewed && mark.hunks.is_empty())
+                    || files.contains_key(path)
+            })
+        {
             let file = fs::File::open(directory.join(JOURNAL_FILE))?;
             ensure_checkpoint(&directory, &file, last)?;
         }

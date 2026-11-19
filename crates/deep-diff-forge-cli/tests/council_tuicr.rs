@@ -1074,6 +1074,69 @@ fn stale_revision_or_bytes_refuse_the_disposition() {
 }
 
 #[test]
+fn checkpoint_repair_requires_the_same_session_revision_and_valid_marks() {
+    let f = Fixture::new();
+    let session = f.session("run/decisions.checkpoint.tmp", |s| {
+        s["files"]["x.rs"]["reviewed_hunks"] = serde_json::json!(["h1"]);
+        s["files"]["x.rs"]["content_hash"] = 111.into();
+    });
+    let original = fs::read(&session).unwrap();
+    let first = json(&f.import(&session, &["--execute"]));
+    assert_eq!(first["events"][0]["kind"], "file_review");
+    assert_eq!(fs::read(&session).unwrap(), original);
+    let journal = fs::read(f.journal()).unwrap();
+    let checkpoint = f
+        .run
+        .join("decisions.checkpoints/00000000000000000000.json");
+    let expected = fs::read(&checkpoint).unwrap();
+    fs::remove_file(&checkpoint).unwrap();
+
+    let other = f.session("other.json", |s| {
+        s["id"] = "00000000-0000-4000-8000-000000000002".into();
+    });
+    assert_eq!(
+        json(&f.import(&other, &["--execute"]))["events"],
+        serde_json::json!([])
+    );
+    assert!(!checkpoint.exists());
+    for source in ["unstaged", "staged"] {
+        fs::copy(&session, &other).unwrap();
+        edit_session(&other, |s| s["diff_source"] = source.into());
+        assert_eq!(
+            json(&f.import(&other, &["--execute"]))["events"],
+            serde_json::json!([])
+        );
+        assert!(!checkpoint.exists());
+    }
+    fs::copy(&session, &other).unwrap();
+    edit_session(&other, |s| s["files"] = serde_json::json!({}));
+    assert_eq!(
+        json(&f.import(&other, &["--execute"]))["events"],
+        serde_json::json!([])
+    );
+    assert!(!checkpoint.exists());
+
+    fs::copy(&session, &other).unwrap();
+    for hash in [serde_json::json!(222), serde_json::Value::Null] {
+        edit_session(&other, |s| s["files"]["x.rs"]["content_hash"] = hash);
+        refused(&f.import(&other, &["--execute"]), "stale review mark");
+        assert!(!checkpoint.exists());
+    }
+    fs::write(f.repository.join("x.rs"), "fn changed() {}\n").unwrap();
+    refused(&f.import(&session, &["--execute"]), "stale file");
+    assert!(!checkpoint.exists());
+
+    fs::write(f.repository.join("x.rs"), SOURCE).unwrap();
+    assert_eq!(
+        json(&f.import(&session, &["--execute"]))["events"],
+        serde_json::json!([])
+    );
+    assert_eq!(fs::read(checkpoint).unwrap(), expected);
+    assert_eq!(fs::read(f.journal()).unwrap(), journal);
+    assert_eq!(fs::read(session).unwrap(), original);
+}
+
+#[test]
 fn reviewed_marks_need_the_journaled_content_hash() {
     let f = Fixture::new();
     let session = f.exported();
