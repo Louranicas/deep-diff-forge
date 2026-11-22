@@ -332,6 +332,16 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   four ways a judged agent can make a stop silent or unjudged, each re-run on this build.
 
 
+- **`eval` says where it is right and wrong** (S3.35). The `deep-diff-forge.eval.v0` receipt
+  (`eval --json`) gains `by_signal` and `by_language`: evidence precision and recall split by
+  signal and by the language of the file (additive; each adds up to the aggregate; the text
+  summary is unchanged). A case whose patch the parser refuses is listed in the new member
+  `refused` with the reason and fails the run with exit 7 while every other case is still scored;
+  before, the first such case ended the run with exit 4 and no figures. A test holds the figures
+  written in `docs/reference/evaluation.md` and `docs/TESTING_GOLD_STANDARD.md` to what the run
+  measures. The hooks' mutation misses of the 0.9.0 run are answered by six new tests (S3.34.b).
+
+
 ### Fixed
 
 - **A text file Git was told to show as binary is read as text** (S3.20,

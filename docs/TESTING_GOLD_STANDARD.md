@@ -179,7 +179,10 @@ era) no longer holds. How the standard is enforced today:
   `fixtures/eval` (59 cases, measured 2026-11-23 on the integrated tree) must score at least its floors,
   which are the measured values: ranking pairs 12/15, evidence precision 186/211,
   evidence recall 186/264, findings 33/33 (0.10.0; sections the parser refuses are in
-  `fixtures/eval-refused-by-parser/`, held refused by a test). Any undeclared miss fails. The 106
+  `fixtures/eval-refused-by-parser/`, held refused by a test). A test holds these figures, and the table in
+  `docs/reference/evaluation.md`, to what the run measures; the receipt also gives precision and
+  recall by signal and by language, and lists a case the parser refuses as `refused` without
+  stopping the run. Any undeclared miss fails. The 106
   declared misses (`known_miss`, `known_false_positive`) count as wrong in their
   metric rather than being excluded, and each fails once the engine gets it
   right. Planted controls prove a wrong label fails with exit 7, a changed file,

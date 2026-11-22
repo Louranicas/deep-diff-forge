@@ -143,6 +143,49 @@ deep-diff-forge eval                          # score the labelled corpus in fix
   | evidence recall | 186 / 264 | 70.5% |
   | findings verdicts | 33 / 33 | 100% |
 
+  The receipt (`--json`) also splits evidence precision and recall by signal (`by_signal`) and by
+  the language of the item's file (`by_language`, the engine's own language reading, `none` where
+  no language applies); each adds up to the two evidence rows above, and the text summary prints
+  the four metrics only. Measured 2026-11-23 on 59 cases:
+
+  | Signal | Precision | Recall | Cases |
+  | --- | ---: | ---: | ---: |
+  | `assertions_removed` | 0 / 0 (-) | 0 / 1 (0.0%) | 1 |
+  | `check_suppressed` | 7 / 7 (100.0%) | 7 / 9 (77.8%) | 5 |
+  | `ci_privilege` | 5 / 5 (100.0%) | 5 / 5 (100.0%) | 2 |
+  | `dynamic_eval` | 7 / 7 (100.0%) | 7 / 11 (63.6%) | 7 |
+  | `error_defaulted` | 0 / 0 (-) | 0 / 2 (0.0%) | 1 |
+  | `error_swallowed` | 12 / 12 (100.0%) | 12 / 15 (80.0%) | 6 |
+  | `expectations_changed` | 0 / 0 (-) | 0 / 1 (0.0%) | 1 |
+  | `input_special_cased` | 0 / 0 (-) | 0 / 1 (0.0%) | 1 |
+  | `module_mocked` | 0 / 0 (-) | 0 / 1 (0.0%) | 1 |
+  | `network_fetch` | 17 / 19 (89.5%) | 17 / 22 (77.3%) | 12 |
+  | `panic_path_added` | 43 / 58 (74.1%) | 43 / 55 (78.2%) | 18 |
+  | `process_spawn` | 38 / 41 (92.7%) | 38 / 51 (74.5%) | 12 |
+  | `secret_like` | 9 / 9 (100.0%) | 9 / 9 (100.0%) | 2 |
+  | `stub_added` | 6 / 6 (100.0%) | 6 / 9 (66.7%) | 8 |
+  | `test_removed` | 6 / 6 (100.0%) | 6 / 6 (100.0%) | 4 |
+  | `test_skipped` | 15 / 19 (78.9%) | 15 / 30 (50.0%) | 14 |
+  | `trivial_assert` | 14 / 14 (100.0%) | 14 / 29 (48.3%) | 13 |
+  | `unsafe_added` | 7 / 8 (87.5%) | 7 / 7 (100.0%) | 4 |
+
+  | Language | Precision | Recall | Cases |
+  | --- | ---: | ---: | ---: |
+  | `go` | 4 / 4 (100.0%) | 4 / 8 (50.0%) | 5 |
+  | `javascript` | 13 / 13 (100.0%) | 13 / 23 (56.5%) | 10 |
+  | `none` | 13 / 14 (92.9%) | 13 / 16 (81.2%) | 4 |
+  | `python` | 12 / 13 (92.3%) | 12 / 29 (41.4%) | 14 |
+  | `rust` | 132 / 154 (85.7%) | 132 / 175 (75.4%) | 22 |
+  | `shell` | 6 / 7 (85.7%) | 6 / 7 (85.7%) | 6 |
+  | `yaml` | 6 / 6 (100.0%) | 6 / 6 (100.0%) | 2 |
+
+  A case whose patch the parser refuses is listed in the receipt's `refused` with the parser's
+  reason and fails the run (exit 7); its items are not scored, and every other case is still
+  scored and the receipt printed (before 0.10.0 the first such case ended the run with exit 4 and
+  no figures). The test `the_figures_in_the_documents_are_the_measured_ones` fails when the four
+  rows of the table above, or the evaluation gate's sentence in `docs/TESTING_GOLD_STANDARD.md`,
+  differ from what the run measures.
+
   `crates/deep-diff-forge-cli/tests/eval.rs` holds these floors (the measured values) and fails
   on any undeclared miss. The corpus is written by the rules' author and is small: it is a
   regression gate and an honest list of known limits, not a measure of review quality on
