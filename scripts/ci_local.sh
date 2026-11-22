@@ -54,7 +54,10 @@ import importlib.util, pathlib, re, subprocess, sys
 spec = importlib.util.spec_from_file_location("gen", "scripts/security/generate_spdx_sbom.py")
 gen = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gen)
-gen.OUTPUT, gen.print = pathlib.Path(sys.argv[1]), lambda *a, **k: None
+class Scratch(pathlib.Path):
+    def relative_to(self, *other, **kw):  # the generator prints OUTPUT relative to the checkout
+        return self
+gen.OUTPUT = Scratch(sys.argv[1])
 gen.main()
 s = lambda t: re.sub(r'"created":\s*"[^"]*"', '"created": "<x>"', t)
 committed = subprocess.check_output(["git", "show", "HEAD:sbom.spdx.json"], text=True)

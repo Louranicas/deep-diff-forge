@@ -79,7 +79,11 @@ fn ci_steps(workflow: &str) -> Vec<CiStep> {
 }
 
 /// The replica's labels that name neither a CI step in `ci` nor a member of `local_only`.
-fn unlisted<'a>(labels: &'a BTreeSet<String>, ci: &BTreeSet<String>, local_only: &[&str]) -> Vec<&'a String> {
+fn unlisted<'a>(
+    labels: &'a BTreeSet<String>,
+    ci: &BTreeSet<String>,
+    local_only: &[&str],
+) -> Vec<&'a String> {
     labels
         .iter()
         .filter(|label| !ci.contains(*label) && !local_only.contains(&label.as_str()))
@@ -151,7 +155,10 @@ fn a_local_only_gate_step_is_listed_and_named() {
         .iter()
         .filter(|name| !labels.contains(**name))
         .collect();
-    let in_ci: Vec<_> = LOCAL_ONLY.iter().filter(|name| ci.contains(**name)).collect();
+    let in_ci: Vec<_> = LOCAL_ONLY
+        .iter()
+        .filter(|name| ci.contains(**name))
+        .collect();
     assert!(
         unlabelled.is_empty() && in_ci.is_empty(),
         "LOCAL_ONLY has names that are no label of scripts/ci_local.sh: {unlabelled:?}; names of CI steps: {in_ci:?}"
