@@ -1,6 +1,6 @@
 // DDF review route: DDF-R12, DDF-R13. Status and remaining work are recorded in the linked ledger; this comment does not claim delivery.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-graph--src--risk
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
 use crate::evidence::{CarriedShares, Evidence, EvidenceSignal, Share, file_evidence_marked};
 use deep_diff_forge_core::{FileStatus, PatchLineKind, ReviewFile};
 

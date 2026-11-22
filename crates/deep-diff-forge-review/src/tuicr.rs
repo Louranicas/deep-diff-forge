@@ -1,6 +1,6 @@
 // Review council: Read-only export of admitted council findings into a disposable local tuicr session as draft notes.
 // Design/status: docs/REVIEW_COUNCIL.md#tuicr-export
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Comparisons%2FArchitecture%20Lessons%20and%20Interoperability
+// Module index: docs/ARCHITECTURE.md#crates-as-built-030
 //! DDF→tuicr adapter (DDF-R54). Admitted council findings become tuicr *local draft* notes.
 //!
 //! The adapter never submits to a forge, marks a file reviewed or resolves a comment: it only runs

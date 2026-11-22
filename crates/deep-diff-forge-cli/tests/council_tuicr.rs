@@ -1,6 +1,6 @@
 // Review council: DDF→tuicr export through the actual CLI with fake providers, a fake tuicr and one opt-in real-tuicr round trip.
 // Design/status: docs/REVIEW_COUNCIL.md#tuicr-export
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Comparisons%2FArchitecture%20Lessons%20and%20Interoperability
+// Module index: docs/ARCHITECTURE.md#crates-as-built-030
 //! Admission, identity, anchoring, idempotency and refusal controls for `council export-tuicr`, and
 //! the decision-journal controls for `council import-tuicr` (dispositions, conflicts, tombstones,
 //! stale revisions, tamper and truncation). The real-tuicr tests run only with `DDF_TUICR_IT=1`,

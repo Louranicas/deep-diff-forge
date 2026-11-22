@@ -1,8 +1,8 @@
 // Review council: Public API boundary; separate typed review claims from controller-owned execution and human authority.
 // Design/status: docs/REVIEW_COUNCIL.md#council-boundary
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--src--lib
+// Module index: docs/REVIEW_COUNCIL.md#cratesdeep-diff-forge-reviewsrclibrs
 //! Review roster and adversarial council, with controller-owned verification.
-//! Design: `docs/REVIEW_COUNCIL.md`. [Vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FReview%20Council).
+//! Design: `docs/REVIEW_COUNCIL.md`.
 pub mod cli;
 mod execution;
 mod journal;

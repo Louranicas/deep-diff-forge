@@ -1,6 +1,6 @@
 // Review council: Bounded private context capture, canonical candidate snapshot verification, source identity and immutable qualified artifacts.
 // Design/status: docs/REVIEW_COUNCIL.md#capture-and-storage
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--src--storage
+// Module index: docs/REVIEW_COUNCIL.md#cratesdeep-diff-forge-reviewsrcstoragers
 //! Private, append-only run artifacts. Hashes establish local consistency, not signer authentication.
 use crate::model::Qualification;
 use crate::{

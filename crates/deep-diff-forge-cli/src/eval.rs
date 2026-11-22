@@ -1,6 +1,6 @@
 // DDF integration: the evaluation corpus and its metrics (plan 2026-10-30, M3 evaluation).
 // Design/status: docs/PLAN_AGENT_EVIDENCE_AND_OBSERVABILITY.md#system-m-monitoring-evaluation-and-benchmarking
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-cli--src--eval
+// Module index: docs/ARCHITECTURE.md#crates-as-built-030
 //! `deep-diff-forge eval`: score the engine against a labelled corpus and print a receipt
 //! (`deep-diff-forge.eval.v0`). The corpus is `fixtures/eval/MANIFEST.json`, which lists every
 //! case with its file's SHA-256, its origin and its labels:

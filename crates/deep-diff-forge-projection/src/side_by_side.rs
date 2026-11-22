@@ -1,6 +1,6 @@
 // DDF integration: R31, R32. Measure displayed cells and preserve grapheme boundaries after terminal-safety escaping; keep remaining chrome/wrap geometry visible as work.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#terminal-geometry
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-projection--side_by_side
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#terminal-geometry
 use crate::notes::{LOSSY, NO_NEWLINE, RENDERS_ALIKE, gutter_width, renders_alike, side_shown};
 use deep_diff_forge_core::{PatchHunk, PatchLine, PatchLineKind, ReviewFile, display_safe};
 use std::fmt::Write as _;

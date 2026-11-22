@@ -1,6 +1,6 @@
 // DDF review route: DDF-R26, DDF-R27, DDF-R29. Status and remaining work are recorded in the linked ledger; this comment does not claim delivery.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-daemon--src--handler
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
 use crate::admission::{Admission, Answering};
 use crate::metrics::Metrics;
 use crate::protocol::{

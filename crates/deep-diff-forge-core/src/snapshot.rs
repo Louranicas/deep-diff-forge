@@ -1,6 +1,6 @@
 // Review council: One canonical changed-source digest reused by analysis and council; explicit absence and framed paths/bytes.
 // Design/status: docs/REVIEW_COUNCIL.md#canonical-snapshot
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-core--src--snapshot
+// Module index: docs/REVIEW_COUNCIL.md#cratesdeep-diff-forge-coresrcsnapshotrs
 //! One canonical changed-source snapshot digest for analysis and review consumers.
 use crate::sha256_hex;
 /// Hash sorted changed-path bytes with explicit absence/presence and length framing.

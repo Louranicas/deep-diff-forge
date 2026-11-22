@@ -1,6 +1,6 @@
 // DDF integration: verified agent findings (plan 2026-10-30, Feature B).
 // Design/status: docs/PLAN_AGENT_EVIDENCE_AND_OBSERVABILITY.md#feature-b-verified-agent-findings
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-agent--src--findings
+// Module index: docs/ARCHITECTURE.md#crates-as-built-030
 //! Verified agent findings: what an agent says it found, checked against patch truth before
 //! anyone reads it.
 //!

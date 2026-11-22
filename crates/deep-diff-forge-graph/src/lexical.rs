@@ -1,6 +1,6 @@
 // DDF integration: line-lexical code view for evidence signals (plan 2026-10-30, Feature A).
 // Design/status: docs/PLAN_AGENT_EVIDENCE_AND_OBSERVABILITY.md#feature-a-code-evidence-risk-signals
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-graph--src--lexical
+// Module index: docs/ARCHITECTURE.md#crates-as-built-030
 //! A line-lexical view of source code: what is left of a line once its comments and string
 //! contents are blanked. Evidence rules match tokens in that view, so a keyword in a comment or
 //! a string is not read as code. Code that runs inside a string is kept: `$(…)`, `${…}` and

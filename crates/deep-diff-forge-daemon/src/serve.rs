@@ -1,6 +1,6 @@
 // DDF integration: R25, R28, R40, R59. Preserve bounded connection admission on Rust 1.88 using compare-exchange; this does not solve the separate global-lock recommendation.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#runtime
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-daemon--serve
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#runtime
 use crate::handler::{Engine, dispatch, request_weight};
 use crate::protocol::{
     INTERNAL_ERROR, INVALID_REQUEST, PARSE_ERROR, RESOURCE_EXHAUSTED, RpcError, error_response,

@@ -1,4 +1,4 @@
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--mcp
+// Module index: docs/ARCHITECTURE.md#crates-as-built-030
 // DDF slice D: `deep-diff-forge mcp`, a read-only Model Context Protocol server over stdio.
 // Design/status: docs/ROADMAP.md#status-2026-10-26 and docs/reference/mcp-sdk-daemon.md "MCP server".
 //! A dual-era MCP server (specification 2026-07-28, with the 2025-11-25 `initialize` handshake for

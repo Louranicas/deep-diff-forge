@@ -1,6 +1,6 @@
 // DDF integration: `deploy doctor`, the operator's health check (production readiness, 2026-10-30).
 // Design/status: docs/OPERATIONS_AND_DAEMON.md#deploy-doctor
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-cli--src--doctor
+// Module index: docs/ARCHITECTURE.md#crates-as-built-030
 //! `deploy doctor`: check that this machine can run deep-diff-forge's daemon and Git inputs, and
 //! say what to do when it cannot. Every check reads; none changes anything. The daemon checks
 //! come from `deep_diff_forge_daemon::inspect`, which applies the daemon's own start rules, and

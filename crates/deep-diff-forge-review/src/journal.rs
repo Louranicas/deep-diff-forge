@@ -1,6 +1,6 @@
 // Review council: Append-only, hash-chained decision journal fed by human dispositions recorded in a local tuicr session.
 // Design/status: docs/REVIEW_COUNCIL.md#decision-journal
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Comparisons%2FArchitecture%20Lessons%20and%20Interoperability
+// Module index: docs/ARCHITECTURE.md#crates-as-built-030
 //! tuicr→DDF decision journal (DDF-R18). Human comments, revisions, lifecycle transitions, deletions
 //! and reviewed marks in a local tuicr session become actor-attributed events in `<run>/decisions.jsonl`.
 //!

@@ -1,6 +1,6 @@
 // DDF integration: R03, R07, R46. Shared by the conformance table's tests and the generated differential: real `git apply` in a scratch repository with a seeded object store, and the tree it writes against the tree a review describes.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--support
+// Module index: docs/ARCHITECTURE.md#crates-as-built-030
 //! A scratch repository whose object store holds every blob a patch may name, Git run with no
 //! user or system configuration, no hooks and no external diff, and the comparison of the tree a
 //! real `git apply` writes with the tree DDF's review describes. `reviewed_tree` and `agree`

@@ -1,6 +1,6 @@
 // Review council: Typed providers, personas, phases, findings, citations, execution outcomes and final qualification.
 // Design/status: docs/REVIEW_COUNCIL.md#typed-protocol
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--src--model
+// Module index: docs/REVIEW_COUNCIL.md#cratesdeep-diff-forge-reviewsrcmodelrs
 //! Typed protocol. Model verdicts remain claims; only measured controller receipts satisfy gates.
 use serde::{Deserialize, Serialize};
 

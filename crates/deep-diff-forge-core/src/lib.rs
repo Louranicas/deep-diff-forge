@@ -1,6 +1,6 @@
 // DDF integration: R02, R03, R04, R05, R06, R07, R44, R46. Preserve source bytes and exact original input independently of normalized display; use Git as the application oracle.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-core--lib
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
 mod deploy;
 pub mod exit;
 pub mod git;

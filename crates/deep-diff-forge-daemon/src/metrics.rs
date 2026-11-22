@@ -1,6 +1,6 @@
 // DDF integration: daemon runtime metrics (plan 2026-10-30, M1 monitoring).
 // Design/status: docs/PLAN_AGENT_EVIDENCE_AND_OBSERVABILITY.md#system-m-monitoring-evaluation-and-benchmarking
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-daemon--src--metrics
+// Module index: docs/ARCHITECTURE.md#crates-as-built-030
 //! Runtime metrics for a running daemon: what it served, how fast, what it refused, and what went
 //! wrong, read with `daemon.metrics` as `deep-diff-forge.daemon-metrics.v0`.
 //!

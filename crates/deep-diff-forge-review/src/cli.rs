@@ -1,6 +1,6 @@
 // Review council: Explicit preparation/status/import and opt-in execution commands; manual reports cannot mint provider evidence.
 // Design/status: docs/REVIEW_COUNCIL.md#council-cli
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--src--cli
+// Module index: docs/REVIEW_COUNCIL.md#cratesdeep-diff-forge-reviewsrcclirs
 //! Small explicit CLI: preparation/status are local; execution requires --execute.
 use crate::{
     Gate, Outcome, Persona, Profile, Provider, Report, Request, Result, ReviewFailure, Reviewer,

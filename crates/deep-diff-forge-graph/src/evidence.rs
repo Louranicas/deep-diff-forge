@@ -1,6 +1,6 @@
 // DDF integration: code-evidence risk signals with hunk addresses (plan 2026-10-30, Feature A).
 // Design/status: docs/PLAN_AGENT_EVIDENCE_AND_OBSERVABILITY.md#feature-a-code-evidence-risk-signals
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-graph--src--evidence
+// Module index: docs/ARCHITECTURE.md#crates-as-built-030
 //! Code evidence: what the changed lines of a patch do, found in the patch alone and pointed at
 //! by hunk address and line, so an agent can check each claim instead of trusting it.
 //!

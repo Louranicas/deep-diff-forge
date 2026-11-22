@@ -1,6 +1,6 @@
 // DDF integration: R02, R09, R19, R21. Validate that a patch transforms the captured base into the captured candidate before attaching semantics; export explicit coverage and snapshot scope.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#shared-service
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-pipeline--review
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#shared-service
 //! Shared review service: capture → validate source pairs → syntax → rank → export.
 //! R02/R09/R19/R21: `docs/RECOMMENDATION_INTEGRATION.md#shared-service` links to
 //! the exact vault note, tests and deferred daemon/TUI consumers. Patch truth is

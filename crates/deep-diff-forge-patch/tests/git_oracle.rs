@@ -1,6 +1,6 @@
 // DDF integration: R02, R03, R04, R05, R06, R07, R44, R46. Preserve source bytes and exact original input independently of normalized display; use Git as the application oracle.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--git_oracle
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
 //! Independent oracle: Git must apply our rendered patch to the exact base bytes.
 #![expect(
     clippy::disallowed_methods,

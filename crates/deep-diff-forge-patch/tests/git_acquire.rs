@@ -1,6 +1,6 @@
 // DDF integration: R02, R03, R07. Structured Git acquisition against a real temporary repository; Git is the application oracle for the authoritative patch bytes.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--git_acquire
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
 //! Real-repository fixture: Unicode, tab and newline filenames, a binary file,
 //! a rename with modification, mode changes (one under a path that display
 //! headers split wrongly), a deletion, a no-final-newline edit, CRLF content and

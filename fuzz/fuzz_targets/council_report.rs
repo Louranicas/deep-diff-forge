@@ -1,7 +1,7 @@
 #![no_main]
 // Review council: Bounded untrusted report parsing, validation and accepted-output serialization stability.
 // Design/status: docs/REVIEW_COUNCIL.md#report-fuzz
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--fuzz--fuzz_targets--council_report
+// Module index: docs/REVIEW_COUNCIL.md#fuzzfuzz_targetscouncil_reportrs
 use libfuzzer_sys::fuzz_target;
 use deep_diff_forge_review::{Manifest,Report,validate_report};
 fuzz_target!(|data:&[u8]| {

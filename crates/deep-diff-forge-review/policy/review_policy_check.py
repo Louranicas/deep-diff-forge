@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Review council (pinned in deep-diff-forge-review): Parse workspace TOML and provenance JSON; check lint inheritance and source labels without pretending to detect all semantic antipatterns.
 # Design/status: docs/REVIEW_COUNCIL.md#parsed-antipattern-guard
-# Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--scripts--security--review_policy_check
+# Module index: docs/REVIEW_COUNCIL.md#cratesdeep-diff-forge-reviewpolicyreview_policy_checkpy
 """Parsed policy/manifest guard. This is not a semantic detector for every imported AP.
 
 Design: docs/REVIEW_COUNCIL.md; vault: Implementation/Review Council.

@@ -1,6 +1,6 @@
 // DDF integration: R03, R07, R46. The generated differential: seeded patches built from the sections Git writes and from near misses of them, each read by DDF and applied by real `git apply` over a seeded object store; a patch DDF accepts must be one Git reads and writes as the review describes.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--generated_differential
+// Module index: docs/ARCHITECTURE.md#crates-as-built-030
 //! Patches are generated from a small grammar: one to three sections drawn from the shapes Git
 //! writes (`CONFORMANCE.md`), then up to three near-miss moves, each a change of one kind to one
 //! section (a line dropped, doubled or swapped, a space lost, a carriage return, a quoted or

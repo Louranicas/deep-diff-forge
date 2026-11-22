@@ -1,6 +1,6 @@
 // DDF integration: R03, R07, R46. The conformance table (`CONFORMANCE.md`): one test per row, each feeding the row's forms to DDF, to `git apply --numstat --summary` and to a real `git apply` over a seeded object store, asserting what the row states.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--conformance
+// Module index: docs/ARCHITECTURE.md#crates-as-built-030
 //! Each row of `CONFORMANCE.md` is a test here named after it (`row_<row>`), and
 //! [`every_row_has_a_test_and_every_test_a_row`] holds the two to each other. Every case checks
 //! the property too: when DDF reads a patch and Git applies it, Git's tree is the tree the

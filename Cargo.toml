@@ -1,6 +1,6 @@
 # DDF review route R59: declared MSRV and locked dependency validation; see current verification and CI.
 # Design/status: docs/RECOMMENDATION_INTEGRATION.md#ddf-r59
-# Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2FCargo.toml
+# Module index: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
 [workspace]
 members = [
   "crates/deep-diff-forge-core",

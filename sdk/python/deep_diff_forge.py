@@ -1,4 +1,4 @@
-# Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fsdk--python--deep_diff_forge
+# Module index: docs/ARCHITECTURE.md#crates-as-built-030
 """Thin Python client for Deep-Diff-Forge's daemon protocol (JSON-RPC 2.0, one message per line).
 
 Standard library only. Two transports speak the same protocol:

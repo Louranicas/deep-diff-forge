@@ -1,6 +1,6 @@
 // DDF integration: R02, R03, R07. Native structured Git acquisition: run Git with a fixed argv (no shell), bind the selection to resolved object IDs, capture untracked files without touching the index, and keep the exact patch bytes authoritative.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--git_acquire
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
 //! Structured Git acquisition port.
 //!
 //! Every Git invocation is a fixed argument vector (never a shell string) with

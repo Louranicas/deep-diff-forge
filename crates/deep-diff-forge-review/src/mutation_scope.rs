@@ -1,6 +1,6 @@
 // Review council: The diff-scoped mutation gate's scope, built from raw base blobs and the sealed workspace bytes.
 // Design/status: docs/REVIEW_COUNCIL.md#gate-sandbox-r7
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--src--mutation_scope
+// Module index: docs/ARCHITECTURE.md#crates-as-built-030
 //! The lines a diff-scoped mutation gate mutates.
 //!
 //! `git diff <base>` of a working tree honours index flags (assume-unchanged, skip-worktree), the

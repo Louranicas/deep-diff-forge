@@ -1,6 +1,6 @@
 // DDF integration: deterministic benchmarks with receipts (plan 2026-10-30, M2 benchmarking).
 // Design/status: docs/PLAN_AGENT_EVIDENCE_AND_OBSERVABILITY.md#system-m-monitoring-evaluation-and-benchmarking
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-cli--src--bench
+// Module index: docs/ARCHITECTURE.md#crates-as-built-030
 //! `deep-diff-forge bench`: time the engine's hot paths on generated inputs and print a receipt
 //! (`deep-diff-forge.bench.v0`). The inputs are generated from fixed parameters, so every run
 //! measures the same bytes, and each workload names its input's SHA-256. A receipt names the

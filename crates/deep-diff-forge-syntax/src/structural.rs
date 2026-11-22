@@ -1,6 +1,6 @@
 // DDF integration: R08, R10, R11. Never turn a failed analysis into formatting-only or behavioral safety; parser time cancellation is cooperative, node limits are post-parse.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#syntax-availability
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-syntax--structural
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#syntax-availability
 //! Token-level structural (AST-leaf) diffing.
 //!
 //! Unlike a line-oriented diff, this compares the *token streams* produced by

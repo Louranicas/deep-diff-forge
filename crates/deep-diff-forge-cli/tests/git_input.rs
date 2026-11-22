@@ -1,6 +1,6 @@
 // DDF integration: R02, R03, R07. CLI contract for structured Git selections, exercised through the compiled binary against a real temporary repository.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--tests--git_input
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
 //! `--git-working-tree`, `--git-staged`, `--git-range`: flag conflicts are
 //! usage errors, outputs reuse the `--stdin-patch` documents, and paths come
 //! from raw records.

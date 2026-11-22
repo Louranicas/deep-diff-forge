@@ -1,6 +1,6 @@
 // DDF integration: R02, R03, R07. Take path/status/mode/blob identity from Git's NUL-delimited raw records, pair each record with its patch block and refuse on any count or identity mismatch; the patch bytes stay the authoritative artifact.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--git_raw
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
 //! Pure (no I/O) parser for one `git diff --raw -z --patch` byte stream.
 //!
 //! Approach adapted from tuicr's `src/vcs/git/raw.rs` (MIT license, pinned peer

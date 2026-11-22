@@ -1,6 +1,6 @@
 // DDF integration: R02, R09, R19, R21. Validate that a patch transforms the captured base into the captured candidate before attaching semantics; export explicit coverage and snapshot scope.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#shared-service
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--analysis
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#shared-service
 //! Snapshot-pair CLI adapter for the shared service (R02/R09/R19/R21).
 //! See `docs/RECOMMENDATION_INTEGRATION.md#shared-service` for vault/code backlinks.
 use deep_diff_forge_pipeline::review::{SourcePair, analyze_review};

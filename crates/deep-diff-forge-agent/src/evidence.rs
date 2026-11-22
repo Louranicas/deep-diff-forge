@@ -1,6 +1,6 @@
 // DDF integration: R14, R15, R16, R17, R52. Separate asserted citations from captured artifact integrity, trusted evaluator support and revision freshness. Do not resolve duplicate IDs together.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#evidence
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-agent--evidence
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#evidence
 //! Revision-bound evidence checks (R14–R18, R52).
 //! Implementation and vault backlinks: `docs/RECOMMENDATION_INTEGRATION.md#evidence`.
 //! Artifact integrity proves which bytes were inspected, not that a claim is true.

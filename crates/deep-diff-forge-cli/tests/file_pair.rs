@@ -1,6 +1,6 @@
 // DDF integration: R02, R03, R07. CLI contract for the direct two-file review, exercised through the compiled binary with Git as the oracle for the sealed bytes.
 // Design/status: docs/reference/commands.md "Compare two files"
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--tests--file_pair
+// Module index: docs/ARCHITECTURE.md#crates-as-built-030
 //! `deep-diff-forge [--] <old> <new>`: the outputs of `--stdin-patch` over Git's exact bytes, the
 //! refusals with their registered exit codes, and the repository around the files kept out.
 #![cfg(unix)]

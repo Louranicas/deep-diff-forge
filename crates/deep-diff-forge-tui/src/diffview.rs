@@ -1,6 +1,6 @@
 // DDF integration: R31, R32. Measure displayed cells and preserve grapheme boundaries after terminal-safety escaping; keep remaining chrome/wrap geometry visible as work.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#terminal-geometry
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-tui--diffview
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#terminal-geometry
 //! Diff rendering for both layouts, as one scrollable line list.
 //!
 //! The review is one continuous, scrollable document — every file stacked with a

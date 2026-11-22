@@ -1,6 +1,6 @@
 // DDF integration: R02, R03, R07. Structured Git input for the CLI: acquire with raw-record identities, seal the exact Git patch bytes, and feed the same review/rank/JSON outputs as `--stdin-patch`.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--git_input
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
 //! `--git-working-tree`, `--git-staged` and `--git-range A..B`.
 //!
 //! Unlike `git diff | deep-diff-forge --stdin-patch`, these selections run Git
