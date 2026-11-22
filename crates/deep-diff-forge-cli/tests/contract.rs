@@ -1440,3 +1440,45 @@ fn a_pending_refusal_survives_a_closed_stdout() {
         );
     }
 }
+
+/// S3.8.d (F6): a status line written before a tag ("0.9.0 prepared", "superseded once `v0.9.0`
+/// is tagged") is false from the tag on, and the class came back with every release. These
+/// documents say what they describe, so no line of theirs waits on a tag.
+/// `docs/RELEASE_AND_PUBLICATION.md` joins the list once its status heading does.
+#[test]
+fn status_lines_hold_after_the_tag() {
+    const STALE: [&str; 9] = [
+        " prepared)",
+        "is tagged",
+        "once tagged",
+        "not yet tagged",
+        "until tagged",
+        "will be tagged",
+        "to be tagged",
+        "not yet released",
+        "not yet published",
+    ];
+    let mut found = Vec::new();
+    for doc in [
+        "SECURITY.md",
+        "README.md",
+        "CONTRIBUTING.md",
+        "docs/OPERATIONS_AND_DAEMON.md",
+        "docs/reference/supported-platforms.md",
+    ] {
+        let path = format!("{}/../../{doc}", env!("CARGO_MANIFEST_DIR"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let flat = flat.to_lowercase();
+        found.extend(
+            STALE
+                .iter()
+                .filter(|stale| flat.contains(*stale))
+                .map(|stale| format!("{doc}: {stale:?}")),
+        );
+    }
+    assert!(
+        found.is_empty(),
+        "a status line that goes stale at the tag; say what the document describes: {found:?}"
+    );
+}
