@@ -2281,7 +2281,8 @@ impl<'a> Bench<'a> {
             ran = true;
             let (code, verdict, said) =
                 run_judge(&self.program, &self.policy_file, &patch_file, ranker, time);
-            last = hook::judged(code, verdict.as_ref(), said.as_deref(), sealed);
+            // (exit 7 holds the stop even when its document is no verdict: S3.21)
+            last = hook::stop_judged(code, verdict.as_ref(), said.as_deref(), sealed);
             // A run that was stopped says what time it had, and why it was no more: "the
             // judge was stopped" did not name the cause (eighth independent review of the
             // hooks, HR8-L-2). Either the stop had little left, or the run had its part of
@@ -6608,24 +6609,25 @@ fn not_checked(why: &str) -> String {
 
 /// The links `chain` and `policy_protects_itself`: the judge's verdict on the probe, or why it
 /// gave none.
-fn chain_checks(name: &str, verdict: &Result<(PathBuf, i32), String>) -> [GateCheck; 2] {
+fn chain_checks(name: &str, verdict: &Result<(PathBuf, i32, String), String>) -> [GateCheck; 2] {
     [
         check(
             "chain",
             verdict.is_ok(),
             match verdict {
-                Ok((ranker, code)) => format!(
-                    "the judge gave a verdict (exit {code}) with ranker {}",
-                    ranker.display()
+                Ok((ranker, code, read)) => format!(
+                    "the judge gave a verdict (exit {code}) with ranker {}: {read}, read by this build, which reads {}",
+                    ranker.display(),
+                    crate::verdict_v2::READS
                 ),
                 Err(why) => why.clone(),
             },
         ),
         check(
             hook::PROTECTS_ITSELF,
-            verdict.as_ref().is_ok_and(|(_, code)| *code != 0),
+            verdict.as_ref().is_ok_and(|(_, code, _)| *code != 0),
             match verdict {
-                Ok((_, 0)) => format!(
+                Ok((_, 0, _)) => format!(
                     "a change to {} passes: any change could loosen the policy it is judged by",
                     hook::shown_path(name)
                 ),
@@ -6915,8 +6917,20 @@ fn commits_check(place: Option<&Place>, deadline: Deadline) -> GateCheck {
     )
 }
 
-/// Have the judge judge the probe. `Ok` with the ranker it admitted and its exit code when it
-/// gave a verdict; otherwise why not.
+/// The version of forge-warden that a judge's document says wrote it, bounded and safe to show.
+fn judge_version(document: &Value) -> String {
+    let version: String = document["tool"]["version"]
+        .as_str()
+        .unwrap_or("of no stated version")
+        .chars()
+        .take(hook::SCHEMA_SHOWN)
+        .collect();
+    deep_diff_forge_core::display_safe(&version).into_owned()
+}
+
+/// Have the judge judge the probe. `Ok` with the ranker it admitted, its exit code and the
+/// schema and version its document names when it gave a verdict; otherwise why not, with the
+/// version its document names when the document names a schema this build does not read.
 fn probe(
     scratch: &Scratch,
     name: &str,
@@ -6924,7 +6938,7 @@ fn probe(
     program: &Path,
     args: &[String],
     deadline: Deadline,
-) -> Result<(PathBuf, i32), String> {
+) -> Result<(PathBuf, i32, String), String> {
     let patch = probe_patch(name, policy).ok_or_else(|| {
         "the policy is empty, or its name cannot stand in a patch header".to_owned()
     })?;
@@ -6964,9 +6978,26 @@ fn probe(
             hook::judged(code, verdict.as_ref(), said.as_deref(), sealed),
         ) {
             (Some(code), Judged::Pass | Judged::Hold { .. } | Judged::Fail { .. }) => {
-                return Ok((ranker, code));
+                let document = verdict.unwrap_or_default();
+                let read = format!(
+                    "{} of forge-warden {}",
+                    document["schema"].as_str().unwrap_or_default(),
+                    judge_version(&document)
+                );
+                return Ok((ranker, code, read));
             }
-            (_, Judged::Unjudged { reason }) => last = reason,
+            (_, Judged::Unjudged { reason }) => {
+                // version drift: a judge that writes a schema this build does not read
+                last = match verdict.filter(|d| {
+                    d["schema"].is_string() && crate::verdict_v2::Version::named_by(d).is_none()
+                }) {
+                    Some(document) => format!(
+                        "{reason}; the document says forge-warden {} wrote it",
+                        judge_version(&document)
+                    ),
+                    None => reason,
+                };
+            }
             (None, _) => {}
         }
         if code != Some(4) {

@@ -507,11 +507,15 @@ pub(crate) struct Sealed<'a> {
     pub(crate) ranker: &'a str,
 }
 
+/// The most characters of a schema name a judge wrote that a reason shows.
+pub(crate) const SCHEMA_SHOWN: usize = 64;
+
 /// Why `verdict` is not the judge's own verdict of `outcome` (process exit `code`) on these
 /// inputs; `None` when it is.
 ///
-/// Three things, in order. The document is a whole `forge-warden.verdict.v2`
-/// ([`crate::verdict_v2::defect`]: every member the schema fixes, the exit triple that belongs
+/// Three things, in order. The document is a whole `forge-warden.verdict.v2` or
+/// `forge-warden.verdict.v3`, by the schema it names
+/// ([`crate::verdict_v2::defect_in`]: every member the schema fixes, the exit triple that belongs
 /// to the verdict, a summary that counts the rules). It says what the process said: the same
 /// outcome and exit code, and no rule stricter than the verdict. And it is an authority verdict
 /// about this stop: sealed to the policy, the patch and the ranker this hook gave, on a ranking
@@ -522,13 +526,26 @@ fn not_a_verdict(
     code: i32,
     sealed: Sealed,
 ) -> Option<String> {
+    use crate::verdict_v2::{READS, Version, defect_in};
     let Some(document) = verdict else {
         return Some("it printed no verdict document that can be read".to_owned());
     };
-    if let Some(defect) = crate::verdict_v2::defect(document) {
+    // A document with no schema, or no object, is read as v2 and refused as before.
+    let version = match (Version::named_by(document), document["schema"].as_str()) {
+        (Some(version), _) => version,
+        (None, Some(other)) => {
+            let other: String = other.chars().take(SCHEMA_SHOWN).collect();
+            return Some(format!(
+                "its document names the schema {}, which this build does not read (it reads {READS})",
+                display_safe(&other)
+            ));
+        }
+        (None, None) => Version::V2,
+    };
+    if let Some(defect) = defect_in(document, version) {
         return Some(format!(
             "its document is not a whole {}: {defect}",
-            crate::verdict_v2::SCHEMA
+            version.schema()
         ));
     }
     if document["verdict"] != outcome || document["exit"]["code"] != code {
@@ -730,7 +747,7 @@ pub(crate) fn hook_command(command: &str, word: &str) -> Option<StopCommand> {
     Some(found)
 }
 
-/// Read a judge's exit code, its `forge-warden.verdict.v2` document and, when it gave no
+/// Read a judge's exit code, its verdict document (v2 or v3) and, when it gave no
 /// verdict, what it said on its error stream (`said`).
 ///
 /// A verdict needs both: an exit code that is one (0, 7, 8) and a document that says the same
@@ -810,6 +827,33 @@ pub(crate) fn judged(
         None => Judged::Unjudged {
             reason: "the judge was stopped before it gave a verdict".to_owned(),
         },
+    }
+}
+
+/// What a stop takes from a judge's answer: [`judged`], except that exit 7, the judge's fail,
+/// holds the stop when the document beside it is not a verdict on these inputs (S3.21). An
+/// exit code is an answer: a fail whose document this build cannot read (a schema it does not
+/// know, a document that is not whole or not sealed to the inputs) used to allow the stop as
+/// UNJUDGED. It is now a failure with no rule, which holds the stop once and then stands; what
+/// is said is why the document is not a verdict, bounded ([`SAID_CHARS`]). A pass or a hold is
+/// never taken from an exit code alone, and `agent doctor --gate` still needs a verdict.
+pub(crate) fn stop_judged(
+    exit: Option<i32>,
+    verdict: Option<&Value>,
+    said: Option<&str>,
+    sealed: Sealed,
+) -> Judged {
+    match judged(exit, verdict, said, sealed) {
+        Judged::Unjudged { reason } if exit == Some(7) => Judged::Fail {
+            rules: Vec::new(),
+            said: vec![
+                format!("exit 7 is the judge's fail, so the stop is held; its verdict could not be read, so which rules failed is not known: {reason}")
+                    .chars()
+                    .take(SAID_CHARS)
+                    .collect(),
+            ],
+        },
+        answer => answer,
     }
 }
 
