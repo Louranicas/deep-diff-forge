@@ -11579,3 +11579,93 @@ fn advice_off_is_told_to_the_model() {
     // told once: the next tool call says nothing
     assert_eq!(hook("post-tool", &[], &event).1, "");
 }
+
+/// A v3 verdict of a policy that requires verified claims (`[claims] require_verified`, which
+/// `forge-warden init` writes from 0.3.0) on a patch the hook gives with no `--repo`, `--base`
+/// or `--head`: every rule passes and the change is held for the note `claims_unverified`.
+fn unverified_hold() -> Value {
+    let mut document = verdict_v3("hold", &["pass"], false);
+    document["notes"] = json!([{
+        "code": "claims_unverified",
+        "detail": "the patch was supplied without --repo, --base and --head; its claims cannot be verified"
+    }]);
+    document
+}
+
+/// S3.25.a: under a policy that requires verified claims a stop here can at best hold. The gate
+/// called that chain ready (the probe is held, so the policy seemed to protect itself); its link
+/// `claims_verified`, read from the verdict's notes, says it, and so does a session's start.
+#[test]
+fn doctor_gate_says_stops_hold_when_the_policy_requires_verified_claims() {
+    let (scratch, root, home, script, _log, exit_file) = gate_fixture("doctor-gate-claims");
+    let judge_arg = ["--judge", script.to_str().unwrap()];
+    let claims = |doc: &Value| -> (bool, String) {
+        let ok = doc["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == "claims_verified")
+            .unwrap_or_else(|| panic!("no link claims_verified: {doc:#}"))["ok"]
+            .as_bool()
+            .unwrap();
+        (ok, detail(doc, "claims_verified"))
+    };
+    std::fs::create_dir(root.join(".claude")).unwrap();
+    std::fs::write(
+        root.join(".claude/settings.local.json"),
+        stop_hook_settings(&script),
+    )
+    .unwrap();
+    // a judge that holds the probe for a rule: the claims are not in question
+    let (code, doc, stderr) = doctor_gate(&root, &home, &judge_arg);
+    assert!(claims(&doc).0, "{doc:#}");
+    assert_eq!(code, 0, "{stderr}\n{doc:#}");
+    // one that holds it for claims it cannot verify
+    let (again, _, _) = judge(&scratch, &unverified_hold());
+    assert_eq!(again, script);
+    std::fs::write(&exit_file, "8").unwrap();
+    let (code, doc, stderr) = doctor_gate(&root, &home, &judge_arg);
+    let (ok, said) = claims(&doc);
+    assert!(
+        !ok && said.starts_with("stops here will hold, never pass: ")
+            && said.contains("An uncommitted or staged change can never be verified, so it can at best hold: commit first."),
+        "{said}"
+    );
+    assert_eq!((code, doc["ok"].as_bool()), (7, Some(false)), "{stderr}");
+    // the start of a session tells the agent: judged, and held
+    let (_, stdout, _) = hook(
+        "session-start",
+        &judge_arg,
+        &input("SessionStart", &root, "s1", false),
+    );
+    assert!(
+        stdout.contains("- Stops will be judged. One link is weak: claims_verified: stops here will hold, never pass: "),
+        "{stdout}"
+    );
+}
+
+/// S3.25.a: a change held only for claims the judge cannot verify is said at every stop, and
+/// never passes; the stop names the note.
+#[test]
+fn a_hold_for_unverified_claims_is_said_at_every_stop_and_never_passes() {
+    let scratch = Scratch::new("hook-claims-hold");
+    let root = repository(&scratch);
+    silence_a_lint(&root);
+    let (script, _, exit_file) = judge(&scratch, &unverified_hold());
+    std::fs::write(&exit_file, "8").unwrap();
+    for active in [false, true, false] {
+        let (code, stdout, stderr) = hook(
+            "stop",
+            &["--judge", script.to_str().unwrap()],
+            &input("Stop", &root, "s1", active),
+        );
+        assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
+        let out: Value =
+            serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{e}: {stdout:?}"));
+        let said = allowed(&out);
+        assert!(
+            said.contains("HOLD") && said.contains("claims_unverified"),
+            "{said}"
+        );
+    }
+}

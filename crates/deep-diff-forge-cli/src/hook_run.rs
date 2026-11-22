@@ -6646,15 +6646,25 @@ fn not_checked(why: &str) -> String {
     format!("{NOT_CHECKED}{why}")
 }
 
-/// The links `chain` and `policy_protects_itself`: the judge's verdict on the probe, or why it
-/// gave none.
-fn chain_checks(name: &str, verdict: &Result<(PathBuf, i32, String), String>) -> [GateCheck; 2] {
+/// What the judge's verdict on the probe says, when it gave one: the ranker it admitted, its
+/// exit code, the schema and version its document names, and whether it holds the probe for
+/// claims it could not verify (a note `claims_unverified`).
+type ProbeVerdict = (PathBuf, i32, String, bool);
+
+/// The links `chain`, `policy_protects_itself` and `claims_verified`: the judge's verdict on
+/// the probe, or why it gave none.
+///
+/// `claims_verified` is read from the verdict's notes, not from the policy: a policy that
+/// requires verified claims (`[claims] require_verified`, which `forge-warden init` writes
+/// from 0.3.0) holds every change this build gives it, and the gate called that chain ready
+/// (S3.25.a).
+fn chain_checks(name: &str, verdict: &Result<ProbeVerdict, String>) -> [GateCheck; 3] {
     [
         check(
             "chain",
             verdict.is_ok(),
             match verdict {
-                Ok((ranker, code, read)) => format!(
+                Ok((ranker, code, read, _)) => format!(
                     "the judge gave a verdict (exit {code}) with ranker {}: {read}, read by this build, which reads {}",
                     ranker.display(),
                     crate::verdict_v2::READS
@@ -6664,13 +6674,26 @@ fn chain_checks(name: &str, verdict: &Result<(PathBuf, i32, String), String>) ->
         ),
         check(
             hook::PROTECTS_ITSELF,
-            verdict.as_ref().is_ok_and(|(_, code, _)| *code != 0),
+            verdict.as_ref().is_ok_and(|(_, code, _, _)| *code != 0),
             match verdict {
-                Ok((_, 0, _)) => format!(
+                Ok((_, 0, _, _)) => format!(
                     "a change to {} passes: any change could loosen the policy it is judged by",
                     hook::shown_path(name)
                 ),
                 Ok(_) => format!("a change to {} is held or fails", hook::shown_path(name)),
+                Err(_) => not_checked("the judge gave no verdict"),
+            },
+        ),
+        check(
+            hook::CLAIMS_VERIFIED,
+            verdict
+                .as_ref()
+                .is_ok_and(|(_, _, _, unverified)| !unverified),
+            match verdict {
+                Ok((_, _, _, true)) => hook::CLAIMS_HOLD.to_owned(),
+                Ok(_) => {
+                    "the judge's verdict on the probe has no note claims_unverified".to_owned()
+                }
                 Err(_) => not_checked("the judge gave no verdict"),
             },
         ),
@@ -6967,8 +6990,8 @@ fn judge_version(document: &Value) -> String {
     deep_diff_forge_core::display_safe(&version).into_owned()
 }
 
-/// Have the judge judge the probe. `Ok` with the ranker it admitted, its exit code and the
-/// schema and version its document names when it gave a verdict; otherwise why not, with the
+/// Have the judge judge the probe. `Ok` with what its verdict says ([`ProbeVerdict`]) when it
+/// gave one; otherwise why not, with the
 /// version its document names when the document names a schema this build does not read.
 fn probe(
     scratch: &Scratch,
@@ -6977,7 +7000,7 @@ fn probe(
     program: &Path,
     args: &[String],
     deadline: Deadline,
-) -> Result<(PathBuf, i32, String), String> {
+) -> Result<ProbeVerdict, String> {
     let patch = probe_patch(name, policy).ok_or_else(|| {
         "the policy is empty, or its name cannot stand in a patch header".to_owned()
     })?;
@@ -7023,7 +7046,11 @@ fn probe(
                     document["schema"].as_str().unwrap_or_default(),
                     judge_version(&document)
                 );
-                return Ok((ranker, code, read));
+                // a member of the verdict document, the one place the judge says it
+                let unverified = document["notes"].as_array().is_some_and(|notes| {
+                    notes.iter().any(|note| note["code"] == "claims_unverified")
+                });
+                return Ok((ranker, code, read, unverified));
             }
             (_, Judged::Unjudged { reason }) => {
                 // version drift: a judge that writes a schema this build does not read

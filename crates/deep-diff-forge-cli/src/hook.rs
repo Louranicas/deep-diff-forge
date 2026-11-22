@@ -291,6 +291,14 @@ pub(crate) enum StartBase<'a> {
 /// ready a stop is still judged.
 pub(crate) const PROTECTS_ITSELF: &str = "policy_protects_itself";
 
+/// The gate link that says whether the judge holds a change for claims it cannot verify. When
+/// it is not ready a stop is still judged, and holds (S3.25.a).
+pub(crate) const CLAIMS_VERIFIED: &str = "claims_verified";
+
+/// What that link says when it is not ready: the contract of the hooks under a policy that
+/// requires verified claims.
+pub(crate) const CLAIMS_HOLD: &str = "stops here will hold, never pass: the judge holds the probe for claims it cannot verify (note claims_unverified). An uncommitted or staged change can never be verified, so it can at best hold: commit first. This build gives no --repo, --base or --head for a commit either, so a commit holds too";
+
 /// The most links that are not ready a session's start names, and the most characters of each.
 const LINKS_SHOWN: usize = 4;
 const LINK_CHARS: usize = 300;
@@ -334,7 +342,9 @@ pub(crate) fn contract(
                     ""
                 }
             );
-            let judged = not_ready.iter().all(|(name, _)| name == PROTECTS_ITSELF);
+            let judged = not_ready
+                .iter()
+                .all(|(name, _)| name == PROTECTS_ITSELF || name == CLAIMS_VERIFIED);
             let links = || {
                 let mut links: Vec<String> = not_ready
                     .iter()
@@ -355,7 +365,16 @@ pub(crate) fn contract(
                     "- The chain was checked the way {doctor} checks it: stops will be judged."
                 );
             } else if judged {
-                let _ = writeln!(text, "- Stops will be judged. One link is weak: {}.", links());
+                let _ = writeln!(
+                    text,
+                    "- Stops will be judged. {} weak: {}.",
+                    if not_ready.len() == 1 {
+                        "One link is"
+                    } else {
+                        "Some links are"
+                    },
+                    links()
+                );
             } else {
                 let _ = writeln!(
                     text,
