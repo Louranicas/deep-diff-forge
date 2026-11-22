@@ -18,6 +18,13 @@
 //! attributes and run its filters. A submodule's uncommitted changes are therefore not captured
 //! (the superproject never stores them).
 //!
+//! # Changes Git gives as binary
+//!
+//! The repository decides which files Git calls binary (`-diff` in any attributes file Git
+//! reads, a driver with `binary = true`, or a NUL byte), so every change Git gives as binary is
+//! read once more with `--text` and kept as text when it is the same change and DDF can read it
+//! ([`read_binary_again`], S3.20). Attributes keep their other effects (line endings).
+//!
 //! # Untracked files
 //!
 //! With [`GitAcquireOptions::include_untracked`], untracked non-ignored files
@@ -60,7 +67,10 @@
 //! diff, textconv or a transport: those are overridden on the command line,
 //! which takes precedence over every file.
 
-use crate::git_raw::{GitAcquireError, GitChangeKind, GitChangeOrigin, GitPath, StructuredDiff};
+use crate::git_raw::{
+    GitAcquireError, GitChange, GitChangeKind, GitChangeOrigin, GitPath, StructuredDiff,
+};
+use deep_diff_forge_core::DiffSuppression;
 use std::ffi::{OsStr, OsString};
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -821,6 +831,7 @@ pub fn acquire(
     } else {
         Vec::new()
     };
+    let diff = read_binary_again(&runner, diff, &selection_args);
     Ok(GitAcquisition {
         root,
         selection: selection.clone(),
@@ -829,6 +840,110 @@ pub fn acquire(
         diff,
         omitted_untracked,
     })
+}
+
+/// The second reading (S3.20): every change Git gave as binary is asked for once more with
+/// `--text`, the same selection and flags, limited to its own path(s). When that answer is the
+/// same change (same status, paths, modes and object IDs), as text, valid UTF-8 (NUL bytes
+/// included: one NUL byte is all Git's content check needs), within what is left of the byte
+/// budget, and DDF's parser takes it, it replaces the binary block, marked with why Git called
+/// the file binary. Otherwise, and whenever Git fails, the binary block stands. No attribute is
+/// trusted or looked for first: an attributes file in the tree, the index, `info/attributes`,
+/// `core.attributesFile`, a driver with `binary = true`, or the content alone all end here. A
+/// text block and a binary block of one change are two spellings of one result, so the patch
+/// still applies to the same bytes.
+fn read_binary_again(
+    runner: &Runner<'_>,
+    first: StructuredDiff,
+    selection: &[OsString],
+) -> StructuredDiff {
+    let mut read = first.clone();
+    for at in 0..first.changes().len() {
+        let change = &read.changes()[at];
+        if change.binary
+            && let Some((text, bytes)) = text_reading(runner, &read, change, selection)
+        {
+            let cause = suppression(runner, &text);
+            let text = GitChange {
+                diff_suppressed: Some(cause),
+                ..text
+            };
+            read.replace_section(at, text, &bytes);
+        }
+    }
+    // Patch truth first: the whole patch must still parse to one file per block.
+    if read.changes() == first.changes() || read.capture().is_err() {
+        first
+    } else {
+        read
+    }
+}
+
+/// `change` (binary in `diff`) read again with `--text`, and its block, when that reading is
+/// the same change as text DDF can read; see [`read_binary_again`].
+fn text_reading(
+    runner: &Runner<'_>,
+    diff: &StructuredDiff,
+    change: &GitChange,
+    selection: &[OsString],
+) -> Option<(GitChange, Vec<u8>)> {
+    let others = diff.patch_bytes().len() - change.patch_range.len();
+    let budget = runner.options.byte_budget.saturating_sub(others);
+    let mut paths = vec![os_arg(change.review_path()?).ok()?];
+    if let Some(old) = change
+        .old_path
+        .as_ref()
+        .filter(|old| Some(*old) != change.new_path.as_ref())
+    {
+        paths.push(os_arg(old).ok()?);
+    }
+    let mut args: Vec<&OsStr> = Vec::new();
+    let out = if change.origin == GitChangeOrigin::Untracked {
+        args.extend(DIFF_ARGS.iter().map(OsStr::new));
+        args.extend(["--text", "--no-index", "--", "/dev/null"].map(OsStr::new));
+        args.push(&paths[0]);
+        runner.run("git diff --no-index", &args, &[0, 1], budget)
+    } else {
+        // Paths, not patterns: `--literal-pathspecs` is a global option, ahead of `diff`.
+        args.push(OsStr::new("--literal-pathspecs"));
+        args.extend(DIFF_ARGS.iter().map(OsStr::new));
+        args.push(OsStr::new("--text"));
+        args.extend(selection.iter().map(OsString::as_os_str));
+        args.extend(paths.iter().map(OsString::as_os_str));
+        runner.run("git diff", &args, &[0], budget)
+    }
+    .ok()?;
+    let mut again = StructuredDiff::default();
+    again.append_stream(&out, change.origin).ok()?;
+    let [text] = again.changes() else {
+        return None;
+    };
+    let same = GitChange {
+        binary: true,
+        patch_range: change.patch_range.clone(),
+        ..text.clone()
+    } == *change;
+    let readable = std::str::from_utf8(again.patch_bytes()).is_ok() && again.capture().is_ok();
+    (same && !text.binary && readable).then(|| (text.clone(), again.patch_bytes().to_vec()))
+}
+
+/// Why Git called `change`'s file binary: [`DiffSuppression::Content`] when `git check-attr`
+/// says the path's `diff` attribute is unspecified (or set), else
+/// [`DiffSuppression::Attribute`]. It only names the cause; the label stands either way.
+fn suppression(runner: &Runner<'_>, change: &GitChange) -> DiffSuppression {
+    let Some(path) = change.review_path().and_then(|path| os_arg(path).ok()) else {
+        return DiffSuppression::Attribute;
+    };
+    let args = ["check-attr", "-z", "diff", "--"].map(OsStr::new);
+    let mut args = args.to_vec();
+    args.push(&path);
+    // `-z` output: `<path> NUL diff NUL <value> NUL`.
+    match runner.run("git check-attr", &args, &[0], 64 * 1024) {
+        Ok(out) if matches!(out.split(|&b| b == 0).nth(2), Some(b"unspecified" | b"set")) => {
+            DiffSuppression::Content
+        }
+        _ => DiffSuppression::Attribute,
+    }
 }
 
 /// Global options for [`diff_files`], ahead of the subcommand: no attributes file, so no filter,
