@@ -848,35 +848,62 @@ pub fn acquire(
 /// included: one NUL byte is all Git's content check needs), within what is left of the byte
 /// budget, and DDF's parser takes it, it replaces the binary block, marked with why Git called
 /// the file binary. Otherwise, and whenever Git fails, the binary block stands. No attribute is
-/// trusted or looked for first: an attributes file in the tree, the index, `info/attributes`,
+/// trusted to clear a file: an attributes file in the tree, the index, `info/attributes`,
 /// `core.attributesFile`, a driver with `binary = true`, or the content alone all end here. A
 /// text block and a binary block of one change are two spellings of one result, so the patch
 /// still applies to the same bytes.
+///
+/// The label does not wait for the text reading (S3.27.a, N55): when `git check-attr` says the
+/// path's `diff` is unset or names a driver, the change carries `diff_suppressed` (cause
+/// attribute) where its binary block stands too: a byte that is not UTF-8, a reading over the
+/// budget, a refusal. The text reading only adds evidence.
 fn read_binary_again(
     runner: &Runner<'_>,
     first: StructuredDiff,
     selection: &[OsString],
 ) -> StructuredDiff {
     let mut read = first.clone();
+    let mut labelled = first.clone();
+    let mut replaced = false;
     for at in 0..first.changes().len() {
-        let change = &read.changes()[at];
-        if change.binary
-            && let Some((text, bytes)) = text_reading(runner, &read, change, selection)
-        {
-            let cause = suppression(runner, &text);
-            let text = GitChange {
-                diff_suppressed: Some(cause),
-                ..text
-            };
-            read.replace_section(at, text, &bytes);
+        let change = read.changes()[at].clone();
+        if !change.binary {
+            continue;
+        }
+        let cause = suppression(runner, &change);
+        let told = cause != DiffSuppression::Content;
+        if told {
+            mark(&mut labelled, at, cause);
+        }
+        match text_reading(runner, &read, &change, selection) {
+            Some((text, bytes)) => {
+                let text = GitChange {
+                    diff_suppressed: Some(cause),
+                    ..text
+                };
+                read.replace_section(at, text, &bytes);
+                replaced = true;
+            }
+            None if told => mark(&mut read, at, cause),
+            None => {}
         }
     }
     // Patch truth first: the whole patch must still parse to one file per block.
-    if read.changes() == first.changes() || read.capture().is_err() {
-        first
-    } else {
+    if replaced && read.capture().is_ok() {
         read
+    } else {
+        labelled
     }
+}
+
+/// Change `at` of `diff`, its block unchanged, marked `diff_suppressed` with `cause`.
+fn mark(diff: &mut StructuredDiff, at: usize, cause: DiffSuppression) {
+    let change = GitChange {
+        diff_suppressed: Some(cause),
+        ..diff.changes()[at].clone()
+    };
+    let bytes = diff.change_patch(&change).to_vec();
+    diff.replace_section(at, change, &bytes);
 }
 
 /// `change` (binary in `diff`) read again with `--text`, and its block, when that reading is
@@ -929,7 +956,8 @@ fn text_reading(
 
 /// Why Git called `change`'s file binary: [`DiffSuppression::Content`] when `git check-attr`
 /// says the path's `diff` attribute is unspecified (or set), else
-/// [`DiffSuppression::Attribute`]. It only names the cause; the label stands either way.
+/// [`DiffSuppression::Attribute`]. Attribute raises the label whatever the text reading gives;
+/// content raises it only beside a text reading.
 fn suppression(runner: &Runner<'_>, change: &GitChange) -> DiffSuppression {
     let Some(path) = change.review_path().and_then(|path| os_arg(path).ok()) else {
         return DiffSuppression::Attribute;

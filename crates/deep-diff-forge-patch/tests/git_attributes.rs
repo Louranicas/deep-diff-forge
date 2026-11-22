@@ -256,8 +256,8 @@ fn every_shape_of_change_is_read_again_and_the_patch_applies_whole() {
 }
 
 /// The text reading is kept only within what is left of the byte budget: a large new file whose
-/// binary block fits and whose text does not stays binary, and the acquisition still succeeds.
-/// With room, the same change is text.
+/// binary block fits and whose text does not stays binary, labelled, and the acquisition still
+/// succeeds. With room, the same change is text.
 #[test]
 fn a_text_reading_over_the_byte_budget_leaves_the_binary_reading_standing() {
     let (root, _scratch) = repo("budget", &[("keep.txt", b"k\n".to_vec())]);
@@ -271,6 +271,14 @@ fn a_text_reading_over_the_byte_budget_leaves_the_binary_reading_standing() {
     git(&root, &["add", "big.rs"]);
     let tight = acquire_git(&root, &GitSelection::Staged, &options(false, 20_000)).unwrap();
     assert!(change(&tight, "big.rs").binary);
+    // S3.27.a: the binary block stands, and the label the attribute raises stands with it.
+    assert_eq!(
+        change(&tight, "big.rs")
+            .diff_suppressed
+            .map(deep_diff_forge_core::DiffSuppression::label),
+        Some("attribute"),
+        "a reading over the budget left the hidden file unlabelled"
+    );
     assert!(tight.diff().patch_bytes().len() < 20_000);
     let roomy = acquire_git(&root, &GitSelection::Staged, &options(false, 1 << 20)).unwrap();
     read_as_text(&roomy, "big.rs");

