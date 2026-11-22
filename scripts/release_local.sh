@@ -18,6 +18,8 @@
 #   with scripts/package_release.py (SOURCE_DATE_EPOCH = commit time) and writes into <outdir>,
 #   which must not exist: the archive, its .sha256, sbom.spdx.json, release-receipt.json and
 #   SHA256SUMS over all of them. It prints the owner's signing command and never signs.
+#   The receipt lists the checks run on the artefact and the gate's result: DDF_GATE_LOG names a
+#   log of scripts/ci_local.sh (its `gate on` and `steps failed` lines); without it, "not given".
 #   A <commit> that is a tag must be v<workspace version at that commit>.
 # verify: (1) the tag: scripts/verify_release_tag.sh with <allowed_signers> and, as main, the
 #   local ref gitlab/main (fetch it first; this tool does not), and the tag is v<version>;
@@ -49,7 +51,7 @@ usage() { sed -n '2,/^# Exit status/{s/^# \{0,1\}//;p}' "${BASH_SOURCE[0]}"; }
 guard() { case "${2,,}" in *github.com*) die "refused: $1 contains github.com (nothing at GitHub)" ;; esac; }
 
 for arg in "$@"; do guard "the argument '$arg'" "$arg"; done
-for var in HOME PATH TMPDIR CARGO_HOME RUSTUP_HOME $(compgen -e | grep '^GIT_' || true); do
+for var in HOME PATH TMPDIR CARGO_HOME RUSTUP_HOME DDF_GATE_LOG $(compgen -e | grep '^GIT_' || true); do
   guard "the environment variable $var" "${!var:-}"
 done
 case "${1:-} $#" in
@@ -131,10 +133,21 @@ do_build() {
   (cd "$stage" && sha256sum "$dist.tar.gz" >"$dist.tar.gz.sha256" && sha256sum -c --quiet "$dist.tar.gz.sha256")
   python3 -I - "$stage" "$version" "$sha" "$target" "$h1" "$h2" "$(cargo_env rustc -Vv)" \
     "$(cargo_env cargo -V)" "$toolchain" "$work/b1/src" "$work/b2/src" "${CARGO_HOME:-$HOME/.cargo}" \
-    "$not_built" <<'EOF'
-import datetime, hashlib, json, pathlib, sys
-stage, version, commit, target, h1, h2, rustc, cargo, pin, root1, root2, cargo_home, not_built = sys.argv[1:]
+    "$not_built" "${DDF_GATE_LOG:-}" <<'EOF'
+import datetime, hashlib, json, pathlib, re, sys
+stage, version, commit, target, h1, h2, rustc, cargo, pin, root1, root2, cargo_home, not_built, log = sys.argv[1:]
 stage = pathlib.Path(stage)
+gate = {"result": "not given (DDF_GATE_LOG is not set)"}
+if log:
+    text = pathlib.Path(log).read_bytes()
+    on = re.findall(rb"^gate on ([0-9a-f]+)(.*)$", text, re.M)
+    failed = re.findall(rb"^steps failed: (\d+)$", text, re.M)
+    gate = {"log": log, "log_sha256": hashlib.sha256(text).hexdigest(),
+            "commit": on[-1][0].decode() if on else None,
+            "uncommitted_changes": bool(on and on[-1][1]),
+            "steps": len(re.findall(rb"^(?:PASS|FAIL) ", text, re.M)),
+            "steps_failed": int(failed[-1]) if failed else None}
+    gate["result"] = "pass" if gate["steps_failed"] == 0 and gate["commit"] == commit and not gate["uncommitted_changes"] else "not a passing gate of this commit"
 receipt = {
     "schema": "deep-diff-forge.release-receipt.v0",
     "version": version, "commit": commit, "target": target,
@@ -147,6 +160,14 @@ receipt = {
     "build_roots": [root1, root2],
     "build_roots_note": "temporary, removed after the build; the binary does not depend on them",
     "cargo_home": cargo_home,
+    "checks_on_artefact": [
+        "two builds from two exports give one binary SHA-256",
+        f"--version reports deep-diff-forge {version}",
+        "--stdin-patch --json on fixtures/patch/basic.patch writes a deep-diff-forge.review.v0 document",
+        "scripts/check_glibc_floor.sh on the binary",
+        "the archive's .sha256 checks",
+    ],
+    "gate": gate,
 }
 (stage / "release-receipt.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
 EOF

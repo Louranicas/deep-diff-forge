@@ -43,7 +43,34 @@ Across the tree:
   Non-provider patterns and validity checks are not available for this user-owned repository, so
   gitleaks (the `secret scan` check and the versioned pre-push hook) is the compensating control
   ([SECURITY.md](../../SECURITY.md#supply-chain-and-releases)).
-- **Local replica.** `scripts/ci_local.sh` (`just ci`) runs the CI gate jobs locally.
+- **Local replica.** `scripts/ci_local.sh` (`just ci`) runs the CI gate jobs locally: 35 steps
+  from 0.10.0 (32 before). It prints the commit it gates and writes nothing into the checkout: the
+  SBOM step generates into the gate's own scratch directory and compares, so `sbom.spdx.json` is
+  never rewritten, also when the step is stopped. Three steps run only there; they are listed as
+  `LOCAL_ONLY` in `crates/deep-diff-forge-cli/tests/ci_replica.rs`, since GitHub's workflow is a
+  mirror and is not changed for them (every step is a `ci.yml` step or a member of the list, and
+  every member is a step): the **release-script self-test** (`scripts/test_release_local.sh`: a
+  release build and its verify in a throwaway clone, with planted failures; it runs
+  `scripts/check_glibc_floor.sh` on the release binary, and the test step runs it on the test
+  binary), the **comparison corpus manifest** (`sha256sum -c` of the corpus's `MANIFEST.sha256`
+  where the corpus is on the machine, `DDF_COMPARE_CORPUS`; elsewhere the step passes and says
+  `skipped: no corpus here`) and the **contract matrix**. `scripts/release_local.sh` writes the
+  checks run on the artefact and the gate's result (from the log `DDF_GATE_LOG` names) into the
+  release receipt.
+- **Contract matrix.** `scripts/contract_matrix.sh <binary>` plays the contract between the stop
+  hook and forge-warden, one scratch repository per row. Stand-in judges
+  (`scripts/contract-matrix/judge.py`, answering with forge-warden's own v2 and v3 documents)
+  give PASS, HOLD and FAIL in both schemas, a FAIL whose document cannot be read (held once, then
+  it stands), exit 4, a hang, and a hold for claims a `require_verified` policy cannot verify (also
+  the `claims_verified` link of `agent doctor --gate`); the patch the judge is given must be the
+  bytes of forge-warden's recorded `make_patch.sh`. A known-bad control row (a FAIL expected to
+  pass the stop) must come out red. With `FW_BIN=<path>` the rows that need a real forge-warden run
+  too: the binary is accepted by its SHA-256 in `scripts/contract-matrix/binaries.tsv`, never by
+  its version, and must judge a stop the hook reads, hold a change that raises a label of
+  `schema signals` it does not know (the row names those labels), read this build's rank document, and refuse an empty patch as ruled (no verdict and "the ranker
+  exited 4" with this build as ranker; a holding verdict with the 0.9.0 ranker,
+  `DDF_RANKER_090`). Without `FW_BIN` those rows are skipped by name; with `--require-real` they
+  are red. The gate runs the stand-in rows always and the real ones when `FW_BIN` is set.
 
 The engine is hardened against:
 - terminal-escape injection;
