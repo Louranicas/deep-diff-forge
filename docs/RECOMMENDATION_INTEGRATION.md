@@ -73,7 +73,7 @@ Measured on the four-file r3 sandbox change: output fell from 1,113,154 to 101,8
 
 ## Traceability rules
 
-Every substantive changed module has a source comment naming its finding IDs, a direct link to this document's section and a direct Obsidian link to its own module note. The module note links back to that exact crate/module and its tests. The original tuicr findings remain historical observations against the base commit; integration follow-ups identify branch status without claiming human approval or resolving findings automatically.
+Every substantive changed module has a source comment naming its finding IDs, a pointer to this document's section (`// Design/status`) and a `// Module index:` line naming the document section that lists the module (a module list below, whose entry links the module file, or the crate list of [ARCHITECTURE](ARCHITECTURE.md)). Until 2026-11-22 that line was a link to a module note in the maintainer's private vault, which no reader of the repository could open; the notes are not published, and a contract test keeps such links out of the tracked tree (ARCHITECTURE, "Source headers"). The original tuicr findings remain historical observations against the base commit; integration follow-ups identify branch status without claiming human approval or resolving findings automatically.
 
 “Implemented” below means the narrow finding has a concrete code change and verification route; it does not mean every future capability described in the original recommendation is delivered. “Partial foundation” names the remaining contract or integration gap. Planned/evaluation items are not advertised as available features.
 
@@ -179,7 +179,6 @@ Make checks fail closed, preserve fuzz crash evidence, use the actual build outp
 **Full-stack review scope and decision — Implemented.**
 
 The complete 60-item integration ledger, original review preservation and module/vault traceability routes are present. This is scope accounting, not a claim that planned capabilities are implemented.
-
 
 **Original recommendation:** Retain/evolve the Rust foundation. First repair patch fidelity, false-clean analysis and revision/evidence identity; then connect one complete Rust analysis-to-evidence workflow. Study current Hunk shared semantics and tuicr persistence/forge patterns, and evaluate adapters before duplicating their surfaces.
 
@@ -914,7 +913,7 @@ Current verified status counts: Implemented: 19, Preserved: 4, Partial foundatio
 
 ## Remaining module routes
 
-These links connect original reviewed modules to their delivery/design notes. Runtime code in these modules is unchanged except where separately listed.
+These links name the original reviewed modules; the delivery and design notes they also linked until 2026-11-22 are in the maintainer's private vault and not published. Runtime code in these modules is unchanged except where separately listed.
 
 - [crates/deep-diff-forge-graph/src/risk.rs](../crates/deep-diff-forge-graph/src/risk.rs)
 - [crates/deep-diff-forge-agent/src/anchor.rs](../crates/deep-diff-forge-agent/src/anchor.rs)

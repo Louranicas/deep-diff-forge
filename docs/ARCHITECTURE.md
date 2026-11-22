@@ -196,12 +196,16 @@ released there.
 
 ## Source headers (decision E-05, 2026-10-27)
 
-Some files open with `// DDF integration`, `// Design/status` and `// Module vault note` lines that
-link to a design section and to the maintainer's local Obsidian vault (65 of 120 Rust files on
-2026-10-27; all 79 links resolved; the vault links were replaced by repository pointers on 2026-11-22). They opened only in the owner's local
-vault, not for other readers. They are optional and not enforced: CI cannot see the vault, so
-a scan could check only that a header is present, which would push headers onto files with no note
-to link. Add one when a vault note exists for the file; never add a link to a note that does not.
+Some files open with `// DDF integration` (the finding IDs), `// Design/status` (a design
+section) and `// Module index: <document>#<heading>` lines. The module index line names the
+section of a document in this repository that lists the file: the module lists of
+[RECOMMENDATION_INTEGRATION](RECOMMENDATION_INTEGRATION.md) and [REVIEW_COUNCIL](REVIEW_COUNCIL.md),
+else [Crates as built](#crates-as-built-030). Until 2026-11-22 that line was a
+`// Module vault note` link into the maintainer's private Obsidian vault (65 of 120 Rust files on
+2026-10-27), which no reader of the repository could open; the links were replaced in place, and
+the contract test `no_tracked_file_links_the_private_vault` keeps any link to that vault out of
+every tracked file. The headers are optional and not enforced. Add a `// Module index:` line
+when a document section lists the file; never link a private note.
 
 ## Layers
 
