@@ -286,6 +286,18 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   items in the core crate: `is_binary_marker` and `PatchTwin::is_binary`.
 
 
+- **The documents say what is built and where it is released** (S3.7, S3.10, S3.17a.k).
+  `SECURITY.md` lists every Git setting that changes what `git apply` writes (`apply.whitespace`,
+  `core.autocrlf`, `-p`, `--directory`, `--3way`, `core.fileMode`, a case-insensitive file
+  system), each declared, six measured against a real `git apply` by the test
+  `a_setting_that_changes_the_write_is_declared`. Linux x86_64 is built and tested, with its
+  receipt under "Runs on record" in the platforms page; arm64 and macOS are not built for this
+  release. Releases are on GitLab and mirrored on GitHub; 0.9.0 is on crates.io and publishing
+  the crates is a release step from 0.10.0; contributions are GitLab merge requests. The
+  generated differential draws four more shapes Git writes (no final newline, an edit of an
+  empty file, a file emptied, unequal hunk counts).
+
+
 ### Fixed
 
 - **A text file Git was told to show as binary is read as text** (S3.20,
