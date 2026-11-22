@@ -11058,3 +11058,238 @@ fn a_failure_in_a_tree_beyond_the_sixteen_stands() {
         "{inside}"
     );
 }
+
+// `forge-warden.verdict.v3` (S3.21). The tests above are as they were.
+
+/// forge-warden's own v3 document: `fixtures/demo.verdict.json` on its main branch at commit
+/// fbd621e0e4c3183e7cb9d9c949dac942b8fb0dd8 (the file last changed in dd05b45b), copied byte
+/// for byte.
+const FORGE_WARDEN_V3_DEMO: &str =
+    include_str!("fixtures/forge-warden-main-fbd621e0/demo.verdict.json");
+
+/// A v3 document for a stand-in judge, made from forge-warden's own: its rules whose outcome
+/// is one of `keep`, then, when `builtin`, a built-in rule as forge-warden's main branch writes
+/// one (`crates/forge-warden-core/src/builtin.rs` at fbd621e0); the verdict and the exit triple
+/// of `outcome`; a summary that counts the rules; no notes (the demo's note is about its
+/// advisory ranking). The judge fills in the seals.
+fn verdict_v3(outcome: &str, keep: &[&str], builtin: bool) -> Value {
+    let demo: Value = serde_json::from_str(FORGE_WARDEN_V3_DEMO).unwrap();
+    let mut rules: Vec<Value> = demo["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|rule| keep.contains(&rule["outcome"].as_str().unwrap()))
+        .cloned()
+        .collect();
+    if builtin {
+        rules.push(json!({"id": "builtin:binary-on-executable", "kind": "builtin",
+            "severity": "hold", "outcome": "hold",
+            "why": "an executable or a symlink sent as a binary section hides its lines from every signal rule, and the shell can still run it; a person reads it before it merges",
+            "violations": [{"path": "tools/run",
+                            "message": "a binary section on an executable file (100755)"}]}));
+    }
+    let count = |outcome: &str| rules.iter().filter(|r| r["outcome"] == outcome).count();
+    let (code, name, action) = match outcome {
+        "pass" => (0, "pass", "proceed"),
+        "fail" => (7, "policy_fail", "change_input"),
+        _ => (8, "policy_hold", "review_evidence"),
+    };
+    json!({
+        "schema": demo["schema"],
+        "tool": demo["tool"],
+        "evaluated_on": demo["evaluated_on"],
+        "seals": "@SEALS@",
+        "verdict": outcome,
+        "exit": {"code": code, "name": name, "action": action},
+        "summary": {"files": 4, "rules": rules.len(), "passed": count("pass"),
+                    "waived": count("waived"), "held": count("hold"), "failed": count("fail")},
+        "rules": rules,
+        "expired_waivers": [],
+        "unused_waivers": [],
+        "notes": [],
+    })
+}
+
+/// The stand-in judge of [`judge`] printing `document` with bound claims in its seals, as
+/// forge-warden's bound mode writes them (`crates/forge-warden-cli/tests/authority_mode.rs` at
+/// fbd621e0): base, head and merge base of 40 hex digits, `verified: true`.
+fn judge_v3_bound(scratch: &Scratch, document: &Value) -> (PathBuf, PathBuf) {
+    let (script, log, exit_file) = judge(scratch, document);
+    let text = judge_script(&log, &exit_file, document);
+    let sealed = r#"\"allowlist_sha256\":\"$f\"}}""#;
+    let claims = r#"\"allowlist_sha256\":\"$f\"},\"claims\":{\"base\":\"@A@\",\"head\":\"@B@\",\"merge_base\":\"@C@\",\"verified\":true}}""#
+        .replace("@A@", &"a".repeat(40))
+        .replace("@B@", &"b".repeat(40))
+        .replace("@C@", &"c".repeat(40));
+    let bound = text.replacen(sealed, &claims, 1);
+    assert_ne!(bound, text, "the stand-in's seals were not found");
+    write_program(&script, &bound);
+    (script, exit_file)
+}
+
+/// S3.21: forge-warden's main branch writes `forge-warden.verdict.v3`. The stop hook reads it as
+/// it reads v2: a fail holds the stop, with a built-in rule and verified claims in it too; a
+/// hold is reported; a pass passes. Before, a v3 document was no verdict, and a fail was
+/// allowed as UNJUDGED.
+#[test]
+fn a_v3_verdict_is_read_and_its_fail_holds_the_stop() {
+    let scratch = Scratch::new("hook-verdict-v3");
+    let root = repository(&scratch);
+    std::fs::write(
+        root.join("a.rs"),
+        "fn a() {}\n#[allow(dead_code)]\nfn b() {}\n",
+    )
+    .unwrap();
+    let stop_with = |document: &Value, code: &str, session: &str| -> Value {
+        let (script, exit_file) = judge_v3_bound(&scratch, document);
+        std::fs::write(&exit_file, code).unwrap();
+        let (_, stdout, _) = hook(
+            "stop",
+            &["--judge", script.to_str().unwrap()],
+            &input("Stop", &root, session, false),
+        );
+        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{e}: {stdout:?}"))
+    };
+
+    // fail: held, with the failing rule and the rules the judge holds for, the built-in one too
+    let out = stop_with(
+        &verdict_v3("fail", &["pass", "fail", "hold"], true),
+        "7",
+        "s1",
+    );
+    let reason = blocked(&out);
+    assert!(
+        reason.starts_with("deep-diff-forge: the judge fails this change")
+            && reason.contains("- rule no-ci-privilege: pull_request_target, write-all")
+            && reason.contains("- rule builtin:binary-on-executable (held, for a person): an executable or a symlink")
+            && reason.contains("\"tools/run\""),
+        "{reason}"
+    );
+
+    // hold: allowed and reported, the built-in rule named
+    let out = stop_with(&verdict_v3("hold", &["pass", "hold"], true), "8", "s2");
+    let said = allowed(&out);
+    assert!(
+        said.starts_with("deep-diff-forge: HOLD. ")
+            && said.contains("- rule builtin:binary-on-executable: an executable or a symlink"),
+        "{said}"
+    );
+
+    // pass: allowed, with nothing said but what the first stop of a session with no recorded
+    // start says
+    let out = stop_with(&verdict_v3("pass", &["pass"], false), "0", "s3");
+    let said = allowed(&out);
+    assert!(
+        said.starts_with("deep-diff-forge: This session's start was not recorded")
+            && !said.contains("UNJUDGED")
+            && !said.contains("HOLD"),
+        "{said}"
+    );
+}
+
+/// S3.21, point (c): exit 7 is the judge's fail. A fail whose document this build cannot read
+/// (here one that names a schema it does not know, as a later forge-warden would write it)
+/// holds the stop once, says why, and then stands. The same document under exit 0 or 8 is
+/// UNJUDGED, as before.
+#[test]
+fn a_fail_whose_document_cannot_be_read_holds_the_stop_once() {
+    let scratch = Scratch::new("hook-fail-unread");
+    let root = repository(&scratch);
+    std::fs::write(
+        root.join("a.rs"),
+        "fn a() {}\n#[allow(dead_code)]\nfn b() {}\n",
+    )
+    .unwrap();
+    let mut later = verdict_v3("fail", &["pass", "fail"], false);
+    later["schema"] = json!("forge-warden.verdict.v4");
+    let (script, _, exit_file) = judge(&scratch, &later);
+    let stop = |session: &str, active: bool| -> Value {
+        let (_, stdout, _) = hook(
+            "stop",
+            &["--judge", script.to_str().unwrap()],
+            &input("Stop", &root, session, active),
+        );
+        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{e}: {stdout:?}"))
+    };
+    std::fs::write(&exit_file, "7").unwrap();
+    let out = stop("s1", false);
+    let reason = blocked(&out);
+    assert!(
+        reason.contains("exit 7 is the judge's fail, so the stop is held; its verdict could not be read, so which rules failed is not known")
+            && reason.contains("its document names the schema forge-warden.verdict.v4, which this build does not read (it reads forge-warden.verdict.v2 and forge-warden.verdict.v3)"),
+        "{reason}"
+    );
+    // the client continues and stops again with nothing changed: the failure stands
+    let out = stop("s1", true);
+    let message = allowed(&out);
+    assert!(
+        message.starts_with("deep-diff-forge: FAIL STANDS. "),
+        "{message}"
+    );
+    // under exit 0 or 8 the same document is no verdict and nothing is held
+    for (code, session) in [("0", "s2"), ("8", "s3")] {
+        std::fs::write(&exit_file, code).unwrap();
+        let out = stop(session, false);
+        let message = allowed(&out);
+        assert!(
+            message.starts_with("deep-diff-forge: UNJUDGED. ")
+                && message.contains("names the schema forge-warden.verdict.v4"),
+            "{code}: {message}"
+        );
+    }
+}
+
+/// S3.21, point (d): `agent doctor --gate` says which verdict schemas this build reads and
+/// which one the judge wrote, and a judge that writes one this build does not read is the
+/// link `chain`, not ready, with the version its document gives.
+#[test]
+fn doctor_gate_names_the_verdict_schema_the_judge_writes() {
+    let (scratch, root, home, script, _log, exit_file) = gate_fixture("doctor-gate-v3");
+    let judge_arg = ["--judge", script.to_str().unwrap()];
+    let chain = |doc: &Value| -> (bool, String) {
+        let ok = doc["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == "chain")
+            .unwrap()["ok"]
+            .as_bool()
+            .unwrap();
+        (ok, detail(doc, "chain"))
+    };
+    let reads =
+        "read by this build, which reads forge-warden.verdict.v2 and forge-warden.verdict.v3";
+    // the stand-in that writes v2
+    let (ok, said) = chain(&doctor_gate(&root, &home, &judge_arg).1);
+    assert!(
+        ok && said.ends_with(&format!(
+            ": forge-warden.verdict.v2 of forge-warden 0.2.0, {reads}"
+        )),
+        "{said}"
+    );
+    // one that writes v3, with what v3 adds
+    let (bound, _) = judge_v3_bound(&scratch, &verdict_v3("hold", &["pass", "hold"], true));
+    assert_eq!(bound, script);
+    std::fs::write(&exit_file, "8").unwrap();
+    let (ok, said) = chain(&doctor_gate(&root, &home, &judge_arg).1);
+    assert!(
+        ok && said.ends_with(&format!(
+            ": forge-warden.verdict.v3 of forge-warden 0.2.1, {reads}"
+        )),
+        "{said}"
+    );
+    // a later one
+    let mut later = verdict_v3("hold", &["pass", "hold"], false);
+    later["schema"] = json!("forge-warden.verdict.v4");
+    later["tool"]["version"] = json!("0.4.0");
+    let (again, _, _) = judge(&scratch, &later);
+    assert_eq!(again, script);
+    std::fs::write(&exit_file, "8").unwrap();
+    let (code, doc, _) = doctor_gate(&root, &home, &judge_arg);
+    let (ok, said) = chain(&doc);
+    assert_eq!((ok, code), (false, 7), "{said}");
+    assert!(
+        said.contains("its document names the schema forge-warden.verdict.v4, which this build does not read (it reads forge-warden.verdict.v2 and forge-warden.verdict.v3); the document says forge-warden 0.4.0 wrote it"),
+        "{said}"
+    );
+}

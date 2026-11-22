@@ -4810,4 +4810,236 @@ mod tests {
         );
         assert_eq!(stop_output_with(&blocked, None), stop_output(&blocked));
     }
+
+    // `forge-warden.verdict.v3`, and a fail whose document is no verdict (S3.21). The tests
+    // above are as they were.
+
+    /// A whole v3 verdict document of `outcome`, sealed to [`SEALED`].
+    fn document_v3(outcome: &str) -> Value {
+        crate::verdict_v2::tests::whole_v3(outcome, SEALED.policy, SEALED.patch, SEALED.ranker)
+    }
+
+    /// A v3 document of `outcome` with what v3 adds: a built-in rule and bound claims.
+    fn document_v3_added(outcome: &str) -> Value {
+        let mut document = document_v3(outcome);
+        document["rules"]
+            .as_array_mut()
+            .unwrap()
+            .push(crate::verdict_v2::tests::builtin_rule());
+        document["seals"]["claims"] = crate::verdict_v2::tests::bound_claims(40);
+        crate::verdict_v2::tests::recount(&mut document);
+        document
+    }
+
+    #[test]
+    fn a_v3_document_is_a_verdict_as_a_v2_one_is() {
+        type Spoil = fn(&mut Value);
+        assert_eq!(
+            judged(Some(0), Some(&document_v3("pass")), None, SEALED),
+            Judged::Pass
+        );
+        let Judged::Hold { rules, .. } =
+            judged(Some(8), Some(&document_v3_added("hold")), None, SEALED)
+        else {
+            panic!("exit 8 with a v3 hold document is a hold")
+        };
+        let ids: Vec<&str> = rules.iter().map(|rule| rule.id.as_str()).collect();
+        assert_eq!(ids, ["keep-the-tests", "builtin:binary-on-executable"]);
+        // a fail with a built-in rule and verified claims: the failing rule, then the held
+        // ones, the built-in one among them, each with what it names
+        let Judged::Fail { rules, .. } =
+            judged(Some(7), Some(&document_v3_added("fail")), None, SEALED)
+        else {
+            panic!("exit 7 with a v3 fail document is a fail")
+        };
+        let named: Vec<(&str, bool)> = rules.iter().map(|r| (r.id.as_str(), r.held)).collect();
+        assert_eq!(
+            named,
+            [
+                ("no-secrets", false),
+                ("keep-the-tests", true),
+                ("builtin:binary-on-executable", true)
+            ]
+        );
+        assert_eq!(
+            rules[2].violations,
+            [(String::new(), "tools/run".to_owned(), 0)]
+        );
+        // a pass beside a built-in hold says two things: no verdict
+        assert!(matches!(
+            judged(Some(0), Some(&document_v3_added("pass")), None, SEALED),
+            Judged::Unjudged { .. }
+        ));
+        // every seal is asked of a v3 verdict as of a v2 one
+        let spoils: [(&str, Spoil); 5] = [
+            ("another policy", |d| {
+                d["seals"]["policy_sha256"] = json!(SEALED.patch);
+            }),
+            ("another patch", |d| {
+                d["seals"]["patch_sha256"] = json!(SEALED.policy);
+            }),
+            ("another ranker", |d| {
+                d["seals"]["ranked_by"]["sha256"] = json!(SEALED.patch);
+            }),
+            ("a supplied ranking", |d| {
+                d["seals"]["provenance"] = json!("supplied");
+            }),
+            ("a Git that is not enrolled", |d| {
+                d["seals"]["git"]["admission"] = json!("unpinned");
+                d["seals"]["git"]["allowlist_sha256"] = Value::Null;
+            }),
+        ];
+        for (what, spoil) in spoils {
+            let mut spoiled = document_v3_added("fail");
+            spoil(&mut spoiled);
+            assert!(
+                matches!(
+                    judged(Some(7), Some(&spoiled), None, SEALED),
+                    Judged::Unjudged { .. }
+                ),
+                "{what}"
+            );
+        }
+        // forge-warden's own v3 document is whole, and advisory: no verdict for a stop
+        let demo: Value =
+            serde_json::from_str(crate::verdict_v2::tests::FORGE_WARDEN_V3_DEMO).unwrap();
+        let sealed = Sealed {
+            policy: demo["seals"]["policy_sha256"].as_str().unwrap(),
+            patch: demo["seals"]["patch_sha256"].as_str().unwrap(),
+            ..SEALED
+        };
+        let Judged::Unjudged { reason } = judged(Some(7), Some(&demo), None, sealed) else {
+            panic!("an advisory verdict was believed")
+        };
+        assert!(
+            reason.ends_with("its verdict is not on a ranking it produced itself"),
+            "{reason}"
+        );
+    }
+
+    /// A document that names a schema this build does not read is no verdict, and the reason
+    /// names the schema, cut and made safe to show, and the schemas this build reads.
+    #[test]
+    fn a_schema_this_build_does_not_read_is_named() {
+        let mut later = document_v3("pass");
+        later["schema"] = json!("forge-warden.verdict.v4");
+        assert_eq!(
+            not_a_verdict(Some(&later), "pass", 0, SEALED).as_deref(),
+            Some(
+                "its document names the schema forge-warden.verdict.v4, which this build does not read (it reads forge-warden.verdict.v2 and forge-warden.verdict.v3)"
+            )
+        );
+        later["schema"] = json!(format!("v\u{1b}[31m{}", "y".repeat(500)));
+        let why = not_a_verdict(Some(&later), "pass", 0, SEALED).unwrap();
+        assert!(
+            !why.contains('\u{1b}') && why.chars().count() < 300,
+            "{why}"
+        );
+        // a document with no schema, or no object, is refused as v2 refused it
+        for (document, why) in [
+            (
+                json!({}),
+                "its document is not a whole forge-warden.verdict.v2: it does not name the schema forge-warden.verdict.v2",
+            ),
+            (
+                json!("pass"),
+                "its document is not a whole forge-warden.verdict.v2: it is not a JSON object",
+            ),
+        ] {
+            assert_eq!(
+                not_a_verdict(Some(&document), "pass", 0, SEALED).as_deref(),
+                Some(why)
+            );
+        }
+    }
+
+    /// Point (c) of S3.21: exit 7 is the judge's fail, and a fail holds the stop even when its
+    /// document is no verdict (no document, a schema this build does not read, a document that
+    /// is not whole, not sealed to the inputs or that says another outcome). Nothing else is
+    /// taken from an exit code alone.
+    #[test]
+    fn a_fail_whose_document_is_no_verdict_holds_the_stop_and_nothing_else_does() {
+        let mut later = document_v3("fail");
+        later["schema"] = json!("forge-warden.verdict.v4");
+        let mut torn = document_v3("fail");
+        torn["rules"] = json!([]);
+        let mut unsealed = document_v3("fail");
+        unsealed["seals"]["patch_sha256"] = json!(SEALED.policy);
+        let cases: [(&str, Option<Value>); 5] = [
+            ("no document", None),
+            ("a schema this build does not read", Some(later)),
+            ("a v3 document that is not whole", Some(torn)),
+            ("a v3 document sealed to another patch", Some(unsealed)),
+            ("a pass document", Some(document("pass"))),
+        ];
+        for (what, verdict) in &cases {
+            let Judged::Unjudged { reason } = judged(Some(7), verdict.as_ref(), None, SEALED)
+            else {
+                panic!("{what} was a verdict")
+            };
+            assert_eq!(
+                stop_judged(Some(7), verdict.as_ref(), Some("io: x"), SEALED),
+                Judged::Fail {
+                    rules: Vec::new(),
+                    said: vec![format!(
+                        "exit 7 is the judge's fail, so the stop is held; its verdict could not be read, so which rules failed is not known: {reason}"
+                    )],
+                },
+                "{what}"
+            );
+            for exit in [Some(0), Some(8), Some(3), Some(4), Some(1), None] {
+                let answer = stop_judged(exit, verdict.as_ref(), None, SEALED);
+                assert!(!matches!(answer, Judged::Fail { .. }), "{what} {exit:?}");
+                assert_eq!(answer, judged(exit, verdict.as_ref(), None, SEALED));
+            }
+        }
+        // a verdict is what it was, in either version
+        for (exit, outcome) in [(0, "pass"), (7, "fail"), (8, "hold")] {
+            for whole in [document(outcome), document_v3(outcome)] {
+                assert_eq!(
+                    stop_judged(Some(exit), Some(&whole), None, SEALED),
+                    judged(Some(exit), Some(&whole), None, SEALED)
+                );
+            }
+        }
+        // what is said is bounded
+        let mut hostile = document_v3("fail");
+        hostile["schema"] = json!("y".repeat(5_000));
+        hostile["rules"] = json!([{"id": "x".repeat(5_000)}]);
+        for verdict in [&hostile, &json!({"schema": SCHEMA_PADDED})] {
+            let Judged::Fail { said, .. } = stop_judged(Some(7), Some(verdict), None, SEALED)
+            else {
+                panic!("exit 7 was not a fail")
+            };
+            assert!(said[0].chars().count() <= SAID_CHARS, "{said:?}");
+        }
+        // the stop: held once, with the reason, and then the failure stands
+        let answer = stop_judged(Some(7), None, None, SEALED);
+        let unit = uncommitted(&answer);
+        let StopDecision::Block { reason } =
+            decide_stop_trees(std::slice::from_ref(&unit), &[], "r")
+        else {
+            panic!("an exit 7 with no document did not hold the stop")
+        };
+        assert!(
+            reason.contains("exit 7 is the judge's fail, so the stop is held")
+                && reason.contains("it printed no verdict document that can be read"),
+            "{reason}"
+        );
+        let blocked = uncommitted_failures(std::slice::from_ref(&unit));
+        let StopDecision::Allow {
+            message: Some(message),
+        } = decide_stop_trees(std::slice::from_ref(&unit), &blocked, "r")
+        else {
+            panic!("the same failure held a stop twice")
+        };
+        assert!(
+            message.starts_with("deep-diff-forge: FAIL STANDS. "),
+            "{message}"
+        );
+    }
+
+    /// A schema name of a later forge-warden written long.
+    const SCHEMA_PADDED: &str =
+        "forge-warden.verdict.v4-with-a-name-longer-than-the-sixty-four-characters-a-reason-shows";
 }
