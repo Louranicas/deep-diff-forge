@@ -655,6 +655,7 @@ fn patch_option_rows<'a>(
             "--cursor",
             vec!["--stdin-patch", "--outline", "--cursor", cursor],
         ),
+        ("--allow-empty", vec!["--stdin-patch", "--allow-empty"]),
         ("--allow-repo", vec!["rpc", "--allow-repo", repo]),
         ("--client", vec!["agent", "setup", "--client", "codex"]),
         (

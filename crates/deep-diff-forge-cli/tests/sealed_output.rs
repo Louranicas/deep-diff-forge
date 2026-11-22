@@ -148,7 +148,7 @@ fn seal_hashes_raw_bytes_before_any_normalisation() {
 
 #[test]
 fn empty_input_seal_is_the_empty_string_digest() {
-    let (code, stdout, _) = run_text(&["--stdin-patch", "--json"], "");
+    let (code, stdout, _) = run_text(&["--stdin-patch", "--json", "--allow-empty"], "");
     assert_eq!(code, 0);
     assert_eq!(
         input_sha256(&stdout),
@@ -214,7 +214,7 @@ fn require_files_does_not_mask_a_parse_failure() {
 
 #[test]
 fn without_require_files_empty_input_is_still_exit_zero() {
-    let (code, stdout, _) = run_text(&["--stdin-patch", "--rank", "--json"], "");
+    let (code, stdout, _) = run_text(&["--stdin-patch", "--rank", "--json", "--allow-empty"], "");
     assert_eq!(code, 0);
     assert!(stdout.contains("\"ranked\": []"));
 }

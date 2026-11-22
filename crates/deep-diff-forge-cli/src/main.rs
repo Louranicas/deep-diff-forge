@@ -248,12 +248,24 @@ const REVIEW_VALUED: [&str; 6] = [
     "--max-bytes",
     "--cursor",
 ];
+/// `--stdin-patch`'s flags: the shared ones and Git's `--allow-empty`, admitted nowhere else.
+const STDIN_PATCH_FLAGS: [&str; 9] = [
+    "--json",
+    "--jsonl",
+    "--rank",
+    "--cluster",
+    "--outline",
+    "--hunks",
+    "--require-files",
+    "--require-hunks",
+    "--allow-empty",
+];
 const STDIN_PATCH: args::Spec = args::Spec {
-    flags: &REVIEW_FLAGS,
+    flags: &STDIN_PATCH_FLAGS,
     valued: &REVIEW_VALUED,
     positionals: 0,
 };
-const STDIN_PATCH_USAGE: &str = "deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side | --outline | --hunks [--address A]... [--path P]...] [--max-bytes N] [--cursor C] [--require-files] [--require-hunks]";
+const STDIN_PATCH_USAGE: &str = "deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side | --outline | --hunks [--address A]... [--path P]...] [--max-bytes N] [--cursor C] [--require-files] [--require-hunks] [--allow-empty]";
 const SCHEMA: args::Spec = args::Spec {
     flags: &[],
     valued: &[],
@@ -337,8 +349,8 @@ fn seal_of(input: &[u8]) -> InputSeal {
 /// summary (default).
 ///
 /// Exit codes follow the CLI contract: 2 = usage error, 3 = input read failure,
-/// 4 = patch parse failure, 7 = `--require-files` / `--require-hunks` refused
-/// a patch with nothing to review.
+/// 4 = patch parse failure or no patch in the input, 7 = `--require-files` / `--require-hunks`
+/// refused a patch with nothing to review.
 fn stdin_patch(opts: &[String]) {
     git_input::reject_with_stdin(opts);
     args::admit_or_exit(opts, &STDIN_PATCH, STDIN_PATCH_USAGE);
@@ -346,6 +358,7 @@ fn stdin_patch(opts: &[String]) {
     let bytes = read_capped_bytes_or_exit(std::io::stdin().lock(), "stdin");
     let decoded = deep_diff_forge_patch::decode(&bytes);
     let guards = InputGuards::from_opts(opts);
+    let allow_empty = opts.iter().any(|a| a == "--allow-empty");
     // --jsonl streams one event per file through the real pipeline runner.
     if opts.iter().any(|a| a == "--jsonl") {
         if !decoded.is_exact() {
@@ -353,20 +366,38 @@ fn stdin_patch(opts: &[String]) {
             // the marked files instead.
             let files = parse_decoded_or_exit(&decoded);
             guards.enforce(&files);
+            refuse_no_patch(&files, allow_empty);
             emit(&deep_diff_forge_pipeline::jsonl_events(&files));
             return;
         }
-        if guards.any() {
+        if guards.any() || !allow_empty {
             // The pipeline parses internally; the gate needs the counts
             // before anything is streamed, so pre-flight the parse here.
-            guards.enforce(&parse_or_exit(decoded.text()));
+            let files = parse_or_exit(decoded.text());
+            guards.enforce(&files);
+            refuse_no_patch(&files, allow_empty);
         }
         run_jsonl_pipeline(decoded.text().to_owned());
         return;
     }
 
     let review = sealed_review_or_exit(&bytes, guards);
+    refuse_no_patch(review.files(), allow_empty);
     emit_review(&review, opts);
+}
+
+/// Input in which Git finds no patch (no file section, and nothing refused before: zero bytes,
+/// whitespace, prose, a commit message alone) is refused as `git apply` refuses it ("No valid
+/// patches in input"), with exit 4 and nothing on stdout. 0.9.0 read it as a clean review of
+/// zero files, so a mis-piped diff passed. `--allow-empty`, Git's flag with Git's meaning, says
+/// an empty change is meant (S3.5). After `--require-files`/`--require-hunks`, which keep exit 7.
+fn refuse_no_patch(files: &[deep_diff_forge_core::ReviewFile], allow_empty: bool) {
+    if files.is_empty() && !allow_empty {
+        eprintln!(
+            "error: no_patch_in_input: no patch in the input, as git apply says: No valid patches in input (an empty change is allowed with --allow-empty)"
+        );
+        std::process::exit(exit::INVALID_INPUT);
+    }
 }
 
 /// Validate cross-option contracts before acquiring or reading a patch. A recognized option that
@@ -2073,7 +2104,7 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "--stdin-patch",
-        "deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side | --outline | --hunks [--address A]... [--path P]...] [--max-bytes N] [--cursor C] [--require-files] [--require-hunks]",
+        STDIN_PATCH_USAGE,
         "Review a unified or Git patch read from stdin.",
     ),
     (

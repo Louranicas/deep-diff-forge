@@ -5,7 +5,7 @@
 ## Review a change
 
 ```bash
-deep-diff-forge --stdin-patch [MODE] [--require-files] [--require-hunks]
+deep-diff-forge --stdin-patch [MODE] [--require-files] [--require-hunks] [--allow-empty]
 deep-diff-forge {--git-working-tree [--include-untracked] | --git-staged | --git-range A..B} [--repo PATH] [MODE | --acquisition-json]
 deep-diff-forge [--] <old> <new> [MODE] [--require-files] [--require-hunks]
 # MODE: --json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side
@@ -27,6 +27,7 @@ refused when given twice; only `--address` and `--path` repeat.
 | `--layout inline` / `--layout side-by-side` | Text projections with old and new line numbers, as wide as the file's largest. A `\` note row follows what a row cannot show: a non-UTF-8 line shown lossily, `\ No newline at end of file`, and a removed/added pair whose printed text looks the same (a tab against the spaces it advances to, a literal `\x1b` against a raw `ESC`, a trailing or no-break space, or in side-by-side a change past the column width). Inline prints tabs raw and judges them by 8-column tab stops; side-by-side shows a tab as four spaces. Letters that only look alike (Cyrillic `а` against Latin `a`) are not noted. |
 | `--require-files` | Refuse a patch with 0 files: exit 7, empty stdout, `refused: 0 files in input (--require-files)`. |
 | `--require-hunks` | Refuse a patch with 0 hunks or 0 changed lines (header-only, rename-only, context-only): exit 7, `refused: 0 hunks in input (--require-hunks)`. |
+| `--allow-empty` | `--stdin-patch` only, Git's flag with Git's meaning: input in which Git finds no patch (zero bytes, whitespace, prose, a commit message alone) is an empty change, exit 0 with 0 files. Without it that input is refused as `git apply` refuses it: exit 4, empty stdout, stderr `error: no_patch_in_input: …`. The Git selections on a clean tree and a file pair of identical files still answer 0 files with exit 0. |
 | `--outline` | `deep-diff-forge.review-outline.v0`: files in review-risk order, each hunk's address, ranges, `@@` heading and counts, no line text. |
 | `--hunks [--address A]... [--path P]...` | `deep-diff-forge.review-hunks.v0`: the chosen hunks verbatim (all, by address or by path). A long hunk continues at a line (`complete: false`). |
 | `--max-bytes N` · `--cursor C` | For `--outline` / `--hunks`: the most bytes the answer may take (1 KiB–16 MiB, default 64 KiB), and the `next_cursor` of the previous page. The page prints as one line of JSON, the daemon's page byte for byte. |

@@ -749,6 +749,39 @@ fn a_binary_creation_or_deletion_has_git_s_status() {
     }
 }
 
+/// S3.5 (L1): input with no file section (zero bytes, whitespace, prose, a commit message alone)
+/// is no patch to Git: `git apply` refuses it ("No valid patches in input") unless given
+/// `--allow-empty`. DDF's parser finds no section and refuses nothing; `--stdin-patch` refuses
+/// that answer with exit 4 (`no_patch_in_input`) unless given `--allow-empty` (the CLI test
+/// `empty_and_prose_input_is_refused_as_git_refuses_it`).
+#[test]
+fn row_no_patch_in_input() {
+    let r = rig("no-patch");
+    for input in [
+        "",
+        " \n\t\n",
+        "hello\n",
+        "Subject: [PATCH] x\n\nOnly the message.\n---\n",
+    ] {
+        let s = see(&r, input);
+        assert!(s.reading.is_none(), "Git reads a patch in {input:?}");
+        let name = ".git/probe.patch";
+        let allowed = r.git(&["apply", "--check", "--allow-empty", name]);
+        assert!(allowed.status.success(), "{input:?}");
+        assert_eq!(s.read().len(), 0, "DDF reads a file in {input:?}");
+    }
+}
+
+/// S3.5 (L3): a nameless `diff --git` header alone is no patch to Git, and DDF refuses it.
+#[test]
+fn a_nameless_diff_git_header_alone_is_refused() {
+    let r = rig("nameless");
+    let s = see(&r, "diff --git a/x b/y\n");
+    assert!(s.reading.is_none(), "{:?}", s.reading);
+    s.git_writes_nothing();
+    s.refused(|e| matches!(e, PatchParseError::SectionWithoutPatch { .. }));
+}
+
 #[test]
 fn row_no_line_feed() {
     let r = rig("no-line-feed");
