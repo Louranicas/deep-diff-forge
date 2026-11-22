@@ -1,0 +1,9 @@
+pub fn real() -> u32 {
+    7
+}
+
+#[cfg(test)]
+mod tests {
+    fn helper() -> u32 { vec![load().unwrap()][0] } // x.unwrap()
+    /* a */ fn other() { Result::unwrap(load()); } /* b.expect(1) */
+}

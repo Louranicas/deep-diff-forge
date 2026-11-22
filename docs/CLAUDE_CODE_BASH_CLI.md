@@ -125,8 +125,8 @@ deep-diff-forge daemon status --json
 
 The shipped codes are one registry in the binary
 (`crates/deep-diff-forge-core/src/exit.rs`), printed by
-`deep-diff-forge schema exit-codes` and documented in the README's
-[Exit codes](../README.md#exit-codes).
+`deep-diff-forge schema exit-codes` and documented in
+[Exit codes](reference/output-and-exit-codes.md#exit-codes).
 
 | Code | Name | Meaning | Next |
 | --- | --- | --- | --- |

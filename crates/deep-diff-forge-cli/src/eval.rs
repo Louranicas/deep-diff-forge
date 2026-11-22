@@ -561,7 +561,7 @@ pub fn run(dir: &Path) -> Result<Value, EvalError> {
 
 #[cfg(test)]
 mod tests {
-    /// The limits the CHANGELOG and the refusal messages name.
+    /// The limits docs/release-notes/0.7.0.md and the refusal messages name.
     #[test]
     fn the_corpus_limits_are_8_mib_a_file_and_64_mib_in_all() {
         assert_eq!(FILE_BYTES, 8 << 20);

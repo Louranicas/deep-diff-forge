@@ -1138,13 +1138,18 @@ fn ranked_json(ranked: &[RankedFile]) -> Value {
                         .evidence
                         .iter()
                         .map(|e| {
-                            json!({
+                            let mut item = json!({
                                 "signal": e.signal.label(),
                                 "address": e.address,
                                 "side": e.side.label(),
                                 "line": e.line,
-                                "basis": deep_diff_forge_graph::EVIDENCE_BASIS,
-                            })
+                                "basis": e.basis.label(),
+                            });
+                            // Present only when true, as `evidence_truncated` is.
+                            if e.test_likely {
+                                item["test_likely"] = json!(true);
+                            }
+                            item
                         })
                         .collect();
                 }
@@ -1798,12 +1803,13 @@ mod tests {
         assert_eq!(v["methods"].as_array().unwrap().len(), METHODS.len());
     }
 
-    /// The README names every method the daemon implements, in `engine.methods` order, and the
+    /// The daemon reference (`docs/reference/mcp-sdk-daemon.md`, once the README's daemon
+    /// section) names every method the daemon implements, in `engine.methods` order, and the
     /// protocol `daemon.health` reports. Before, it omitted `engine.methods` and `diff.compute`
     /// and showed protocol 0.
     #[test]
-    fn the_readme_lists_the_methods_and_protocol() {
-        let readme = include_str!("../../../README.md");
+    fn the_daemon_reference_lists_the_methods_and_protocol() {
+        let readme = include_str!("../../../docs/reference/mcp-sdk-daemon.md");
         let start = readme.find("**JSON-RPC methods**").unwrap();
         let paragraph = &readme[start..start + readme[start..].find("\n\n").unwrap()];
         let names: Vec<String> = paragraph
@@ -1947,7 +1953,7 @@ mod tests {
                 "refused: 0 files in input (--require-files)"
             )
         );
-        let header = call(r#"{"method":"diff.compute","params":{"patch":"diff --git a/x b/x\nindex 1..2 100644\n","require_hunks":true}}"#, &e).unwrap_err();
+        let header = call(r#"{"method":"diff.compute","params":{"patch":"diff --git a/x b/x\nold mode 100644\nnew mode 100755\n","require_hunks":true}}"#, &e).unwrap_err();
         assert_eq!(
             (header.code, header.message.as_str()),
             (

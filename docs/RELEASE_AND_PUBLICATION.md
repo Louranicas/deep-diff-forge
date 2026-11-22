@@ -2,9 +2,20 @@
 
 This document defines how Deep-Diff-Forge moves from commit to public artifact.
 
-## Status 2026-11-11 (0.8.3 released)
+## Status 2026-11-18 (0.9.0 prepared)
 
-- **0.8.3 is released** as the signed tag `v0.8.3` (2026-11-11 UTC), the latest tag: a security release for v0.8.2's review of bare `diff --git` lines
+- **0.9.0** adds five integrity signals and the agent hooks, and fixes a process spawn cut
+  across two sections of one path and two costs quadratic in the length of a line, in 0.8.4
+  and earlier ([DDF-2026-003](advisories/DDF-2026-003.md)). It is a release once the signed tag
+  `v0.9.0` exists; pushing that tag is the owner's decision. It is not built by `release.yml`
+  and has no GitHub release: once tagged it is published as a signed tag on GitLab, Gitea and
+  Forgejo; binaries built locally for Linux x86_64.
+- **0.8.4 was released** as the signed tag `v0.8.4` (2026-11-17), the last tag before 0.9.0, and
+  published on GitLab, Gitea and Forgejo on 2026-11-18 (`SHA256SUMS` signed by the owner; the
+  local verify passed): a security release for v0.8.3's review of `Files … differ` lines and of
+  one path in several sections (rescore of v0.8.3, G1 and G2), with the fix for Rust code the
+  code view hid. It has no GitHub release.
+- **0.8.3 was released** as the signed tag `v0.8.3` (2026-11-11 UTC), the last tag before 0.8.4: a security release for v0.8.2's review of bare `diff --git` lines
   and of modes (rescore of v0.8.2, GHSA-rq5r-p3g9-phff), with three dependency updates, one of
   which the supply chain gate needs (rustix 1.1.6, RUSTSEC-2026-0486). Its assets and tag
   cannot change (Immutable Releases); pushing any later `v*` tag is the owner's decision.
@@ -22,9 +33,10 @@ This document defines how Deep-Diff-Forge moves from commit to public artifact.
   with `gh api .../environments`). Only the crates.io `publish` job runs in it,
   so a tag run builds, attests and uploads without waiting, and a publish waits
   for the owner even with the gate open.
-- `deep-diff-forge deploy release` reports this posture as a declared snapshot:
-  `github` and `gitlab` published, `github-release` and `crates.io` blocked
-  (a build cannot know whether its own version was tagged).
+- `deep-diff-forge deploy release` reports the posture as a declared snapshot. From 0.8.4:
+  `gitlab`, `gitea` and `forgejo` published, `github` and `github-release` skipped (nothing
+  goes to GitHub; a skipped target is not pending), `crates.io` blocked. Up to 0.8.3 it said
+  `github` and `gitlab` published and `github-release` and `crates.io` blocked.
 - The workflows are described below exactly as `.github/workflows/ci.yml` and
   `.github/workflows/release.yml` define them.
 
@@ -32,9 +44,9 @@ This document defines how Deep-Diff-Forge moves from commit to public artifact.
 
 | Channel | Purpose | Today |
 | --- | --- | --- |
-| `main` | Current development branch. | 0.8.3, reached only through pull requests (branch ruleset). |
+| `main` | Current development branch. | 0.9.0 (from 0.8.4 merged without GitHub); up to 0.8.3 it was reached only through pull requests (branch ruleset). |
 | GitHub Releases | Primary binary release and project visibility. | `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`, `v0.8.0`, `v0.8.1`, `v0.8.2`, `v0.8.3`. |
-| GitLab mirror | Secondary remote and redundancy. | Pushed to match GitHub. |
+| GitLab mirror | Secondary remote and redundancy; from 0.8.4 the repository of record. | Up to 0.8.3 pushed to match GitHub; 0.8.4's signed tag and release files are published here ([local release](#local-release-from-084)). |
 | crates.io | Rust library and CLI distribution. | On hold (`DDF_CRATES_IO`). |
 | cargo-binstall | Fast binary installation. | Not configured (no binstall metadata in any `Cargo.toml`). |
 | package managers | Later, after CLI stabilizes. | None. |
@@ -44,7 +56,7 @@ This document defines how Deep-Diff-Forge moves from commit to public artifact.
 Semantic versioning. The plan below is the original 2026-06 sequence, kept as
 written; the releases did not follow it (`v0.2.0` already held 12 crates,
 including the TUI, daemon and learning crates; the review and SDK crates came
-later; 0.8.3 is the current development line):
+later; 0.9.0 is the current development line):
 
 ```text
 0.1.0: model and CLI bootstrap
@@ -79,8 +91,10 @@ rustup default. Run `scripts/diff_mutation.sh` from anywhere in the checkout: it
 - [ ] `DDF_SOAK_SECONDS=10 python3 scripts/security/daemon_soak.py`
 - [ ] `python3 scripts/security/privacy_probe.py`
 - [ ] Regenerated `sbom.spdx.json` matches the committed dependency graph
-- [ ] A `workflow_dispatch` run of `release.yml` on the release commit passes
-      (the dry run; it runs the macOS tests too, as the tag run does)
+- [ ] Up to 0.8.3: a `workflow_dispatch` run of `release.yml` on the release commit passes
+      (the dry run; it runs the macOS tests too, as the tag run does). From 0.8.4:
+      `scripts/test_release_local.sh` passes and `scripts/release_local.sh build` succeeds on
+      the release commit ([Local release](#local-release-from-084))
 - [ ] The version moved everywhere it is stated: workspace and fuzz manifests, both lock
       files, the SBOM, and the Python package (`sdk/python/pyproject.toml` and
       `deep_diff_forge.__version__`; `cli/tests/python_sdk.rs` fails if they differ)
@@ -92,22 +106,51 @@ checklist; neither has tooling yet.
 
 ## Tag And Push
 
-`main` reaches GitHub only through a merged pull request: the branch ruleset
+Up to 0.8.3, `main` reached GitHub only through a merged pull request: the branch ruleset
 requires a PR, thirteen passing checks (the PR-time jobs of `ci.yml` and the two
 CodeQL analyses of `codeql.yml`), an
-up-to-date branch, and allows no bypass. The tag is cut from that commit with
-the `justfile` recipe:
+up-to-date branch, and allows no bypass. From 0.8.4 nothing runs at GitHub: `main` moves on
+GitLab, and the release commit passes `scripts/ci_local.sh` instead. The tag is cut with the
+`justfile` recipe, on the `HEAD` of the worktree it runs in, under the procedure below:
 
 ```bash
-just release-tag 0.8.3
+just release-tag 0.8.4
 ```
 
 `release-tag` refuses a version that differs from `[workspace.package].version`
-or a dirty tree, runs `just gate-release`, creates a signed annotated tag `vX.Y.Z`
-(see [Signed Tags](#signed-tags)), and pushes it to the remotes named `origin`
-(GitHub) and `gitlab`. The tag push
-starts `release.yml`. crates.io publishes only when `DDF_CRATES_IO == 'open'`
-(see below).
+or a status-visible change (`git status --porcelain` prints anything, checked before the gate
+and again after it: a tracked change, or an untracked file Git does not ignore, such as a stray
+`build.rs` Cargo would compile), and refuses unless the remotes named `gitlab`, `gitea` and `forgejo` all
+exist and none of their fetch or push URLs contains `github.com` (in any case), before the gate
+and before signing. It then runs `just gate-release`, creates a signed annotated tag `vX.Y.Z`
+(see [Signed Tags](#signed-tags)), and pushes it to those three remotes only, never `origin`
+(GitHub). Up to 0.8.3 the recipe pushed to `origin` and `gitlab`, and the tag push started
+`release.yml`; from 0.8.4 the tag starts nothing, and the release is built and checked as in
+[Local release](#local-release-from-084). crates.io stays on hold.
+
+What the recipe does not check (reviews of 0.8.4, VR84C-M-1 and VR84C-M-2):
+
+- **Ignored files.** `git status --porcelain` does not list a file that `.gitignore`,
+  `.git/info/exclude` or a global excludes file ignores, nor an untracked file when
+  `status.showUntrackedFiles=no` is set; Cargo compiles an ignored package-root `build.rs` all
+  the same, so the gate could run on an input the commit does not hold.
+- **`HEAD`.** The recipe tags the `HEAD` current when it signs and does not compare it with the
+  `HEAD` at the start. A commit made in the worktree while the gate runs leaves a clean status,
+  and the tag then names a commit the gate did not run on. The status checks do not prove that
+  the tag names the gated commit.
+
+So the release relies on this procedure: the tag is cut in a dedicated release worktree,
+freshly cloned, used by nobody else and under the release operator's exclusive control, with no
+ignored or untracked files before the recipe starts (`git status --porcelain --ignored
+--untracked-files=all` prints nothing; without `--untracked-files=all`, a
+`status.showUntrackedFiles=no` setting hides ignored files from this check too) and a stable
+`HEAD` for the whole recipe. The owner's release script, outside this repository, first runs
+`scripts/ci_local.sh` in a second fresh clone of the same commit. It then runs the recipe
+unchanged in the release clone, with the push URLs of the three remotes pointed at local
+staging repositories. It pushes the signed tag to GitLab, Gitea and Forgejo only if `HEAD` is
+still the commit it started from, the tag names that commit, and the tag verifies. The recipe
+alone signs and pushes in one step: run without that script, a wrong tag would only be found
+after it was pushed.
 
 ## Signed Tags
 
@@ -146,14 +189,99 @@ git -c gpg.ssh.allowedSignersFile=.github/allowed_signers tag -v v0.8.3
 ```
 
 Rotating the key means adding the new public key to `.github/allowed_signers`
-in a reviewed PR before the first tag it signs. Old lines stay, so older tags
+(and, from 0.8.4, to `.github/release_allowed_signers`) in a reviewed change before the first
+tag it signs. Old lines stay, so older tags
 keep verifying. Whether GitHub and GitLab show the tag as "Verified" depends on
 the key also being registered as a signing key on each account; the
 `allowed_signers` check above does not.
 
+## Local release (from 0.8.4)
+
+0.8.4 is built and published without GitHub (owner decision 2026-11-16); `release.yml` is not
+used for releases from 0.8.4. `scripts/release_local.sh` runs its build and check steps on the
+owner's machine. It publishes, pushes, tags and signs nothing, and contacts no network service:
+cargo runs offline (`cargo fetch --locked` once beforehand, outside the tool), and git reads only
+the local repository. Its self-test is `scripts/test_release_local.sh` (`just release-local-test`).
+
+- **Build.** In the `fedora-toolbox-44` toolbox, with the toolchain that `scripts/ci_local.sh`
+  pins at the commit (Rust 1.99.1):
+
+  ```bash
+  scripts/release_local.sh build <commit> <outdir>     # just release-local-build <commit> <outdir>
+  ```
+
+  It exports the commit twice with `git archive`, into two new directories, builds each with
+  `release.yml`'s exact command, `cargo build --release --locked -p deep-diff-forge-cli --target
+  x86_64-unknown-linux-gnu`, in an environment holding only `HOME`, `PATH`, `TMPDIR`,
+  `CARGO_HOME`, `RUSTUP_HOME`, the toolchain pin and offline mode, and stops, writing nothing,
+  unless the two binaries have the same SHA-256. It then runs `release.yml`'s smoke
+  (`--version` and a review document) and `scripts/check_glibc_floor.sh` (glibc 2.34), writes the
+  SBOM, packs the archive with `scripts/package_release.py` (`SOURCE_DATE_EPOCH` = the commit
+  time), and writes into `<outdir>`, which must not exist: the archive, its `.sha256`,
+  `sbom.spdx.json`, `release-receipt.json` (commit, toolchain, both build hashes, every file's
+  SHA-256) and `SHA256SUMS` over all of them. A `<commit>` that is a tag must be
+  `v<workspace version>`.
+- **Sign.** The owner signs `SHA256SUMS` with the release key, in a namespace used for nothing
+  else (a signature in namespace `git` is one git accepts on a tag or commit):
+
+  ```bash
+  ssh-keygen -Y sign -f ~/.ssh/id_ed25519_ddf_release_signing -n deep-diff-forge-release-sha256sums <outdir>/SHA256SUMS
+  ```
+
+- **Publish.** The signed tag goes to GitLab (`https://gitlab.com/lukeomahoney/deep-diff-forge`),
+  Gitea and Forgejo through `just release-tag`; the archive and the other files of `<outdir>`,
+  with `SHA256SUMS.sig`, are attached to the tag's release on GitLab. These are the owner's
+  steps.
+- **Verify.** From a clone that has the tag and `gitlab/main` (fetch them first; the tool uses no
+  remote):
+
+  ```bash
+  scripts/release_local.sh verify v0.8.4 <dir> .github/release_allowed_signers
+  just release-local-verify v0.8.4 <dir> .github/release_allowed_signers
+  ```
+
+  It passes only if (1) `scripts/verify_release_tag.sh` accepts the tag against the signers
+  file, its commit is on `gitlab/main` and the tag is `v<workspace version>`; (2) `SHA256SUMS`
+  lists exactly the files of `<dir>`, each matches, and `SHA256SUMS.sig` verifies against the
+  signers file in namespace `deep-diff-forge-release-sha256sums`; (3) the archive's members are
+  exactly the five it packs (the directory, `LICENSE-APACHE`, `LICENSE-MIT`, `README.md` and the
+  binary), and a fresh build of the tag's commit gives the binary of the receipt and of the
+  archive. One file serves checks 1 and 2, so
+  `.github/release_allowed_signers` holds the release key, the principal and key of
+  `.github/allowed_signers`, for both namespaces, `git` and `deep-diff-forge-release-sha256sums`.
+  `.github/allowed_signers` stays `git` only: `just release-tag` and `release.yml` read it, and
+  `repo_scripts.rs` requires that form of each of its lines. Rotating the key means changing
+  both files in one commit.
+
+- **Targets.** Only `x86_64-unknown-linux-gnu` is built: the build machine has no
+  `aarch64-unknown-linux-gnu` Rust target or cross linker, and there is no macOS runner. The
+  `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin` and `aarch64-apple-darwin` binaries of
+  v0.8.3 remain on its GitHub release; none is built for 0.8.4.
+- **Reproducibility.** The binary does not depend on the checkout path: the two builds of every
+  `build` run are made at two different paths and must be equal (measured; see
+  [EVIDENCE.md](../EVIDENCE.md)). The binary holds the registry source path under `CARGO_HOME`,
+  so a rebuild gives the same SHA-256 only with the same toolchain and the same `CARGO_HOME`
+  path (both are in the receipt). That second half is inferred from the strings in the binary,
+  not measured.
+- **What it does not give.** No build-provenance attestation, no CI run on the release commit
+  (the local gate `scripts/ci_local.sh` instead), and no binary for the other three targets.
+- **Known limits of releasing without GitHub (0.8.4; reviews of 0.8.4).**
+  - The GitLab project is private: on 2026-11-16 its API answered an anonymous request with 404. Until
+    the owner makes it public, its clone URL, the release files and the issue routes (ordinary
+    and confidential) are closed to the public.
+  - The binary holds the build account's `CARGO_HOME` path (`~/.cargo` of that account, so the
+    account's name). A third party's `verify` passes check 3 only when it rebuilds at that path
+    with the receipt's toolchain. `--remap-path-prefix` is parked for a later release.
+  - `cargo deny` and `cargo audit` in `scripts/ci_local.sh` fetch the RustSec advisory database
+    from github.com: a read that bills nothing, but the gate needs github.com reachable.
+  - The edits to `.github/ISSUE_TEMPLATE` are inert: GitHub reads them from its `main`, which
+    stays at 0.8.3, and GitLab does not read them.
+  - The README's "Latest release" badge reads GitLab's releases. The README shipped in the
+    0.9.0 archive still carries GitHub's badge, which shows v0.8.3.
+
 ## Artifact Layout
 
-Release assets uploaded on a tag run:
+Release assets uploaded on a tag run (to v0.8.3; for 0.8.4 see [Local release](#local-release-from-084)):
 
 ```text
 deep-diff-forge-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz
@@ -223,7 +351,8 @@ of them, all but `linux-arm64` and `launchd`, are required by ruleset 25868121 (
 
 ### `release.yml`
 
-Triggers: `push` of a `v*` tag, and `workflow_dispatch` (dry run). Default
+Not used for releases from 0.8.4 ([Local release](#local-release-from-084)); described as it
+ran up to v0.8.3. Triggers: `push` of a `v*` tag, and `workflow_dispatch` (dry run). Default
 permission `contents: read`; only `release` elevates, and it compiles and runs nothing.
 
 | Job | Runner | What it does |
@@ -240,7 +369,7 @@ ubuntu-22.04-arm): they link against the build image's glibc, and a 26.04 build 
 PR #79), hence the older arm64 image. Their
 declared floor is glibc 2.34 (measured on the v0.5.0 x86_64 binary; on glibc 2.34 to 2.38 the
 loader prints one stderr warning per run, see
-[supported platforms](../README.md#supported-platforms)). musl is not built: the tree-sitter C
+[supported platforms](reference/supported-platforms.md)). musl is not built: the tree-sitter C
 code needs a musl C toolchain and nothing would test the result.
 
 ```mermaid
@@ -285,7 +414,9 @@ reports/releases/vX.Y.Z/
 
 ## Mirror Policy
 
-GitHub is the primary remote:
+From 0.8.4 nothing is pushed to GitHub: GitLab is the repository of record, with mirrors on
+Gitea and Forgejo, and GitHub keeps `main` and the tags as they were after v0.8.3. Up to 0.8.3,
+GitHub was the primary remote:
 
 ```text
 https://github.com/Louranicas/deep-diff-forge

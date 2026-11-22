@@ -1,0 +1,3 @@
+#[cfg(test)]
+fn t() { a().unwrap(); } pub fn production() -> u32 { Result::unwrap(crate::b()) }
+pub fn production2() -> u32 { vec![crate::b().unwrap()][0] } #[cfg(test)] fn t2() { a().unwrap(); }

@@ -43,7 +43,8 @@ shipped command that does the job today.
 
 `council` subcommands use their own family (0 completed, 4 refused, 7 hold).
 `deep-diff-forge explain <code> [--family engine|council] [--json]` names one
-code.
+code. `deep-diff-forge explain signal <label> [--json]` explains one signal of a
+ranking instead (`deep-diff-forge schema signals` lists them).
 
 ## Stable Bootstrap Contract
 
@@ -78,7 +79,7 @@ git diff | deep-diff-forge --stdin-patch --rank --json --require-files --require
 | Guard | Refuses when | stderr line |
 | --- | --- | --- |
 | `--require-files` | the well-formed patch describes 0 files (empty or mis-piped input) | `refused: 0 files in input (--require-files)` |
-| `--require-hunks` | the patch has 0 hunks or 0 added+removed lines across all files (header-only `diff --git a/x b/x`, rename-only, context-only hunks) | `refused: 0 hunks in input (--require-hunks)` |
+| `--require-hunks` | the patch has 0 hunks or 0 added+removed lines across all files (a mode-only or rename-only change, an empty file created or deleted, a binary change; a section with an `index` line alone, or a hunk of context lines alone, is refused at parse with exit 4) | `refused: 0 hunks in input (--require-hunks)` |
 
 Rules:
 
@@ -141,8 +142,8 @@ Rules:
 
 Measured on 0.3.0 for a one-line change. Since 0.4.0 each hunk also carries `old_lines`,
 `new_lines`, `section`, `address` and `body_sha256`, and a file or line with hidden or
-traversing text a `hazards` list (additive, still `review.v0`; see the README's
-[output formats](../README.md#output-formats-and-schemas)):
+traversing text a `hazards` list (additive, still `review.v0`; see the
+[output formats](reference/output-and-exit-codes.md#output-formats-and-schemas)):
 
 ```json
 {

@@ -87,6 +87,31 @@ fn code_evidence_outranks_path_and_size() {
     assert!(ranked[1].get("evidence").is_none() && ranked[2].get("evidence").is_none());
 }
 
+/// A panic path under a test attribute is still reported, at the same score, with `test_likely`
+/// beside it; an item without the hint has no such member.
+#[test]
+fn a_panic_path_under_a_test_attribute_says_so() {
+    let patch = "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,1 +1,8 @@\n x\n+#[test]\n+fn a() {\n+    f().unwrap();\n+}\n+fn real() {\n+    g().unwrap();\n+}\n";
+    let rank: Value =
+        serde_json::from_str(&run(patch, &["--stdin-patch", "--rank", "--json"])).unwrap();
+    let items = rank["ranked"][0]["evidence"].as_array().unwrap();
+    assert_eq!(items.len(), 2, "{rank}");
+    assert_eq!(
+        (
+            items[0]["signal"].as_str(),
+            items[0]["line"].as_u64(),
+            items[0]["test_likely"].as_bool()
+        ),
+        (Some("panic_path_added"), Some(4), Some(true))
+    );
+    assert_eq!(items[1]["line"], 7);
+    assert!(items[1].get("test_likely").is_none(), "{rank}");
+    assert_eq!(
+        rank["ranked"][0]["signals"],
+        serde_json::json!(["panic_path_added"])
+    );
+}
+
 /// The address an evidence item names is the hunk the outline lists, and that hunk carries the
 /// same labels.
 #[test]
@@ -124,6 +149,40 @@ fn rank_and_outline_are_byte_stable() {
 }
 
 /// Evidence is capped per file in the document, while the score still counts what was found.
+/// The printed list at the bound holds what 0.8.3 printed: a fetch on line 1 that only the
+/// second reading of Rust finds (it stands behind a nested block comment), then 32 process
+/// spawns. The published v0.8.3 binary lists the spawns on lines 2 to 33 and scores 8. The list
+/// here is the same 32 items; the fetch is in the signals and the score, and
+/// `evidence_truncated` says the list is not all there is.
+#[test]
+fn the_capped_list_holds_the_items_0_8_3_listed() {
+    let spawns = (1..=32).fold(String::new(), |mut body, i| {
+        let _ = writeln!(body, "+std::process::Command::new(\"sh\"); // {i:02}");
+        body
+    });
+    let patch = format!(
+        "diff --git a/src/cap.rs b/src/cap.rs\nnew file mode 100644\n--- /dev/null\n+++ b/src/cap.rs\n\
+         @@ -0,0 +1,33 @@\n+/* /* */ // */ let _ = reqwest::blocking::get(u);\n{spawns}"
+    );
+    let rank: Value =
+        serde_json::from_str(&run(&patch, &["--stdin-patch", "--rank", "--json"])).unwrap();
+    let file = &rank["ranked"][0];
+    let listed: Vec<(&str, u64)> = file["evidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| (e["signal"].as_str().unwrap(), e["line"].as_u64().unwrap()))
+        .collect();
+    let spawns: Vec<(&str, u64)> = (2..=33).map(|line| ("process_spawn", line)).collect();
+    assert_eq!(listed, spawns);
+    assert_eq!(file["evidence_truncated"], true);
+    assert_eq!(
+        file["signals"],
+        serde_json::json!(["new_file", "process_spawn", "network_fetch"])
+    );
+    assert_eq!(file["score"], 11);
+}
+
 #[test]
 fn evidence_is_capped_and_says_so() {
     let body = (0..40).fold(String::new(), |mut body, i| {

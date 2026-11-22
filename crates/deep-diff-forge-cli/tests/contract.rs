@@ -10,7 +10,20 @@ use std::process::{Command, Stdio};
 const PATCH: &str = "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new\n";
 
 fn run(args: &[&str], stdin: &str) -> (i32, String, String) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"));
+    // The agent hooks and the gate keep a session's state in the user's state directory. A test
+    // must never write there: these runs get a home of their own, and no project is named to
+    // them. (Found 2026-11-14: `every_documented_option_is_admitted` ran three stop hooks and the
+    // gate with the developer's own `HOME` and left `~/.local/state/deep-diff-forge/hooks`.)
+    if args.first() == Some(&"agent") {
+        let home = std::env::temp_dir().join(format!("ddf-contract-home-{}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        command
+            .env("HOME", &home)
+            .env_remove("XDG_STATE_HOME")
+            .env_remove("CLAUDE_PROJECT_DIR");
+    }
+    let mut child = command
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -115,12 +128,104 @@ fn explain_and_schema_answer_from_the_registry() {
     assert_eq!(schema["properties"]["schema"]["const"], "ddf.result.v1");
 }
 
-/// The README's exit-code tables and the binary's registry name the same codes, and each README
-/// row begins with the registry's meaning.
 #[test]
-fn readme_exit_code_tables_match_the_registry() {
-    let readme =
-        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md")).unwrap();
+fn schema_signals_and_explain_signal_answer_from_the_vocabulary() {
+    let (code, stdout, _) = run(&["schema", "signals"], "");
+    assert_eq!(code, 0);
+    let doc: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(doc["schema"], "deep-diff-forge.signals.v0");
+    // 21 labels, and the five integrity labels since the merge with them
+    assert_eq!(doc["signals"].as_array().unwrap().len(), 26);
+    let (code, stdout, _) = run(&["explain", "signal", "test_removed"], "");
+    assert_eq!(code, 0);
+    assert!(
+        stdout.starts_with("test_removed (integrity, direct, weight 3): "),
+        "{stdout}"
+    );
+    let (code, stdout, _) = run(&["explain", "signal", "test_removed", "--json"], "");
+    assert_eq!(code, 0);
+    let doc: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(doc["schema"], "deep-diff-forge.signal-explain.v0");
+    let (code, stdout, stderr) = run(&["explain", "signal", "no_such_signal"], "");
+    assert_eq!((code, stdout.as_str()), (2, ""));
+    assert!(
+        stderr.contains("unknown signal: no_such_signal"),
+        "{stderr}"
+    );
+    let (code, _, stderr) = run(&["schema", "other"], "");
+    assert_eq!(code, 2);
+    assert!(stderr.contains("(result|exit-codes|signals)"), "{stderr}");
+}
+
+/// The two signal tables of `docs/reference/risk-ranking.md` (once the README's "Risk ranking")
+/// name every label of the vocabulary, and each row's score is the weight the scorer uses: one
+/// source of truth, and the document is held to it.
+#[test]
+fn risk_ranking_signal_tables_match_the_vocabulary() {
+    let readme = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/reference/risk-ranking.md"
+    ))
+    .unwrap();
+    let start = readme.find("| Signal | When | Score |").unwrap();
+    let section = &readme[start..];
+    let section = &section[..section.find("\nLanguages come from the extension").unwrap()];
+    let (code, stdout, _) = run(&["schema", "signals"], "");
+    assert_eq!(code, 0);
+    let doc: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let weights: std::collections::BTreeMap<&str, u64> = doc["signals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| (s["label"].as_str().unwrap(), s["weight"].as_u64().unwrap()))
+        .collect();
+    let mut seen = std::collections::BTreeSet::new();
+    for row in section.lines().filter(|l| l.starts_with("| `")) {
+        let row = row.trim().trim_start_matches("| ").trim_end_matches(" |");
+        let first = row.split(" | ").next().unwrap();
+        let last = row.rsplit(" | ").next().unwrap();
+        let labels: Vec<&str> = first
+            .split('`')
+            .skip(1)
+            .step_by(2)
+            .filter(|word| weights.contains_key(word))
+            .collect();
+        assert!(!labels.is_empty(), "no known label in {first:?}");
+        // A row of one signal has one score cell, whatever it says: a signal that adds nothing
+        // explains itself there in words.
+        let scores: Vec<&str> = if labels.len() == 1 {
+            vec![last]
+        } else {
+            last.split('\u{b7}').map(str::trim).collect()
+        };
+        assert_eq!(labels.len(), scores.len(), "{row}");
+        for (label, score) in labels.iter().zip(&scores) {
+            let weight = weights[label];
+            if weight == 0 {
+                assert!(!score.starts_with('+'), "{label}: {score}");
+            } else {
+                assert_eq!(*score, format!("+{weight}"), "{label}");
+            }
+            assert!(seen.insert(*label), "{label} is in two rows");
+        }
+    }
+    let all: std::collections::BTreeSet<&str> = weights.keys().copied().collect();
+    assert_eq!(
+        seen, all,
+        "the tables of docs/reference/risk-ranking.md and the vocabulary differ"
+    );
+}
+
+/// The exit-code tables of `docs/reference/output-and-exit-codes.md` (once the README's "Exit
+/// codes") and the binary's registry name the same codes, and each row begins with the
+/// registry's meaning.
+#[test]
+fn exit_code_tables_match_the_registry() {
+    let readme = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/reference/output-and-exit-codes.md"
+    ))
+    .unwrap();
     let section = &readme[readme.find("## Exit codes").unwrap()..];
     let section = &section[..section.find("\n## ").unwrap()];
     let (code, stdout, _) = run(&["schema", "exit-codes"], "");
@@ -167,7 +272,7 @@ fn readme_exit_code_tables_match_the_registry() {
             );
             assert!(
                 section.contains(&format!("- `{}`: ", row.2)),
-                "the README does not explain the action {}",
+                "docs/reference/output-and-exit-codes.md does not explain the action {}",
                 row.2
             );
         }
@@ -546,6 +651,35 @@ fn patch_option_rows<'a>(
         ),
         ("--allow-repo", vec!["rpc", "--allow-repo", repo]),
         ("--client", vec!["agent", "setup", "--client", "codex"]),
+        (
+            "--hooks",
+            vec!["agent", "setup", "--client", "claude", "--hooks"],
+        ),
+        ("--gate", vec!["agent", "doctor", "--gate"]),
+        (
+            "--judge",
+            vec![
+                "agent", "hook", "stop", "--client", "claude", "--judge", "x",
+            ],
+        ),
+        (
+            "--policy",
+            vec![
+                "agent", "hook", "stop", "--client", "claude", "--policy", "x",
+            ],
+        ),
+        (
+            "--ranker-dir",
+            vec![
+                "agent",
+                "hook",
+                "stop",
+                "--client",
+                "claude",
+                "--ranker-dir",
+                "x",
+            ],
+        ),
         ("--jsonl", vec!["--stdin-patch", "--jsonl"]),
         ("--rank", vec!["--stdin-patch", "--rank"]),
         ("--cluster", vec!["--stdin-patch", "--cluster"]),
@@ -848,4 +982,241 @@ fn envelope_exits_128_plus_the_signal_that_ended_the_command() {
         "{v}"
     );
     assert_eq!(out.status.code(), Some(128 + 15));
+}
+
+/// The front page stays short and the documents it hands over stay linked (the landing tidy of
+/// 2026-11-18): `README.md` is under 400 lines and links both indexes; every relative link, inline
+/// or reference-style, in `README.md`, `CHANGELOG.md`, `docs/release-notes/*.md` and
+/// `docs/reference/*.md` stays inside the repository, names a file that exists and, with a
+/// fragment, a heading of that file; every document in the two directories but their
+/// `README.md` indexes is linked from `README.md`, `CHANGELOG.md` or an index; and the version
+/// headings of the changelog and the files of `docs/release-notes/` but its index correspond
+/// both ways, each file non-empty and beginning with a line that names its version as a whole
+/// word. It does not check external URLs, or whether a host renders an anchor differently from
+/// the rule of `headings`; and it takes a link inside an HTML comment, or a reference definition
+/// nothing uses, for a link.
+#[test]
+fn the_front_page_stays_short_and_its_documents_stay_linked() {
+    use std::path::{Path, PathBuf};
+    // Fragments no heading defines: `#top` is the top of any page.
+    const NO_HEADING: [&str; 1] = ["top"];
+    let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+        .canonicalize()
+        .unwrap();
+    let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
+    let lines = readme.lines().count();
+    assert!(lines < 400, "README.md has {lines} lines");
+    let mut files = vec![root.join("README.md"), root.join("CHANGELOG.md")];
+    for dir in ["docs/release-notes", "docs/reference"] {
+        let mut listed: Vec<PathBuf> = std::fs::read_dir(root.join(dir))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
+            .collect();
+        listed.sort();
+        assert!(!listed.is_empty(), "{dir} has no documents");
+        files.extend(listed);
+    }
+    let mut anchors = std::collections::BTreeMap::new();
+    let mut from_readme = std::collections::BTreeSet::new();
+    let mut from_front = std::collections::BTreeSet::new();
+    let front = [
+        "README.md",
+        "CHANGELOG.md",
+        "docs/reference/README.md",
+        "docs/release-notes/README.md",
+    ]
+    .map(|path| root.join(path));
+    let mut checked = 0;
+    for file in &files {
+        let text = std::fs::read_to_string(file).unwrap();
+        let mut fence = false;
+        for (n, line) in text.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                fence = !fence;
+                continue;
+            }
+            if fence {
+                continue;
+            }
+            for target in relative_links(line) {
+                let at = format!("{}:{}: {target}", file.display(), n + 1);
+                let (path, fragment) = target.split_once('#').unwrap_or((target, ""));
+                let resolved = if path.is_empty() {
+                    file.clone()
+                } else {
+                    let dir = file.parent().unwrap();
+                    inside(&root, dir, path).unwrap_or_else(|| panic!("{at} leaves the repository"))
+                };
+                checked += 1;
+                assert!(resolved.exists(), "{at} names no file");
+                if *file == root.join("README.md") {
+                    from_readme.insert(resolved.clone());
+                }
+                if front.contains(file) {
+                    from_front.insert(resolved.clone());
+                }
+                let markdown = resolved.extension().is_some_and(|ext| ext == "md");
+                if fragment.is_empty() || !markdown || NO_HEADING.contains(&fragment) {
+                    continue;
+                }
+                let known = anchors
+                    .entry(resolved.clone())
+                    .or_insert_with(|| headings(&std::fs::read_to_string(&resolved).unwrap()));
+                assert!(known.contains(fragment), "{at}: no heading {fragment}");
+            }
+        }
+    }
+    assert!(checked > 100, "only {checked} relative links were found");
+    for index in ["docs/reference/README.md", "docs/release-notes/README.md"] {
+        assert!(
+            from_readme.contains(&root.join(index)),
+            "README.md does not link {index}"
+        );
+    }
+    for file in files.iter().skip(2).filter(|file| !front.contains(file)) {
+        assert!(
+            from_front.contains(file),
+            "{} is linked from no index",
+            file.display()
+        );
+    }
+    release_notes_match_the_changelog(&root);
+}
+
+/// The version headings of `CHANGELOG.md` and the Markdown files of `docs/release-notes/` but its
+/// `README.md` correspond both ways; each such file is non-empty and its first line names its
+/// version as a whole word (`10.9.0` does not name `0.9.0`).
+fn release_notes_match_the_changelog(root: &std::path::Path) {
+    let changelog = std::fs::read_to_string(root.join("CHANGELOG.md")).unwrap();
+    let versions: Vec<&str> = changelog
+        .lines()
+        .filter_map(|line| line.strip_prefix("## [")?.split(']').next())
+        .filter(|version| *version != "Unreleased")
+        .collect();
+    assert!(!versions.is_empty(), "the changelog names no version");
+    for version in &versions {
+        let notes = root.join(format!("docs/release-notes/{version}.md"));
+        assert!(
+            notes.is_file(),
+            "{version} has no file in docs/release-notes/"
+        );
+    }
+    for entry in std::fs::read_dir(root.join("docs/release-notes")).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let Some(version) = name.strip_suffix(".md").filter(|stem| *stem != "README") else {
+            continue;
+        };
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.trim().is_empty(), "{name} is empty");
+        let first = text.lines().next().unwrap_or("");
+        assert!(
+            first.split_whitespace().any(|word| word == version),
+            "{name} begins {first:?}"
+        );
+        assert!(
+            versions.contains(&version),
+            "{name} has no heading in the changelog"
+        );
+    }
+}
+
+/// The path a link names from `dir`, resolved by its components under `root`, a leading `/`
+/// meaning `root` as it does on the hosts; `None` when it climbs out of `root`.
+fn inside(root: &std::path::Path, dir: &std::path::Path, path: &str) -> Option<std::path::PathBuf> {
+    use std::path::{Component, Path};
+    let mut parts: Vec<_> = dir.strip_prefix(root).ok()?.components().collect();
+    for part in Path::new(path).components() {
+        match part {
+            Component::ParentDir => {
+                parts.pop()?;
+            }
+            Component::Normal(_) => parts.push(part),
+            Component::RootDir => parts.clear(),
+            _ => {}
+        }
+    }
+    Some(
+        parts
+            .iter()
+            .fold(root.to_path_buf(), |path, part| path.join(part)),
+    )
+}
+
+/// The anchors of a Markdown text: each heading by the slug rule GitHub and GitLab use (lower
+/// case; letters, digits, `-` and `_` kept, a space made `-`, the rest dropped; a repeated slug
+/// gains `-1`, `-2`, ...), and each `<a id="...">` or `<a name="...">`. The rule was checked
+/// against GitLab's rendering on 2026-11-18: `Reconciled score: 86 / 100` is
+/// `reconciled-score-86--100`, both hyphens kept.
+fn headings(text: &str) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    let mut fence = false;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fence = !fence;
+            continue;
+        }
+        let level = line.chars().take_while(|&c| c == '#').count();
+        if !fence && (1..=6).contains(&level) && line[level..].starts_with(' ') {
+            let slug: String = line[level..]
+                .trim()
+                .to_lowercase()
+                .chars()
+                .filter(|&c| c.is_alphanumeric() || matches!(c, '-' | '_' | ' '))
+                .map(|c| if c == ' ' { '-' } else { c })
+                .collect();
+            let mut unique = slug.clone();
+            for n in 1.. {
+                if !out.contains(&unique) {
+                    break;
+                }
+                unique = format!("{slug}-{n}");
+            }
+            out.insert(unique);
+        }
+        for attribute in ["<a id=\"", "<a name=\""] {
+            for part in line.split(attribute).skip(1) {
+                out.insert(part.split('"').next().unwrap().to_owned());
+            }
+        }
+    }
+    out
+}
+
+/// The relative link targets of one line of Markdown, outside inline code: `](target)`,
+/// `src="target"`, `href="target"` and a reference definition `[label]: target`, each without
+/// a scheme.
+fn relative_links(line: &str) -> Vec<&str> {
+    let mut found = Vec::new();
+    if let Some((_, target)) = line
+        .trim_start()
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once("]: "))
+    {
+        found.push(target.split_whitespace().next().unwrap_or(""));
+    }
+    for part in line.split('`').step_by(2) {
+        for (open, close) in [("](", ')'), ("src=\"", '"'), ("href=\"", '"')] {
+            let mut rest = part;
+            while let Some(at) = rest.find(open) {
+                rest = &rest[at + open.len()..];
+                let end = rest.find(close).unwrap_or(rest.len());
+                found.push(rest[..end].split_whitespace().next().unwrap_or(""));
+                rest = &rest[end..];
+            }
+        }
+    }
+    found.retain(|target| {
+        let scheme = target.split_once(':').is_some_and(|(scheme, _)| {
+            !scheme.is_empty()
+                && scheme
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c))
+        });
+        !target.is_empty() && !scheme
+    });
+    found
 }

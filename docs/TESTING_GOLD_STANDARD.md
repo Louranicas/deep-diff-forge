@@ -27,10 +27,142 @@ era) no longer holds. How the standard is enforced today:
 - **Fuzz smoke:** every target in `fuzz/Cargo.toml`
   (`patch_parser`, `review_json`, `daemon_protocol`, `agent_annotation`,
   `council_report`, `stdio_mcp`, `stdio_rpc`, `structural_soundness`,
-  `findings_verify`, `evidence_scan`; `stdio_invariants.rs` is a shared module)
+  `findings_verify`, `evidence_scan`, `rust_tokens`, `rust_code_view`, `rust_hunk_places`,
+  `hook_input`, `judge_patch`: fifteen; `stdio_invariants.rs` is a shared module)
   runs for 10 s per pull request; CI fails if a declared target is not in the
   run list. Crash inputs become fixtures under
-  `fixtures/patch/regressions/`.
+  `fixtures/patch/regressions/`. `rust_code_view` has an oracle: the compiler's own lexer
+  (`ra-ap-rustc_lexer`, a dependency of the fuzz crate only). For any text read as a Rust
+  file from its first line, no byte of a token that is code may be blank in either view that
+  follows that lexer: the side read whole from code (`rust_views`), in which every byte of a
+  comment and of a literal's text must be blank too, and the line-by-line reading of release
+  0.8.4 (`rust_lexer_view`), in which they must be where that view has one reading. The
+  reading of 0.8.3 (`code_view`) is kept as it was and is not held to the lexer. The other starts a side of a
+  hunk is read from are held to the same reading: from inside a block comment the views are
+  those of `/*` and the text, from inside a string those of `"` and the text, and from line 1
+  of a file a shebang line by the compiler's rule is blank. `rust_tokens` holds, among its
+  rules, that a comment between two tokens of a construct and complete strings on the lines
+  before it do not change the reader's signals. `rust_hunk_places` holds where a hunk is and
+  how it starts: it builds a whole Rust file whose every line is in a known state, takes the
+  evidence of the file read whole, and requires that the same change written in other ways
+  Git accepts loses no item (the file created as several hunks, with honest or false
+  headers; a hunk cut out with the lines above and below unseen, whatever the cut left open;
+  the same hunk with another new position in its header), that nothing the scanner and
+  the Rust rules of release 0.8.3 find on a changed line is missing, and that no join takes
+  a reading away (what each hunk gives as a patch of its own is among what its file gives
+  for it). Nine of its first ten seeds fail on the sources of the commit before it
+  (`8f290e3`); the tenth holds there and fails on round 14 as it was first built, which
+  read a hunk Git must put after another only as its continuation. Since round 15 it also
+  holds that a construct only a join reads is found when either number of the headers says
+  the hunks touch (with or without an old line in the first, in both orders), that a
+  construct cut beside the word it is known by is found (so it was said then; since round
+  17 only after a method's name and `::`) whatever the numbers and the order
+  of the hunks, and that every item of a script's hunk with honest numbers is found under
+  false ones and with the hunk written second; the fragment rules also run with removed
+  lines, and a raw string's text may hold quotes. Of its 18 seeds the 8 new ones are those
+  rules': on the sources of `87d1afd`, each rule run alone, the join rule and the edge
+  rule fail on every seed, the script rule on its two seeds, and the raw-string seed fails
+  the older rules. In round 16 the edge rule cut only where what a side ended on was
+  taken for evidence by itself (`todo!`, `#[ignore`, `Command::`; so it was said then:
+  since round 18 nothing is read at the end of a side), and a ninth rule holds the other
+  direction: a line of honest code as a one-line hunk (a return type named `Command`, a
+  field named `expect`, a variable named `todo`, a call of a function named `expect`)
+  reports none of the signals whose constructs its last or first word begins. Its 20 seeds
+  hold, and that rule fails on every one of them on the sources of `ceb2e6f`. After the
+  eighth independent review it has three more rules (28 seeds): no hunk of added lines
+  that names the place where two hunks with old lines touch parts those two (up to three
+  such hunks, written before, between or after, with or without a hunk that ends the file
+  before them; this rule fails on ten of the seeds on the sources of `ceb2e6f`, its own
+  four among them); a removed test's attribute cut after `#[test`, `#[tokio::` and the like
+  is reported (with the old side's forms deleted no rule used to fail); and a shebang on a
+  removed first line only, or on an added one only, names a script's language, and a
+  second hunk that begins with another language's shebang takes nothing away.
+  `evidence_scan` also writes its lines as hunks of three with unseen lines between them
+  and holds that a hunk read alone has the labels the scan of its file gives it, with no
+  pass over the file, and that the view of the file's hunks by path shows the outline's
+  labels and goes through the file's hunks at most twice (no target called the reader of
+  one hunk before, and nothing held what a view by path costs). In round 17 the end of a
+  side went under one rule (a form is read there only where every continuation the
+  grammar allows is the construct: a method's name with `::` after it), and
+  `rust_hunk_places` (38 seeds) follows it: its edge rule cuts only after that form; its
+  rule for honest ends has the lines that round 16 still reported (a constant
+  `Command::` whose name stands on the next line, a sentence of a comment that ends on
+  `todo!`, a `cfg_attr` list left open on `ignore`), honest forms over TWO lines (`assert!(`
+  and `true`, as rustfmt writes a long condition) and removed lines (`#[rstest`, which
+  goes on as `::fixture]`), and fails on every seed on the sources of `4391c1e`; a removed
+  test's attribute cut in two is found by the join when the old numbers say the hunks
+  touch; a change cut inside into touching hunks with true numbers loses no item of the
+  same change as one hunk (the ninth independent review's `whole.py`); two hunks at old
+  position 0 of an existing file, which `git apply --unidiff-zero` stacks and the reader
+  joins to nothing (declared), lose nothing each has alone; and a hunk with lines that
+  falsely claims the place where two hunks touch parts nothing when it is written after
+  them. `evidence_scan` also holds what a scan keeps in memory: the readings alive at one
+  moment never hold more lines than the file has (a unit test in the graph crate holds
+  the exact figure: one reading of the longest text; it counts the lines of the views a
+  reading holds, not memory, and the memory figures of
+  [`reference/risk-ranking.md`](reference/risk-ranking.md) are measured, not held by
+  it). In round 18 no form is read at the end of a side (a hunk side is read as text that
+  ends there; nothing is inferred from how it ends: in a macro that takes any tokens
+  `.unwrap::` goes on as anything, and after a range `unwrap` is a free function), and
+  `rust_hunk_places` follows: its edge rule (7) is turned round, a method call with
+  generic arguments cut after its `::` or `<` is not found when the numbers say nothing
+  and is found by the join when the old number is true; its rule for honest ends (9) has
+  the reviewers' shapes (`value.unwrap::` and `value.expect::<` in a macro's braces,
+  `0..unwrap::`); a new rule (16) puts a line as a side's last line whole and cut between
+  any two of its tokens outside every string and comment of every reading (every cut of a
+  line from a list of every form some round read at an edge, written out whole, and one
+  cut of the input's own first line) and requires that the cut line reports nothing of
+  the reader's eight signals that the whole line does not; and its joined constructs have
+  `ignore(…)` in a `cfg_attr` list. `rust_tokens` has `#[ignore(…)]` and `ignore(…)` in a
+  `cfg_attr` list among the constructs of its rule 5. The graph crate's tests hold that no
+  form of the 52 that rounds 13 to 17 read at an edge gives an item there, on either side,
+  spaced or a token a line, in a macro's braces or not. In round 19 a skip is read only
+  where the side holds its attribute whole, from `#` to its `]`, for the first 16
+  `cfg_attr` lists followed at once (a seventeenth nested one is taken to hold a skip with
+  no `ignore` and no `]`, a writer's false item: VD3R19-M-1, IR12-L-2) (round 18 still read
+  `#[ignore(` from its parenthesis, and in a macro that takes any tokens it goes on as
+  anything: round 18 of Vesper's review, VD3R18-M-1), and the list of forms has 63 (the
+  skip's attributes that rounds 13 to 18 read before their `]`, Vesper's two one-line
+  sides among them); a test holds the bound of the whole attribute (`#[ignore(…)]` of up
+  to 64 tokens from `[` to `]`). The keywords after which a `<` opens a bracketed path
+  are the ones rustc 1.99.1 compiles before `<Command>::new("true")`, and a test holds
+  each added one (`&mut`, `become`, `do yeet`) and a name before the `<` as controls; the
+  rule is lexical (any `mut` straight before the `<`, so `&raw mut` and `mut` in a macro's
+  discarded tokens are a writer's false items: VD3R19-L-1, IR12-L-3).
+  The fuzz targets are unchanged in this round.
+  In 0.9.0 two targets were added for the agent hooks. `hook_input` reads any byte string
+  up to 256 KiB (the hook itself reads up to 32 MiB) as the JSON a client gives
+  `agent hook <event>`, through the CLI's own `hook` module, for each of the three events:
+  UTF-8 text is read only when this target's own reading finds an object that names the
+  event, a session and a directory (and then with the same values), and all other text is
+  refused with the hooks' own message: a JSON object with `systemMessage` alone, saying
+  nothing was judged, and for a stop UNJUDGED and "not a pass". Bytes that are not UTF-8
+  are refused before that reading, where the target cannot reach; for them it checks only
+  the form of the message, and a CLI test
+  (`bytes_that_are_not_utf8_are_refused_by_every_event`) runs the hook on such bytes
+  (integrated review of 0.9.0, VI1-L-3 and CI5). `judge_patch` edits a working tree with real Git (one
+  base repository per process, put back before every input; files written, deleted or made
+  executable, any bytes in names and contents, Git's own files left out) and calls
+  `judge_patch`: the patch is read as the hooks read it (`SealedReview` with no guards) or
+  refused with an error, and when it is read, its paths are exactly the paths the edits
+  changed, each once. Five minutes each on 2026-11-18, no crash: `hook_input` 4,046,034
+  runs, `judge_patch` 8,102 (about 26 a second: each runs Git several times). Seeds:
+  `fuzz/seeds/hook_input` (4), `fuzz/seeds/judge_patch` (5).
+- **Cost of one long line (0.9.0):** one rule closes the class "cost quadratic in the length
+  of one line" (FINDING-5, the secret rule, the empty-handler rule): no check walks from a
+  match to the end of its line, or of its run, more than once for the line. One test holds
+  the class (`long_lines_of_every_trigger_rank_in_bounded_time` in the graph crate): it
+  builds its list from the tables in the code (every rule's tokens, modules, spaced heads and
+  tails and secret prefixes, the JavaScript operand keywords, the Rust token reader's words,
+  the shell's list words, the empty-handler rule's head words, and every ASCII punctuation
+  byte in every language; 397 triggers on 2026-11-18), and ranks two lines of 2 MiB for
+  each, the trigger repeated and one word ending in it, inside a bound of thread CPU time
+  (10 s in a debug build, 2 s in a release build). The gate runs all of them: on 16 threads
+  67 s in a debug build, the slowest line 3.2 s; in a release build 6 s, the slowest 0.22 s.
+  A new token, keyword or word is in the list without a new test. Readings that changed for
+  the class are compared with the reading they replaced, kept for the tests, on seeded
+  generated lines (the keyword test, the secret rule and the empty-handler rule: the same
+  answer on every line).
 - **Sandbox refusal controls:** the rootless-Podman planted-breach suite
   (`crates/deep-diff-forge-cli/tests/council_sandbox.rs`, 12 probes) runs on
   every pull request.
@@ -44,9 +176,9 @@ era) no longer holds. How the standard is enforced today:
   `fuzz_target.sh` lists targets with a TOML parser and fuzzes a new private
   corpus each run, under a root it makes if missing.
 - **Evaluation gate** (`cli/tests/eval.rs`, every PR): the labelled corpus in
-  `fixtures/eval` (34 cases, measured 2026-10-31) must score at least its floors,
-  which are the measured values: ranking pairs 12/15, evidence precision 21/22,
-  evidence recall 21/28, findings 33/33. Any undeclared miss fails. The 11
+  `fixtures/eval` (56 cases, measured 2026-11-18 on the integrated tree) must score at least its floors,
+  which are the measured values: ranking pairs 12/15, evidence precision 179/207,
+  evidence recall 179/260, findings 33/33. Any undeclared miss fails. The 112
   declared misses (`known_miss`, `known_false_positive`) count as wrong in their
   metric rather than being excluded, and each fails once the engine gets it
   right. Planted controls prove a wrong label fails with exit 7, a changed file,

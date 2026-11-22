@@ -1,0 +1,3 @@
+#!//// four
+/*** three */ /**/ [allow(dead_code)]
+fn main() { unsafe { g() } }

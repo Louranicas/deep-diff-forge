@@ -3,7 +3,7 @@
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-cluster--src--cluster
 use crate::scheduler::{resolve_workers, run_lane};
 use deep_diff_forge_core::{ExecutionDimension, JoinPolicy, Parallelism, ReviewFile};
-use deep_diff_forge_graph::{RankedFile, sort_ranked};
+use deep_diff_forge_graph::{CarriedShares, RankedFile, sort_ranked};
 
 /// A structured record of a cluster run (the framework's dimensional receipt).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,13 +31,23 @@ pub struct ClusterRun {
 
 /// Run the patch+risk dimensions over the review with bounded parallelism, then
 /// join deterministically. The result is identical for any worker count.
+///
+/// `files` are the files of one patch, all of them, in patch order: each is scored with its
+/// share of the patch's carried reading, worked out once before the lanes start, as
+/// [`deep_diff_forge_graph::rank`] scores it.
 #[must_use]
 pub fn run_risk_cluster(
     files: &[ReviewFile],
     parallelism: Parallelism,
     join: JoinPolicy,
 ) -> ClusterRun {
-    let scored: Vec<RankedFile> = run_lane(files, parallelism, |_, file| RankedFile::scored(file));
+    // The shares of the patch's carried reading are worked out from the whole patch before any
+    // lane runs, and nothing else is shared between files, so every worker count gives the
+    // same answer.
+    let shares = CarriedShares::of(files);
+    let scored: Vec<RankedFile> = run_lane(files, parallelism, |index, file| {
+        RankedFile::scored_in_patch(file, &shares, index)
+    });
     let ranked = apply_join(scored, join);
     let receipt = ClusterReceipt {
         dimensions: vec![ExecutionDimension::Patch, ExecutionDimension::Risk],
@@ -137,6 +147,75 @@ mod tests {
             );
         }
         parse(&s).unwrap()
+    }
+
+    /// Five created files of 32 hunks of 2 KiB, Rust, JavaScript, Rust, JavaScript and Rust,
+    /// each hunk closing the comment the hunk before left open before a spawn: the patch's
+    /// carried reading of 256 KiB covers the first four, whatever their languages, and the
+    /// fifth is read hunk by hunk.
+    fn five_creations() -> Vec<ReviewFile> {
+        use std::fmt::Write as _;
+        let mut s = String::new();
+        for f in 0..5 {
+            let (ext, spawn) = if f % 2 == 0 {
+                ("rs", "// */ std::process::Command::new(\"sh\");")
+            } else {
+                ("js", "// */ execSync(\"sh\");")
+            };
+            let _ = writeln!(s, "--- /dev/null\n+++ b/src/c{f}.{ext}");
+            for h in 0..32 {
+                // 2,048 bytes: the spawn, 14 for the comment, and filler.
+                let _ = writeln!(s, "@@ -0,0 +{},7 @@", 1 + h * 7);
+                let _ = writeln!(s, "+{spawn}");
+                for _ in 0..4 {
+                    let _ = writeln!(s, "+//{}", "a".repeat(400 - 3));
+                }
+                let filler = 2048 - (spawn.len() + 1) - 14;
+                let _ = writeln!(s, "+//{}", "a".repeat(filler - 4 * 400 - 3));
+                let _ = writeln!(s, "+let x = 1; /*");
+            }
+        }
+        let files = parse(&s).unwrap();
+        for file in &files {
+            let bytes: usize = file.patch_twin.hunks[0]
+                .lines
+                .iter()
+                .map(|line| line.text.len() + 1)
+                .sum();
+            assert_eq!(bytes, 2048, "{}", file.path);
+        }
+        files
+    }
+
+    /// The lanes score each file with its share of the patch's carried reading, worked out
+    /// once from the whole patch, as the rank does, whatever the worker count: the fifth file
+    /// is past the budget and the reading of 0.8.4 gives it none of the spawns only its
+    /// carried reading finds (the readings of the integrity signals find them).
+    #[test]
+    fn cluster_lanes_share_the_patch_bound_as_the_rank_does() {
+        let files = five_creations();
+        let ranked = deep_diff_forge_graph::rank(&files);
+        let fifth = ranked.iter().find(|r| r.path == "src/c4.rs").unwrap();
+        // The reading of release 0.8.4 gives the fifth file, past the budget, none of the
+        // spawns only its carried reading finds.
+        let shares = CarriedShares::of(&files);
+        let mut labels = deep_diff_forge_graph::HunkLabels::in_patch(&files[4], &shares, 4, &[]);
+        assert!((0..32).all(|h| labels.of(h).is_empty()));
+        // Since the merge with the integrity signals the rank finds them all the same: their
+        // reading of a creation as one text has no budget. (Was `fifth.evidence.is_empty()`.)
+        assert_eq!(fifth.evidence.len(), 31, "{:?}", fifth.evidence);
+        for path in ["src/c0.rs", "src/c1.js", "src/c3.js"] {
+            let read = ranked.iter().find(|r| r.path == path).unwrap();
+            assert_eq!(read.evidence.len(), 31, "{path}");
+        }
+        for parallelism in [
+            Parallelism::Serial,
+            Parallelism::Fixed(2),
+            Parallelism::Fixed(3),
+        ] {
+            let run = run_risk_cluster(&files, parallelism, JoinPolicy::RankedReviewOrder);
+            assert_eq!(run.ranked, ranked, "{parallelism:?}");
+        }
     }
 
     #[test]
@@ -315,6 +394,50 @@ mod tests {
         );
         for (file, ranked) in files.iter().zip(run.ranked.iter()) {
             assert_eq!(ranked.score, deep_diff_forge_graph::score_file(file).0);
+        }
+    }
+
+    /// Independent review 2026-11-14, weak tests: every fixture here was `-a` / `+b`, so any
+    /// way of scoring passed every test. While a parser read the hunks under a budget, the
+    /// cluster had to score under the plan of the whole review, and this test held a review
+    /// in which the fourth and fifth file were past the budget (each said `syntax_unchecked`,
+    /// and alone each gave its item). There is no budget now: the same review, where every
+    /// file gives its item, for every worker count, and the same as scored alone.
+    #[test]
+    fn the_cluster_scores_each_file_as_it_scores_alone() {
+        use deep_diff_forge_graph::EvidenceSignal;
+        let evidence = |ranked: &RankedFile| -> Vec<EvidenceSignal> {
+            ranked.evidence.iter().map(|item| item.signal).collect()
+        };
+        // each hunk is about 12 KB and holds an assertion over three lines
+        let pad = "a".repeat(12_000);
+        let mut review = Vec::new();
+        for index in 0..5 {
+            let text = format!(
+                "--- a/tests/t{index}.rs\n+++ b/tests/t{index}.rs\n@@ -1,1 +1,5 @@\n fn t() {{\n+    assert!(\n+        true\n+    );\n+    // {pad}\n"
+            );
+            review.extend(parse(&text).unwrap());
+        }
+        for parallelism in [
+            Parallelism::Serial,
+            Parallelism::Fixed(1),
+            Parallelism::Fixed(2),
+            Parallelism::Fixed(8),
+            Parallelism::Auto,
+        ] {
+            let run = run_risk_cluster(&review, parallelism, JoinPolicy::DeterministicInputOrder);
+            for (index, file) in review.iter().enumerate() {
+                assert_eq!(
+                    evidence(&run.ranked[index]),
+                    [EvidenceSignal::TrivialAssert],
+                    "{parallelism:?}, file {index}"
+                );
+                assert_eq!(
+                    run.ranked[index],
+                    RankedFile::scored(file),
+                    "{parallelism:?}, file {index}"
+                );
+            }
         }
     }
 

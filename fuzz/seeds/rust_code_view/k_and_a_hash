@@ -1,0 +1,12 @@
+macro_rules! m { ($($t:tt)*) => {}; }
+m!(k#r"\"); m!(" /* ");
+pub fn run() -> bool {
+    let s = std::process::Command::new("sh").arg("-c").arg("id").status();
+    let p = unsafe { *std::ptr::null::<u8>().wrapping_add(1).cast::<u8>().wrapping_sub(1).cast::<Option<u8>>() };
+    s.is_ok() && p.is_none()
+}
+#[test]
+#[ignore]
+fn never_runs() { assert!(true); }
+fn main() { println!("spawned: {}", std::process::Command::new("true").status().unwrap().success()); }
+m!(k#fn k#"x"# k#r#"y"# 'k#a);

@@ -6,7 +6,7 @@ Deep-Diff-Forge improves through measured review outcomes, not vague preference.
 > (`crates/deep-diff-forge-learning`, `learn record|status`). Shipped as library code no command
 > calls: the planner, ranking and annotation learners and promotion. Planned, unowned: automatic
 > receipts, `learn record` reading `bench.v0` or `eval.v0`, learned weights in ranking. Nothing
-> is withdrawn or on hold. Unchanged in code since 2026-10-28 except the eval corpus (34 cases on
+> is withdrawn or on hold. Unchanged in code since 2026-10-28 except the eval corpus (35 cases on
 > `main`), which is not wired into the loop.
 
 ## Status 2026-10-28 (0.3.0)

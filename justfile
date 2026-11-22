@@ -114,14 +114,21 @@ publish-dry-run:
     cargo publish --dry-run -p deep-diff-forge-core --allow-dirty
     cargo publish --dry-run -p deep-diff-forge-learning --allow-dirty
 
-# Cut a release: validate the tag matches the workspace version + a clean tree,
-# run the release gate, then sign the tag and push BOTH remotes (`origin` is GitHub). Pushing
-# the tag fires release.yml: cross-platform binaries, checksums, provenance and the
-# GitHub Release. crates.io publishes only when the repository variable
-# DDF_CRATES_IO is `open` (on hold by owner decision; irreversible, yank-only).
-# Run a `workflow_dispatch` dry run on the commit first: it is the only run that
-# tests the macOS binaries before they ship.
-# Usage: just release-tag 0.8.3
+# Cut a release: validate the tag matches the workspace version + no status-visible change
+# (`git status --porcelain` prints nothing, before and after the gate; it does not see ignored
+# files, or untracked files hidden by status.showUntrackedFiles=no), refuse
+# unless the remotes `gitlab`, `gitea` and `forgejo` all exist and none points at github.com,
+# run the release gate, then sign the tag and push it to those three remotes only (never
+# `origin`, which is GitHub). From 0.8.4 nothing runs at GitHub: the tag starts no workflow;
+# the release is built and checked on this machine with `just release-local-build` and
+# `just release-local-verify` (scripts/release_local.sh; docs/RELEASE_AND_PUBLICATION.md).
+# crates.io stays on hold by owner decision. The tag is made on the HEAD current when it is
+# signed, which the recipe does not compare with the HEAD at the start: run it only in a
+# dedicated, freshly cloned release worktree that nobody else uses, with no ignored or
+# untracked files (`git status --porcelain --ignored --untracked-files=all` empty: without the
+# last option, status.showUntrackedFiles=no hides both) before it starts and HEAD stable
+# throughout (docs/RELEASE_AND_PUBLICATION.md, Tag And Push).
+# Usage: just release-tag 0.8.4
 [group("release")]
 release-tag version:
     #!/usr/bin/env bash
@@ -132,23 +139,65 @@ release-tag version:
       echo "version mismatch: arg='${want}' but [workspace.package].version='${have}'" >&2
       exit 1
     fi
-    if ! git diff --quiet || ! git diff --cached --quiet; then
-      echo "working tree is dirty; commit before tagging" >&2
+    # Status-visible changes only: a tracked change, or an untracked file Git does not ignore
+    # (a stray build.rs, which Cargo compiles). An ignored file, or one hidden by
+    # status.showUntrackedFiles=no, is not seen; the release procedure rules them out.
+    if [ -n "$(git status --porcelain)" ]; then
+      echo "working tree is not clean (git status --porcelain); commit or remove before tagging" >&2
       exit 1
     fi
+    # Nothing at GitHub: every fetch and push URL of each target remote (insteadOf rewrites
+    # applied) is checked, in any case, before the gate runs and before anything is signed.
+    for remote in gitlab gitea forgejo; do
+      if ! urls="$(git remote get-url --all "${remote}" 2>/dev/null)"; then
+        echo "no remote named ${remote}; refusing to tag" >&2
+        exit 1
+      fi
+      urls="${urls} $(git remote get-url --push --all "${remote}")"
+      case "${urls,,}" in
+        *github.com*)
+          echo "remote ${remote} points at github.com; refusing to tag (nothing at GitHub)" >&2
+          exit 1
+          ;;
+      esac
+    done
     just gate-release
-    # The gate must not have changed the tree (a rewritten Cargo.lock, a regenerated file):
-    # the tag names the commit that was gated.
-    if ! git diff --quiet || ! git diff --cached --quiet; then
-      echo "the release gate changed the working tree; commit or discard before tagging" >&2
+    # The gate must not have changed the tree (a rewritten Cargo.lock, a regenerated file).
+    # This does not prove that the tag names the commit the gate ran on: the tag is made on the
+    # HEAD current below, which is not compared with the HEAD at the start (the release
+    # procedure keeps HEAD stable, and the owner's release script points this recipe's pushes at
+    # local staging repositories and publishes the tag only if HEAD and the tag's commit are still
+    # the commit it started from).
+    if [ -n "$(git status --porcelain)" ]; then
+      echo "the release gate changed the working tree (git status --porcelain); commit or discard before tagging" >&2
       exit 1
     fi
     # Signed with the caller's user.signingkey and verified against .github/allowed_signers;
     # an unverified tag is deleted here, before it can be pushed.
     scripts/sign_release_tag.sh "${want}"
-    git push origin "v${want}"
-    git push gitlab "v${want}"
-    printf 'tagged + pushed v%s to both remotes; release.yml is now running.\n' "${want}"
+    for remote in gitlab gitea forgejo; do
+      git push "${remote}" "v${want}"
+    done
+    printf 'tagged + pushed v%s to gitlab, gitea and forgejo; next: just release-local-build v%s <outdir>.\n' "${want}" "${want}"
+
+# Local release (from 0.8.4, nothing at GitHub): two fresh exports of <commit> built with
+# release.yml's cargo command must give one SHA-256; writes the archive, SBOM, receipt and
+# SHA256SUMS into <outdir>, which must not exist. Never signs. Run in the fedora-toolbox-44 toolbox.
+[group("release")]
+release-local-build commit outdir:
+    scripts/release_local.sh build "{{commit}}" "{{outdir}}"
+
+# Checks a local release: the tag's signature and its commit on gitlab/main, SHA256SUMS and its
+# signature (namespace deep-diff-forge-release-sha256sums), then a fresh build of the tag.
+# signers: .github/release_allowed_signers (the release key, for both namespaces).
+[group("release")]
+release-local-verify tag outdir signers:
+    scripts/release_local.sh verify "{{tag}}" "{{outdir}}" "{{signers}}"
+
+# Self-test of scripts/release_local.sh in a throwaway clone of HEAD, with keys made for the test.
+[group("release")]
+release-local-test:
+    scripts/test_release_local.sh
 
 # Read-only Zellij observation. This never controls deployment truth.
 [group("observe")]

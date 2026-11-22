@@ -13,10 +13,10 @@ reaches `main`.
 
 | You have… | Start here |
 | --- | --- |
-| Found a bug | [Open a bug report](https://github.com/Louranicas/deep-diff-forge/issues/new?template=bug_report.yml). A patch that reproduces it is the best report there is. |
-| An idea | [Open a feature request](https://github.com/Louranicas/deep-diff-forge/issues/new?template=feature_request.yml) and describe the problem before the solution. |
+| Found a bug | [Open a bug report](https://gitlab.com/lukeomahoney/deep-diff-forge/-/issues/new). A patch that reproduces it is the best report there is. |
+| An idea | [Open a feature request](https://gitlab.com/lukeomahoney/deep-diff-forge/-/issues/new) and describe the problem before the solution. |
 | An hour | Pick an issue labelled [`good first issue`](https://github.com/Louranicas/deep-diff-forge/labels/good%20first%20issue) or [`help wanted`](https://github.com/Louranicas/deep-diff-forge/labels/help%20wanted), or one of the open problems below. |
-| A security finding | **Don't open a public issue.** Follow [SECURITY.md](SECURITY.md) and use a private advisory. |
+| A security finding | **Don't open a public issue.** Follow [SECURITY.md](SECURITY.md) and open a confidential issue on GitLab (https://gitlab.com/lukeomahoney/deep-diff-forge/-/issues/new, tick *This issue is confidential*). |
 | Docs or graphics to improve | Every `.md` file is fair game. The code is the source of truth, so check claims against it. |
 
 ### Open problems worth owning
@@ -86,8 +86,9 @@ What the gates enforce, and what we ask in review:
   locally to see survivors before CI does.
 - **Fuzzed parsers.** A parser change must survive the fuzz targets in [`fuzz/`](fuzz/). CI fuzzes
   each target briefly; run longer locally (`cargo +nightly fuzz run patch_parser`).
-- **Docs move with code.** Several tests read the README (exit codes, caps, daemon methods). If
-  your change alters a documented contract, update the doc in the same pull request.
+- **Docs move with code.** Several tests read the reference documents in
+  [`docs/reference/`](docs/reference/) (exit codes, caps, daemon methods). If your change alters
+  a documented contract, update the doc in the same pull request.
 - **A new dependency is a reviewed decision.** `cargo deny` and `cargo audit` gate licences,
   sources and advisories, and the committed SBOM must be regenerated
   (`python3 scripts/security/generate_spdx_sbom.py`).

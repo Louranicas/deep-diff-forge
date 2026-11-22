@@ -1,0 +1,2 @@
+﻿#!/usr/bin/env run /* "
+fn main() { unsafe { g() } }

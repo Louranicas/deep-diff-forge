@@ -1,0 +1,61 @@
+{
+  "schema": "forge-warden.verdict.v2",
+  "tool": {
+    "name": "forge-warden",
+    "version": "0.2.0"
+  },
+  "evaluated_on": "2026-11-14",
+  "seals": {
+    "policy_sha256": "74d1bfb2884a4bd4505f10407fed2595a7b65ec82b361a76ac364fffb05c8f7c",
+    "rank_sha256": "ed4e97cff9464688d335723742abbf3ff3f10d405d212e27c08e2f043414b7f2",
+    "patch_sha256": "5d83245304830f177bd708f8cdae08349f58048387491c9257bbd995b1f41851",
+    "patch_facts_sha256": "98bc67edccaf569b75a8c671ad30f3342c81881b5a0e567165c055881ec8c35b",
+    "provenance": "produced",
+    "ranked_by": {
+      "version": "0.8.3",
+      "sha256": "b4ec54b07a1afa79b0493ce8030aac4fdff6eae6b369ba06a8c5be6528636918"
+    },
+    "git": {
+      "path": "/usr/bin/git",
+      "version": "git version 2.56.0",
+      "sha256": "20739384fd97e904e8545b39753c3e42a0cd7a8016d382f6ec1aadc910f8c872",
+      "admission": "approved",
+      "allowlist_sha256": "6caed663d4f7d288d8f4df32495800a5d58f2df9db14017f03f1e4cb3e1894ba"
+    }
+  },
+  "verdict": "pass",
+  "exit": {
+    "code": 0,
+    "name": "pass",
+    "action": "proceed"
+  },
+  "summary": {
+    "files": 1,
+    "rules": 2,
+    "passed": 2,
+    "waived": 0,
+    "held": 0,
+    "failed": 0
+  },
+  "rules": [
+    {
+      "id": "no-secrets",
+      "kind": "forbid_signal",
+      "severity": "fail",
+      "outcome": "pass",
+      "why": "A credential committed once is compromised forever, even after a revert.",
+      "violations": []
+    },
+    {
+      "id": "no-silent-suppression",
+      "kind": "forbid_signal",
+      "severity": "hold",
+      "outcome": "pass",
+      "why": "A silenced check hides the next real bug; fix the cause or justify it in review.",
+      "violations": []
+    }
+  ],
+  "expired_waivers": [],
+  "unused_waivers": [],
+  "notes": []
+}

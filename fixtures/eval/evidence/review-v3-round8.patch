@@ -1,0 +1,21 @@
+diff --git a/src/raw.rs b/src/raw.rs
+new file mode 100644
+--- /dev/null
++++ b/src/raw.rs
+@@ -0,0 +1,6 @@
++pub struct X;
++impl X { pub fn unwrap(self) {} }
++pub fn f(x: X) { x.r#unwrap(); }
++pub fn g(x: X) { X::r#unwrap(x); }
++pub fn h(it: I) -> Vec<u32> { it.map(Result::r#unwrap).collect() }
++pub fn i() { r#todo!() }
+diff --git a/tests/raw.rs b/tests/raw.rs
+--- a/tests/raw.rs
++++ b/tests/raw.rs
+@@ -1,3 +1,6 @@
+ #[test]
++#[r#ignore]
+ fn slow() {
++    r#assert!(true);
++    let s = r#"x.unwrap()"#;
+ }

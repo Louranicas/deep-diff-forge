@@ -24,6 +24,13 @@ hardware are under [open items for maintainers](#open-items-for-maintainers).
 
 Release and publication:
 
+- **0.9.0 is prepared** (the five integrity signals, the agent hooks, and the fixes of
+  [DDF-2026-003](advisories/DDF-2026-003.md)); it is a release once the signed tag `v0.9.0`
+  exists, with no GitHub release: it is published as a signed tag on GitLab, Gitea and Forgejo;
+  binaries built locally for Linux x86_64.
+- **0.8.4 is released** (the signed tag `v0.8.4`, 2026-11-17; the v0.8.3 rescore's G1 and G2 fix
+  and the fix for Rust code the code view hid), published on GitLab, Gitea and Forgejo with no
+  GitHub release; binaries built locally for Linux x86_64.
 - **0.8.3 is tagged** (`v0.8.3`, 2026-11-11 UTC, signed, owner decision; the v0.8.2 rescore's F3 and F2
   fix, the submodule-mode fix and three dependency updates); 0.8.2 is `v0.8.2` (2026-11-10).
   Any later `v*` tag is the owner's decision. Published GitHub releases are v0.1.0, v0.2.0, v0.3.0, v0.4.0, v0.5.0, v0.6.0, v0.7.0, v0.8.0, v0.8.1, v0.8.2 and v0.8.3; v0.2.1 was never tagged.

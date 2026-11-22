@@ -72,7 +72,11 @@ fn release_json_reports_crates_io_blocked() {
     assert_eq!(code, 0);
     assert!(stdout.contains("crates.io"));
     assert!(stdout.contains("\"state\": \"blocked\""));
-    assert!(stdout.contains("\"pending\": [\"github-release\", \"crates.io\"]"));
+    assert!(stdout.contains("\"pending\": [\"crates.io\"]"));
+    // From 0.8.4 nothing goes to GitHub: those targets are skipped, not pending.
+    assert!(stdout.contains("{\"name\": \"github\", \"state\": \"skipped\"}"));
+    assert!(stdout.contains("{\"name\": \"github-release\", \"state\": \"skipped\"}"));
+    assert!(stdout.contains("{\"name\": \"forgejo\", \"state\": \"published\"}"));
     assert!(stdout.contains("\"fully_published\": false"));
 }
 
@@ -83,7 +87,8 @@ fn release_human_lists_targets_and_pending() {
     assert!(stdout.contains("github"));
     assert!(stdout.contains("gitlab"));
     assert!(stdout.contains("crates.io"));
-    assert!(stdout.contains("pending: github-release, crates.io"));
+    assert!(stdout.contains("pending: crates.io"));
+    assert!(stdout.contains("gitea"));
 }
 
 #[test]

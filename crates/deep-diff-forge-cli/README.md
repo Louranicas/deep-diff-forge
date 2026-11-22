@@ -4,7 +4,7 @@ The command-line front door to **Deep-Diff-Forge**, a deterministic code-review
 engine for diffs. It parses a unified or Git patch into a reviewable model,
 ranks the files by review risk, and never changes the patch it shows you.
 
-This crate builds the `deep-diff-forge` binary (version 0.8.3). It is a local,
+This crate builds the `deep-diff-forge` binary (version 0.9.0). It is a local,
 single-user tool for Linux and macOS
 ([supported platforms](https://github.com/Louranicas/deep-diff-forge#supported-platforms)).
 
@@ -17,7 +17,9 @@ crates.io publication is on hold until the project is production-hardened, so
   ship `deep-diff-forge-<tag>-<target>.tar.gz` archives with `.sha256` files
   for `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin` and
   `x86_64-apple-darwin`, and `aarch64-unknown-linux-gnu` since v0.6.0.
-  Published releases: v0.1.0 to v0.8.3 (latest: v0.8.3, 2026-11-11 UTC).
+  Published GitHub releases: v0.1.0 to v0.8.3 (latest: v0.8.3, 2026-11-11 UTC). 0.8.4
+  (signed tag `v0.8.4`, 2026-11-17) and 0.9.0 have none: each is published as a signed tag on
+  GitLab, Gitea and Forgejo (0.9.0 once `v0.9.0` exists); binaries built locally for Linux x86_64.
 - **From source** (Rust 1.88 or newer):
 
   ```bash
@@ -65,7 +67,7 @@ deep-diff-forge --git-range main..HEAD --rank --json --require-files --require-h
 | Surface | Command | What it is |
 | --- | --- | --- |
 | CLI | `deep-diff-forge …` | Review, rank, cluster, Git selections, file pairs, `semantic`, `structural`, `highlight`, `analyze`, `findings verify`, `bench`, `eval`, `learn`, `council`, `agent setup\|doctor`. |
-| Machine contract | `envelope -- <command…>`, `schema [result\|exit-codes]`, `explain <code>` | Any command's result as one `ddf.result.v1` object; the exit-code registry. |
+| Machine contract | `envelope -- <command…>`, `schema [result\|exit-codes\|signals]`, `explain <code>`, `explain signal <label>` | Any command's result as one `ddf.result.v1` object; the exit-code registry; the signal vocabulary and, for one signal, why it matters and what answers it. |
 | MCP server | `deep-diff-forge mcp [--allow-repo PATH]...` | Eight read-only MCP tools over stdio: `review_outline`, `review_hunks`, `review_change`, `review_patch`, `rank_patch`, `verify_findings`, `explain_exit_code`, `exit_code_registry`. |
 | JSON-RPC over stdio | `deep-diff-forge rpc` | The daemon's protocol (JSON-RPC 2.0, protocol 2) with no daemon. |
 | Optional daemon | `deep-diff-forge daemon {path\|start\|health\|status\|metrics\|stop}` | The same protocol on an owner-private Unix socket; `metrics --format prometheus` writes a node_exporter textfile (since 0.6.0). |
@@ -97,7 +99,7 @@ prints the full registry.
 
 ## More
 
-- [Root README](https://github.com/Louranicas/deep-diff-forge#readme): command
+- [Reference documents](https://gitlab.com/lukeomahoney/deep-diff-forge/-/tree/main/docs/reference): command
   reference, output schemas, MCP server, SDKs and the daemon.
 - [API and IPC](https://github.com/Louranicas/deep-diff-forge/blob/main/docs/API_AND_IPC.md):
   JSON-RPC methods, MCP tools and socket rules.

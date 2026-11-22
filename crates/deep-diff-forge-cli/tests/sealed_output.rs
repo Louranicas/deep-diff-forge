@@ -229,9 +229,10 @@ fn help_documents_require_files() {
 // ---- --require-hunks -----------------------------------------------------
 
 /// One file, zero hunks: `--require-files` alone is satisfied by this.
-/// A header-only section Git reads as no change (`0 0 x`). A bare `diff --git` line is no patch
-/// to Git and is refused at parse since 2026-11-04.
-const HEADER_ONLY: &str = "diff --git a/x b/x\nindex 1..2 100644\n";
+/// A header-only section Git applies: a mode change (`0 0 x`). A bare `diff --git` line is no
+/// patch to Git and is refused at parse since 2026-11-04, and so is a section whose only header
+/// is an `index` line ("patch with only garbage"; rescore of v0.8.3, G1).
+const HEADER_ONLY: &str = "diff --git a/x b/x\nold mode 100644\nnew mode 100755\n";
 const RENAME_ONLY: &str =
     "diff --git a/old.rs b/new.rs\nsimilarity index 100%\nrename from old.rs\nrename to new.rs\n";
 /// The recommended gate invocation from the README.

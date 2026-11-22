@@ -1,0 +1,255 @@
+diff --git a/src/placed.rs b/src/placed.rs
+--- a/src/placed.rs
++++ b/src/placed.rs
+@@ -9,4 +1,5 @@
+ pub fn h() {}
+ pub fn i() {}
+ pub fn j() {}
++// */ pub fn evil() { std::process::Command::new("sh").arg("-c").arg("echo EVIL-RAN").status().ok(); } /*
+ */
+diff --git a/src/second.rs b/src/second.rs
+--- a/src/second.rs
++++ b/src/second.rs
+@@ -1,3 +1,4 @@
+ pub fn a() {}
++/*
+ pub fn b() {}
+ pub fn c() {}
+@@ -9,3 +1,4 @@
+ pub fn i() {}
+ pub fn j() {}
++// */ pub fn evil() { std::process::Command::new("sh").arg("-c").arg("echo EVIL-RAN").status().ok(); }
+ pub fn k() {}
+diff --git a/src/macro.rs b/src/macro.rs
+--- a/src/macro.rs
++++ b/src/macro.rs
+@@ -6,1 +1,2 @@
++#! std::process::Command::new("sh").arg("-c").arg("echo EVIL-RAN").status().ok();
+ } }
+diff --git a/src/top.rs b/src/top.rs
+--- a/src/top.rs
++++ b/src/top.rs
+@@ -1,3 +7,4 @@
+ prose of a comment
++// */ pub fn evil() { std::process::Command::new("sh").arg("-c").arg("echo EVIL-RAN").status().ok(); } /*
+ more prose
+ and more
+diff --git a/src/split.rs b/src/split.rs
+new file mode 100644
+--- /dev/null
++++ b/src/split.rs
+@@ -0,0 +1,2 @@
++pub fn a() {}
++pub fn cut(x: Option<u32>) -> u32 { x.unwrap
+@@ -2,0 +3,1 @@
++() }
+diff --git a/src/end.rs b/src/end.rs
+--- a/src/end.rs
++++ b/src/end.rs
+@@ -2,2 +2,3 @@
+ pub fn b() {}
+ pub fn c() {}
++pub fn cut(x: Option<u32>) -> u32 { x.unwrap
+@@ -3,0 +5,1 @@
++() }
+diff --git a/src/deep.rs b/src/deep.rs
+new file mode 100644
+--- /dev/null
++++ b/src/deep.rs
+@@ -0,0 +1,2 @@
++//! Helpers.
++/* /*
+@@ -2,0 +3,2 @@
++ */ // */ pub fn evil() { std::process::Command::new("sh").arg("-c").arg("echo EVIL-RAN").status().ok(); }
++pub fn k() {}
+diff --git a/src/glob.rs b/src/glob.rs
+new file mode 100644
+--- /dev/null
++++ b/src/glob.rs
+@@ -0,0 +1,2 @@
++//! Helpers.
++pub const GLOB: &str = "
+@@ -2,0 +3,3 @@
++    crates/*/*/Cargo.toml";
++pub fn evil() { std::process::Command::new("sh").arg("-c").arg("echo EVIL-RAN").status().ok(); }
++fn main() { evil(); }
+diff --git a/src/zero.rs b/src/zero.rs
+--- a/src/zero.rs
++++ b/src/zero.rs
+@@ -5,0 +6,2 @@ pub fn a() -> u32 {
++    let x = Some(1); /* note
++    let y = 2;
+@@ -20,0 +23,2 @@ pub fn b() -> u32 {
++    std::process::Command::new("sh").status().ok();
++    let z = q.unwrap();
+diff --git a/tests/snapshots.rs b/tests/snapshots.rs
+--- a/tests/snapshots.rs
++++ b/tests/snapshots.rs
+@@ -15,6 +15,7 @@
+ "#);
+ }
+ 
++#[ignore]
+ #[test]
+ fn renders_a_large_value() {
+     check(538, r#"
+diff --git a/tests/t.rs b/tests/t.rs
+--- a/tests/t.rs
++++ b/tests/t.rs
+@@ -40,5 +40,4 @@
+   the last line of a long string";
+-#[test]
+ fn t() { check(); }
+ 
+ const S: &str = "another
+diff --git a/src/help.rs b/src/help.rs
+--- a/src/help.rs
++++ b/src/help.rs
+@@ -4,4 +4,5 @@
+   --quiet   say less
+   --help    this text
+ ";
++pub fn evil() { let _open = "/*"; std::process::Command::new("sh").status().ok(); }
+ pub fn k() {}
+diff --git a/src/paths.rs b/src/paths.rs
+--- a/src/paths.rs
++++ b/src/paths.rs
+@@ -2,5 +2,5 @@
+ C:\tools\
+ C:\more\
+ C:\other\
+-C:\last\"#;
++C:\last\"#; pub fn evil() { std::process::Command::new("sh").arg("-c").arg("echo EVIL-RAN").status().ok(); }
+ pub fn k() {}
+diff --git a/src/main.rs b/src/main.rs
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -6,9 +6,15 @@ pub const PATTERNS: &str = "
+     Cargo.lock
+     README.md
+     LICENSE
++    crates/*/*/Cargo.toml
+     docs/README.md
+ ";
+ 
++pub fn run(cmd: &str) -> bool {
++    std::process::Command::new("sh").arg("-c").arg(cmd).status().is_ok()
++}
++
+ fn main() {
+     println!("patterns: {}", PATTERNS.lines().count());
++    println!("ran: {}", run("echo SPAWNED"));
+ }
+diff --git a/src/script.rs b/src/script.rs
+--- a/src/script.rs
++++ b/src/script.rs
+@@ -8,8 +8,8 @@ pub const SCRIPT: &str = r#"
+     set -eu
+     cd "$1"
+     make
+-    printf done
+-"#; pub fn f() { g() }
++    printf '\t"%s\n' done
++"#; pub fn f() { unsafe { hint2::run(g) } }
+ 
+ 
+ mod hint2 { pub unsafe fn run(f: fn()) { f() } }
+diff --git a/src/full/strcode.rs b/src/full/strcode.rs
+--- a/src/full/strcode.rs
++++ b/src/full/strcode.rs
+@@ -1,5 +1,5 @@
+ pub const HELP: &str = "usage: tool
+   --quiet   say less
+   --help    this text
+-";
++"; pub fn evil() { std::process::Command::new("sh").arg("-c").arg("echo EVIL-RAN").status().ok(); } // "
+ pub fn k() {}
+diff --git a/src/full/nested.rs b/src/full/nested.rs
+--- a/src/full/nested.rs
++++ b/src/full/nested.rs
+@@ -1,7 +1,7 @@
+ fn before() {}
+ /* outer
+ /* inner
+ // */ //
+-// */ /*
++// */ pub fn evil() { std::process::Command::new("sh").arg("-c").arg("echo EVIL-RAN").status().ok(); } /*
+ */
+ fn main() { evil(); }
+diff --git a/src/strcode.rs b/src/strcode.rs
+--- a/src/strcode.rs
++++ b/src/strcode.rs
+@@ -3,3 +3,3 @@
+   --help    this text
+-";
++"; pub fn evil() { std::process::Command::new("sh").arg("-c").arg("echo EVIL-RAN").status().ok(); } // "
+ pub fn k() {}
+diff --git a/src/nested.rs b/src/nested.rs
+--- a/src/nested.rs
++++ b/src/nested.rs
+@@ -4,3 +4,3 @@
+ // */ //
+-// */ /*
++// */ pub fn evil() { std::process::Command::new("sh").arg("-c").arg("echo EVIL-RAN").status().ok(); } /*
+ */
+diff --git a/src/depth2.rs b/src/depth2.rs
+--- a/src/depth2.rs
++++ b/src/depth2.rs
+@@ -1,4 +1,5 @@
+ pub fn a() {}
++/* /*
+ pub fn b() {}
+ pub fn c() {}
+ pub fn d() {}
+@@ -8,4 +9,5 @@
+ pub fn h() {}
+ pub fn i() {}
+ pub fn j() {}
++ */ // */ pub fn evil() { std::process::Command::new("sh").arg("-c").arg("echo EVIL-RAN").status().ok(); }
+ pub fn k() {}
+diff --git a/src/apart.rs b/src/apart.rs
+--- a/src/apart.rs
++++ b/src/apart.rs
+@@ -1,3 +1,4 @@
+ pub fn a() {}
+ pub fn b() {}
++pub fn cut(x: Option<u32>) -> u32 { x.unwrap
+ // note
+@@ -40,1 +41,2 @@
++() }
+ pub fn k() {}
+diff --git a/src/allow.rs b/src/allow.rs
+new file mode 100644
+--- /dev/null
++++ b/src/allow.rs
+@@ -0,0 +1,9 @@
++#[/**/allow(dead_code)]
++fn one() {}
++#[
++allow(dead_code)]
++fn two() {}
++#[cfg_attr(all(), allow(dead_code))]
++fn three() {}
++#[expect(dead_code)]
++fn four() {}
+diff --git a/src/notes.rs b/src/notes.rs
+--- a/src/notes.rs
++++ b/src/notes.rs
+@@ -20,4 +20,5 @@
+ /* a note that the hunk
+    does not see the end of
+ fn above() {}
++    log("never call x.unwrap() here");
+ fn below() {}
+diff --git a/src/legacy.rs b/src/legacy.rs
+new file mode 100644
+--- /dev/null
++++ b/src/legacy.rs
+@@ -0,0 +1,7 @@
++pub const HELP: &str = "usage: tool
++  --all   run everything";
++
++pub fn notes() -> &'static str {
++    // the old code said "x.unwrap()" here
++    "never call std::process::Command::new(sh) or todo!() or unsafe { } in a handler"
++}

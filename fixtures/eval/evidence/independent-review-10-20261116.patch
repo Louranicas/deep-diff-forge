@@ -1,0 +1,92 @@
+diff --git a/tests/ign.rs b/tests/ign.rs
+--- a/tests/ign.rs
++++ b/tests/ign.rs
+@@ -1,9 +1,11 @@
+ #[test]
++#[ignore(not_ready)]
+ fn a() {
+     assert_eq!(1 + 1, 2);
+ }
+ 
+ #[test]
++#[cfg_attr(all(), ignore(flaky))]
+ fn d() {
+     assert_eq!(2 + 2, 4);
+ }
+diff --git a/src/kw.rs b/src/kw.rs
+--- a/src/kw.rs
++++ b/src/kw.rs
+@@ -10,3 +10,3 @@ use std::process::Command;
+ fn a() -> std::io::Result<std::process::ExitStatus> {
+-    Ok(Default::default())
++    return <Command>::new("true").status();
+ }
+@@ -20,3 +20,3 @@ fn b() -> bool {
+ fn b() -> bool {
+-    match g() {
++    match <Command>::new("true").status() {
+         Ok(s) => s.success(),
+@@ -30,3 +30,3 @@ fn d() {
+ fn d() {
+-    for _ in None::<u8> {}
++    for _ in <Command>::new("true").status().ok() {}
+ }
+@@ -40,3 +40,3 @@ fn e() -> std::io::Result<std::process::ExitStatus> {
+ fn e() -> std::io::Result<std::process::ExitStatus> {
+-    'l: loop { break 'l Ok(Default::default()); }
++    'l: loop { break 'l <Command>::new("true").status(); }
+ }
+diff --git a/src/macro.rs b/src/macro.rs
+--- a/src/macro.rs
++++ b/src/macro.rs
+@@ -7 +7 @@ fn main() {
+-        value.other::
++        value.unwrap::
+diff --git a/src/macro2.rs b/src/macro2.rs
+--- a/src/macro2.rs
++++ b/src/macro2.rs
+@@ -7 +7 @@ fn main() {
+-        value.other::<
++        value.expect::<
+diff --git a/src/range.rs b/src/range.rs
+--- a/src/range.rs
++++ b/src/range.rs
+@@ -5 +5 @@ fn main() {
+-    let r = 1..unwrap::
++    let r = 0..unwrap::
+diff --git a/tests/slow.rs b/tests/slow.rs
+--- a/tests/slow.rs
++++ b/tests/slow.rs
+@@ -2,2 +2,8 @@
+-#[should_panic(
+-    expected = "a very long expected panic message that makes rustfmt wrap the attribute over lines"
++#[cfg_attr(
++    any(
++        target_os = "windows",
++        target_os = "macos",
++        target_arch = "wasm32",
++        target_env = "musl"
++    ),
++    ignore
+diff --git a/src/newtwotop.rs b/src/newtwotop.rs
+new file mode 100644
+--- /dev/null
++++ b/src/newtwotop.rs
+@@ -0,0 +3,3 @@
++    ()
++}
++fn main() { boom(None); }
+@@ -0,0 +1,2 @@
++pub fn boom(opt: Option<u8>) -> u8 {
++    opt.unwrap
+diff --git a/src/newtop.rs b/src/newtop.rs
+new file mode 100644
+--- /dev/null
++++ b/src/newtop.rs
+@@ -0,0 +1,2 @@
++pub fn boom(opt: Option<u8>) -> u8 {
++    opt.unwrap
+@@ -0,0 +3,3 @@
++    ()
++}
++fn main() { boom(None); }

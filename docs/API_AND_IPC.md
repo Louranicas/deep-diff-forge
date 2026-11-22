@@ -129,12 +129,14 @@ deep-diff-forge learn {status|record --stdin} [--json]
 deep-diff-forge <old> <new> [<--stdin-patch output flags>]
 deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side | --outline | --hunks [--address A]... [--path P]...] [--max-bytes N] [--cursor C] [--require-files] [--require-hunks]
 deep-diff-forge {--git-working-tree [--include-untracked] | --git-staged | --git-range A..B} [--repo PATH] [--acquisition-json | <--stdin-patch output flags>]
-deep-diff-forge agent {setup --client claude|codex [--allow-repo PATH]... | doctor} [--json]
+deep-diff-forge agent {setup --client claude|codex [--allow-repo PATH]... [--hooks] | doctor [--gate] | hook session-start|post-tool|stop --client claude} [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--json]
+# internal, started by the stop hook itself: agent hook seal-rankers [--ranker-dir DIR]
+#   prints one JSON list of {"path", "sha256"} or {"path", "refused"} for the candidate rankers
 deep-diff-forge mcp [--allow-repo PATH]...
 deep-diff-forge rpc [--allow-repo PATH]...
 deep-diff-forge envelope -- <command> [args…]
-deep-diff-forge schema [result|exit-codes]
-deep-diff-forge explain <code> [--family engine|council] [--json]
+deep-diff-forge schema [result|exit-codes|signals]
+deep-diff-forge explain {<code> [--family engine|council] | signal <label>} [--json]
 deep-diff-forge claude-code-contract
 deep-diff-forge chain-contract
 deep-diff-forge cluster-contract
@@ -419,7 +421,7 @@ names (`deep-diff-forge.review.v0`, `ddf.result.v1` and so on).
 What may change within a `v0` schema name (stated 2026-11-03, after an expert-circle review):
 new members (present only when they apply, such as `hazards` and `old_path`), new enum values,
 and a different value for the same input when that fixes a value that misreported what Git
-does. A fix of that kind is listed under `### Changed` in the CHANGELOG, with the inputs it
+does. A fix of that kind is listed under `### Changed` in the [release notes](release-notes/README.md), with the inputs it
 affects. Removing or renaming a member, or changing a member's type, needs a new schema name.
 
 `old_path` (since 0.7.0): in `review.v0` files and `diff.file` JSONL events,
@@ -473,13 +475,57 @@ Additive members, so the schema names stay `v0`. They are present only when foun
 
 - `rank.v0` `ranked[i].evidence`: up to 32 items `{"signal", "address", "side", "line", "basis"}`.
   - `signal` is one of `unsafe_added`, `process_spawn`, `network_fetch`, `dynamic_eval`,
-    `ci_privilege`, `build_hook`, `secret_like`, `check_suppressed` and `test_removed`.
+    `ci_privilege`, `build_hook`, `secret_like`, `check_suppressed`, `test_removed`,
+    `test_skipped`, `trivial_assert`, `stub_added`, `error_swallowed` and `panic_path_added`.
+    The list grows: a client must accept a label it does not know. (A fifteenth label,
+    `syntax_unchecked`, existed in unreleased builds until 2026-11-14 and is gone with the
+    parser it spoke of.)
   - `address` is the hunk's address: the same value the outline and `review.hunks` use.
   - `side` is `new` (an added line) or `old` (a removed line), and `line` is that line's number on
     that side.
-  - `basis` is always `lexical`.
+  - `basis` says how the item was found, as the highest rung that found it: `lexical` (tokens
+    on the one changed line) or `hunk` (tokens read across the lines of one side of the hunk:
+    an error handler with its empty body on the next line, and in Rust a panic path, a
+    trivial assertion, a stub, a skipped or a removed test whose tokens stand on several
+    lines). The list of values grows: a client must accept a value it does not know and may
+    treat it as at least `lexical`. (A value `syntax_fragment`, for an item a parser
+    confirmed, existed in unreleased builds until 2026-11-14; no parser reads for evidence
+    now.)
+  - `test_likely: true` is present on a `panic_path_added` item when the hunk shows the call
+    inside the braces of an item whose attribute spells a test (`#[test]`, a path ending in
+    `::test`, `#[rstest]`, exactly `#[cfg(test)]`). It is a hint for a reader and never proof
+    (an import can bind those names to anything, a hunk can sit under an open comment, and the
+    braces are only counted in what the lexer takes for code): the signal, the score and what
+    a judge reads are the same with and without it. The hint follows the braces the call is
+    inside, so a function that only shares a line with a test is not marked, and a line that
+    holds a call of each kind is not either; a test inside another macro's body is read like
+    any other. The member is absent otherwise. Since 2026-11-14 no `panic_path_added`
+    item is withdrawn as test code, whatever the patch shows: one in a `#[cfg(test)]` module
+    of a file the patch creates is reported like any other and carries this member.
   - Items are ordered by hunk, then line, then signal. `evidence_truncated: true` follows when more
-    were found; the score counts all of them. Each signal also appears in `signals`.
+    than 32 were found; the score counts all of them. Each signal also appears in `signals`.
+  - At the bound the list is not simply the first 32 in that order (since release 0.8.4, which
+    reads Rust a second way and reads the hunks of a file the patch creates as one text, up to
+    a bound for the whole patch: its created files share 256 KiB of new side in patch order,
+    with no line longer than 512 bytes, so one request reads at most 256 KiB in that reading,
+    whatever it asks; and since the integrity signals, whose readings add further items). It
+    holds first the items the reading every release up to 0.8.3 had finds, as many as fit (with
+    32 or more of them it is exactly the list 0.8.3 printed, so the list of a later version
+    never lacks an item that release showed); then the first item of every signal with no item
+    in the list yet, the heavier signal first; then the others in order. The items listed keep
+    the order above. The CLI and the daemon (and so MCP) take the list from the same function.
+  - What is held against 0.8.3: for every patch, the signals, the score and the listed items (at
+    the bound of 32 a file) of the ranking are at least those of 0.8.3. An answer that is bounded
+    in bytes (the MCP summary, a protocol line, a page) reaches its bound sooner when it says
+    more, and says so as before (a summary with its omitted count, error 8, a cursor); time and
+    memory are linear in the patch, within the factors stated in [the 0.8.4 notes](release-notes/0.8.4.md). Measured for
+    release 0.8.4 (not again for this version, whose further readings say more) against the
+    published v0.8.3 binary: the `rank_patch` summary (256 KiB) of a 1,500-file patch
+    lists 1,082 files where 0.8.3 listed 1,094 (`omitted_files` 418 against 406), and a ranking
+    147 bytes under that cap on 0.8.3 comes back as a summary; a `diff.rank` answer of 83,885,992
+    bytes on 0.8.3 is 83,886,151 bytes, over the 80 MiB line cap, and so error 8; the first page
+    of the outline (64 KiB) of a file of 313 one-line hunks holds 312 and a cursor where 0.8.3's
+    held all 313. A file's place in the ranking can fall when another file's score rises.
 - `review-outline.v0` and `review-hunks.v0` hunk heads: `evidence`, the distinct signal labels in
   that hunk. It comes from the same scan as `rank`, so the two never disagree.
 - The CLI (`--rank --json`, `--outline`), the daemon (`diff.rank`, `review.outline`,

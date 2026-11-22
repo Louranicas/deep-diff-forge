@@ -1,0 +1,12 @@
+pub fn real() -> u32 {
+    7
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn it_is_seven() {
+        assert_eq!(Some(super::real()).unwrap(), 7);
+        let v = f().expect("set");
+    }
+}
