@@ -2377,6 +2377,63 @@
         }
       ],
       "sha256": "9bda1054eb50b92f932548c99757914834c2ea3d12465da36add4130c3b68623"
+    },
+    {
+      "id": "evidence/secret-forge-tokens",
+      "kind": "evidence",
+      "patch": "evidence/secret-forge-tokens.patch",
+      "origin": "synthetic: plan of record S3.24, 2026-11-23 (DDF-2026-007): releases 0.5.0 to 0.9.0 knew no GitLab token prefix and not GitHub's fine-grained one. An env file gains a GitLab personal, deploy, runner, pipeline trigger, CI job and OAuth application token, a fine-grained GitHub token and the routable GitLab form, every body zeros (shapes, not credentials); a placeholder, a GitLab token a byte short, one glued to a word, a fine-grained token a byte short and the prefix in prose are near misses that must stay unlabelled.",
+      "expect": [
+        {
+          "path": "deploy/forge.env",
+          "signal": "secret_like",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "deploy/forge.env",
+          "signal": "secret_like",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "deploy/forge.env",
+          "signal": "secret_like",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "deploy/forge.env",
+          "signal": "secret_like",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "deploy/forge.env",
+          "signal": "secret_like",
+          "side": "new",
+          "line": 6
+        },
+        {
+          "path": "deploy/forge.env",
+          "signal": "secret_like",
+          "side": "new",
+          "line": 7
+        },
+        {
+          "path": "deploy/forge.env",
+          "signal": "secret_like",
+          "side": "new",
+          "line": 8
+        },
+        {
+          "path": "deploy/forge.env",
+          "signal": "secret_like",
+          "side": "new",
+          "line": 9
+        }
+      ],
+      "sha256": "b1ef43ad77bbacd861209936b056c029b2cd319ab9d7269f2cf7369a25e4c27d"
     }
   ]
 }
