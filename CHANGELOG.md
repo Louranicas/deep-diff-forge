@@ -251,6 +251,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   `rename from`/`rename to` before the `index` line, where Git writes them, so that DDF's
   rendering is a shape Git writes. Before, they came after it.
 
+- **The repository no longer links into the maintainer's private Obsidian vault** (S3.17b.a).
+  251 links of the `obsidian` scheme in 103 tracked files were replaced by in-repository pointers (in
+  source comments, with every line number kept) or removed (in documents), and the contract
+  test `no_tracked_file_links_the_private_vault` keeps them out. The two policy scripts that
+  are compiled into the binary changed in one comment line each, so the release binary's hash
+  changes; its answers do not (7,421 comparison patches, identical in both directions).
+
 ### Fixed
 
 - **A text file Git was told to show as binary is read as text** (S3.20,
