@@ -128,17 +128,19 @@ class _Client:
 
 class StdioClient(_Client):
     """``deep-diff-forge rpc`` as a child process; close it (or use ``with``) to end it. Each answer
-    must arrive within ``timeout`` seconds, and the answer must fit the
-    daemon's size cap and be a valid response; otherwise the child is killed and ``TransportError``
-    raised, so a stuck, runaway or misbehaving child cannot hang or exhaust the caller. The
-    deadline covers the write too: a child that stops reading cannot block a large request. An
-    answer that arrives before the whole request is taken is returned, and the child, now out of
-    step with the stream, is killed."""
+    must arrive within ``timeout`` seconds, and the answer line must fit the daemon's size cap
+    (``MAX_REQUEST_BYTES``, its newline counted) and be a valid response; otherwise the child is
+    killed and ``TransportError`` raised, so a stuck, runaway or misbehaving child cannot hang or
+    exhaust the caller. The deadline covers the write too: a child that stops reading cannot block
+    a large request. An answer that arrives before the whole request is taken is returned, and the
+    child, now out of step with the stream, is killed, also when it broke the pipe. Once the client
+    is closed or its child killed, both pipes are closed and every call raises ``TransportError``."""
 
     def __init__(self, command=("deep-diff-forge", "rpc"), timeout=30.0):
         super().__init__()
         self._timeout = timeout
-        self._buffer = b""
+        self._buffer = bytearray()
+        self._ended = None
         self._process = subprocess.Popen(list(command), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                          stderr=subprocess.DEVNULL)
         # Both pipes are non-blocking and driven by one selector under one deadline: a blocking
@@ -148,16 +150,21 @@ class StdioClient(_Client):
         os.set_blocking(self._process.stdout.fileno(), False)
 
     def _exchange(self, request):
+        if self._ended:
+            raise TransportError(f"deep-diff-forge rpc has ended: {self._ended}")
         deadline = time.monotonic() + self._timeout
         pending = memoryview(request)
         stdin, stdout = self._process.stdin.fileno(), self._process.stdout.fileno()
+        # The buffer grows in place and only new bytes are searched, so a long answer is read in
+        # time linear in its size (before, each chunk copied and rescanned the whole buffer).
+        newline = self._buffer.find(b"\n")
         with selectors.DefaultSelector() as selector:
             selector.register(stdin, selectors.EVENT_WRITE)
             selector.register(stdout, selectors.EVENT_READ)
             # Read while writing, so a child that answers (or refuses) early cannot deadlock us.
             # A whole answer line ends the exchange even if part of the request is unsent.
-            while b"\n" not in self._buffer:
-                if len(self._buffer) > MAX_REQUEST_BYTES:
+            while newline < 0:
+                if len(self._buffer) >= MAX_REQUEST_BYTES:
                     self._fail("the answer exceeds the daemon's maximum size")
                 remaining = deadline - time.monotonic()
                 ready = selector.select(remaining) if remaining > 0 else []
@@ -166,51 +173,74 @@ class StdioClient(_Client):
                 for key, _ in ready:
                     if key.fd == stdin:
                         pending = self._write(selector, pending)
-                    else:
+                        continue
+                    try:
                         chunk = os.read(stdout, 1 << 16)
-                        if not chunk:
-                            self._fail("deep-diff-forge rpc closed without answering")
-                        self._buffer += chunk
-        line, _, self._buffer = self._buffer.partition(b"\n")
-        if pending:
+                    except BlockingIOError:
+                        continue
+                    except OSError as error:
+                        self._fail(f"reading the answer of deep-diff-forge rpc failed: {error}")
+                    if not chunk:
+                        self._fail("deep-diff-forge rpc closed without answering")
+                    scanned = len(self._buffer)
+                    self._buffer += chunk
+                    newline = self._buffer.find(b"\n", scanned)
+        # The cap counts the newline, as the daemon's does for a request line.
+        if newline + 1 > MAX_REQUEST_BYTES:
+            self._fail("the answer exceeds the daemon's maximum size")
+        line = bytes(self._buffer[:newline])
+        del self._buffer[:newline + 1]
+        if pending is None or pending:
             # It answered before taking the whole request: the unsent tail would garble the next
             # one, so the out-of-step child is killed and the next call is a TransportError.
-            self._process.kill()
-            self._process.wait()
+            self._end("it answered before taking the whole request and was killed")
         return line
 
     def _write(self, selector, pending):
-        """Write what the pipe takes of ``pending``; the rest, or nothing once it is all written."""
+        """Write what the pipe takes of ``pending`` and return the rest: empty once it is all
+        written, None once the child stopped reading (a broken pipe: the request was not taken)."""
         try:
             pending = pending[os.write(self._process.stdin.fileno(), pending):]
         except BlockingIOError:
             return pending
         except BrokenPipeError:
             # The child stopped reading: it may still answer (a refusal), or close without one.
-            pending = pending[:0]
+            pending = None
         if not pending:
             selector.unregister(self._process.stdin.fileno())
         return pending
 
-    def _invalid(self, error):
-        self._process.kill()
+    def _end(self, reason):
+        """End the child (killed unless it already exited) and close both pipes."""
+        if self._process.poll() is None:
+            self._process.kill()
         self._process.wait()
+        for pipe in (self._process.stdin, self._process.stdout):
+            try:
+                pipe.close()
+            except OSError:
+                pass
+        self._ended = reason
+
+    def _invalid(self, error):
+        self._end("it was killed after a failed call")
         raise error
 
     def _fail(self, message):
         self._invalid(TransportError(message))
 
     def close(self):
-        if self._process.stdin and not self._process.stdin.closed:
-            try:
-                self._process.stdin.close()
-            except BrokenPipeError:
-                pass
+        if self._ended:
+            return
+        try:
+            self._process.stdin.close()
+        except BrokenPipeError:
+            pass
         try:
             self._process.wait(timeout=self._timeout)
         except subprocess.TimeoutExpired:
-            self._process.kill()
-            self._process.wait()
+            pass
+        self._end("the client was closed")
 
     def __enter__(self):
         return self
@@ -222,12 +252,13 @@ class StdioClient(_Client):
 def _peer_uid(connection):
     """The effective user ID of the daemon at the other end, or None where Python cannot read it.
 
-    Linux reads ``SO_PEERCRED`` (pid, uid, gid); macOS reads ``LOCAL_PEERCRED`` (a ``xucred``
-    whose second field is the uid). The daemon checks its clients itself on every platform.
+    Linux reads ``SO_PEERCRED`` (pid, uid, gid: a signed ``pid_t`` and two unsigned ids, so a uid
+    of 2^31 or more is not read as negative); macOS reads ``LOCAL_PEERCRED`` (a ``xucred`` whose
+    second field is the uid). The daemon checks its clients itself on every platform.
     """
     if hasattr(socket, "SO_PEERCRED"):
-        _, uid, _ = struct.unpack("3i", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
-                                                             struct.calcsize("3i")))
+        _, uid, _ = struct.unpack("iII", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
+                                                              struct.calcsize("iII")))
         return uid
     if hasattr(socket, "LOCAL_PEERCRED"):
         sol_local = getattr(socket, "SOL_LOCAL", 0)
@@ -237,7 +268,11 @@ def _peer_uid(connection):
 
 
 class SocketClient(_Client):
-    """A running ``deep-diff-forge daemon``; one connection per call, as the daemon expects."""
+    """A running ``deep-diff-forge daemon``; one connection per call, as the daemon expects. The
+    whole call, connecting, sending and reading the answer, must end within ``timeout`` seconds,
+    and the answer line must fit the daemon's size cap (``MAX_REQUEST_BYTES``, its newline
+    counted). An answer the daemon sends before it has taken the whole request (a refusal) is
+    read, not lost."""
 
     def __init__(self, path, timeout=30.0):
         super().__init__()
@@ -245,22 +280,58 @@ class SocketClient(_Client):
         self._timeout = timeout
 
     def _exchange(self, request):
-        # A missing socket, a refused connection or a timeout is "could not be reached", the
-        # same TransportError the stdio client raises, not a bare OSError.
+        # A missing socket, a refused connection or a failed exchange is "could not be reached",
+        # the same TransportError the stdio client raises, not a bare OSError.
+        deadline = time.monotonic() + self._timeout
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-                connection.settimeout(self._timeout)
-                connection.connect(self._path)
-                # Refuse a daemon of another user before sending it anything, as the Rust client does.
-                uid = _peer_uid(connection)
-                if uid is not None and uid != os.geteuid():
-                    raise TransportError(f"the daemon at {self._path} runs as uid {uid}, not uid {os.geteuid()}")
-                connection.sendall(request)
-                # Bytes, not text: the caller decodes under its TransportError mapping.
-                with connection.makefile("rb") as reader:
-                    answer = reader.readline(MAX_REQUEST_BYTES + 1)
+                return self._converse(connection, request, deadline)
+        except socket.timeout as error:
+            raise TransportError(f"no answer from the daemon at {self._path} within {self._timeout} s") from error
         except OSError as error:
             raise TransportError(f"the daemon at {self._path} could not be reached: {error}") from error
-        if not answer.endswith(b"\n"):
-            raise TransportError("the daemon closed without a complete answer")
-        return answer
+
+    def _converse(self, connection, request, deadline):
+        def arm():
+            # One deadline for the whole call: each step waits only for what is left of it. Before,
+            # each step had the whole timeout, so a daemon sending a byte at a time held the caller.
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise socket.timeout("the deadline passed")
+            connection.settimeout(remaining)
+
+        arm()
+        connection.connect(self._path)
+        # Refuse a daemon of another user before sending it anything, as the Rust client does.
+        uid = _peer_uid(connection)
+        if uid is not None and uid != os.geteuid():
+            raise TransportError(f"the daemon at {self._path} runs as uid {uid}, not uid {os.geteuid()}")
+        # A daemon that refuses a request early (its read budget is full) answers and closes before
+        # the rest arrives, so the send breaks with the answer already waiting: read it, and report
+        # the broken send only when there is none (as the Rust client does).
+        unsent, broken = memoryview(request), None
+        while unsent:
+            arm()
+            try:
+                unsent = unsent[connection.send(unsent):]
+            except (BrokenPipeError, ConnectionResetError) as error:
+                broken = error
+                break
+        # Bytes, not text: the caller decodes under its TransportError mapping.
+        answer, newline = bytearray(), -1
+        while newline < 0:
+            if len(answer) >= MAX_REQUEST_BYTES:
+                raise TransportError("the answer exceeds the daemon's maximum size")
+            arm()
+            chunk = connection.recv(1 << 16)
+            if not chunk:
+                if broken is not None:
+                    raise broken
+                raise TransportError("the daemon closed without a complete answer")
+            scanned = len(answer)
+            answer += chunk
+            newline = answer.find(b"\n", scanned)
+        # The cap counts the newline, as the daemon's does for a request line.
+        if newline + 1 > MAX_REQUEST_BYTES:
+            raise TransportError("the answer exceeds the daemon's maximum size")
+        return bytes(answer[:newline + 1])
