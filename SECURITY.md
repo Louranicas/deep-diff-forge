@@ -125,6 +125,30 @@ exposed through TCP forwarding, a shared container mount, or a socket directory
 writable by another account. Windows named-pipe support and TCP listeners are
 not implemented security boundaries.
 
+### Git settings that change what `git apply` writes
+
+DDF's promise about a patch is made for a plain `git apply` in Git's default configuration
+([`CONFORMANCE.md`](crates/deep-diff-forge-patch/CONFORMANCE.md#what-is-promised)): Git
+either refuses the whole patch and writes nothing, or writes what the review shows. A patch
+does not carry the configuration or the options of the `git apply` that will apply it, so DDF
+cannot read them. Each setting below is either `tested` (a test shows Git still writes the
+reviewed tree or nothing with it) or `declared` (Git writes otherwise, and DDF does not model
+it). The test `a_setting_that_changes_the_write_is_declared`
+(`crates/deep-diff-forge-patch/tests/conformance.rs`) reads this table and runs a real
+`git apply` with each measured value: a value that writes another tree than the default needs a
+`declared` row, a value a row says keeps the promise must keep it, and every test a row names
+must exist. Measured with Git 2.56 on Linux, 2026-11-23.
+
+| Setting | State | What DDF does not model |
+| --- | --- | --- |
+| `apply.whitespace` (`--whitespace`) | declared; measured by `a_setting_that_changes_the_write_is_declared` | With `fix` or `strip`, Git removes the trailing whitespace of the lines it adds, so it writes other bytes than the review shows. `nowarn` and `warn` (the default) write the reviewed lines; `error` and `error-all` refuse a patch with a whitespace error and write nothing. |
+| `core.autocrlf` | declared; measured by `a_setting_that_changes_the_write_is_declared` | With `true`, Git writes the lines of a text file with CRLF where the review shows LF; `input` writes the reviewed bytes. Attributes in the target tree (`eol`, `ident`, `working-tree-encoding`) change the bytes written as well (`CONFORMANCE.md`, "Attributes in the target tree"). |
+| `-p<n>` | declared; measured by `a_setting_that_changes_the_write_is_declared` | DDF strips one leading component from each name, as Git's default `-p1` does. With another `-p`, Git applies the hunks to other paths (`-p2` writes `x` for `a/d/x`) or refuses. |
+| `--directory=<root>` | declared; measured by `a_setting_that_changes_the_write_is_declared` | Git writes every path under `<root>`; the review shows the paths without it. |
+| `--3way` | declared; measured by `a_setting_that_changes_the_write_is_declared` | Where plain `git apply` refuses a hunk, Git merges with the blob the `index` line names and writes the result, with conflict markers when the merge conflicts, while it exits non-zero. DDF promises only the outcomes of a plain apply. |
+| `core.fileMode` | declared; measured by `a_setting_that_changes_the_write_is_declared` | With `false`, Git does not trust the executable bit: an edit of an executable file that names no mode is written as `100644`, and the mode an `index` line names is the one written (`CONFORMANCE.md`, "A non-default configuration"). |
+| A case-insensitive file system (`core.ignorecase`) | declared; not measured (it needs a file system that folds case) | DDF compares paths byte for byte. Where the file system folds case, two paths that differ only in case name one file, so what Git writes for one can land on the other. |
+
 ## Enforced controls
 
 ### First-party memory safety
