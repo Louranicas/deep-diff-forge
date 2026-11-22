@@ -6,11 +6,26 @@
 //! `clippy.toml` disallows the unbounded waits (`Command::output`, `Command::status`,
 //! `Child::wait`, `Child::wait_with_output`) outside a reviewed door, so a new caller reaches for
 //! [`run_bounded`] rather than writing its own wait.
+//!
+//! Each child runs in a process group of its own, and the whole group is killed on every way out
+//! (time limit, output cap, and after the child exits by itself), so nothing it started in its
+//! group outlives the call (S3.17a: a judge that left a grandchild holding its output stretched an
+//! agent's stop from 30 s to 75 s). A process that leaves the group (`setsid`, or a double fork
+//! that makes its own group) is not killed by DDF: the call still returns by its deadline, but that
+//! process runs on. Under Claude Code 2.1.330 the client ends a timed-out hook's descendants,
+//! including those in their own group or session (measured 2026-11-22); a process that detaches
+//! from them is ended by no one. Since the child is not in the caller's group, a signal from the
+//! terminal (Ctrl-C) reaches the caller and not the child; a caller killed by it leaves the child
+//! to finish on its own.
 
+use nix::sys::signal::{Signal, killpg};
+use nix::unistd::Pid;
 use std::io::{Read, Write};
-use std::process::{Command, ExitStatus, Stdio};
+use std::os::unix::process::CommandExt as _;
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 /// How long between checks on a running child.
@@ -74,9 +89,13 @@ impl std::error::Error for Stopped {}
 /// under `limits`. Its pipes are set here; the caller sets the program, arguments, directory and
 /// environment.
 ///
-/// The readers are detached, not joined, when the child is stopped: a process the child started
-/// can outlive the kill and hold its pipes open, and joining would wait for it, so the deadline
-/// would not bound the caller (the same rule as Git acquisition, bug hunt 2026-10-28, H1-03).
+/// The child is made the leader of a new process group (the caller's own setting of a group is
+/// replaced), and the group is killed when the call ends, however it ends. The readers and the
+/// writer are joined only while the deadline lasts and detached after it: a process that left the
+/// group can hold the pipes open, and joining would wait for it (bug hunt 2026-10-28, H1-03, and
+/// S3.17a). So the call returns by [`Limits::time`] plus about one poll and the time to kill and
+/// reap; a child that exited in time whose pipes are still held at the deadline is
+/// [`Stopped::TimedOut`].
 ///
 /// # Errors
 ///
@@ -99,6 +118,7 @@ pub fn run_bounded(
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .process_group(0)
         .spawn()
         .map_err(Stopped::Spawn)?;
     // Each pipe on its own thread, so a large input, output and error stream cannot block each
@@ -149,6 +169,8 @@ pub fn run_bounded(
             Some(Stopped::TimedOut { limit: limits.time })
         };
         if let Some(stop) = stop {
+            // Before the reap, while the group's id is still the child's own.
+            kill_group(&child);
             let _ = child.kill();
             let _ = child.wait();
             drop((writer, stdout_reader, stderr_reader));
@@ -156,6 +178,18 @@ pub fn run_bounded(
         }
         std::thread::sleep(POLL);
     };
+    // The leader is reaped; what it left in its group goes now, so its pipes close.
+    kill_group(&child);
+    while !(stdout_reader.is_finished()
+        && stderr_reader.is_finished()
+        && writer.as_ref().is_none_or(JoinHandle::is_finished))
+    {
+        if deadline.checked_duration_since(Instant::now()).is_none() {
+            // Detached: a process outside the group still holds a pipe.
+            return Err(Stopped::TimedOut { limit: limits.time });
+        }
+        std::thread::sleep(POLL);
+    }
     let (stdout, read) = stdout_reader
         .join()
         .map_err(|_| Stopped::Io(std::io::Error::other("the output reader panicked")))?;
@@ -177,6 +211,13 @@ pub fn run_bounded(
         stdout,
         stderr,
     })
+}
+
+/// Kill the process group `child` leads. Errors are ignored: an empty group is already gone.
+fn kill_group(child: &Child) {
+    if let Ok(group) = i32::try_from(child.id()) {
+        let _ = killpg(Pid::from_raw(group), Signal::SIGKILL);
+    }
 }
 
 #[cfg(test)]
@@ -267,6 +308,131 @@ mod tests {
             took < Duration::from_secs(10),
             "the deadline did not bound the caller: {took:?}"
         );
+    }
+
+    /// What a test may add to a bound for a loaded machine: the call itself returns within about
+    /// one poll of its deadline, so this is margin for the scheduler, not for the code.
+    const MARGIN: Duration = Duration::from_secs(2);
+
+    /// A `sleep` argument no other process has: `whole` seconds, this process's id and `n` in
+    /// the fraction. It names a grandchild without a file to write its pid to.
+    fn mark(whole: u32, n: u32) -> String {
+        format!("{whole}.{:07}{n}", std::process::id())
+    }
+
+    /// Shell words that start `sleep <mark>` in the background, its output sent to `to` (empty:
+    /// the child's own pipes), and wait until it runs `sleep` (before its exec the child is still
+    /// the shell), so it exists when the next step ends the call.
+    fn background_sleep(mark: &str, to: &str) -> String {
+        format!(
+            "sleep {mark} {to} & P=$!; \
+             until [ \"$(cat /proc/$P/comm 2>/dev/null)\" = sleep ]; do sleep 0.01; done; "
+        )
+    }
+
+    /// The running processes (zombies are not) whose command line is `sleep <mark>`.
+    #[cfg(target_os = "linux")]
+    fn sleepers(mark: &str) -> Vec<String> {
+        let want = format!("sleep\0{mark}\0").into_bytes();
+        let running = |pid: &String| {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+            let state = stat.rsplit(')').next().unwrap_or_default().trim_start();
+            !state.is_empty() && !state.starts_with('Z')
+        };
+        std::fs::read_dir("/proc")
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|pid| pid.bytes().all(|b| b.is_ascii_digit()))
+            .filter(|pid| std::fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|c| c == want))
+            .filter(running)
+            .collect()
+    }
+
+    /// The sleepers of `mark` still running after [`MARGIN`] for a kill to land; they are then
+    /// killed, so no test leaves one behind.
+    #[cfg(target_os = "linux")]
+    fn left_running(mark: &str) -> Vec<String> {
+        let started = Instant::now();
+        loop {
+            let left = sleepers(mark);
+            if left.is_empty() || started.elapsed() > MARGIN {
+                for pid in &left {
+                    let _ = Command::new("kill").args(["-KILL", pid]).status();
+                }
+                return left;
+            }
+            std::thread::sleep(POLL);
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_leader_that_exits_while_a_grandchild_holds_stdout_returns_by_the_deadline() {
+        let limits = Limits {
+            time: Duration::from_millis(300),
+            ..ROOMY
+        };
+        // In the child's group: killed when the leader exits, so the output is complete at once.
+        let held = mark(31, 0);
+        let started = Instant::now();
+        let script = format!("{}printf done; exit 0", background_sleep(&held, ""));
+        let done = run_bounded(&mut sh(&script), &[], limits).unwrap();
+        assert_eq!(done.stdout, b"done");
+        assert!(
+            started.elapsed() < limits.time + MARGIN,
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(left_running(&held), Vec::<String>::new());
+        // Out of the group (its own session): not killed, so the output never ends; the call
+        // returns at its deadline all the same. The leader exits when the escaped process, out
+        // of the group by then, signals it.
+        let escaped = mark(32, 1);
+        let script = format!(
+            "L=$$; trap 'exit 0' USR1; setsid sh -c \"kill -USR1 $L; exec sleep {escaped}\" & \
+             while :; do sleep 0.01; done"
+        );
+        let started = Instant::now();
+        let late = run_bounded(&mut sh(&script), &[], limits);
+        let took = started.elapsed();
+        let left = left_running(&escaped);
+        assert!(
+            took < limits.time + MARGIN,
+            "a process that held stdout after its parent exited held the caller for {took:?}"
+        );
+        assert!(matches!(late, Err(Stopped::TimedOut { .. })), "{late:?}");
+        assert_eq!(left.len(), 1, "the escaped process did not hold the pipe");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn the_whole_group_is_killed_on_every_exit_path() {
+        let capped = Limits {
+            time: Duration::from_secs(5),
+            stdout_bytes: 5,
+            ..ROOMY
+        };
+        let timed = Limits {
+            time: Duration::from_secs(1),
+            ..ROOMY
+        };
+        // The grandchild's output goes nowhere, so only the group kill can end it.
+        for (n, (path, tail, limits)) in (2..).zip([
+            ("exit", "exit 0", ROOMY),
+            ("timeout", "exec sleep 30", timed),
+            ("cap", "exec yes", capped),
+        ]) {
+            let grandchild = mark(33, n);
+            let script = format!("{}{tail}", background_sleep(&grandchild, ">/dev/null 2>&1"));
+            let _ = run_bounded(&mut sh(&script), &[], limits);
+            let left = left_running(&grandchild);
+            assert!(
+                left.is_empty(),
+                "{path}: the grandchild {left:?} outlived the call"
+            );
+        }
     }
 
     #[test]
