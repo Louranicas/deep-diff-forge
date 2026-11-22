@@ -41,6 +41,7 @@ class Stdio(unittest.TestCase):
     def test_rank_patch_matches_the_cli(self):
         with ddf.StdioClient((BIN, "rpc")) as client:
             ranked = client.rank_patch(PATCH, require_files=True)
+            self.assertEqual(json.loads(ranked.pop("canonical_json")), cli_review(PATCH, "--rank"))
             self.assertEqual(ranked, cli_review(PATCH, "--rank"))
             self.assertEqual(ranked["schema"], "deep-diff-forge.rank.v0")
             with self.assertRaises(ddf.RpcError) as refused:
@@ -332,7 +333,9 @@ class Socket(unittest.TestCase):
                             raise
                         time.sleep(0.05)
                 self.assertEqual(client.review_patch(PATCH), cli_review(PATCH))
-                self.assertEqual(client.rank_patch(PATCH), cli_review(PATCH, "--rank"))
+                ranked = client.rank_patch(PATCH)
+                self.assertEqual(json.loads(ranked.pop("canonical_json")), cli_review(PATCH, "--rank"))
+                self.assertEqual(ranked, cli_review(PATCH, "--rank"))
                 with self.assertRaises(ddf.RpcError) as failed:
                     client.review_patch("--- a/x\n+++ b/x\n+stray\n")
                 self.assertEqual(failed.exception.code, 4)

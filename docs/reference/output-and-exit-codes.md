@@ -29,7 +29,13 @@ empty.
 `git-acquisition.v0` carry two members right after `schema`:
 - `input_sha256`: lowercase hex SHA-256 of the exact bytes read, before any parsing.
   `sha256sum < input` reproduces it.
-- `tool`: `{"name": "deep-diff-forge", "version": "<CARGO_PKG_VERSION>"}`.
+- `tool`: `{"name": "deep-diff-forge", "version": "<CARGO_PKG_VERSION>"}`. In `rank.v0` (since
+  0.10.0) `tool` also carries `scorer_sha256`: the SHA-256, taken when the binary is built, of
+  every source of the ranking crate but its `lib.rs` (the rule tables, the secret prefixes and
+  their byte classes, the readers, the path rules and weights, the order and the vocabulary). It
+  moves on any edit of those files, a comment included, so two scorers never share it, which
+  `version` alone cannot promise: a build from a tree between releases keeps the last version.
+  It does not identify the patch parser or the other crates.
 
 The outline and hunk views carry the seal as well.
 
@@ -67,7 +73,7 @@ An empty list never means the text is safe. They also raise the file's rank
 {
   "schema": "deep-diff-forge.rank.v0",
   "input_sha256": "9317219840467a00fbb7bc3ff905b0ae26a999582c12c8d02f49d380b398bbb3",
-  "tool": {"name": "deep-diff-forge", "version": "0.9.0"},
+  "tool": {"name": "deep-diff-forge", "version": "0.10.0", "scorer_sha256": "<64 hex>"},
   "ranked": [
     {"path": "src/lib.rs", "status": "modified", "score": 7, "signals": ["public_api_surface"]},
     {"path": "tests/it.rs", "status": "modified", "score": 1, "signals": ["test_only"]}
@@ -75,9 +81,21 @@ An empty list never means the text is safe. They also raise the file's rank
 }
 ```
 
+**One byte form for `rank.v0`.** The bytes `--rank --json` prints, schema first as above with
+the final newline, are the document's canonical form on every surface: the daemon's `diff.rank`
+(and so `rpc` and the Python SDK's `rank_patch`) answers with the document's value plus the member
+`canonical_json`, a string holding exactly those bytes, and MCP's `rank_patch` gives them as its
+text, with the value as `structuredContent`. Seal or compare the bytes, not a re-serialisation of
+the value. Before 0.10.0 the daemon, `rpc` and MCP gave only a compact form with sorted keys,
+equal in value but not in bytes. `diff.plan` and `session.snapshot` still answer with the bare
+`ranked` array, unsealed; `cluster.v0`'s `ranked` list uses the same entries without
+`evidence`, `evidence_truncated` and `diff_suppressed`.
+
 Strings are RFC 8259-escaped, and valid UTF-8 passes through. A hunk line decoded lossily is
 marked `"lossy": true`; a header line that is not UTF-8 (a path, a mode, a hunk header) is
-refused with exit 3, because the name it gives would be a substitute. File statuses use one snake-case spelling everywhere: `added`, `modified`,
+refused with exit 3, because the name it gives would be a substitute; from a Git selection such a
+file name is the change's own input, refused with exit 4, and the daemon's `review.change` answers
+it with code 4. File statuses use one snake-case spelling everywhere: `added`, `modified`,
 `deleted`, `renamed`, `copied`, `type_changed` (a file, a symlink or a submodule became
 another), `mode_changed` (only the mode changed, such as the executable bit), `binary_changed`,
 `unknown`.

@@ -709,15 +709,23 @@ fn review_tool_with(mut arguments: Map<String, Value>, cap: usize) -> Value {
 /// `deep-diff-forge.rank-summary.v0` with the same seal, holding the highest-ranked files that fit:
 /// before, a 5,000-file patch produced an 878 KB answer (Remaining Work 2.8). Before 0.3.0's
 /// circle fixes it returned `diff.plan`'s bare array, which the MCP tools specification does not
-/// allow as `structuredContent` and which could not say which bytes it ranked.
+/// allow as `structuredContent` and which could not say which bytes it ranked. Since S3.15 the
+/// text copy is the document's canonical bytes, what `--rank --json` prints, and the cap counts
+/// them; `structuredContent` is their value.
 fn rank_tool_with(arguments: Map<String, Value>, cap: usize) -> Value {
-    let document = match daemon_value("diff.rank", arguments) {
+    let mut document = match daemon_value("diff.rank", arguments) {
         Ok(document) => document,
         Err(error) => return error,
     };
-    let full_bytes = document.to_string().len();
+    let Some(Value::String(canonical)) = document
+        .as_object_mut()
+        .and_then(|members| members.remove("canonical_json"))
+    else {
+        return tool_error("internal error");
+    };
+    let full_bytes = canonical.len();
     if full_bytes <= cap {
-        return structured(document);
+        return json!({"content": [{"type": "text", "text": canonical}], "isError": false, "structuredContent": document});
     }
     let ranked = document["ranked"].as_array().map_or(&[][..], Vec::as_slice);
     // Room for the summary's own fields, so the whole answer stays within the cap.
@@ -1056,7 +1064,8 @@ mod tests {
         };
         let full = rank_tool_with(arguments(), usize::MAX);
         let plan = full["structuredContent"].clone();
-        let size = plan.to_string().len();
+        // The cap counts the canonical bytes, the text copy (S3.15.c).
+        let size = full["content"][0]["text"].as_str().unwrap().len();
         assert_eq!(plan["schema"], "deep-diff-forge.rank.v0");
         assert_eq!(plan["ranked"].as_array().map(Vec::len), Some(200));
         assert_eq!(rank_tool_with(arguments(), size)["structuredContent"], plan);
