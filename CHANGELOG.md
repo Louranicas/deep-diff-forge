@@ -298,6 +298,19 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   empty file, a file emptied, unequal hunk counts).
 
 
+- **`rank.v0` has one byte form on every surface** (S3.15): the bytes `--rank --json` prints.
+  They are built by one renderer. The daemon's `diff.rank` (so `rpc`, the Python SDK and
+  `review.change` with the rank view) keeps its value and adds those exact bytes as
+  `canonical_json`; MCP `rank_patch` gives them as its text and their value as
+  `structuredContent`, and its 256 KiB cap counts them. The command line's own output for a
+  patch is unchanged apart from one added member (7,421 comparison patches, identical once
+  that member is set aside): `tool.scorer_sha256`, a build-time SHA-256 of the ranking crate's
+  sources that decide labels (every source file of the graph crate but `lib.rs`), which moves
+  on any edit of them. A consumer that seals the ranking's bytes (forge-warden) sees its seals
+  change once by that member. `agent doctor`'s `rank_parity` now compares the command line's,
+  the daemon's and MCP's bytes. A `diff.rank` answer is about 2.2 times its earlier size.
+
+
 ### Fixed
 
 - **A text file Git was told to show as binary is read as text** (S3.20,
@@ -420,6 +433,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   whose forge-warden policy forbids `secret_like` fails, from 0.10.0, a commit that adds a line
   with one of the seven forms. The eval corpus gains the case `evidence/secret-forge-tokens`
   (59 cases: precision 186 of 211, recall 186 of 264).
+
+- **The daemon answers a changed file name that is not UTF-8 with code 4** (`review.change`),
+  as the command line exits 4 (S3.27.f); it was code 3, which reads as "may be transient".
 
 ## [0.9.0] - 2026-11-18
 
