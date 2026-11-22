@@ -1323,3 +1323,162 @@ fn no_tracked_file_links_the_private_vault() {
         if found.len() > 40 { ", ..." } else { "" }
     );
 }
+
+/// Run the binary with `stdin` written to it and the given stdout and stderr; its exit code.
+fn exit_with(args: &[&str], stdin: &[u8], stdout: Stdio, stderr: Stdio) -> i32 {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(stdout)
+        .stderr(stderr)
+        .spawn()
+        .unwrap();
+    // A command that exits before reading all of stdin closes the pipe first; not a failure.
+    let _ = child.stdin.take().unwrap().write_all(stdin);
+    child.wait().unwrap().code().unwrap_or(-1)
+}
+
+/// S3.17a.g: a diagnostic that cannot be written does not change the exit code. std's
+/// `eprintln!` panicked on a failed stderr write, and the panic exited 101: `no-such-command
+/// 2>/dev/full` exited 101, not 2.
+#[test]
+fn an_unwritable_error_stream_keeps_the_exit_code() {
+    let full = || std::fs::OpenOptions::new().write(true).open("/dev/full");
+    if full().is_err() {
+        return; // no /dev/full on this platform (Linux has it; the gate runs on Linux)
+    }
+    let over_budget = vec![b'x'; deep_diff_forge_patch::DEFAULT_BYTE_BUDGET + 1];
+    for (args, stdin, code) in [
+        (&["no-such-command"][..], &b""[..], 2),
+        // an option refused in another module of the binary (`args.rs`)
+        (&["--stdin-patch", "--no-such-option"][..], &b""[..], 2),
+        (&["--stdin-patch"][..], &over_budget[..], 4),
+    ] {
+        let stderr = Stdio::from(full().unwrap());
+        assert_eq!(
+            exit_with(args, stdin, Stdio::null(), stderr),
+            code,
+            "{args:?} with stderr at /dev/full"
+        );
+    }
+}
+
+/// Run the binary with stdout on a pipe whose reader has already gone; its exit code and stderr.
+fn run_with_stdout_closed(args: &[&str], stdin: &[u8]) -> (Option<i32>, String) {
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(writer))
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let _ = child.stdin.take().unwrap().write_all(stdin);
+    let out = child.wait_with_output().unwrap();
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// S3.17a.g2 (DDF-2026-010): every `--require-*` refusal exits 7 with its reason when the reader
+/// of stdout has gone. `findings verify --require-findings` and `--require-all` wrote the verdict
+/// first and treated the broken pipe as a clean exit 0 with an empty stderr, so a gate that
+/// closed its reader early passed; `--require-files` and `--require-hunks` refuse before writing.
+#[test]
+fn a_pending_refusal_survives_a_closed_stdout() {
+    let scratch = deep_diff_forge_testkit::Scratch::new("pending-refusal");
+    let empty = scratch.write("empty.jsonl", "");
+    let refused = scratch.write(
+        "refused.jsonl",
+        "{\"agent\": \"codex\", \"severity\": \"low\", \"title\": \"u\", \"body\": \"c\", \"path\": \"nope\"}\n",
+    );
+    let (empty, refused) = (empty.to_str().unwrap(), refused.to_str().unwrap());
+    let no_files = "just some prose that is not a diff\n";
+    let header_only = "diff --git a/x b/x\nold mode 100644\nnew mode 100755\n";
+    for (args, stdin, reason) in [
+        (
+            &["--stdin-patch", "--json", "--require-files"][..],
+            no_files,
+            "refused: 0 files in input (--require-files)\n",
+        ),
+        (
+            &["--stdin-patch", "--json", "--require-hunks"][..],
+            header_only,
+            "refused: 0 hunks in input (--require-hunks)\n",
+        ),
+        (
+            &[
+                "findings",
+                "verify",
+                "--findings",
+                empty,
+                "--require-findings",
+            ][..],
+            PATCH,
+            "refused: 0 findings in the findings file (--require-findings)\n",
+        ),
+        (
+            &["findings", "verify", "--findings", refused, "--require-all"][..],
+            PATCH,
+            "",
+        ),
+    ] {
+        // The same refusal with stdout open, and with its reader gone.
+        let (code, stdout, stderr) = run(args, stdin);
+        assert_eq!(
+            (code, stderr.as_str()),
+            (7, reason),
+            "{args:?} open: {stdout}"
+        );
+        let (code, stderr) = run_with_stdout_closed(args, stdin.as_bytes());
+        assert_eq!(
+            (code, stderr.as_str()),
+            (Some(7), reason),
+            "{args:?} with the reader of stdout gone"
+        );
+    }
+}
+
+/// S3.8.d (F6): a status line written before a tag ("0.9.0 prepared", "superseded once `v0.9.0`
+/// is tagged") is false from the tag on, and the class came back with every release. These
+/// documents say what they describe, so no line of theirs waits on a tag.
+/// `docs/RELEASE_AND_PUBLICATION.md` joins the list once its status heading does.
+#[test]
+fn status_lines_hold_after_the_tag() {
+    const STALE: [&str; 9] = [
+        " prepared)",
+        "is tagged",
+        "once tagged",
+        "not yet tagged",
+        "until tagged",
+        "will be tagged",
+        "to be tagged",
+        "not yet released",
+        "not yet published",
+    ];
+    let mut found = Vec::new();
+    for doc in [
+        "SECURITY.md",
+        "README.md",
+        "CONTRIBUTING.md",
+        "docs/OPERATIONS_AND_DAEMON.md",
+        "docs/reference/supported-platforms.md",
+    ] {
+        let path = format!("{}/../../{doc}", env!("CARGO_MANIFEST_DIR"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let flat = flat.to_lowercase();
+        found.extend(
+            STALE
+                .iter()
+                .filter(|stale| flat.contains(*stale))
+                .map(|stale| format!("{doc}: {stale:?}")),
+        );
+    }
+    assert!(
+        found.is_empty(),
+        "a status line that goes stale at the tag; say what the document describes: {found:?}"
+    );
+}

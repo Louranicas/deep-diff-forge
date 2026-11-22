@@ -1,6 +1,18 @@
 // DDF integration: R02, R09, R19, R21. Validate that a patch transforms the captured base into the captured candidate before attaching semantics; export explicit coverage and snapshot scope.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#shared-service
 // Module index: docs/RECOMMENDATION_INTEGRATION.md#shared-service
+
+/// `eprintln!` for this crate: a diagnostic that cannot be written is dropped, so the exit code
+/// chosen after it still reaches the caller. std's `eprintln!` panics when stderr cannot be
+/// written (`2>/dev/full`), and that panic exited 101 whatever the error was (S3.17a.g). Declared
+/// before every module, so it stands in for std's in the whole binary crate.
+macro_rules! eprintln {
+    ($($arg:tt)*) => {{
+        use ::std::io::Write as _;
+        let _ = ::std::writeln!(::std::io::stderr(), $($arg)*);
+    }};
+}
+
 mod analysis;
 mod args;
 mod bench;
@@ -32,11 +44,28 @@ fn emit(s: &str) {
     let mut stdout = std::io::stdout();
     if let Err(err) = stdout.write_all(s.as_bytes()).and_then(|()| stdout.flush()) {
         if err.kind() == std::io::ErrorKind::BrokenPipe {
+            if let Some(reason) = PENDING_REFUSAL.get() {
+                refuse_now(reason);
+            }
             std::process::exit(exit::SUCCESS);
         }
         eprintln!("error: write failed: {err}");
         std::process::exit(exit::IO);
     }
+}
+
+/// A refusal decided before its command writes its output, with its stderr line (empty for
+/// none). A reader that closes stdout then still gets exit 7, not the clean exit of a broken pipe:
+/// `findings verify --require-findings` exited 0 with an empty stderr when its reader had gone
+/// (S3.17a.g2, DDF-2026-010).
+static PENDING_REFUSAL: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
+/// Exit 7 with `reason` on stderr (nothing when it is empty).
+fn refuse_now(reason: &str) -> ! {
+    if !reason.is_empty() {
+        eprintln!("{reason}");
+    }
+    std::process::exit(EXIT_REFUSED);
 }
 
 /// `println!`-shaped wrapper over [`emit`] for broken-pipe-tolerant line output.
@@ -621,6 +650,13 @@ fn daemon_cmd(opts: &[String]) {
         eprintln!("       set XDG_RUNTIME_DIR, or pass an explicit --socket PATH.");
         std::process::exit(exit::USAGE);
     };
+    // Linux holds a socket path and its NUL in 108 bytes (`sun_path`), so a longer one can be
+    // neither bound nor reached: refused up front (S3.8.c). Before, `path` printed it, exit 0.
+    let length = location.path().as_os_str().len();
+    if matches!(sub, Some("path" | "start")) && length >= 108 {
+        eprintln!("error: the socket path is {length} bytes; a Unix socket path is at most 107");
+        std::process::exit(exit::USAGE);
+    }
     match sub {
         Some("path") => emitln!("{}", location.path().display()),
         Some("start") => {
@@ -1530,15 +1566,23 @@ fn findings_cmd(opts: &[String]) {
         &deep_diff_forge_core::sha256_hex(text.as_bytes()),
         &seal.tool_version,
     );
-    emit_pretty_json(&doc);
     let required = |flag: &str| opts.iter().any(|a| a == flag);
-    if required("--require-findings") && verdict.total() == 0 {
-        eprintln!("refused: 0 findings in the findings file (--require-findings)");
-        std::process::exit(EXIT_REFUSED);
-    }
     let all_accepted = verdict.refused.is_empty() && verdict.over_limit == 0;
-    if required("--require-all") && !all_accepted {
-        std::process::exit(EXIT_REFUSED);
+    // Decided before the verdict is written, so a reader that closes stdout cannot turn the
+    // refusal into a clean exit (S3.17a.g2).
+    let refusal = if required("--require-findings") && verdict.total() == 0 {
+        Some("refused: 0 findings in the findings file (--require-findings)")
+    } else if required("--require-all") && !all_accepted {
+        Some("")
+    } else {
+        None
+    };
+    if let Some(reason) = refusal {
+        let _ = PENDING_REFUSAL.set(reason);
+    }
+    emit_pretty_json(&doc);
+    if let Some(reason) = refusal {
+        refuse_now(reason);
     }
 }
 

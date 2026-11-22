@@ -48,16 +48,17 @@ pub fn fit_emitted<E>(
 ) -> Result<Value, E> {
     let start = max_bytes / copies.max(1);
     let mut inner = start.clamp(MIN_MAX_BYTES, max_bytes.max(MIN_MAX_BYTES));
-    for attempt in 1.. {
+    for _ in 1..FIT_ATTEMPTS {
         let answer = view(inner)?;
         let size = emitted(&answer);
-        if size <= max_bytes || inner == MIN_MAX_BYTES || attempt == FIT_ATTEMPTS {
+        if size <= max_bytes || inner == MIN_MAX_BYTES {
             return Ok(answer);
         }
         let proportional = inner.saturating_mul(max_bytes) / size;
         inner = proportional.min(inner - inner / 4).max(MIN_MAX_BYTES);
     }
-    unreachable!("the attempts range is unbounded and every path returns by FIT_ATTEMPTS")
+    // The last attempt's answer is returned as it is.
+    view(inner)
 }
 
 /// How many times [`fit_emitted`] runs a view at most.
@@ -355,7 +356,8 @@ fn hunk_head(
         }
         other => (other, false),
     };
-    let Value::Object(mut map) = json!({
+    // An object literal is always an object; the empty map is only the other arm (T-18c).
+    let mut map = match json!({
         "address": hunk.address(&file.path),
         "old_start": hunk.old_start,
         "old_lines": old_lines,
@@ -364,8 +366,9 @@ fn hunk_head(
         "section": section,
         "additions": additions,
         "deletions": deletions,
-    }) else {
-        unreachable!("json! of an object literal is an object")
+    }) {
+        Value::Object(map) => map,
+        _ => serde_json::Map::new(),
     };
     if !hazards.is_empty() {
         map.insert("hazards".into(), json!(hazards));
