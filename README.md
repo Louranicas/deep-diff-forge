@@ -350,14 +350,16 @@ moved from this page. The release archive ships this README alone: read them in 
 **Everyone is welcome.** Deep-Diff-Forge is an open invitation, with no prior involvement
 needed, and no contribution is too small. Fix a typo, report a bug with a patch that reproduces
 it, add a tree-sitter language, close one of the [known limits](docs/release-notes/0.9.0.md#status-at-release), or review
-someone else's pull request.
+someone else's merge request.
 
 1. Read [CONTRIBUTING.md](CONTRIBUTING.md). It covers setup in three commands, the quality bar
    and the open problems.
 2. Pick an [open issue on GitLab](https://gitlab.com/lukeomahoney/deep-diff-forge/-/issues), or
    [open your own](https://gitlab.com/lukeomahoney/deep-diff-forge/-/issues/new).
-3. Send a pull request. CI tells you everything a reviewer would check mechanically, so the
-   human review can focus on ideas.
+3. Open a [merge request on GitLab](https://gitlab.com/lukeomahoney/deep-diff-forge/-/merge_requests).
+   The local gate (`scripts/ci_local.sh`) checks everything a reviewer would check mechanically,
+   so the human review can focus on ideas. GitHub is a mirror and takes pull requests only to
+   bring its `main` up to date.
 
 Everyone participates under the [Code of Conduct](CODE_OF_CONDUCT.md). Security issues go
 through a confidential issue on GitLab ([SECURITY.md](SECURITY.md#reporting-a-vulnerability)), not a public issue.

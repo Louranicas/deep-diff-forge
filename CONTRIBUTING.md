@@ -4,7 +4,7 @@
 veterans, people and AI-assisted workflows, Rust experts and people who have never written
 Rust. You don't need permission to start or prior involvement, and no contribution is too small.
 Bug reports, a sharper sentence in the docs, a failing test that proves a bug, a new
-tree-sitter language, or a review of someone else's pull request all move the project forward.
+tree-sitter language, or a review of someone else's merge request all move the project forward.
 
 This guide covers how to get started, what we ask of every change, and how a change
 reaches `main`.
@@ -15,7 +15,7 @@ reaches `main`.
 | --- | --- |
 | Found a bug | [Open a bug report](https://gitlab.com/lukeomahoney/deep-diff-forge/-/issues/new). A patch that reproduces it is the best report there is. |
 | An idea | [Open a feature request](https://gitlab.com/lukeomahoney/deep-diff-forge/-/issues/new) and describe the problem before the solution. |
-| An hour | Pick an issue labelled [`good first issue`](https://github.com/Louranicas/deep-diff-forge/labels/good%20first%20issue) or [`help wanted`](https://github.com/Louranicas/deep-diff-forge/labels/help%20wanted), or one of the open problems below. |
+| An hour | Pick an [open issue on GitLab](https://gitlab.com/lukeomahoney/deep-diff-forge/-/issues), or one of the open problems below. |
 | A security finding | **Don't open a public issue.** Follow [SECURITY.md](SECURITY.md) and open a confidential issue on GitLab (https://gitlab.com/lukeomahoney/deep-diff-forge/-/issues/new, tick *This issue is confidential*). |
 | Docs or graphics to improve | Every `.md` file is fair game. The code is the source of truth, so check claims against it. |
 
@@ -43,7 +43,7 @@ You need Rust **1.88 or newer** (edition 2024) and Git. [`just`](https://github.
 is optional and runs the same commands.
 
 ```bash
-git clone https://github.com/<you>/deep-diff-forge.git
+git clone https://gitlab.com/<you>/deep-diff-forge.git    # your fork on GitLab
 cd deep-diff-forge
 cargo build -p deep-diff-forge-cli
 cargo test --workspace --locked
@@ -57,7 +57,7 @@ how the 14 crates fit together (plus `deep-diff-forge-testkit`, test-only and ne
 
 Deep-Diff-Forge reviews untrusted code, so it holds itself to a strict bar. The aim is to
 make it hard to write bad code: the gates catch problems so reviewers don't have to. Every
-pull request must pass:
+merge request must pass:
 
 ```bash
 cargo fmt --all --check
@@ -81,45 +81,44 @@ What the gates enforce, and what we ask in review:
   and no unexplained lint suppression.
 - **A test that fails on the old code.** A fix comes with a test that fails without the fix. A
   new behaviour comes with tests of its refusals as well as its successes.
-- **Mutation-tested diffs.** CI runs `cargo-mutants` on the lines your pull request changes (four
-  shards), and a surviving mutant fails the check. Run `scripts/diff_mutation.sh origin/main`
-  locally to see survivors before CI does.
-- **Fuzzed parsers.** A parser change must survive the fuzz targets in [`fuzz/`](fuzz/). CI fuzzes
-  each target briefly; run longer locally (`cargo +nightly fuzz run patch_parser`).
+- **Mutation-tested diffs.** `scripts/diff_mutation.sh origin/main` runs `cargo-mutants` on the
+  lines your change touches, and a surviving mutant fails it; run it before asking for review
+  (the GitHub mirror's CI runs it in four shards on its pull requests).
+- **Fuzzed parsers.** A parser change must survive the fuzz targets in [`fuzz/`](fuzz/). The
+  GitHub mirror's CI fuzzes each target briefly; run longer locally
+  (`cargo +nightly fuzz run patch_parser`).
 - **Docs move with code.** Several tests read the reference documents in
   [`docs/reference/`](docs/reference/) (exit codes, caps, daemon methods). If your change alters
-  a documented contract, update the doc in the same pull request.
+  a documented contract, update the doc in the same merge request.
 - **A new dependency is a reviewed decision.** `cargo deny` and `cargo audit` gate licences,
   sources and advisories, and the committed SBOM must be regenerated
   (`python3 scripts/security/generate_spdx_sbom.py`).
 
 ## How a change reaches `main`
 
-1. Fork the repository and create a branch from `main`.
+GitLab, <https://gitlab.com/lukeomahoney/deep-diff-forge>, is the place of contribution and of
+release. GitHub, <https://github.com/Louranicas/deep-diff-forge>, is a mirror: it takes pull
+requests only to bring its `main` up to date with GitLab's, so a contribution opened there is not
+merged there.
+
+1. Fork the repository on GitLab and create a branch from `main`.
 2. Make focused commits. Messages follow [Conventional Commits](https://www.conventionalcommits.org/)
    and describe the behaviour, for example
    `fix(daemon): a second start never replaces a live daemon's socket`.
-3. Open a pull request and fill in the template. Draft pull requests are welcome for early
+3. Open a merge request on GitLab against `main`. Draft merge requests are welcome for early
    feedback.
-4. `main` is protected. Merging needs a pull request, a branch that is up to date with `main`,
-   and **thirteen required checks**:
-   - the gate;
-   - supply chain;
-   - review-controller evidence;
-   - secret scan;
-   - Rust 1.88 compatibility;
-   - macOS tests;
-   - the bench comparison (base vs head);
-   - four diff-mutation shards;
-   - CodeQL for the Rust code and for the workflows (since 2026-11-02).
-
-   Nobody can bypass them, including the maintainer.
+4. GitLab runs no CI for this project. Before a merge the maintainer runs the local gate,
+   `scripts/ci_local.sh`, on the merge request's head commit; it must end with
+   `steps failed: 0`. The maintainer merges.
 5. Add an entry under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md) when users would notice
    the change.
 
-Every pull request also runs the macOS job (`macOS tests`), so socket and platform changes are
-tested on macOS before they merge. Two more platform jobs run on every pull request but are not
-required: `Linux arm64 tests` and `macOS launchd agent`.
+On the GitHub mirror, `main` is protected by a branch ruleset whose required checks (the gate,
+supply chain, review-controller evidence, secret scan, Rust 1.88 compatibility, macOS tests, the
+bench comparison, four diff-mutation shards and CodeQL) run on the mirror's pull requests, with
+`Linux arm64 tests` and `macOS launchd agent` as jobs that are not required. A merge request on
+GitLab is tested on Linux x86_64 only, by the local gate
+([supported platforms](README.md#supported-platforms)).
 
 ## Licence
 

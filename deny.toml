@@ -1,6 +1,9 @@
 # cargo-deny supply-chain policy (deployment framework gap analysis, P1).
-# The workspace is dependency-free today; this policy guards future growth
-# (the tree-sitter / TUI / async waves) before heavy deps arrive.
+# The workspace has third-party dependencies (tree-sitter, ratatui and crossterm, serde and
+# serde_json, rustix, nix and more; `Cargo.lock` and `sbom.spdx.json` list every one), and this
+# policy holds each to its advisories, licence, version and source rules. No published crate is
+# free of them: each declares its own or reaches `nix` through `deep-diff-forge-core` (since
+# 0.10.0). Only the test-only `deep-diff-forge-testkit` has none.
 
 [advisories]
 version = 2
