@@ -458,6 +458,19 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - **The daemon answers a changed file name that is not UTF-8 with code 4** (`review.change`),
   as the command line exits 4 (S3.27.f); it was code 3, which reads as "may be transient".
 
+- **A file hidden from `git diff` is never both blind and unlabelled** (S3.27,
+  [DDF-2026-006](docs/advisories/DDF-2026-006.md)). The first fix of this release read such a
+  file again as text and labelled it; it left the file silent when that reading failed. Now a
+  path whose `diff` attribute is unset or names a driver carries `diff_suppressed` whatever the
+  second reading gives (a byte that is not UTF-8, the byte budget, a refusal). A UTF-16 or
+  UTF-32 file, also an existing source rewritten in one of them, is labelled with the new cause
+  `encoding` (labelled, not decoded). A second reading that the byte budget or the time limit
+  cuts off never leaves a binary change silent: the attribute label stands, or the acquisition
+  fails with the step named; a binary by content whose text form passes the remaining budget
+  is therefore refused where 0.9.0 read it. A changed file whose name is not UTF-8 exits 4
+  (`change_input`), not 3, in every Git selection and in a file pair. A Git helper that
+  outlives Git can no longer stretch the acquisition past its limit (S3.17a.b).
+
 ## [0.9.0] - 2026-11-18
 
 **Feature release with fixes for released versions.** 0.9.0 adds five integrity signals for a
