@@ -299,7 +299,9 @@ enum Scope {
 /// What a rule looks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Match {
-    /// Any of these tokens. A trailing `*` makes a token a prefix (no boundary after it).
+    /// Any of these tokens. A trailing `*` makes a token a prefix (no boundary after it); a
+    /// trailing `$` makes it end its statement: after it, only white space, then the end of the
+    /// line, `,`, `;` or a comment.
     Tokens(&'static [&'static str]),
     /// Any line with code on it.
     AnyCode,
@@ -644,7 +646,9 @@ const RULES: &[Rule] = &[
         Side::New,
         View::Code,
         Scope::Languages(PYTHON),
-        Match::Tokens(&["assert True", "self.assertTrue(True)"]),
+        // `assert True` only where the statement ends: `assert True == False` fails on every
+        // run, and before 2026-11-22 the token was labelled whatever followed it (S3.16).
+        Match::Tokens(&["assert True$", "self.assertTrue(True)"]),
     ),
     rule(
         S::TrivialAssert,
@@ -3766,12 +3770,20 @@ fn imports_module(code: &str, raw: &str, modules: &[&str]) -> bool {
 }
 
 fn token_in(text: &str, token: &str) -> bool {
-    match token.strip_suffix('*') {
+    let before = |i: usize| i == 0 || !is_boundary_blocker(text.as_bytes()[i - 1]);
+    if let Some(prefix) = token.strip_suffix('*') {
         // A prefix token: a boundary before it, none required after.
-        Some(prefix) => text
-            .match_indices(prefix)
-            .any(|(i, _)| i == 0 || !is_boundary_blocker(text.as_bytes()[i - 1])),
-        None => has_token(text, token),
+        text.match_indices(prefix).any(|(i, _)| before(i))
+    } else if let Some(whole) = token.strip_suffix('$') {
+        // A token that ends its statement. A comment is blanked in the code view, and a `\`
+        // continues the statement on the next line, so it is not an end.
+        text.match_indices(whole).any(|(i, _)| {
+            let after =
+                text[i + whole.len()..].trim_start_matches(|c: char| c.is_ascii_whitespace());
+            before(i) && after.bytes().next().is_none_or(|b| b",;#".contains(&b))
+        })
+    } else {
+        has_token(text, token)
     }
 }
 
@@ -3929,9 +3941,10 @@ mod tests {
     }
 
     fn sample_token(token: &str) -> String {
-        match token.strip_suffix('*') {
-            Some(prefix) => format!("{prefix}_case()"),
-            None => format!("{token} x"),
+        match (token.strip_suffix('*'), token.strip_suffix('$')) {
+            (Some(prefix), _) => format!("{prefix}_case()"),
+            (_, Some(whole)) => format!("{whole}  # x"),
+            _ => format!("{token} x"),
         }
     }
 
@@ -4867,7 +4880,7 @@ mod tests {
             let triggers: Vec<String> = match rule.matches {
                 Match::Tokens(tokens) => tokens
                     .iter()
-                    .map(|token| token.trim_end_matches('*').to_owned())
+                    .map(|token| token.trim_end_matches(['*', '$']).to_owned())
                     .collect(),
                 Match::Imports(modules) => modules
                     .iter()
@@ -7936,6 +7949,53 @@ mod tests {
         for (path, line) in cases {
             assert_eq!(signals(&added(path, &[line])), [], "{path}: {line}");
         }
+    }
+
+    /// S3.16: Python `assert True` cannot fail only where its statement ends. Release 0.9.0
+    /// labelled the token whatever followed it: eleven assertions that fail on every run, five
+    /// that depend on a variable and a continued line (the seventeen rows of the hardening
+    /// review's FINDINGS 0.1). Each is not labelled; the statement ended by the end of the
+    /// line, a message, a `;` or a comment is.
+    #[test]
+    fn a_python_assert_true_is_trivial_only_where_its_statement_ends() {
+        let path = "tests/test_app.py";
+        for rest in [
+            " == False",
+            " and False",
+            " is False",
+            " != True",
+            " in []",
+            " - 1",
+            " * 0",
+            " ^ True",
+            " < 0",
+            ".__ne__(True)",
+            " not in [True]",
+            " and ready",
+            " if ready else False",
+            " & ready",
+            " == ready",
+            " is ready",
+        ] {
+            let line = format!("    assert True{rest}");
+            assert_eq!(signals(&added(path, &[&line])), [], "{line}");
+        }
+        let continued = added(path, &["    assert True \\", "        and ready"]);
+        assert_eq!(signals(&continued), [], "a continued line");
+        for line in [
+            "    assert True",
+            "    assert True, \"msg\"",
+            "    assert True,'msg'",
+            "    assert True  # why",
+            "    assert True; x = 1",
+            "    assert True ;",
+            "    assert True\t",
+            "    if ready: assert True",
+        ] {
+            assert_eq!(signals(&added(path, &[line])), [S::TrivialAssert], "{line}");
+        }
+        // A stated limit: this cannot fail either, and is not labelled.
+        assert_eq!(signals(&added(path, &["    assert True or ready"])), []);
     }
 
     /// A file from hunk body lines written as in a patch (`+`, `-` or a space first), after one

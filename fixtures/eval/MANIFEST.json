@@ -2336,6 +2336,47 @@
         }
       ],
       "sha256": "1899ea4494cb5c98f03b69b776a52a0bd05658d655d13ac6bd0c2562f7cf53bb"
+    },
+    {
+      "id": "evidence/python-trivial-assert-ends",
+      "kind": "evidence",
+      "patch": "evidence/python-trivial-assert-ends.patch",
+      "origin": "S3.16, 2026-11-22: Python `assert True` cannot fail only where its statement ends. Release 0.9.0 labelled trivial_assert on the token whatever followed it; the seventeen rows of the hardening review (FINDINGS 0.1: eleven assertions that fail on every run, five that depend on a variable, a continued line) are hard negatives here, with `assert Trueish`. The statement ended by the line, a message, a comment or a `;` is labelled. `assert True or ready` also cannot fail and is not labelled: a declared miss, stated in the README row.",
+      "expect": [
+        {
+          "path": "tests/test_flags.py",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/test_flags.py",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "tests/test_flags.py",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "tests/test_flags.py",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 5
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "tests/test_flags.py",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 24
+        }
+      ],
+      "sha256": "9bda1054eb50b92f932548c99757914834c2ea3d12465da36add4130c3b68623"
     }
   ]
 }

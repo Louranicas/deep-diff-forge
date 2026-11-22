@@ -1,0 +1,30 @@
+diff --git a/tests/test_flags.py b/tests/test_flags.py
+--- a/tests/test_flags.py
++++ b/tests/test_flags.py
+@@ -1,2 +1,26 @@
+ def test_flags(ready):
++    assert True
++    assert True, "a placeholder"
++    assert True  # nothing to check yet
++    assert True; x = 1
++    assert True == False
++    assert True and False
++    assert True is False
++    assert True != True
++    assert True in []
++    assert True - 1
++    assert True * 0
++    assert True ^ True
++    assert True < 0
++    assert True.__ne__(True)
++    assert True not in [True]
++    assert True and ready
++    assert True if ready else False
++    assert True & ready
++    assert True == ready
++    assert True is ready
++    assert True \
++        and ready
++    assert True or ready
++    assert Trueish
+     return ready
