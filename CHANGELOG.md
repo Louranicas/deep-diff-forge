@@ -311,6 +311,27 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   the daemon's and MCP's bytes. A `diff.rank` answer is about 2.2 times its earlier size.
 
 
+- **What the hooks tell the judged agent** (S3.17a.f, i, l; S3.21.d). Advice after a tool call
+  says how a line was read as the ranking reads it (`lexical` or `hunk`) and names only the
+  accepted repair: no hook message names a substitute that does not count (0.9.0 printed the
+  first "Not accepted" substitute, some of which no label raises) or points the agent at
+  `explain signal`. Commands the hooks name are this binary's absolute, shell-quoted path.
+  Advice names once, for the whole file, a signal that has no evidence row (`hazardous_text`,
+  `executable_bit`, `symlink_change`, or a code signal past the 32 rows). When advice is off for
+  a reason told once, the model is told as well as the user. A built-in rule `builtin:<name>`
+  keeps its name at later stops.
+
+- **The judge's patch is the bytes forge-warden's `make_patch.sh` writes** (S3.17a.h): full index
+  lines and the submodule options, held by a test that runs a recorded copy of that script. A
+  verdict's `patch_sha256` therefore differs from 0.9.0's for the same change.
+
+- **`agent doctor --gate` gains the link `claims_verified`** (S3.25.a). Under a policy that
+  requires verified claims (forge-warden 0.3.0's `init` writes one) the hook's stops hold and
+  never pass, an uncommitted or staged change can at best hold ("commit first"), and the
+  session start says so. `docs/reference/agent-hooks.md` states the hooks' limits, among them
+  four ways a judged agent can make a stop silent or unjudged, each re-run on this build.
+
+
 ### Fixed
 
 - **A text file Git was told to show as binary is read as text** (S3.20,
