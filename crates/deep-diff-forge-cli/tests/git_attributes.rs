@@ -310,6 +310,7 @@ fn signals(entry: &Value) -> Vec<&str> {
 /// `diff_suppressed` with cause `attribute` whatever the second reading gives.
 #[test]
 fn an_attribute_hidden_file_is_labelled_even_when_unreadable() {
+    type Row = (&'static [u8], &'static str, Vec<u8>, Vec<u8>);
     let script = |payload: bool| {
         let mut text = b"#!/bin/sh\n# caf\xff\n".to_vec();
         if payload {
@@ -323,7 +324,7 @@ fn an_attribute_hidden_file_is_labelled_even_when_unreadable() {
         text.extend_from_slice(b"// \xff\n");
         text
     };
-    let rows: [(&[u8], &str, Vec<u8>, Vec<u8>); 2] = [
+    let rows: [Row; 2] = [
         (b"*.sh -diff\n", "s.sh", script(false), script(true)),
         (b"*.rs diff=nonexistent\n", "m.rs", rust(false), rust(true)),
     ];
@@ -361,6 +362,7 @@ fn wide(text: &str, bom: &[u8], unit: fn(u32) -> Vec<u8>) -> Vec<u8> {
 /// `content` (`a_text_file_git_was_told_to_hide_is_read_and_the_act_is_labelled`).
 #[test]
 fn utf16_sources_are_labelled_encoding() {
+    type Unit = fn(u32) -> Vec<u8>;
     let le = |c: u32| u16::try_from(c).unwrap().to_le_bytes().to_vec();
     let be = |c: u32| u16::try_from(c).unwrap().to_be_bytes().to_vec();
     let le32 = |c: u32| c.to_le_bytes().to_vec();
@@ -372,7 +374,7 @@ fn utf16_sources_are_labelled_encoding() {
         text.push_str("Write-Output 'done'\r\n");
         text
     };
-    let rows: [(&str, &[u8], fn(u32) -> Vec<u8>, &str); 4] = [
+    let rows: [(&str, &[u8], Unit, &str); 4] = [
         ("UTF-16LE with a mark", b"\xff\xfe", le, "binary_changed"),
         ("UTF-16BE with a mark", b"\xfe\xff", be, "binary_changed"),
         (

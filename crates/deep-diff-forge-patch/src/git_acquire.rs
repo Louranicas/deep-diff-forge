@@ -481,6 +481,10 @@ impl Runner<'_> {
         clippy::disallowed_methods,
         reason = "the git-acquisition door: patch acquisition spawns git only here, hardened by core::git"
     )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one poll loop bounds the child, its byte budget and its readers by one deadline"
+    )]
     fn output_reading(
         &self,
         command: &'static str,
@@ -559,7 +563,12 @@ impl Runner<'_> {
                     limit_bytes: budget,
                 });
             }
-            if let Some(status) = child.try_wait().map_err(spawn_err)? {
+            // Git has exited, but a process it started can still hold its pipes open: the
+            // readers are waited for against the same deadline (S3.17a.b).
+            if let Some(status) = child.try_wait().map_err(spawn_err)?
+                && stdout_reader.is_finished()
+                && stderr_reader.is_finished()
+            {
                 break status;
             }
             if std::time::Instant::now() >= self.deadline {
@@ -576,19 +585,6 @@ impl Runner<'_> {
             std::thread::sleep(pause);
             pause = next_pause(pause);
         };
-        // Git has exited, but a process it started can still hold its pipes open: the readers
-        // are joined against the same deadline and detached when it passes (S3.17a.b).
-        while !(stdout_reader.is_finished() && stderr_reader.is_finished()) {
-            if std::time::Instant::now() >= self.deadline {
-                drop((stdout_reader, stderr_reader));
-                return Err(GitAcquireError::TimedOut {
-                    command,
-                    limit_ms: self.options.time_limit.as_millis(),
-                });
-            }
-            std::thread::sleep(pause);
-            pause = next_pause(pause);
-        }
         let (out, read) = stdout_reader.join().unwrap_or_default();
         let stderr = stderr_reader.join().unwrap_or_default();
         if out.len() > budget {
@@ -844,7 +840,7 @@ pub fn acquire(
     } else {
         Vec::new()
     };
-    let diff = read_binary_again(&runner, diff, &selection_args)?;
+    let diff = read_binary_again(&runner, &diff, &selection_args)?;
     Ok(GitAcquisition {
         root,
         selection: selection.clone(),
@@ -876,7 +872,7 @@ pub fn acquire(
 /// (S3.27.d): a reading that was cut off is no answer, and a binary change is never left silent.
 fn read_binary_again(
     runner: &Runner<'_>,
-    first: StructuredDiff,
+    first: &StructuredDiff,
     selection: &[OsString],
 ) -> Result<StructuredDiff, GitAcquireError> {
     let mut read = first.clone();
