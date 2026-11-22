@@ -284,6 +284,26 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
     leftover temporary checkpoint files are removed. A torn record a checkpoint names, and other
     malformed checkpoints, stay refusals.
 
+- **The stop hook reads forge-warden's verdict version 3, and a fail it cannot read holds the
+  stop** (S3.21). forge-warden's main branch (for 0.3.0) writes `forge-warden.verdict.v3`;
+  0.9.0 read only v2, so a v3 document was no verdict and a stop the judge failed was allowed
+  as UNJUDGED. No released pair is affected (forge-warden 0.2.1 writes v2), so there is no
+  advisory.
+  - A v3 document is checked member by member against forge-warden's v3 schema, as v2 is
+    against its own; v2 is read as before. What v3 adds is read in its own form only: bound
+    claims (`verified: true`, `base`, `head` and `merge_base` of one length, 40 or 64 hex
+    digits), which the hook cannot check and does not use (the seals bind the verdict to its
+    patch); a rule of kind `builtin`, which has a `builtin:` id (and is the only one that
+    may), holds and names no waiver; the note code `claims_unverified`. Any other schema is no
+    verdict, and the reason names it.
+  - Exit 7, the judge's fail, now holds the stop when its document is no verdict (missing, of
+    a schema this build does not read, not whole, not sealed to the inputs, saying another
+    outcome): once, as a fail with no failing rule, with why the verdict could not be read.
+    Before, it was allowed as UNJUDGED. Exit 0 and 8 still need a verdict.
+  - `agent doctor --gate` names, in the link `chain`, the verdict schema and forge-warden
+    version of the judge's document and the schemas this build reads; a judge that writes a
+    schema this build does not read fails that link, named with its version.
+
 - **A moved file's old path is squashed as Git squashes it** (independent review of S3a,
   S3A-L-1, low). `rename from d//x` or `copy from d//x` was reported as `old_path` `d//x`, while
   `git apply` read `d/x`. It is `d/x` now (`render::old_path`), with a real-apply test.

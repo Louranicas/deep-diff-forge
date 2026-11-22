@@ -756,8 +756,9 @@ bounded form.** What it holds to:
   Settings an administrator manages are not read.
 - **The judge decides, by its exit code and its document together.** DDF starts
   `forge-warden` under a deadline and output caps. Exit 0, 7 or 8 is a verdict only with a
-  whole `forge-warden.verdict.v2` document, checked member by member against the schema
-  forge-warden ships (`cli/src/verdict_v2.rs`): every required member and nested member, its
+  whole `forge-warden.verdict.v2` or `forge-warden.verdict.v3` document, checked member by
+  member against the schema forge-warden ships for that version (`cli/src/verdict_v2.rs`;
+  v3's bound claims and `builtin:` rules in their schema's form only): every required member and nested member, its
   pattern or closed set of values, lists the schema says are never empty, the `exit` triple
   that belongs to the `verdict`, a `summary` that counts the `rules`; no key given twice at
   any depth. It must agree with the process exit, hold no rule stricter than the verdict,
@@ -766,7 +767,8 @@ bounded form.** What it holds to:
   members a later forge-warden adds, and a rule `kind` or note `code` this version does not
   know. A member the schema makes optional is checked when it is present. Not checked: the
   date the judge evaluated on (a verdict for the same policy, patch and ranker is the same
-  verdict tomorrow).
+  verdict tomorrow). Exit 7 with a document that is no verdict holds the stop once all the
+  same, saying that the verdict could not be read and why: a fail is never taken for silence.
 - **A ranker is hashed under bounds.** To seal a verdict to the ranker it gave, the hook
   hashes each candidate in pieces: a regular file of at most 256 MiB. Listing the ranker
   directory and hashing are done by a helper the hook starts as a child (`agent hook

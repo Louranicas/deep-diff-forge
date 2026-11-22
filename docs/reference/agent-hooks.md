@@ -161,15 +161,28 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   an absolute path. A judge inside the repository it would judge is not run, however it was
   named: the change could have written it.
 - **A verdict is an exit code and a document that agree.** Exit 0, 7 or 8 counts only with a
-  whole `forge-warden.verdict.v2` document, checked member by member against the schema
-  forge-warden ships (required members and their nested members, patterns, closed sets of
-  values, the exit triple that belongs to the verdict, a summary that counts the rules, no
-  key given twice). It must say the same outcome as the exit code, hold no rule stricter
-  than that outcome, be sealed to the policy, the patch and the ranker this hook gave (their
-  SHA-256), be on a ranking the judge produced itself, and be on a Git the machine's owner
-  enrolled. Anything else is UNJUDGED: a program that is merely named `forge-warden` and exits 0 does not
-  pass a stop. The seals do not prove who wrote the document; they bind a real judge's answer
+  whole `forge-warden.verdict.v2` or `forge-warden.verdict.v3` document, each checked member
+  by member against the schema forge-warden ships for it (required members and their nested
+  members, patterns, closed sets of values, the exit triple that belongs to the verdict, a
+  summary that counts the rules, no key given twice). It must say the same outcome as the
+  exit code, hold no rule stricter than that outcome, be sealed to the policy, the patch and
+  the ranker this hook gave (their SHA-256), be on a ranking the judge produced itself, and be
+  on a Git the machine's owner enrolled. Anything else is no verdict: a program that is merely
+  named `forge-warden` and exits 0 does not pass a stop, and exit 0 or 8 with such a document
+  is UNJUDGED. The seals do not prove who wrote the document; they bind a real judge's answer
   to these inputs.
+- **Exit 7 is the judge's fail, and a fail holds the stop even when its document cannot be
+  read as a verdict** (no document, a schema this build does not read, a document that is
+  not whole, not sealed to these inputs or that says another outcome): the stop is held once,
+  like a fail with no failing rule, and the message says that the verdict could not be read,
+  why, and that which rules failed is not known; the failure then stands for a person.
+- **What v3 adds is read for what it means.** Claims that forge-warden bound (`verified:
+  true`, with `base`, `head` and `merge_base` of one length, 40 or 64 hex digits) are accepted
+  in that form only. The hook gives no `--repo`, so it cannot check them and does not use
+  them: claims never change an outcome, and the verdict is bound to the hook's patch by the
+  seals alone. A rule of kind `builtin` must have a `builtin:` id (and only it may), be a hold
+  and name no waiver; it is shown like any other rule the judge holds for. A later schema
+  (`forge-warden.verdict.v4`) is no verdict, and the reason names it.
 - **The policy is the one at the commit the session began from** (`warden.toml`, or
   `--policy NAME`), read from Git, never from the working tree: a change cannot loosen the
   policy it is judged by, and committing the loosened policy does not make it the policy
@@ -331,7 +344,10 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   depends on it. In the repository of the current directory it checks each link and says what
   it found: Git 2.40 or later, the repository, the policy at `HEAD`, the judge, the chain (the
   judge is given a probe, a patch that adds one comment line to the policy, and must return a
-  verdict with a ranker this machine has), whether the policy protects its own file (a policy
+  verdict with a ranker this machine has; the link names the verdict schema and the
+  forge-warden version the judge's document gives and the schemas this build reads, v2 and
+  v3, and a judge that writes a schema this build does not read is this link, not ready,
+  named with its version), whether the policy protects its own file (a policy
   that lets the probe pass can be loosened by any change), the patch (the one a stop would
   judge is made, and the one of what is staged, so a path marked skip-worktree, an untracked
   file that cannot be read or an index with unmerged paths is found here and not at the
