@@ -12,6 +12,7 @@
 use crate::mcp::entry_json;
 use deep_diff_forge_core::exit::{self, EXIT_CODES, lookup};
 use serde_json::{Value, json};
+use std::fmt::Write as _;
 use std::io::Read;
 use std::process::{Command, Stdio};
 
@@ -84,13 +85,14 @@ pub fn explain(args: &[String]) -> Result<String, String> {
     if (entry.family, entry.code) == ("engine", exit::INPUT_CONTRACT_REFUSED) {
         text.push_str(REFUSAL_PREAMBLE);
         for r in exit::REFUSALS {
-            text.push_str(&format!(
-                "  {:<18} ({}) stdout {}, next {}\n",
+            let _ = writeln!(
+                text,
+                "  {:<18} ({}) stdout {}, next {}",
                 r.class,
                 r.tag,
                 r.stdout.name(),
                 r.action.name()
-            ));
+            );
         }
     }
     Ok(text)

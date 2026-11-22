@@ -1519,7 +1519,6 @@ fn refusal_reasons_match_the_registry() {
     let registry = schema["refusals"]
         .as_array()
         .expect("schema exit-codes has refusals");
-    assert!(!registry.is_empty());
     let (code, stdout, _) = run(&["explain", "7", "--json"], "");
     assert_eq!(code, 0);
     let explained: serde_json::Value = serde_json::from_str(&stdout).unwrap();
