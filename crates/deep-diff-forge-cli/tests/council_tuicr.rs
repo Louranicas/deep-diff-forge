@@ -1467,13 +1467,15 @@ fn interrupted_exports_held_locks_and_unsafe_sessions_refuse_import() {
     refused(&f.import(&session, &[]), "interrupted export");
     fs::remove_file(&marker).unwrap();
     let lock = f.run.join("decisions.lock");
-    fs::write(&lock, "1").unwrap();
+    let go = f.root.join("go");
+    let mut holder = hold_lock(&lock, &go);
     refused(&f.import(&session, &["--execute"]), "locked");
     assert!(
         json(&f.import(&session, &[]))["events"].is_array(),
         "a dry run takes no lock"
     );
-    fs::remove_file(&lock).unwrap();
+    fs::remove_file(&go).unwrap();
+    holder.wait().unwrap();
     let escaping = f.root.join("escaping.json");
     fs::copy(&session, &escaping).unwrap();
     edit_session(&escaping, |s| {
@@ -1569,4 +1571,267 @@ fn real_tuicr_human_comment_is_imported_as_a_disposition() {
     let stale = import(&["--execute"]);
     refused(&stale, "stale file");
     println!("stale disposition: {}", stderr(&stale).trim());
+}
+
+/// Hold an exclusive `flock` on `path` from another process until `go` is removed; returns when
+/// it is held (as in the hook tests).
+fn hold_lock(path: &Path, go: &Path) -> std::process::Child {
+    fs::write(go, "").unwrap();
+    let held = go.with_extension("held");
+    let child = Command::new("flock")
+        .arg("-o")
+        .arg(path)
+        .args([
+            "sh",
+            "-c",
+            "touch \"$1\"; while [ -e \"$2\" ]; do sleep 0.02; done",
+            "sh",
+        ])
+        .arg(&held)
+        .arg(go)
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let asked = std::time::Instant::now();
+    while !held.exists() {
+        assert!(
+            asked.elapsed() < std::time::Duration::from_secs(20),
+            "no lock"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    child
+}
+/// Set the session's review-level human comments to `ids`, with `long` bytes of text on the last.
+fn decisions(session: &Path, ids: &[&str], long: usize) {
+    edit_session(session, |s| {
+        let mut list: Vec<serde_json::Value> = ids
+            .iter()
+            .map(|id| human(id, "Luke", "note", &format!("decision {id}")))
+            .collect();
+        if let Some(last) = list.last_mut().filter(|_| long > 0) {
+            last["content"] = format!("decision {}", "x".repeat(long)).into();
+        }
+        s["review_comments"] = list.into();
+    });
+}
+/// A run whose journal holds event 0 (`h-1`) and checkpoint 0, and its session.
+fn journaled() -> (Fixture, PathBuf) {
+    let f = Fixture::new();
+    let session = f.session("journal.json", |_| {});
+    decisions(&session, &["h-1"], 0);
+    assert_eq!(
+        json(&f.import(&session, &["--execute"]))["events"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    (f, session)
+}
+fn checkpoint(f: &Fixture, seq: u64) -> PathBuf {
+    f.run
+        .join("decisions.checkpoints")
+        .join(format!("{seq:020}.json"))
+}
+fn planned(o: &Output) -> usize {
+    json(o)["events"].as_array().unwrap().len()
+}
+/// The truncation guarantee: cutting the journal back to any earlier head (whole lines, down to
+/// none) is refused.
+fn cut_back_is_detected(f: &Fixture, session: &Path) {
+    let good = fs::read(f.journal()).unwrap();
+    let mut heads = vec![0];
+    heads.extend((0..good.len()).filter(|i| good[*i] == b'\n').map(|i| i + 1));
+    heads.pop();
+    for cut in heads {
+        fs::write(f.journal(), &good[..cut]).unwrap();
+        refused(&f.import(session, &[]), "truncated or rewritten");
+    }
+    fs::write(f.journal(), &good).unwrap();
+}
+
+/// FINDINGS A.1 (0.8.3 to 0.9.0 exit 4 with the decision appended): a checkpoint that cannot be
+/// written, here a read-only checkpoint directory, refuses the import before the append, so exit
+/// 4 means nothing was appended. Cleared, the identical retry appends once and checkpoints it.
+#[test]
+fn an_unwritable_checkpoint_refuses_before_the_append() {
+    let (f, session) = journaled();
+    let before = fs::read(f.journal()).unwrap();
+    decisions(&session, &["h-1", "h-2"], 0);
+    let dir = f.run.join("decisions.checkpoints");
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
+    let out = f.import(&session, &["--execute"]);
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    let after = fs::read(f.journal()).unwrap();
+    assert!(
+        after == before,
+        "exit 4 appended {} bytes: {}",
+        after.len() - before.len(),
+        stderr(&out)
+    );
+    refused(&out, "nothing was appended");
+    assert_eq!(planned(&f.import(&session, &["--execute"])), 1);
+    assert!(checkpoint(&f, 1).exists());
+    assert_eq!(
+        fs::read_dir(&dir).unwrap().count(),
+        2,
+        "no temporary file is left"
+    );
+    cut_back_is_detected(&f, &session);
+}
+
+/// FINDINGS A.2 (every later import refused): a torn last record no checkpoint names, made by a
+/// kill mid-append (`ulimit -f`, SIGXFSZ), is reported by a dry run, then cut off by the next
+/// executing import, its bytes kept beside the journal, and the import proceeds. The same limit
+/// with SIGXFSZ ignored is a write error that is cut off again: a refusal, nothing appended.
+#[test]
+fn a_torn_last_record_is_cut_off_and_kept_and_the_import_proceeds() {
+    use std::os::unix::process::ExitStatusExt as _;
+    let (f, session) = journaled();
+    let before = fs::read(f.journal()).unwrap();
+    // The new line is longer than 1 KiB, so it passes the next KiB boundary of the journal.
+    decisions(&session, &["h-1", "h-2"], 2048);
+    let blocks = before.len() / 1024 + 1;
+    let limited = |prefix: &str| {
+        Command::new("bash")
+            .arg("-c")
+            .arg(format!("{prefix} ulimit -f {blocks}; exec \"$0\" \"$@\""))
+            .arg(env!("CARGO_BIN_EXE_deep-diff-forge"))
+            .args(["council", "import-tuicr", f.run.to_str().unwrap()])
+            .args(["--session", session.to_str().unwrap(), "--execute"])
+            .output()
+            .unwrap()
+    };
+    let efbig = limited("trap '' XFSZ;");
+    refused(&efbig, "nothing was appended");
+    assert_eq!(fs::read(f.journal()).unwrap(), before);
+    let killed = limited("");
+    assert_eq!(
+        killed.status.signal(),
+        Some(25),
+        "SIGXFSZ: {}",
+        stderr(&killed)
+    );
+    let torn = fs::read(f.journal()).unwrap();
+    assert!(torn.len() > before.len() && !torn.ends_with(b"\n"));
+    let dry = f.import(&session, &[]);
+    assert!(
+        stderr(&dry).contains("would repair: cut the torn last record"),
+        "{}",
+        stderr(&dry)
+    );
+    assert_eq!(planned(&dry), 1);
+    assert_eq!(
+        fs::read(f.journal()).unwrap(),
+        torn,
+        "a dry run writes nothing"
+    );
+    let out = f.import(&session, &["--execute"]);
+    assert!(
+        stderr(&out).contains("repair: cut the torn last record"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(planned(&out), 1);
+    assert_eq!(f.events().len(), 2);
+    let kept: Vec<PathBuf> = fs::read_dir(&f.run)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("decisions.torn-00000000000000000001-")
+        })
+        .collect();
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert_eq!(fs::read(&kept[0]).unwrap(), torn[before.len()..]);
+    assert_eq!(
+        fs::read_dir(checkpoint(&f, 0).parent().unwrap())
+            .unwrap()
+            .count(),
+        2
+    );
+    cut_back_is_detected(&f, &session);
+}
+
+/// FINDINGS A.3 (every import blocked): a lock file left by a dead process, as 0.8.3 to 0.9.0
+/// leave it (its process id, or empty after an I/O error), no longer blocks. Two live processes
+/// still exclude each other.
+#[test]
+fn a_dead_process_lock_does_not_block_and_a_live_one_does() {
+    let (f, session) = journaled();
+    let lock = f.run.join("decisions.lock");
+    for (i, left) in ["2147483647", ""].into_iter().enumerate() {
+        fs::write(&lock, left).unwrap();
+        let ids = ["h-1", "h-2", "h-3"];
+        decisions(&session, &ids[..i + 2], 0);
+        assert_eq!(planned(&f.import(&session, &["--execute"])), 1, "{left:?}");
+        assert!(!lock.exists(), "the lock file goes with its holder");
+    }
+    decisions(&session, &["h-1", "h-2", "h-3", "h-4"], 0);
+    let go = f.root.join("go");
+    let mut holder = hold_lock(&lock, &go);
+    refused(&f.import(&session, &["--execute"]), "locked");
+    fs::remove_file(&go).unwrap();
+    holder.wait().unwrap();
+    assert_eq!(planned(&f.import(&session, &["--execute"])), 1);
+}
+
+/// FINDINGS A.4 P3b and P3c on 0.8.3 to 0.9.0 (every later import refused, dry runs included): an
+/// empty checkpoint file, planted as those versions leave it, is reported by a dry run and
+/// replaced by the next executing import. Other malformed content stays a refusal.
+#[test]
+fn an_empty_checkpoint_left_by_an_older_version_is_replaced() {
+    let (f, session) = journaled();
+    decisions(&session, &["h-1", "h-2"], 0);
+    assert_eq!(planned(&f.import(&session, &["--execute"])), 1);
+    let path = checkpoint(&f, 1);
+    let good = fs::read(&path).unwrap();
+    fs::write(&path, "").unwrap();
+    let dry = f.import(&session, &[]);
+    assert!(
+        stderr(&dry).contains("would repair: replace the empty checkpoint"),
+        "{}",
+        stderr(&dry)
+    );
+    assert_eq!(planned(&dry), 0);
+    assert!(
+        fs::read(&path).unwrap().is_empty(),
+        "a dry run writes nothing"
+    );
+    let out = f.import(&session, &["--execute"]);
+    assert!(
+        stderr(&out).contains("repair: replace the empty checkpoint"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(planned(&out), 0);
+    assert_eq!(fs::read(&path).unwrap(), good);
+    cut_back_is_detected(&f, &session);
+    fs::write(&path, "{").unwrap();
+    refused(&f.import(&session, &["--execute"]), "checkpoint");
+}
+
+/// FINDINGS A.1 step 3 (the retry plans nothing and never writes the missing checkpoint, so a cut
+/// back goes undetected): a head beyond the newest checkpoint, as 0.8.3 to 0.9.0 leave it, gets
+/// its checkpoint from the next executing import even when it plans no events.
+#[test]
+fn a_retry_that_plans_nothing_writes_the_missing_head_checkpoint() {
+    let (f, session) = journaled();
+    decisions(&session, &["h-1", "h-2"], 0);
+    assert_eq!(planned(&f.import(&session, &["--execute"])), 1);
+    fs::remove_file(checkpoint(&f, 1)).unwrap();
+    let dry = f.import(&session, &[]);
+    assert!(
+        stderr(&dry).contains("would repair: write the missing checkpoint"),
+        "{}",
+        stderr(&dry)
+    );
+    assert!(!checkpoint(&f, 1).exists());
+    let out = f.import(&session, &["--execute"]);
+    assert_eq!(planned(&out), 0);
+    assert!(checkpoint(&f, 1).exists(), "{}", stderr(&out));
+    cut_back_is_detected(&f, &session);
 }

@@ -244,6 +244,7 @@ mod tests {
                 ("engine", "input_contract_refused", A::ChangeInput),
                 ("engine", "panic", A::ReportBug),
                 ("council", "completed", A::Proceed),
+                ("council", "recorded_incomplete", A::CheckEnvironment),
                 ("council", "refused", A::ChangeInput),
                 ("council", "hold", A::ReviewEvidence),
             ]
@@ -276,7 +277,11 @@ mod tests {
     fn lookup_is_by_family_and_code() {
         assert_eq!(lookup("engine", 4).map(|e| e.name), Some("invalid_input"));
         assert_eq!(lookup("council", 4).map(|e| e.name), Some("refused"));
-        assert_eq!(lookup("council", 3), None);
+        assert_eq!(
+            lookup("council", 3).map(|e| e.name),
+            Some("recorded_incomplete")
+        );
+        assert_eq!(lookup("council", 5), None);
         assert_eq!(lookup("other", 0), None);
     }
 }

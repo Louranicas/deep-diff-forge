@@ -1613,13 +1613,11 @@ mod tests {
         // The documented 64 MiB, written out so the test does not move with the constant.
         let cap: u64 = 64 << 20;
         let file = fs::File::create(dir.join(JOURNAL_FILE)).unwrap();
-        // Exactly the cap is read in full, then refused for its content (NULs, no final newline).
+        // Exactly the cap is read in full: NULs and no newline, all of it a torn last record
+        // that no checkpoint names (so it is for `reconcile` to cut off and keep).
         file.set_len(cap).unwrap();
-        let at_cap = load_journal(dir.path(), "run").map(|j| j.bytes);
-        assert!(
-            matches!(&at_cap, Err(TuicrImportError::Journal(r)) if r.contains("incomplete")),
-            "{at_cap:?}"
-        );
+        let at_cap = load_journal(dir.path(), "run").map(|j| (j.bytes, j.torn.len() as u64));
+        assert_eq!(at_cap.ok(), Some((0, cap)));
         file.set_len(cap + 1).unwrap();
         // Over the cap is the journal's refusal, not one about the run or session export.
         let over = load_journal(dir.path(), "run").map(|j| j.bytes);
@@ -1694,8 +1692,11 @@ mod tests {
         assert_eq!(pinned(&journal), Some(2), "later marks keep the first pin");
     }
 
+    /// FINDINGS A.3: the lock is a `flock`. A second holder is refused while the first lives; the
+    /// file goes with its holder; a file left by a dead process (0.8.3 to 0.9.0 wrote its id into
+    /// a create-new file, or left it empty after an I/O error) does not block.
     #[test]
-    fn only_an_existing_lock_file_is_reported_as_locked() {
+    fn a_held_lock_refuses_and_a_left_lock_file_does_not() {
         let dir = Scratch::new("journal");
         let lock = Lock::acquire(dir.path()).unwrap();
         assert!(matches!(
@@ -1703,11 +1704,393 @@ mod tests {
             Err(TuicrImportError::Locked { .. })
         ));
         drop(lock);
-        assert!(!dir.join(LOCK_FILE).exists(), "the lock is released");
-        // Any other failure to create the lock is reported as itself.
-        assert!(matches!(
-            Lock::acquire(&dir.join("missing")),
-            Err(TuicrImportError::Session(_))
-        ));
+        assert!(
+            !dir.join(LOCK_FILE).exists(),
+            "the lock file goes with its holder"
+        );
+        for left in ["2147483647", ""] {
+            fs::write(dir.join(LOCK_FILE), left).unwrap();
+            drop(Lock::acquire(dir.path()).unwrap());
+        }
+        // Any other failure to take the lock is reported as itself, naming the file.
+        let missing = Lock::acquire(&dir.join("missing"));
+        assert!(
+            matches!(&missing, Err(TuicrImportError::Session(e)) if e.to_string().contains("missing/decisions.lock")),
+            "{missing:?}",
+            missing = missing.map(|_| ())
+        );
+    }
+
+    const SOURCE: &str = "fn a() {}\n";
+    /// A run prepared in-process over a one-file repository, for the fault tests.
+    struct Run {
+        _scratch: Scratch,
+        root: PathBuf,
+        dir: PathBuf,
+        repository: PathBuf,
+    }
+    fn cp(seq: u64) -> String {
+        format!("{seq:020}.json")
+    }
+    impl Run {
+        fn new() -> Self {
+            let scratch = Scratch::new("recovery");
+            let root = scratch.path().to_owned();
+            let repository = root.join("repo");
+            fs::create_dir(&repository).unwrap();
+            fs::write(repository.join("x.rs"), SOURCE).unwrap();
+            let git = |args: &[&str]| storage::git_bytes(&repository, args, 1 << 20).unwrap();
+            git(&["init", "-q"]);
+            git(&["add", "x.rs"]);
+            git(&[
+                "-c",
+                "user.name=F",
+                "-c",
+                "user.email=f@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "f",
+            ]);
+            let snapshot = deep_diff_forge_core::changed_source_snapshot_id([(
+                "x.rs",
+                Some(SOURCE.as_bytes()),
+            )]);
+            let analysis = root.join("analysis.json");
+            let value = serde_json::json!({
+                "schema": "deep-diff-forge.analysis.v1",
+                "review_id": "0".repeat(64),
+                "candidate_snapshot": snapshot,
+                "coverage": [{"path": "x.rs", "coverage": "analyzed"}],
+                "review": {"files": [{"path": "x.rs", "status": "modified"}]}
+            });
+            fs::write(&analysis, serde_json::to_vec(&value).unwrap()).unwrap();
+            let decision = root.join("decision.md");
+            fs::write(&decision, "Keep dissent.\n").unwrap();
+            let mut request = crate::cli::example();
+            request.profile = crate::Profile::Roster;
+            request.reviewers.truncate(2);
+            request.repository = repository.display().to_string();
+            request.analysis_file = analysis.display().to_string();
+            request.decision_file = decision.display().to_string();
+            let run = root.join("run");
+            crate::prepare(request, &run).unwrap();
+            Self {
+                _scratch: scratch,
+                root,
+                dir: run,
+                repository,
+            }
+        }
+        /// Import a session whose review-level comments are `ids`.
+        fn import(&self, ids: &[&str], execute: bool) -> Result<TuicrImport> {
+            let path = self.session(ids);
+            import_tuicr(&self.dir, &path, ImportOptions { execute })
+        }
+        fn session(&self, ids: &[&str]) -> PathBuf {
+            let head = storage::git_bytes(&self.repository, &["rev-parse", "HEAD"], 1024).unwrap();
+            let comments: Vec<_> = ids
+                .iter()
+                .map(|id| serde_json::json!({"id": id, "content": format!("decision {id}"), "author": "Luke"}))
+                .collect();
+            let session = serde_json::json!({
+                "id": "00000000-0000-4000-8000-000000000001", "version": "1.3",
+                "repo_path": self.repository, "branch_name": null,
+                "base_commit": String::from_utf8(head).unwrap().trim(),
+                "diff_source": "working_tree", "commit_range": null, "pr_session_key": null,
+                "created_at": "2026-10-25T00:00:00Z", "updated_at": "2026-10-25T00:00:00Z",
+                "review_comments": comments,
+                "files": {"x.rs": {"path": "x.rs", "reviewed": false, "status": "modified",
+                    "file_comments": [], "line_comments": {}, "reviewed_hunks": [], "content_hash": 0}},
+                "session_notes": null
+            });
+            let path = self.root.join("session.json");
+            fs::write(&path, serde_json::to_vec(&session).unwrap()).unwrap();
+            path
+        }
+        fn journal(&self) -> Vec<u8> {
+            fs::read(self.dir.join(JOURNAL_FILE)).unwrap_or_default()
+        }
+        /// Every name in the checkpoint directory, temporary files included.
+        fn checkpoints(&self) -> Vec<String> {
+            let mut names: Vec<String> = fs::read_dir(self.dir.join(CHECKPOINT_DIR))
+                .map(|d| {
+                    d.map(|e| e.unwrap().file_name().into_string().unwrap())
+                        .collect()
+                })
+                .unwrap_or_default();
+            names.sort();
+            names
+        }
+        /// The truncation guarantee: a cut back to every earlier head is refused.
+        fn cuts_are_detected(&self) {
+            let good = self.journal();
+            let run_id = load_manifest(&self.dir).unwrap().run_id.clone();
+            let mut heads = vec![0];
+            heads.extend((0..good.len()).filter(|i| good[*i] == b'\n').map(|i| i + 1));
+            heads.pop();
+            for cut in heads {
+                fs::write(self.dir.join(JOURNAL_FILE), &good[..cut]).unwrap();
+                let loaded = load_journal(&self.dir, &run_id).map(|j| j.events.len());
+                assert!(
+                    matches!(&loaded, Err(TuicrImportError::Journal(r)) if r.contains("truncated or rewritten")),
+                    "cut to {cut} bytes: {loaded:?}"
+                );
+            }
+            fs::write(self.dir.join(JOURNAL_FILE), &good).unwrap();
+        }
+    }
+    fn failing<T>(step: &'static str, f: impl FnOnce() -> T) -> T {
+        storage::FAIL_AT.with(|at| at.set(Some(step)));
+        let out = f();
+        storage::FAIL_AT.with(|at| at.set(None));
+        out
+    }
+
+    /// FINDINGS A.4, in-process: every I/O error the seam injects into an executing import of
+    /// one new event. Before the commit point (the synced append) it is a refusal that leaves the
+    /// journal as it was; after it, it is `Incomplete` with the event recorded. Either way no
+    /// checkpoint or temporary file is left, a dry run writes nothing, the identical retry
+    /// completes the import and checkpoints the head, cuts back are detected, and a different
+    /// import appends after it.
+    #[test]
+    fn every_injected_io_error_refuses_before_the_append_or_is_recorded_after_it() {
+        for (step, recorded) in [
+            ("stage-write", false),
+            ("stage-sync", false),
+            ("journal-write", false),
+            ("journal-sync", true),
+            ("link", true),
+        ] {
+            let r = Run::new();
+            r.import(&["h-1"], true).unwrap();
+            let before = r.journal();
+            let failed = failing(step, || r.import(&["h-1", "h-2"], true));
+            let failed = failed.map(|i| i.events.len());
+            if recorded {
+                assert!(
+                    matches!(&failed, Err(TuicrImportError::Incomplete { first: 1, last: 1, durable, .. })
+                        if *durable == (step == "link")),
+                    "{step}: {failed:?}"
+                );
+                assert!(r.journal().starts_with(&before) && r.journal().len() > before.len());
+            } else {
+                assert!(
+                    matches!(&failed, Err(TuicrImportError::Journal(m)) if m.ends_with("nothing was appended")),
+                    "{step}: {failed:?}"
+                );
+                assert_eq!(r.journal(), before, "{step}: refused, nothing appended");
+            }
+            assert_eq!(r.checkpoints(), [cp(0)], "{step}");
+            let journal = r.journal();
+            let planned = usize::from(!recorded);
+            assert_eq!(
+                r.import(&["h-1", "h-2"], false).unwrap().events.len(),
+                planned
+            );
+            assert_eq!(
+                (r.journal(), r.checkpoints()),
+                (journal, vec![cp(0)]),
+                "{step}: dry run"
+            );
+            assert_eq!(
+                r.import(&["h-1", "h-2"], true).unwrap().events.len(),
+                planned
+            );
+            assert_eq!(
+                r.checkpoints(),
+                [cp(0), cp(1)],
+                "{step}: the retry checkpoints the head"
+            );
+            r.cuts_are_detected();
+            let different = r.import(&["h-1", "h-2", "h-3"], true).unwrap();
+            assert_eq!(
+                different.events.iter().map(|e| e.seq).collect::<Vec<_>>(),
+                [2]
+            );
+            assert_eq!(r.checkpoints(), [cp(0), cp(1), cp(2)]);
+            r.cuts_are_detected();
+        }
+    }
+
+    /// FINDINGS A.4 P0 to P4b and section A.1 to A.3: the states a kill (or 0.8.3 to 0.9.0) leaves,
+    /// planted after one import of `h-1`. None blocks a dry run, which writes nothing; the
+    /// executing import repairs it and completes, and cuts back are detected afterwards.
+    #[test]
+    fn the_states_a_kill_or_an_older_version_leaves_are_repaired() {
+        type Plant = fn(&Run);
+        let staged = |r: &Run| {
+            let name = format!("{}{}.4242-0", storage::TEMPORARY_PREFIX, cp(1));
+            fs::write(r.dir.join(CHECKPOINT_DIR).join(name), "{\"se").unwrap();
+        };
+        let torn = |r: &Run| {
+            let line = r.journal();
+            let mut file = OpenOptions::new()
+                .append(true)
+                .open(r.dir.join(JOURNAL_FILE))
+                .unwrap();
+            file.write_all(&line[..line.len() / 2]).unwrap();
+        };
+        let headless = |r: &Run| {
+            r.import(&["h-1", "h-2"], true).unwrap();
+            fs::remove_file(r.dir.join(CHECKPOINT_DIR).join(cp(1))).unwrap();
+        };
+        let empty = |r: &Run| {
+            r.import(&["h-1", "h-2"], true).unwrap();
+            fs::write(r.dir.join(CHECKPOINT_DIR).join(cp(1)), "").unwrap();
+        };
+        let ledger = |r: &Run| {
+            let dir = r
+                .dir
+                .join(LEDGER_DIR)
+                .join("tuicr/00000000-0000-4000-8000-000000000001");
+            fs::create_dir_all(&dir).unwrap();
+            let name = format!(
+                "{}{}.json.4242-0",
+                storage::TEMPORARY_PREFIX,
+                "a".repeat(64)
+            );
+            fs::write(dir.join(name), "{").unwrap();
+        };
+        let cases: [(&str, Plant, usize); 7] = [
+            (
+                "lock file of a dead process",
+                |r| fs::write(r.dir.join(LOCK_FILE), "2147483647").unwrap(),
+                1,
+            ),
+            (
+                "empty lock file",
+                |r| fs::write(r.dir.join(LOCK_FILE), "").unwrap(),
+                1,
+            ),
+            ("staged checkpoint of a killed import", staged, 1),
+            ("export ledger temporary file", ledger, 1),
+            ("torn last record", torn, 1),
+            ("head without its checkpoint", headless, 0),
+            ("empty checkpoint", empty, 0),
+        ];
+        for (name, plant, planned) in cases {
+            let r = Run::new();
+            r.import(&["h-1"], true).unwrap();
+            plant(&r);
+            let state = (r.journal(), r.checkpoints());
+            let dry = r.import(&["h-1", "h-2"], false);
+            assert_eq!(dry.map(|i| i.events.len()).ok(), Some(planned), "{name}");
+            assert_eq!(
+                (r.journal(), r.checkpoints()),
+                state,
+                "{name}: a dry run writes nothing"
+            );
+            let done = r.import(&["h-1", "h-2"], true).map(|i| i.events.len());
+            assert_eq!(done.ok(), Some(planned), "{name}");
+            assert_eq!(r.checkpoints(), [cp(0), cp(1)], "{name}");
+            assert_eq!(
+                String::from_utf8(r.journal()).unwrap().lines().count(),
+                2,
+                "{name}"
+            );
+            assert!(!r.dir.join(LOCK_FILE).exists(), "{name}");
+            r.cuts_are_detected();
+        }
+        // The torn bytes are kept beside the journal, named for their sequence.
+        let r = Run::new();
+        r.import(&["h-1"], true).unwrap();
+        let line = r.journal();
+        torn(&r);
+        r.import(&["h-1", "h-2"], true).unwrap();
+        let kept: Vec<_> = fs::read_dir(&r.dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| {
+                p.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("decisions.torn-00000000000000000001-")
+            })
+            .collect();
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert_eq!(fs::read(&kept[0]).unwrap(), line[..line.len() / 2]);
+        // The replaced checkpoint holds what an import writes.
+        let r = Run::new();
+        r.import(&["h-1"], true).unwrap();
+        r.import(&["h-1", "h-2"], true).unwrap();
+        let path = r.dir.join(CHECKPOINT_DIR).join(cp(1));
+        let good = fs::read(&path).unwrap();
+        fs::write(&path, "").unwrap();
+        r.import(&["h-1", "h-2"], true).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), good);
+    }
+
+    /// What stays a refusal: a torn record a checkpoint names (truncated committed data), and a
+    /// checkpoint with malformed content other than none.
+    #[test]
+    fn a_torn_committed_record_and_a_malformed_checkpoint_stay_refused() {
+        let r = Run::new();
+        r.import(&["h-1"], true).unwrap();
+        r.import(&["h-1", "h-2"], true).unwrap();
+        let good = r.journal();
+        fs::write(r.dir.join(JOURNAL_FILE), &good[..good.len() - 10]).unwrap();
+        for execute in [false, true] {
+            let refused = r.import(&["h-1", "h-2"], execute).map(|i| i.events.len());
+            assert!(
+                matches!(&refused, Err(TuicrImportError::Journal(m)) if m.contains("incomplete")),
+                "{refused:?}"
+            );
+        }
+        assert_eq!(r.journal(), good[..good.len() - 10]);
+        fs::write(r.dir.join(JOURNAL_FILE), &good).unwrap();
+        let path = r.dir.join(CHECKPOINT_DIR).join(cp(1));
+        for bad in ["{", " ", "{\"seq\":1}"] {
+            fs::write(&path, bad).unwrap();
+            let refused = r.import(&["h-1", "h-2"], true).map(|i| i.events.len());
+            assert!(
+                matches!(&refused, Err(TuicrImportError::Journal(m)) if m.starts_with("checkpoint")),
+                "{bad:?}: {refused:?}"
+            );
+            assert_eq!(fs::read(&path).unwrap(), bad.as_bytes());
+        }
+    }
+
+    /// FINDINGS B: `write_new` serves the export ledger, the reports, `execution.json` and
+    /// `qualification.json`. An I/O error at any step leaves nothing at the final name (0.8.3 to
+    /// 0.9.0 left an empty file every reader refused and create-new would not replace) and no
+    /// temporary file; the error names the file; the next attempt succeeds.
+    #[test]
+    fn a_failed_artifact_write_leaves_nothing_at_its_name() {
+        let dir = Scratch::new("write-new");
+        let targets = [
+            format!("{LEDGER_DIR}/tuicr/s/{}.json", "a".repeat(64)),
+            "reports/r-independent.json".to_owned(),
+            "jobs/review-r-independent/execution.json".to_owned(),
+            "jobs/review-r-independent/qualification.json".to_owned(),
+        ];
+        for step in ["stage-write", "stage-sync", "link"] {
+            for target in &targets {
+                let path = dir.join(step).join(target);
+                let parent = path.parent().unwrap();
+                fs::create_dir_all(parent).unwrap();
+                let value = serde_json::json!({"k": 1});
+                let failed = failing(step, || storage::write_json(&path, &value));
+                assert!(
+                    failed
+                        .as_ref()
+                        .is_err_and(|e| e.0.starts_with(&path.display().to_string())),
+                    "{step} {target}: {failed:?}"
+                );
+                assert!(!path.exists(), "{step} {target}");
+                let left = fs::read_dir(parent)
+                    .unwrap()
+                    .map(|e| e.unwrap().file_name());
+                let left: Vec<_> = left
+                    .filter(|n| storage::is_temporary(&n.to_string_lossy()))
+                    .collect();
+                assert!(left.is_empty(), "{step} {target}: {left:?}");
+                storage::write_json(&path, &value).unwrap();
+                let read: serde_json::Value = storage::read_json(&path, 4096).unwrap();
+                assert_eq!(read, value);
+                assert!(storage::write_json(&path, &value).is_err(), "create-new");
+            }
+        }
     }
 }
