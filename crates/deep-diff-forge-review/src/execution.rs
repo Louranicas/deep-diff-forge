@@ -190,7 +190,7 @@ fn launch_argv(
         &jobdir.join("environment.json"),
         &gate.sandbox.record(&spec),
     )?;
-    Ok((gate.sandbox.argv(&spec), Some(name)))
+    Ok((gate.sandbox.argv(&spec)?, Some(name)))
 }
 /// Truncate oversized transcripts and record that they are incomplete; returns whether the limit was hit.
 fn limit_transcripts(jobdir: &Path, stdout: &Path, stderr: &Path) -> Result<bool> {
