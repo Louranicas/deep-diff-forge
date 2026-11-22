@@ -150,7 +150,11 @@ impl Sandbox {
     /// and its options at `,`, so such a path would mount another directory or add options.
     pub(crate) fn argv(&self, spec: &Spec<'_>) -> Result<Vec<String>> {
         let mounts = [Some(spec.work), Some(spec.source), spec.cargo_home];
-        for path in mounts.into_iter().flatten().chain(spec.vendor.map(|(p, _)| p)) {
+        for path in mounts
+            .into_iter()
+            .flatten()
+            .chain(spec.vendor.map(|(p, _)| p))
+        {
             require(
                 path.to_str().is_some_and(|p| !p.contains([':', ','])),
                 "gate sandbox refused: a host path to mount is not UTF-8 or holds ':' or ','",
@@ -345,7 +349,10 @@ mod tests {
             assert!(sandbox.argv(&spec(bad)).is_err(), "{bad} reaches --volume");
         }
         let argv = sandbox.argv(&spec("/run/work")).unwrap();
-        assert!(argv.contains(&"--volume=/run/work:/work:Z".to_owned()), "{argv:?}");
+        assert!(
+            argv.contains(&"--volume=/run/work:/work:Z".to_owned()),
+            "{argv:?}"
+        );
     }
 
     /// A runtime whose control command is a shell script printing `bytes` zero bytes to stdout.
