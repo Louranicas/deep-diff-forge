@@ -7532,7 +7532,8 @@ mod tests {
 
     /// S3.18, the forms each rule that reads a YAML or JSON file finds, quoted or not, held
     /// so that a later change of one of these rules cannot lose one unseen; and the forms that
-    /// are stated limits (README), held as not found so that the statement stays true.
+    /// are stated limits (`docs/reference/risk-ranking.md`), held as not found so that the
+    /// statement stays true.
     #[test]
     fn every_rule_that_reads_yaml_or_json_reads_its_forms() {
         let (ci, yml, pkg) = (".github/workflows/ci.yml", "deploy/app.yml", "package.json");

@@ -46,7 +46,7 @@ deep-diff-forge eval                          # score the labelled corpus in fix
   repeated id or a field its kind does not read, or a ranking pair is not two distinct paths. `eval` prints `deep-diff-forge.eval.v0` and exits 7 when a case
   fails.
 
-  **Measured 2026-11-18 on the integrated tree (release 0.8.4 with the integrity signals and the agent hooks), 56 cases** (14 ranking, 39 evidence, 3 findings; 112 declared misses). The two items of a second section for one path (IR7-H-2) went from declared misses to expected when the sections of one path that Git applies in order were read as one file (precision 179 / 205 on 55 cases); the integrated review's two false items of that reading (CI1) were then added as one case of two declared false positives, so precision is 179 / 207.
+  **Measured 2026-11-18 on the integrated tree (release 0.8.4 with the integrity signals and the agent hooks), 56 cases** (14 ranking, 39 evidence, 3 findings; 112 declared misses). The two items of a second section for one path (IR7-H-2) went from declared misses to expected when the sections of one path that Git applies in order were read as one file (precision 179 / 205 on 55 cases); the integrated review's two false items of that reading (CI1) were then added as one case of two declared false positives, so precision is 179 / 207. **Measured again for 0.10.0** (same 56 cases; 105 declared): the parser refuses hunks plain `git apply` places elsewhere than their header says, so 18 sections of nine evidence cases moved with their 16 expectations to `fixtures/eval-refused-by-parser/`, where a test holds each refused, and 29 gained a blank line of context with their items unchanged: precision 170 / 195, recall 170 / 247. **Measured again 2026-11-22, 58 cases** (41 evidence; 106 declared): a case of four privilege grants written with quotes, which 0.9.0 missed, with three near misses, and a case of the seventeen Python assertions 0.9.0 labelled `trivial_assert` though they can fail (hard negatives) beside four ended forms and one declared miss (`assert True or ready`): precision 178 / 203, recall 178 / 256.
   Three evidence cases were added for the integrity signals, one of them a declared miss, and
   one case of twelve declared misses: ways an agent makes a gate pass without doing the work
   (a tautological assertion, a deleted assertion, an early `return` in a test, an error
@@ -139,8 +139,8 @@ deep-diff-forge eval                          # score the labelled corpus in fix
   | Metric | Right / total | Floor |
   | --- | ---: | ---: |
   | ranking pairs | 12 / 15 | 80.0% |
-  | evidence precision | 179 / 207 | 86.5% |
-  | evidence recall | 179 / 260 | 68.8% |
+  | evidence precision | 178 / 203 | 87.7% |
+  | evidence recall | 178 / 256 | 69.5% |
   | findings verdicts | 33 / 33 | 100% |
 
   `crates/deep-diff-forge-cli/tests/eval.rs` holds these floors (the measured values) and fails
