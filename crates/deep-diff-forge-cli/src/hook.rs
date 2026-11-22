@@ -5133,4 +5133,149 @@ mod tests {
     /// A schema name of a later forge-warden written long.
     const SCHEMA_PADDED: &str =
         "forge-warden.verdict.v4-with-a-name-longer-than-the-sixty-four-characters-a-reason-shows";
+
+    /// Mutation run on the 0.9.0 code (S3.34.b), `unit_text`: a reason cut at
+    /// [`REASON_CHARS`] ends with "…" and a whole one with a full stop (`>` for `<` ended
+    /// every reason with a full stop).
+    #[test]
+    fn a_reason_cut_at_its_bound_ends_with_an_ellipsis_and_a_whole_one_with_a_stop() {
+        let unit = |reason: String| TreeJudged {
+            tag: String::new(),
+            what: commit_label("0123456789ab"),
+            judged: Some(Judged::Unjudged { reason }),
+            holds: Holds::Never,
+        };
+        let whole = "r".repeat(REASON_CHARS);
+        assert_eq!(
+            unit_text(&unit(whole.clone()), "UNJUDGED", false).0,
+            format!("  not judged: {whole}.\n")
+        );
+        assert_eq!(
+            unit_text(&unit(format!("{whole}s")), "UNJUDGED", false).0,
+            format!("  not judged: {whole}…\n")
+        );
+    }
+
+    /// Mutation run on the 0.9.0 code (S3.34.b), `rules_brief`: the rules beyond
+    /// [`SHORT_RULES`] are counted, and only when there are any (`==` for `>` dropped the
+    /// count of one more and wrote "- and 0 more rules").
+    #[test]
+    fn a_brief_counts_only_the_rules_beyond_its_bound() {
+        let rules = |count: usize| -> Vec<RuleOutcome> {
+            (0..count)
+                .map(|n| RuleOutcome {
+                    id: format!("r{n}"),
+                    why: String::new(),
+                    held: false,
+                    violations: Vec::new(),
+                })
+                .collect()
+        };
+        let text = rules_brief(&rules(SHORT_RULES + 1), true, 0);
+        assert!(text.ends_with("- rule r29\n- and 1 more rules\n"), "{text}");
+        let text = rules_brief(&rules(SHORT_RULES), true, 0);
+        assert!(!text.contains("more rules"), "{text}");
+    }
+
+    /// Mutation run on the 0.9.0 code (S3.34.b), `rule_names`: nine mutants of the bounds of
+    /// the line of names. A name that fills [`RULE_NAMES`] exactly is whole; a first name too
+    /// long is cut to 57 characters, counted only when others follow; the room kept for the
+    /// count is taken only while others follow; a name past the room is counted.
+    #[test]
+    fn the_line_of_rule_names_keeps_its_bounds_exactly() {
+        let rules = |names: &[String]| -> Vec<RuleOutcome> {
+            names
+                .iter()
+                .map(|name| RuleOutcome {
+                    id: name.clone(),
+                    why: String::new(),
+                    held: false,
+                    violations: Vec::new(),
+                })
+                .collect()
+        };
+        let n = |c: &str, count: usize| c.repeat(count);
+        for (names, said) in [
+            (vec![n("n", RULE_NAMES)], n("n", RULE_NAMES)),
+            (vec![n("n", 100)], format!("{}…", n("n", 57))),
+            (
+                vec![n("a", 59), n("b", 1)],
+                format!("{}… (+1 more)", n("a", 57)),
+            ),
+            (
+                vec![n("a", 58), n("b", 11)],
+                format!("{} (+1 more)", n("a", 58)),
+            ),
+            (
+                vec![n("a", 58), n("b", 10)],
+                format!("{}, {}", n("a", 58), n("b", 10)),
+            ),
+        ] {
+            assert_eq!(rule_names(&rules(&names), false), said, "{names:?}");
+        }
+    }
+
+    /// Mutation run on the 0.9.0 code (S3.34.b), `named_with_rules`: a held unit with no
+    /// rules and no words is named alone (the guard taken as true read a first word that is
+    /// not there), and the words beyond the first are counted.
+    #[test]
+    fn a_unit_with_no_rules_is_named_with_the_judges_words_counted() {
+        let unit = |said: &[&str]| TreeJudged {
+            tag: String::new(),
+            what: commit_label("0123456789ab"),
+            judged: Some(Judged::Hold {
+                rules: Vec::new(),
+                said: said.iter().map(|word| (*word).to_owned()).collect(),
+            }),
+            holds: Holds::Never,
+        };
+        assert_eq!(named_with_rules(&unit(&[])), "Commit 0123456789ab");
+        assert_eq!(
+            named_with_rules(&unit(&["a note"])),
+            "Commit 0123456789ab (the judge's words: a note)"
+        );
+        assert_eq!(
+            named_with_rules(&unit(&["a note", "another"])),
+            "Commit 0123456789ab (the judge's words: a note (+1 more))"
+        );
+    }
+
+    /// Mutation run on the 0.9.0 code (S3.34.b), `blocking_text`: a unit with no room for its
+    /// rules is named on a short line only when the line and the room kept for the count fit
+    /// (`-` for `+` let it pass the room by 40 characters; the rule's name makes the line
+    /// longer than that room, so the mutant shows the line and does not overflow); and among
+    /// several units no line "New at this stop" leads a unit, whose own line says it (`&&`
+    /// for `||` added it).
+    #[test]
+    fn a_short_line_keeps_the_counts_room_and_many_units_have_no_lead() {
+        let long = format!("src/{}.rs", "p".repeat(80));
+        let judged = fail(&[("no-secrets-in-any-file", "secret_like", long.as_str())]);
+        let Judged::Fail { rules, .. } = &judged else {
+            panic!("a failure")
+        };
+        let what = commit_label("0123456789ab");
+        let line = format!("{what}: FAIL ({})\n", rule_names(rules, true));
+        let commit = TreeJudged {
+            tag: String::new(),
+            what,
+            judged: Some(judged.clone()),
+            holds: Holds::Now,
+        };
+        let alone = std::slice::from_ref(&commit);
+        assert_eq!(blocking_text(alone, &[], line.len() + COUNT_ROOM).0, line);
+        assert_eq!(
+            blocking_text(alone, &[], line.len() + COUNT_ROOM - 1).0,
+            "and 1 more commits fail.\n"
+        );
+
+        let before = uncommitted(&fail(&[("no-secrets", "secret_like", "x.rs")]));
+        let blocked = uncommitted_failures(std::slice::from_ref(&before));
+        let now = uncommitted(&fail(&[
+            ("no-secrets", "secret_like", "x.rs"),
+            ("no-secrets", "secret_like", "new.rs"),
+        ]));
+        let (text, _) = blocking_text(&[now, commit], &blocked, STOP_CAP);
+        assert!(text.contains(": FAIL, new at this stop\n"), "{text}");
+        assert!(!text.contains("New at this stop:\n"), "{text}");
+    }
 }
