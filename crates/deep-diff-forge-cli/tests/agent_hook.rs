@@ -815,7 +815,7 @@ fn session_start_states_the_contract_and_whether_a_stop_can_be_judged() {
     std::fs::write(&exit_file, "8").unwrap();
     let (_, stdout, _) = hook("session-start", &judge_arg, &event);
     assert!(
-        stdout.contains("- The chain was checked the way `deep-diff-forge agent doctor --gate` checks it: stops will be judged.\n"),
+        stdout.contains(&format!("- The chain was checked the way `{} agent doctor --gate` checks it: stops will be judged.\n", this_binary().display())),
         "{stdout}"
     );
     assert!(
