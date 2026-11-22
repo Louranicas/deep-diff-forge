@@ -117,9 +117,10 @@ another), `mode_changed` (only the mode changed, such as the executable bit), `b
 On `--stdin-patch` the refusals come in this order: a parse error (4), then `--require-files` / `--require-hunks` (7), then input in which Git finds no patch (4, stderr `error: no_patch_in_input: …`, unless `--allow-empty`).
 
 A reader that closes stdout ends a command with exit 0 (`… | head`), except while a
-`--require-*` refusal is pending: each is decided before the output is written and exits 7
-with its reason on stderr even when the reader has gone (since 0.10.0;
-[DDF-2026-010](../advisories/DDF-2026-010.md)). A diagnostic that cannot be written
+refusal is pending: every verdict refusal (`findings verify --require-findings` and
+`--require-all` since 0.10.0, [DDF-2026-010](../advisories/DDF-2026-010.md); `eval` and
+`agent doctor` since 0.11.0) is decided before its document is written and exits 7 with its
+reason lines on stderr even when the reader has gone. A diagnostic that cannot be written
 (`2>/dev/full`) leaves the exit code as it is; before 0.10.0 it exited 101. A daemon socket path of
 108 bytes or more is a usage error (exit 2) of `daemon path` and `daemon start` since 0.10.0.
 

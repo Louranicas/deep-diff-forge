@@ -321,6 +321,16 @@ fn doctor(args: &[String]) {
         );
     }
     let ok = checks.iter().all(|c| c.ok);
+    // A chain not ready is decided before the checks are written (F7.h2); surfaces that disagree
+    // are a bug (exit 101), not a refusal.
+    if surfaces_agree && !ok {
+        eprintln!(
+            "error: the chain is not ready: a stop here would not be judged, or the policy would not hold"
+        );
+        let failed = checks.iter().filter(|c| !c.ok).count();
+        let class = exit::refusal("chain_not_ready");
+        crate::refusal::pending(&[(class, format!("{failed} checks failed"))]);
+    }
     if args.iter().any(|a| a == "--json") {
         let list: Vec<Value> = checks
             .iter()
@@ -344,12 +354,7 @@ fn doctor(args: &[String]) {
         eprintln!("error: the agent surfaces disagree; report this as a bug");
         std::process::exit(exit::PANIC);
     }
-    if !ok {
-        eprintln!(
-            "error: the chain is not ready: a stop here would not be judged, or the policy would not hold"
-        );
-        std::process::exit(exit::INPUT_CONTRACT_REFUSED);
-    }
+    crate::refusal::finish();
 }
 
 #[cfg(test)]

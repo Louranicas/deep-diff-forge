@@ -1386,6 +1386,7 @@ fn run_with_stdout_closed(args: &[&str], stdin: &[u8]) -> (Option<i32>, String) 
 /// of stdout has gone. `findings verify --require-findings` and `--require-all` wrote the verdict
 /// first and treated the broken pipe as a clean exit 0 with an empty stderr, so a gate that
 /// closed its reader early passed; `--require-files` and `--require-hunks` refuse before writing.
+/// F7.h2: `--require-all` names its reason (it wrote none before 0.11.0).
 #[test]
 fn a_pending_refusal_survives_a_closed_stdout() {
     let scratch = deep_diff_forge_testkit::Scratch::new("pending-refusal");
@@ -1422,7 +1423,7 @@ fn a_pending_refusal_survives_a_closed_stdout() {
         (
             &["findings", "verify", "--findings", refused, "--require-all"][..],
             PATCH,
-            "",
+            "refused: 1 of 1 findings were refused or over the limit (--require-all)\n",
         ),
     ] {
         // The same refusal with stdout open, and with its reader gone.
@@ -1727,4 +1728,403 @@ fn action_texts_reachable_from_exit_7_are_pinned() {
         let text = item(action);
         assert!(!text.contains("drop the contract"), "{class}: {text}");
     }
+}
+
+/// The function a line declares (`fn name(` or `fn name<`), if any.
+fn declared_fn(line: &str) -> Option<String> {
+    if line.trim_start().starts_with("//") {
+        return None;
+    }
+    let rest = &line[line.find("fn ")? + 3..];
+    let name: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    let next = rest[name.len()..].chars().next();
+    (!name.is_empty() && matches!(next, Some('(' | '<'))).then_some(name)
+}
+
+/// Every production line in every `crates/*/src` file, with the function it is in (the nearest
+/// `fn` before it).
+fn production_sites_in_fns() -> Vec<(String, usize, String, String)> {
+    let mut sites = Vec::new();
+    for (file, text) in source_files() {
+        let mut functions = Vec::new();
+        let mut current = String::new();
+        for line in text.lines() {
+            if let Some(name) = declared_fn(line) {
+                current = name;
+            }
+            functions.push(current.clone());
+        }
+        for (number, line) in production_lines(&text) {
+            sites.push((
+                file.clone(),
+                number,
+                line.to_owned(),
+                functions[number - 1].clone(),
+            ));
+        }
+    }
+    sites
+}
+
+/// The registry constants of value 7: the engine's refusal and council's HOLD.
+const SEVEN: [&str; 3] = ["EXIT_REFUSED", "INPUT_CONTRACT_REFUSED", "COUNCIL_HOLD"];
+
+/// Where a process exits with a code it did not name: each forwards a code another part chose,
+/// none of them 7 but the council's own.
+const PASS_THROUGH_EXITS: &[(&str, &str, &str)] = &[
+    (
+        "deep-diff-forge-cli/src/main.rs",
+        "main",
+        "council's code (its HOLD is 7) and analysis errors",
+    ),
+    (
+        "deep-diff-forge-cli/src/main.rs",
+        "run_envelope",
+        "the wrapped command's code",
+    ),
+    (
+        "deep-diff-forge-cli/src/main.rs",
+        "sealed_review_or_exit",
+        "a parse error's code",
+    ),
+    (
+        "deep-diff-forge-cli/src/main.rs",
+        "learn_record",
+        "io or invalid_input, by error kind",
+    ),
+    (
+        "deep-diff-forge-cli/src/main.rs",
+        "eval_cmd",
+        "io or invalid_input, by error kind",
+    ),
+    (
+        "deep-diff-forge-cli/src/main.rs",
+        "deploy_doctor",
+        "success or daemon_or_terminal",
+    ),
+    (
+        "deep-diff-forge-cli/src/file_pair.rs",
+        "run",
+        "a Git acquisition error's code",
+    ),
+    (
+        "deep-diff-forge-cli/src/git_input.rs",
+        "fail",
+        "a Git acquisition error's code",
+    ),
+    (
+        "deep-diff-forge-daemon/src/serve.rs",
+        "watch_signals",
+        "128 + the signal that ended the drain",
+    ),
+];
+
+/// F7.h2: exit 7 has one door. A constant of value 7 appears in a `process::exit` (or
+/// `ExitCode::from`) only in `refusal.rs` or the council's own crate, and a code that is not a
+/// named constant only at a listed pass-through site, so no process reaches exit 7 without a
+/// registered reason class (council's HOLD is its own family).
+#[test]
+fn exit_7_goes_through_a_registered_refusal() {
+    let mut used = Vec::new();
+    for (file, number, line, function) in production_sites_in_fns() {
+        for form in ["process::exit(", "ExitCode::from("] {
+            let Some(at) = line.find(form) else { continue };
+            let arg = line[at + form.len()..]
+                .split(')')
+                .next()
+                .unwrap_or("")
+                .trim();
+            let name = arg.rsplit("::").next().unwrap_or("");
+            let constant = !name.is_empty()
+                && arg
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+            if constant {
+                assert!(
+                    !SEVEN.contains(&name)
+                        || file == "deep-diff-forge-cli/src/refusal.rs"
+                        || file.starts_with("deep-diff-forge-review/"),
+                    "{file}:{number}: exit 7 outside the refusal door: {}",
+                    line.trim()
+                );
+            } else {
+                let site = PASS_THROUGH_EXITS
+                    .iter()
+                    .position(|(f, n, _)| *f == file && *n == function);
+                assert!(
+                    site.is_some(),
+                    "{file}:{number} (fn {function}): an exit code that is not a named constant: {}",
+                    line.trim()
+                );
+                used.extend(site);
+            }
+        }
+    }
+    for (i, (file, function, _)) in PASS_THROUGH_EXITS.iter().enumerate() {
+        assert!(
+            used.contains(&i),
+            "{file} fn {function}: a listed site with no exit"
+        );
+    }
+}
+
+/// Where `BrokenPipe` may be named: the refusal door, and the places that are not a command's
+/// verdict on stdout.
+const BROKEN_PIPE_SITES: &[(&str, &str, &str)] = &[
+    (
+        "deep-diff-forge-cli/src/main.rs",
+        "run_rpc",
+        "the rpc transport ends a session",
+    ),
+    (
+        "deep-diff-forge-cli/src/main.rs",
+        "run_mcp",
+        "the MCP transport ends a session",
+    ),
+    (
+        "deep-diff-forge-cli/src/main.rs",
+        "run_envelope",
+        "forwards the wrapped command's code",
+    ),
+    (
+        "deep-diff-forge-cli/src/main.rs",
+        "daemon_failure",
+        "a daemon connection, not stdout",
+    ),
+    (
+        "deep-diff-forge-daemon/src/serve.rs",
+        "request",
+        "the daemon serving a peer",
+    ),
+];
+
+/// F7.h2: a closed stdout is handled in one place, `refusal::stdout_closed`, which keeps a
+/// pending verdict refusal. `BrokenPipe` is named in production code only in `refusal.rs` and at
+/// the listed sites, none of which writes a verdict: before, `emit` turned it into exit 0 whatever
+/// was pending (M27).
+#[test]
+fn broken_pipe_is_handled_only_by_the_refusal_door() {
+    let mut used = Vec::new();
+    let mut door = false;
+    for (file, number, line, function) in production_sites_in_fns() {
+        if !line.contains("BrokenPipe") || line.trim_start().starts_with("//") {
+            continue;
+        }
+        if file == "deep-diff-forge-cli/src/refusal.rs" {
+            door = true;
+            continue;
+        }
+        let site = BROKEN_PIPE_SITES
+            .iter()
+            .position(|(f, n, _)| *f == file && *n == function);
+        assert!(
+            site.is_some(),
+            "{file}:{number} (fn {function}) handles BrokenPipe outside the refusal door: {}",
+            line.trim()
+        );
+        used.extend(site);
+    }
+    assert!(door, "refusal.rs no longer handles BrokenPipe");
+    for (i, (file, function, _)) in BROKEN_PIPE_SITES.iter().enumerate() {
+        assert!(
+            used.contains(&i),
+            "{file} fn {function}: a listed site that names no BrokenPipe"
+        );
+    }
+}
+
+/// How to make each reason class of exit 7 hold: the arguments, stdin, the directory to run in,
+/// and the exact first reason line. Every class of `schema exit-codes` must have one.
+fn refusal_driver(
+    class: &str,
+    scratch: &deep_diff_forge_testkit::Scratch,
+) -> (Vec<String>, String, std::path::PathBuf, String) {
+    let here = scratch.path().to_path_buf();
+    let owned = |args: &[&str]| args.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>();
+    let findings = |name: &str, text: &str| scratch.write(name, text).to_str().unwrap().to_owned();
+    match class {
+        "require_files" => (
+            owned(&["--stdin-patch", "--json", "--require-files"]),
+            "just some prose that is not a diff\n".into(),
+            here,
+            "refused: 0 files in input (--require-files)".into(),
+        ),
+        "require_hunks" => (
+            owned(&["--stdin-patch", "--json", "--require-hunks"]),
+            "diff --git a/x b/x\nold mode 100644\nnew mode 100755\n".into(),
+            here,
+            "refused: 0 hunks in input (--require-hunks)".into(),
+        ),
+        "require_findings" => (
+            owned(&[
+                "findings",
+                "verify",
+                "--findings",
+                &findings("empty.jsonl", ""),
+                "--require-findings",
+            ]),
+            PATCH.into(),
+            here,
+            "refused: 0 findings in the findings file (--require-findings)".into(),
+        ),
+        "require_all" => (
+            owned(&[
+                "findings",
+                "verify",
+                "--findings",
+                &findings(
+                    "refused.jsonl",
+                    "{\"agent\": \"codex\", \"severity\": \"low\", \"title\": \"u\", \"body\": \"c\", \"path\": \"nope\"}\n",
+                ),
+                "--require-all",
+            ]),
+            PATCH.into(),
+            here,
+            "refused: 1 of 1 findings were refused or over the limit (--require-all)".into(),
+        ),
+        "eval_failed" => {
+            // One ranking case that cannot hold: a docs edit must outrank an unsafe spawn.
+            let patch = "diff --git a/docs/a.md b/docs/a.md\n--- a/docs/a.md\n+++ b/docs/a.md\n@@ -1 +1 @@\n-a\n+b\ndiff --git a/src/run.rs b/src/run.rs\n--- a/src/run.rs\n+++ b/src/run.rs\n@@ -1 +1,2 @@\n fn f() {}\n+fn g() { unsafe { std::process::Command::new(\"sh\"); } }\n";
+            std::fs::create_dir_all(scratch.join("corpus/ranking")).unwrap();
+            scratch.write("corpus/ranking/r.patch", patch);
+            let manifest = serde_json::json!({
+                "schema": "deep-diff-forge.eval-manifest.v0",
+                "cases": [{"id": "ranking/r", "kind": "ranking", "patch": "ranking/r.patch", "origin": "contract test", "must_outrank": [["docs/a.md", "src/run.rs"]], "sha256": deep_diff_forge_core::sha256_hex(patch.as_bytes())}],
+            });
+            scratch.write("corpus/MANIFEST.json", manifest.to_string());
+            let corpus = scratch.join("corpus");
+            (
+                owned(&["eval", "--corpus", corpus.to_str().unwrap()]),
+                String::new(),
+                here,
+                "refused: 1 cases failed (eval)".into(),
+            )
+        }
+        // Outside a Git repository the links a judged stop needs cannot hold.
+        "chain_not_ready" => (
+            owned(&["agent", "doctor", "--gate"]),
+            String::new(),
+            here,
+            "refused: 13 checks failed (agent doctor)".into(),
+        ),
+        other => panic!("no driver for the refusal class {other}: add one"),
+    }
+}
+
+/// Run the binary in `dir` (its own `HOME`), stdout piped or on a pipe whose reader has gone.
+fn run_refusal(
+    args: &[String],
+    stdin: &str,
+    dir: &std::path::Path,
+    closed: bool,
+) -> (Option<i32>, String, String) {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"));
+    command
+        .args(args)
+        .current_dir(dir)
+        .env("HOME", dir)
+        .env_remove("XDG_STATE_HOME")
+        .env_remove("CLAUDE_PROJECT_DIR")
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped());
+    if closed {
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        command.stdout(Stdio::from(writer));
+    } else {
+        command.stdout(Stdio::piped());
+    }
+    let mut child = command.spawn().unwrap();
+    let _ = child.stdin.take().unwrap().write_all(stdin.as_bytes());
+    let out = child.wait_with_output().unwrap();
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// The registered classes as `schema exit-codes` lists them: (class, tag, stdout).
+fn refusal_classes() -> Vec<(String, String, String)> {
+    let (code, stdout, _) = run(&["schema", "exit-codes"], "");
+    assert_eq!(code, 0);
+    let schema: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    schema["refusals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            let s = |k: &str| r[k].as_str().unwrap().to_owned();
+            (s("class"), s("tag"), s("stdout"))
+        })
+        .collect()
+}
+
+/// The first stderr line in the reason grammar `refused: <text> (<tag>)`, as (line, tag).
+fn first_reason(stderr: &str) -> Option<(&str, &str)> {
+    stderr.lines().find_map(|line| {
+        let rest = line.strip_prefix("refused: ")?.strip_suffix(')')?;
+        let (text, tag) = rest.rsplit_once(" (")?;
+        let bare = tag.trim_start_matches('-');
+        let (head, tail) = bare.split_once(' ').unwrap_or((bare, ""));
+        let fits = !text.is_empty()
+            && tag.len() - bare.len() <= 2
+            && head.starts_with(|c: char| c.is_ascii_lowercase())
+            && head.bytes().all(|c| c.is_ascii_lowercase() || c == b'-')
+            && tail.bytes().all(|c| c.is_ascii_lowercase() || c == b'_');
+        fits.then_some((line, tag))
+    })
+}
+
+/// F7.h2: every reason class of exit 7 is driven: exit 7, the first stderr line in the reason
+/// grammar is the class's line with its tag, and stdout is empty for an input refusal and holds
+/// the document for a verdict refusal. Before, `--require-all`, `eval` and `agent doctor` named no
+/// reason (M3).
+#[test]
+fn every_refusal_names_its_reason_on_stderr() {
+    let scratch = deep_diff_forge_testkit::Scratch::new("refusal-reasons");
+    for (class, tag, form) in refusal_classes() {
+        let (args, stdin, dir, want) = refusal_driver(&class, &scratch);
+        let (code, stdout, stderr) = run_refusal(&args, &stdin, &dir, false);
+        assert_eq!(code, Some(7), "{class}: {stderr}");
+        assert_eq!(
+            first_reason(&stderr),
+            Some((want.as_str(), tag.as_str())),
+            "{class}: the reason line on stderr: {stderr}"
+        );
+        assert_eq!(
+            stdout.is_empty(),
+            form == "empty",
+            "{class}: stdout {form}: {stdout}"
+        );
+    }
+}
+
+/// F7.h2 (M27): a verdict refusal is decided before its document is written, so a reader that has
+/// closed stdout before the run still gets exit 7 and the reason, for every verdict class. Before,
+/// `eval` and `agent doctor` exited 0 with no reason when the reader had gone.
+#[test]
+fn a_closed_stdout_keeps_every_verdict_refusal() {
+    let scratch = deep_diff_forge_testkit::Scratch::new("closed-stdout");
+    let mut verdicts = 0;
+    for (class, tag, form) in refusal_classes() {
+        if form != "document" {
+            continue;
+        }
+        verdicts += 1;
+        let (args, stdin, dir, want) = refusal_driver(&class, &scratch);
+        let (code, _, stderr) = run_refusal(&args, &stdin, &dir, true);
+        assert_eq!(
+            (code, first_reason(&stderr)),
+            (Some(7), Some((want.as_str(), tag.as_str()))),
+            "{class} with the reader of stdout gone: {stderr}"
+        );
+    }
+    assert!(verdicts >= 4, "{verdicts} verdict classes");
 }

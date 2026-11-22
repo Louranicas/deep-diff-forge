@@ -21,6 +21,7 @@ mod eval;
 mod file_pair;
 mod git_input;
 mod mcp;
+mod refusal;
 mod regular;
 mod rpc;
 mod textfile;
@@ -28,9 +29,10 @@ use deep_diff_forge_core::exit;
 use deep_diff_forge_core::{InputSeal, ReviewDocument, display_safe, display_safe_bounded};
 
 /// Write `s` to stdout, treating a reader that closed the pipe (`… | head`) as
-/// a clean exit. Rust ignores SIGPIPE, so a bare `print!`/`println!` panics with
-/// `BrokenPipe` (exit 101) the moment the downstream consumer goes away; routing
-/// bulk output through here keeps `deep-diff-forge … | head` a normal success.
+/// a clean exit unless a verdict refusal is pending ([`refusal::stdout_failed`]). Rust ignores
+/// SIGPIPE, so a bare `print!`/`println!` panics with `BrokenPipe` (exit 101) the moment the
+/// downstream consumer goes away; routing bulk output through here keeps `deep-diff-forge … |
+/// head` a normal success.
 /// std-only, no `unsafe`.
 ///
 /// Stdout is line-buffered, so the flush is what writes a tail after the last newline: before,
@@ -43,29 +45,8 @@ fn emit(s: &str) {
     // (`trusted`, `session_id`) as cleartext logging on PR #83. Output is single-threaded.
     let mut stdout = std::io::stdout();
     if let Err(err) = stdout.write_all(s.as_bytes()).and_then(|()| stdout.flush()) {
-        if err.kind() == std::io::ErrorKind::BrokenPipe {
-            if let Some(reason) = PENDING_REFUSAL.get() {
-                refuse_now(reason);
-            }
-            std::process::exit(exit::SUCCESS);
-        }
-        eprintln!("error: write failed: {err}");
-        std::process::exit(exit::IO);
+        refusal::stdout_failed(&err);
     }
-}
-
-/// A refusal decided before its command writes its output, with its stderr line (empty for
-/// none). A reader that closes stdout then still gets exit 7, not the clean exit of a broken pipe:
-/// `findings verify --require-findings` exited 0 with an empty stderr when its reader had gone
-/// (S3.17a.g2, DDF-2026-010).
-static PENDING_REFUSAL: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
-
-/// Exit 7 with `reason` on stderr (nothing when it is empty).
-fn refuse_now(reason: &str) -> ! {
-    if !reason.is_empty() {
-        eprintln!("{reason}");
-    }
-    std::process::exit(EXIT_REFUSED);
 }
 
 /// `println!`-shaped wrapper over [`emit`] for broken-pipe-tolerant line output.
@@ -301,13 +282,6 @@ const SCHEMA: args::Spec = args::Spec {
     positionals: 1,
 };
 
-/// Exit code for an input-contract refusal: the caller passed `--require-files`
-/// or `--require-hunks` and the (well-formed) patch has nothing to review.
-/// Distinct from 4 (the input could not be parsed) so a gate can tell "nothing
-/// to review" from "garbage". This is the "contract violation" slot of the
-/// documented exit-code table.
-const EXIT_REFUSED: i32 = exit::INPUT_CONTRACT_REFUSED;
-
 /// The `--require-files` / `--require-hunks` input contracts, parsed from the CLI flags; the
 /// predicate itself is [`deep_diff_forge_patch::InputGuards`], shared with the daemon.
 #[derive(Clone, Copy)]
@@ -325,14 +299,13 @@ impl InputGuards {
         self.0.files || self.0.hunks
     }
 
-    /// Exit [`EXIT_REFUSED`] with a one-line stderr reason and an empty stdout on the first
+    /// Exit 7 ([`refusal::refuse_input`]) with a one-line stderr reason and an empty stdout on the first
     /// requested contract the input breaks. A gate that feeds a diff into the engine should pass
     /// both, so neither an empty or mis-piped input nor a header-only or rename-only diff can be
     /// mistaken for a clean, zero-risk review.
     fn enforce(self, files: &[deep_diff_forge_core::ReviewFile]) {
         if let Some(reason) = self.0.refusal(files) {
-            eprintln!("refused: {reason}");
-            std::process::exit(EXIT_REFUSED);
+            refusal::refuse_input(reason);
         }
     }
 }
@@ -518,10 +491,7 @@ fn sealed_review_or_exit(bytes: &[u8], guards: InputGuards) -> deep_diff_forge_p
             eprintln!("error: patch parse failed: {error}");
             std::process::exit(error.exit_code());
         }
-        Err(refused @ ReviewError::Refused(_)) => {
-            eprintln!("{refused}");
-            std::process::exit(EXIT_REFUSED);
-        }
+        Err(ReviewError::Refused(reason)) => refusal::refuse_input(reason),
     }
 }
 
@@ -1500,7 +1470,17 @@ fn eval_cmd(opts: &[String]) {
             });
         }
     };
-    let failures = receipt["failures"].as_array().map_or(0, Vec::len);
+    // Decided before the receipt is written (F7.h2): the cases with a failure, by id.
+    let failed: std::collections::BTreeSet<&str> = receipt["failures"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|f| Some(f.as_str()?.split_once(": ").map_or("", |(id, _)| id)))
+        .collect();
+    if !failed.is_empty() {
+        let class = exit::refusal("eval_failed");
+        refusal::pending(&[(class, format!("{} cases failed", failed.len()))]);
+    }
     if opts.iter().any(|a| a == "--json") {
         emit_pretty_json(&receipt);
     } else {
@@ -1519,9 +1499,7 @@ fn eval_cmd(opts: &[String]) {
             emitln!("  FAIL {}", failure.as_str().unwrap_or(""));
         }
     }
-    if failures > 0 {
-        std::process::exit(EXIT_REFUSED);
-    }
+    refusal::finish();
 }
 
 const FINDINGS_USAGE: &str = "deep-diff-forge findings verify --findings FILE [--require-all] [--require-findings] [--require-files] [--require-hunks]";
@@ -1569,21 +1547,23 @@ fn findings_cmd(opts: &[String]) {
     let required = |flag: &str| opts.iter().any(|a| a == flag);
     let all_accepted = verdict.refused.is_empty() && verdict.over_limit == 0;
     // Decided before the verdict is written, so a reader that closes stdout cannot turn the
-    // refusal into a clean exit (S3.17a.g2).
-    let refusal = if required("--require-findings") && verdict.total() == 0 {
-        Some("refused: 0 findings in the findings file (--require-findings)")
-    } else if required("--require-all") && !all_accepted {
-        Some("")
-    } else {
-        None
-    };
-    if let Some(reason) = refusal {
-        let _ = PENDING_REFUSAL.set(reason);
+    // refusal into a clean exit (S3.17a.g2, F7.h2).
+    let mut reasons = Vec::new();
+    if required("--require-findings") && verdict.total() == 0 {
+        let text = "0 findings in the findings file".to_owned();
+        reasons.push((exit::refusal("require_findings"), text));
     }
+    if required("--require-all") && !all_accepted {
+        let refused = verdict.refused.len() + verdict.over_limit;
+        let text = format!(
+            "{refused} of {} findings were refused or over the limit",
+            verdict.total()
+        );
+        reasons.push((exit::refusal("require_all"), text));
+    }
+    refusal::pending(&reasons);
     emit_pretty_json(&doc);
-    if let Some(reason) = refusal {
-        refuse_now(reason);
-    }
+    refusal::finish();
 }
 
 /// A findings file: at most 8 MiB of UTF-8. Exit 3 when it cannot be read or is not UTF-8, 4

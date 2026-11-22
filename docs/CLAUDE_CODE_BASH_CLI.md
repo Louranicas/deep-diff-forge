@@ -135,7 +135,7 @@ The shipped codes are one registry in the binary
 | 3 | `io` | I/O or encoding failure: reading input (stdin, a file, Git, the learning store), non-UTF-8 input, or writing output. | `check_environment` |
 | 4 | `invalid_input` | A patch or analysis input that fails to parse or validate, input over the byte budget, an invalid receipt, or a refused Git acquisition or file pair. | `change_input` |
 | 6 | `daemon_or_terminal` | Daemon / interactive-terminal failure (for example `review` without a TTY, or `daemon status` with no daemon). | `check_environment` |
-| 7 | `input_contract_refused` | `--require-files` refused a patch with 0 files (`refused: 0 files in input (--require-files)`), or `--require-hunks` refused one with 0 hunks or 0 added+removed lines (`refused: 0 hunks in input (--require-hunks)`). stdout is empty. A gate should pass both flags. | `change_input` |
+| 7 | `input_contract_refused` | `--require-files` refused a patch with 0 files (`refused: 0 files in input (--require-files)`), or `--require-hunks` refused one with 0 hunks or 0 added+removed lines (`refused: 0 hunks in input (--require-hunks)`). Input refusals (these two) leave stdout empty; verdict refusals (`findings verify --require-findings`/`--require-all`, `eval`, `agent doctor`) print their document first, and name their reason the same way. A gate should pass both flags. | `change_input` |
 | 101 | `panic` | Internal error (a panic). | `report_bug` |
 
 The `council` subcommands use their own family: 0 completed, 3 recorded incomplete, 4 refused, 7 hold.

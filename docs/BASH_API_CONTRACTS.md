@@ -83,7 +83,11 @@ git diff | deep-diff-forge --stdin-patch --rank --json --require-files --require
 
 Rules:
 
-- A refusal exits **7**, writes one line to stderr, and leaves stdout empty.
+- A refusal exits **7** and writes one line `refused: <text> (<tag>)` to stderr. An input
+  refusal (these two guards) leaves stdout empty; a verdict refusal (`findings verify
+  --require-findings`/`--require-all`, `eval`, `agent doctor`) prints its document first, and
+  still exits 7 when the reader of stdout has gone. The classes:
+  [Refusal reasons (exit 7)](reference/output-and-exit-codes.md#refusal-reasons-exit-7).
 - `--require-files` alone passes a header-only or rename-only diff (one file,
   zero hunks); only `--require-hunks` closes that gap.
 - When both guards would fail, the files guard reports first.

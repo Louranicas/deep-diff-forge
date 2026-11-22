@@ -120,3 +120,32 @@ fn doctor_reports_every_check_passing() {
     assert_eq!(code, 0);
     assert_eq!(human.lines().filter(|l| l.starts_with("ok")).count(), 4);
 }
+
+/// F7.h2: a chain that is not ready (here: no Git repository) exits 7 with its `error:` line and
+/// then the reason line of the class `chain_not_ready`, after the checks are written.
+#[test]
+fn doctor_names_the_chain_not_ready_reason_after_its_error_line() {
+    let scratch = Scratch::new("doctor-not-ready");
+    let out = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .args(["agent", "doctor", "--gate"])
+        .current_dir(scratch.path())
+        .env("HOME", scratch.path())
+        .env_remove("XDG_STATE_HOME")
+        .env_remove("CLAUDE_PROJECT_DIR")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert_eq!(out.status.code(), Some(7), "{stderr}");
+    let lines: Vec<&str> = stderr.lines().collect();
+    let error = lines
+        .iter()
+        .position(|l| l.starts_with("error: the chain is not ready: "));
+    let reason = lines
+        .iter()
+        .position(|l| l.starts_with("refused: ") && l.ends_with(" checks failed (agent doctor)"));
+    assert!(
+        matches!((error, reason), (Some(e), Some(r)) if e < r),
+        "{stderr}"
+    );
+    assert!(String::from_utf8(out.stdout).unwrap().contains("FAIL"));
+}
