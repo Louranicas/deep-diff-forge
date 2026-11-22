@@ -495,10 +495,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   path whose `diff` attribute is unset or names a driver carries `diff_suppressed` whatever the
   second reading gives (a byte that is not UTF-8, the byte budget, a refusal). A UTF-16 or
   UTF-32 file, also an existing source rewritten in one of them, is labelled with the new cause
-  `encoding` (labelled, not decoded). A second reading that the byte budget or the time limit
-  cuts off never leaves a binary change silent: the attribute label stands, or the acquisition
-  fails with the step named; a binary by content whose text form passes the remaining budget
-  is therefore refused where 0.9.0 read it. A changed file whose name is not UTF-8 exits 4
+  `encoding` (labelled, not decoded). A second reading of a binary change (or its
+  `git check-attr`) that the 64 MiB budget or the 120 s limit cuts off never leaves the change
+  silent and no longer fails the review: the file stays a binary change and is labelled by its
+  attribute, else with the new cause `unread` (S3.27.g); paths are read again in Git's order
+  within what is left of the budget, so one large file does not keep later files unread, and
+  once the limit has run out every binary change left is `unread`. A changed file whose name is
+  not UTF-8 exits 4
   (`change_input`), not 3, in every Git selection and in a file pair. A Git helper that
   outlives Git can no longer stretch the acquisition past its limit (S3.17a.b).
 
