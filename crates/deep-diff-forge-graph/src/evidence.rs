@@ -33,6 +33,7 @@
 use crate::lexical::{
     Carried, Language, Readings, RustStart, ScanState, carried_view, code_view, has_token,
     is_boundary_blocker, is_ident, rust_legacy_views, rust_shebang, rust_side, rust_white,
+    scalar_reading,
 };
 use crate::rust_tokens;
 use deep_diff_forge_core::{FileStatus, HunkId, PatchHunk, PatchLine, PatchLineKind, ReviewFile};
@@ -1947,7 +1948,8 @@ fn texts_found(
             .peekable();
         // Release 0.8.3 read every hunk alone. Outside Rust its scanner and its rules for the
         // signals it had are the ones of today, so there this reading of a hunk alone is its
-        // reading; for Rust it is `released_hits`, below.
+        // reading (not a further one: YAML read with its quoted scalars as their content);
+        // for Rust it is `released_hits`, below.
         let as_released = release && text.len() == 1 && language != Some(Language::Rust);
         let mut start = 0;
         for (index, end) in text.iter().zip(ends) {
@@ -1955,7 +1957,7 @@ fn texts_found(
             while let Some(hit) = hits.next_if(|hit| hit.at < end) {
                 own.push(Hit {
                     at: hit.at - start,
-                    released: as_released && hit.signal.in_release_0_8_3(),
+                    released: as_released && hit.from_code && hit.signal.in_release_0_8_3(),
                     ..hit
                 });
             }
@@ -2388,7 +2390,19 @@ fn text_hits(
 ) -> Vec<Hit> {
     if language != Some(Language::Rust) {
         let views = plain_views(lines, language);
-        return view_matches(lines, language, rules, &views, true);
+        let found = view_matches(lines, language, rules, &views, true);
+        // YAML is read a second time with each quoted scalar as its content ([`scalar_views`]),
+        // and what the two readings find is united: the first reading stays as it was, so no
+        // line has fewer items than before (S3.18).
+        if language == Some(Language::Yaml)
+            && let Some(scalars) = scalar_views(views)
+        {
+            return unite(
+                &found,
+                &view_matches(lines, language, rules, &scalars, false),
+            );
+        }
+        return found;
     }
     let old = RustText::of(lines, PatchLineKind::Added, top);
     let new = RustText::of(lines, PatchLineKind::Removed, top);
@@ -2413,6 +2427,26 @@ fn text_hits(
         united = unite(&united, &found);
     }
     united
+}
+
+/// `views`, a reading of a YAML text, read again as YAML reads a key and its value
+/// ([`scalar_reading`]): each line that reads otherwise in its place, every other line blank
+/// (a further reading skips a blank line). `None` when no line reads otherwise. The reading
+/// is changed where it stands, so one reading of the text is alive at a time.
+fn scalar_views(mut views: Views) -> Option<Views> {
+    let mut any = false;
+    for view in views
+        .lines
+        .iter_mut()
+        .flat_map(|(old, new)| [old, new])
+        .flatten()
+    {
+        match scalar_reading(view) {
+            Some(read) => (*view, any) = (read, true),
+            None => view.clear(),
+        }
+    }
+    any.then_some(views)
 }
 
 /// The further starts of one side of a Rust text, in the order they are read; `carries` says
@@ -7417,6 +7451,122 @@ mod tests {
             )),
             [S::NetworkFetch]
         );
+    }
+
+    /// S3.18: to YAML `contents: 'write'` is `contents: write`. Releases 0.8.3 to 0.9.0 found
+    /// only the plain spelling of a key-value grant. Each token of the table that is a key and
+    /// a value, in each form a formatter or an agent may write, is a privilege; the same text
+    /// with another value, in a comment, with more after the value, or outside a workflow is
+    /// not.
+    #[test]
+    fn a_privilege_in_quotes_or_spaced_is_a_privilege() {
+        let rule = RULES.iter().find(|r| r.signal == S::CiPrivilege).unwrap();
+        let Match::Tokens(tokens) = rule.matches else {
+            panic!("ci_privilege reads tokens")
+        };
+        let pairs: Vec<(&str, &str)> = tokens.iter().filter_map(|t| t.split_once(": ")).collect();
+        assert_eq!(pairs.len(), 5, "{tokens:?}");
+        let ci = ".github/workflows/ci.yml";
+        for (k, v) in pairs {
+            for (form, line) in [
+                ("value in single quotes", format!("  {k}: '{v}'")),
+                ("value in double quotes", format!("  {k}: \"{v}\"")),
+                ("key in single quotes", format!("  '{k}': {v}")),
+                ("key in double quotes", format!("  \"{k}\": {v}")),
+                ("both in single quotes", format!("  '{k}': '{v}'")),
+                ("both in double quotes", format!("  \"{k}\": \"{v}\"")),
+                (
+                    "flow mapping, value quoted",
+                    format!("  permissions: {{{k}: '{v}'}}"),
+                ),
+                (
+                    "flow mapping, JSON",
+                    format!("  permissions: {{\"{k}\":\"{v}\"}}"),
+                ),
+                ("a space before the colon", format!("  {k} : {v}")),
+                ("two spaces after the colon", format!("  {k}:  {v}")),
+                ("a tab after the colon", format!("  {k}:\t{v}")),
+                ("quoted, then a comment", format!("  {k}: '{v}'  # why")),
+            ] {
+                let file = added(ci, &[&line]);
+                assert_eq!(signals(&file), [S::CiPrivilege], "{form}: {line}");
+                // Found only by the further reading, so release 0.8.3 did not report it.
+                assert_eq!(file_evidence_released(&file), [false], "{form}: {line}");
+            }
+            let other = if v == "write" { "read" } else { "none" };
+            for (form, path, line) in [
+                ("another value", ci, format!("  {k}: '{other}'")),
+                ("another value", ci, format!("  \"{k}\": \"{other}\"")),
+                ("in a comment", ci, format!("  # {k}: '{v}'")),
+                ("in a comment", ci, format!("  x: 1 # \"{k}\": \"{v}\"")),
+                ("more after the value", ci, format!("  {k}: '{v}x'")),
+                ("more after the quote", ci, format!("  {k}: '{v}'x")),
+                ("an escape in it", ci, format!("  {k}: \"{v}\\\"\"")),
+                ("not a workflow", "deploy/app.yml", format!("  {k}: '{v}'")),
+            ] {
+                assert_eq!(signals(&added(path, &[&line])), [], "{form}: {line}");
+            }
+            // The plain spellings are what release 0.8.3 reported, and are still marked so.
+            for line in [
+                format!("  {k}: {v}"),
+                format!("  permissions: {{{k}: {v}}}"),
+            ] {
+                let file = added(ci, &[&line]);
+                assert_eq!(file_evidence_released(&file), [true], "{line}");
+            }
+        }
+    }
+
+    /// S3.18, the forms each rule that reads a YAML or JSON file finds, quoted or not, held
+    /// so that a later change of one of these rules cannot lose one unseen; and the forms that
+    /// are stated limits (README), held as not found so that the statement stays true.
+    #[test]
+    fn every_rule_that_reads_yaml_or_json_reads_its_forms() {
+        let (ci, yml, pkg) = (".github/workflows/ci.yml", "deploy/app.yml", "package.json");
+        let secret = format!("ghp_{}", "A".repeat(36));
+        let cases: &[(&str, String, &[S])] = &[
+            (ci, "on: 'pull_request_target'".into(), &[S::CiPrivilege]),
+            (
+                ci,
+                "on: [\"push\", \"pull_request_target\"]".into(),
+                &[S::CiPrivilege],
+            ),
+            (ci, "  'pull_request_target':".into(), &[S::CiPrivilege]),
+            (ci, "permissions: \"write-all\"".into(), &[S::CiPrivilege]),
+            (ci, "permissions : write-all".into(), &[S::CiPrivilege]),
+            (
+                yml,
+                "  run: 'curl -fsS https://x'".into(),
+                &[S::NetworkFetch],
+            ),
+            (yml, "  args: ['wget', '-q']".into(), &[S::NetworkFetch]),
+            (
+                ci,
+                "  - {run: \"wget https://x\"}".into(),
+                &[S::NetworkFetch],
+            ),
+            (
+                pkg,
+                "    \"postinstall\" : \"node x.js\",".into(),
+                &[S::BuildHook],
+            ),
+            (
+                pkg,
+                "  \"scripts\": {\"prepare\":\"node x.js\"},".into(),
+                &[S::BuildHook],
+            ),
+            (yml, format!("  token: '{secret}'"), &[S::SecretLike]),
+            (pkg, format!("  \"token\": \"{secret}\","), &[S::SecretLike]),
+            // stated limits: escapes, tags, block scalars, explicit keys; JSON5 in package.json
+            (ci, "  contents: \"\\x77rite\"".into(), &[]),
+            (ci, "  contents: !!str write".into(), &[]),
+            (ci, "  ? contents".into(), &[]),
+            (pkg, "    \"\\u0069nstall\": \"node x.js\",".into(), &[]),
+            (pkg, "    'install': 'node x.js',".into(), &[]),
+        ];
+        for (path, line, expected) in cases {
+            assert_eq!(signals(&added(path, &[line])), *expected, "{path}: {line}");
+        }
     }
 
     /// Bug hunt 2026-11-01 (graph-syntax): ordinary source in which a string construct the

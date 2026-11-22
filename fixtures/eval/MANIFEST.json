@@ -2303,6 +2303,39 @@
         }
       ],
       "sha256": "0e0d308d351300f4a9cd59dc8984a9eb6af1f402451a6d5a07d001008c26b32c"
+    },
+    {
+      "id": "evidence/workflow-privilege-quoted",
+      "kind": "evidence",
+      "patch": "evidence/workflow-privilege-quoted.patch",
+      "origin": "S3.18, 2026-11-22: to YAML a quoted scalar is its content, and releases 0.8.3 to 0.9.0 found only the plain spelling of a key-value grant. A workflow gains id-token, packages and contents write and inherited secrets, each written with quotes (single, double, a quoted key, a JSON flow mapping); contents: 'read', actions: 'read' and a comment naming contents: 'write' are near misses that must stay unlabelled.",
+      "expect": [
+        {
+          "path": ".github/workflows/release.yml",
+          "signal": "ci_privilege",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": ".github/workflows/release.yml",
+          "signal": "ci_privilege",
+          "side": "new",
+          "line": 6
+        },
+        {
+          "path": ".github/workflows/release.yml",
+          "signal": "ci_privilege",
+          "side": "new",
+          "line": 11
+        },
+        {
+          "path": ".github/workflows/release.yml",
+          "signal": "ci_privilege",
+          "side": "new",
+          "line": 12
+        }
+      ],
+      "sha256": "1899ea4494cb5c98f03b69b776a52a0bd05658d655d13ac6bd0c2562f7cf53bb"
     }
   ]
 }

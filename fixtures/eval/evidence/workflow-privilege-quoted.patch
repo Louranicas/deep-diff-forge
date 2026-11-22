@@ -1,0 +1,17 @@
+diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -1,3 +1,13 @@
+ on: push
++# contents: 'write' is not wanted here
++permissions:
++  contents: 'read'
++  id-token: "write"
++  "packages": "write"
++  actions: 'read'
+ jobs:
++  call:
++    uses: ./.github/workflows/build.yml
++    permissions: {"contents":"write"}
++    secrets: 'inherit'
+   build:
