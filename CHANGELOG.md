@@ -258,6 +258,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   are compiled into the binary changed in one comment line each, so the release binary's hash
   changes; its answers do not (7,421 comparison patches, identical in both directions).
 
+- **`deep-diff-forge.tuicr-import.v1` gains `repairs`** (S3.17a.d; additive): the repairs an
+  import made to the journal are returned in the document, and the command line prints the same
+  `note:` lines as before. `TuicrImportError::Incomplete` carries the I/O error as its `source`
+  (library users of `deep-diff-forge-review`: the field `reason: String` is replaced). The refusal
+  for a held import lock names what to do first, so that it survives the 200-byte cut.
+
+
 ### Fixed
 
 - **A text file Git was told to show as binary is read as text** (S3.20,
@@ -339,6 +346,24 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - **A moved file's old path is squashed as Git squashes it** (independent review of S3a,
   S3A-L-1, low). `rename from d//x` or `copy from d//x` was reported as `old_path` `d//x`, while
   `git apply` read `d/x`. It is `d/x` now (`render::old_path`), with a real-apply test.
+
+- **A judge that left a process holding its output could stretch an agent's stop past its limit**
+  (S3.17a.a, [DDF-2026-008](docs/advisories/DDF-2026-008.md)). Measured on 0.9.0: a stand-in judge
+  that exits at once and leaves a child holding its standard output held the stop for 75 s against
+  the documented 45 s. Every child DDF waits for (the judge, the ranker seal, the council's Git and
+  tuicr calls) now runs in a process group of its own; the whole group is killed on every exit path
+  (time limit, output cap, normal exit), and the output is joined only until the deadline. The same
+  stop now takes 0.15 s. A process that leaves the group (`setsid`, a double fork) is not killed by
+  DDF, and Ctrl-C on an interactive council command no longer reaches its Git or tuicr child: both
+  are stated in `SECURITY.md` and in the module's documentation.
+
+- **`council import-tuicr`: four low findings of the journal review** (S3.17a.d, S3.17a.e). The
+  journal is no longer appended through a link at `decisions.jsonl` (a dangling link used to create
+  and fill its target). A session that is refused no longer triggers the journal's repairs. A failed
+  directory sync of a bare file name no longer removes the file. Temporary files that a killed writer
+  left in the export ledger, the reports and the job directories are removed when their writer has
+  ended, and named when it is still running. A mounted host path of the gate sandbox that holds `:`
+  or `,` is refused before it reaches `--volume`.
 
 ## [0.9.0] - 2026-11-18
 
