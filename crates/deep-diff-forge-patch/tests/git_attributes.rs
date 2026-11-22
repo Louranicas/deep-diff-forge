@@ -11,7 +11,8 @@
 )]
 
 use deep_diff_forge_patch::{
-    GitAcquireOptions, GitAcquisition, GitChange, GitPath, GitSelection, acquire_git,
+    GitAcquireError, GitAcquireOptions, GitAcquisition, GitChange, GitPath, GitSelection,
+    acquire_git,
 };
 use deep_diff_forge_testkit::Scratch;
 use std::ffi::OsString;
@@ -283,4 +284,85 @@ fn a_text_reading_over_the_byte_budget_leaves_the_binary_reading_standing() {
     let roomy = acquire_git(&root, &GitSelection::Staged, &options(false, 1 << 20)).unwrap();
     read_as_text(&roomy, "big.rs");
     assert!(roomy.diff().patch_bytes().len() > 20_000);
+}
+
+/// A Git that takes `pause` seconds over every `--text` reading and is otherwise the real one,
+/// written by a child process (a file this process wrote and then ran could be busy, ETXTBSY).
+fn slow_text_git(scratch: &Scratch, pause: u32) -> PathBuf {
+    let stub = scratch.join("slow-git");
+    let script = format!(
+        "#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = --text ] && sleep {pause}; done\nexec git \"$@\"\n"
+    );
+    let mut writer = Command::new("sh")
+        .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+        .arg(&stub)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::io::Write::write_all(&mut writer.stdin.take().unwrap(), script.as_bytes()).unwrap();
+    assert!(writer.wait().unwrap().success());
+    stub
+}
+
+/// S3.27.d: the time limit and the byte budget cover the second reading too, and running out
+/// there never leaves a binary change silent. Six hidden files come first, each read again
+/// through a Git that takes two seconds over a `--text` reading, so a five-second limit ends
+/// among them; the payloads come last: `z.rs` (hidden by `*.rs -diff`) and `z.txt` (binary for
+/// a NUL byte alone, no attribute). Before, every failure of the second reading was swallowed:
+/// the acquisition succeeded with both payloads binary and unlabelled. Now the acquisition fails
+/// with the step that ran out named, or each payload is read or labelled with its true cause.
+/// The same for the budget: a NUL-only file whose text reading is over what is left of it fails
+/// the acquisition, where before it stood as a silent binary change.
+#[test]
+fn many_binary_files_before_a_payload_cannot_hide_it() {
+    const NAMES: [&str; 8] = [
+        "a0.rs", "a1.rs", "a2.rs", "a3.rs", "a4.rs", "a5.rs", "z.rs", "z.txt",
+    ];
+    let before: Vec<(&str, Vec<u8>)> = NAMES
+        .iter()
+        .map(|name| (*name, source(name.ends_with(".txt"), false)))
+        .collect();
+    let (root, scratch) = repo("many", &before);
+    for name in NAMES {
+        std::fs::write(root.join(name), source(name.ends_with(".txt"), true)).unwrap();
+    }
+    let opts = GitAcquireOptions {
+        git_program: slow_text_git(&scratch, 2).into_os_string(),
+        time_limit: std::time::Duration::from_secs(5),
+        ..options(false, 1 << 20)
+    };
+    match acquire_git(&root, &GitSelection::WorkingTree, &opts) {
+        Err(GitAcquireError::TimedOut { command, .. }) => assert!(
+            command == "git check-attr" || command.ends_with("--text"),
+            "the limit ran out outside the second reading: {command}"
+        ),
+        Ok(acq) => {
+            for (name, cause) in [("z.rs", "attribute"), ("z.txt", "content")] {
+                let c = change(&acq, name);
+                assert_eq!(
+                    c.diff_suppressed
+                        .map(deep_diff_forge_core::DiffSuppression::label),
+                    Some(cause),
+                    "a binary change was left silent or mislabelled: {name} {c:?}"
+                );
+            }
+        }
+        Err(other) => panic!("{other}"),
+    }
+
+    let (root, _scratch) = repo("silent-budget", &[("keep.txt", b"k\n".to_vec())]);
+    let mut big = b"fn main() {\n    // \0\n".to_vec();
+    for n in 0..5000 {
+        big.extend_from_slice(format!("    let a{} = 1;\n", n % 7).as_bytes());
+    }
+    big.extend_from_slice(SPAWN);
+    big.extend_from_slice(b"}\n");
+    std::fs::write(root.join("big.txt"), &big).unwrap();
+    git(&root, &["add", "big.txt"]);
+    let tight = acquire_git(&root, &GitSelection::Staged, &options(false, 20_000));
+    assert!(
+        matches!(tight, Err(GitAcquireError::BudgetExceeded { .. })),
+        "a NUL-only file over the budget stood as a silent binary change: {:?}",
+        tight.map(|acq| change(&acq, "big.txt").clone())
+    );
 }
