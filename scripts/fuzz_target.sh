@@ -77,6 +77,19 @@ case "$target" in
     cp review-policy/fuzz-seeds/council_report.json "$corpus/seed.json"
     max_len=4096
     ;;
+  git_raw_stream)
+    # Three `git diff --raw -z --patch` streams: a change, an addition and a rename.
+    z=0000000000000000000000000000000000000000
+    a=1111111111111111111111111111111111111111
+    b=2222222222222222222222222222222222222222
+    printf ':100644 100644 %s %s M\0f\0\0diff --git a/f b/f\nindex %s..%s 100644\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n' \
+      "$a" "$b" "$a" "$b" >"$corpus/modified"
+    printf ':000000 100644 %s %s A\0n\0\0diff --git a/n b/n\nnew file mode 100644\nindex %s..%s\n--- /dev/null\n+++ b/n\n@@ -0,0 +1 @@\n+a\n' \
+      "$z" "$a" "$z" "$a" >"$corpus/added"
+    printf ':100644 100644 %s %s R100\0o\0n\0\0diff --git a/o b/n\nsimilarity index 100%%\nrename from o\nrename to n\n' \
+      "$a" "$a" >"$corpus/renamed"
+    max_len=65536
+    ;;
   journal_recover)
     # Damages to the journal of the run the target prepares (see its source): none, a record
     # torn after a cut, an emptied checkpoint, a temporary file and a stray line.
