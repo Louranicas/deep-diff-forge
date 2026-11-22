@@ -795,6 +795,23 @@ bounded form.** What it holds to:
   most twelve, each cut at 400 characters, escaped like every other text the hook did not
   write, and marked as the judge's words and not instructions. A note's path is shown as
   every path is.
+- **What the judged agent is told names the accepted repair only.** Advice after a tool call
+  and the rules of a stop's message say, for each label, the change that answers it, never a
+  substitute that does not count (0.9.0 named the first of them, and some no label raises: a
+  list of what the tool will not catch), and the agent is not pointed at `explain signal`.
+  Every command a hook names is this binary's own absolute path, quoted for the shell.
+- **The gate reads the notes of the judge's verdict on its probe.** A note `claims_unverified`
+  (a policy that requires verified claims) fails the link `claims_verified` of `agent doctor
+  --gate`: the hook gives the judge no `--repo`, `--base` or `--head`, so every stop there
+  holds and none passes; an uncommitted or staged change can never be verified.
+- **The patch given to the judge has forge-warden's patch-maker options** (full index lines,
+  `--submodule=short`, `--ignore-submodules=none`, the store's commit-graph and multi-pack
+  index not read), held byte for byte by a test that runs a recorded copy of `make_patch.sh`.
+- **Not a boundary: work hidden with Git's own rules.** A judged agent can hide work from the
+  hooks with a directory of mode 000 or an untracked `.gitignore` that ignores itself (the stop
+  is then silent), or make staging run out of time with a very large sparse file (UNJUDGED,
+  with no run of the judge). These are stated limits of 0.10.0: the working tree and the merge
+  request still show the work, and release 0.11.0 targets them (F12, F13).
 - **`agent doctor --gate` reads a registered stop hook only in the form `agent setup --hooks`
   prints.** One program and its arguments, written with plain characters and single quotes:
   no comment, second command, pipe, redirection or substitution. The program word must be

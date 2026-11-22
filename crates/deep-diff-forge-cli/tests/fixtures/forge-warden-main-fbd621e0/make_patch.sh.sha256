@@ -1,0 +1,4 @@
+f53c440c2bae2aab26261ec01535a9083c72e67591176ec6d64b3c5093b5d7f3  make_patch.sh
+# forge-warden hub main fbd621e0e4c3183e7cb9d9c949dac942b8fb0dd8, scripts/make_patch.sh
+# (blob badb7aacb36d0a12318aafccafea914ab945b24b), copied byte for byte. Run by the parity test
+# crates/deep-diff-forge-patch/tests/judge_patch.rs (patch_maker), which holds this digest.

@@ -245,6 +245,9 @@ pub enum DiffSuppression {
     Attribute,
     /// No `diff` attribute applies: Git's own content check (a NUL byte) called it binary.
     Content,
+    /// No `diff` attribute applies and the file is UTF-16 or UTF-32 (a byte order mark, or one
+    /// NUL in every pair): Git's content check called it binary for the NULs of its encoding.
+    Encoding,
 }
 
 impl DiffSuppression {
@@ -254,6 +257,7 @@ impl DiffSuppression {
         match self {
             Self::Attribute => "attribute",
             Self::Content => "content",
+            Self::Encoding => "encoding",
         }
     }
 }

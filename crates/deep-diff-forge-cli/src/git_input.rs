@@ -9,15 +9,16 @@
 //! (`--include-untracked`, working tree only) without touching the index.
 //!
 //! Exit codes: 2 = usage error or invalid selection, 3 = Git could not be run
-//! or failed, or the patch is not UTF-8, 4 = structured output was malformed,
-//! mismatched, over budget or failed to parse, 7 = `--require-files` /
-//! `--require-hunks` refusal.
+//! or failed, 4 = structured output was malformed, mismatched, over budget or
+//! failed to parse, or a changed file's name is not UTF-8 (S3.27.f),
+//! 7 = `--require-files` / `--require-hunks` refusal.
 
 use crate::{InputGuards, emit, emit_review, flag_value, seal_of, validate_review_options_or_exit};
 use deep_diff_forge_core::exit;
 use deep_diff_forge_core::{display_safe, json_escape};
 use deep_diff_forge_patch::{
-    GitAcquireError, GitAcquireOptions, GitAcquisition, GitPath, GitSelection, acquire_git,
+    GitAcquireError, GitAcquireOptions, GitAcquisition, GitPath, GitSelection, PatchParseError,
+    acquire_git,
 };
 
 /// Flags that choose a structured Git selection.
@@ -48,14 +49,23 @@ pub(crate) fn exit_code(err: &GitAcquireError) -> i32 {
         | GitAcquireError::TimedOut { .. }
         | GitAcquireError::NonUtf8Path { .. }
         | GitAcquireError::FileUnreadable { .. } => exit::IO,
+        // A header Git wrote that is not UTF-8 (a file name) is the change's own: retrying
+        // never helps, so it is not `io` (S3.27.f).
+        GitAcquireError::Parse(PatchParseError::LossyHeader { .. }) => exit::INVALID_INPUT,
         GitAcquireError::Parse(error) => error.exit_code(),
         _ => exit::INVALID_INPUT,
     }
 }
 
 fn fail(err: &GitAcquireError) -> ! {
+    let class = match err {
+        GitAcquireError::Parse(PatchParseError::LossyHeader { .. }) => {
+            "refused (a file name that is not UTF-8): "
+        }
+        _ => "",
+    };
     eprintln!(
-        "error: structured Git acquisition failed: {}",
+        "error: structured Git acquisition failed: {class}{}",
         display_safe(&err.to_string())
     );
     std::process::exit(exit_code(err));

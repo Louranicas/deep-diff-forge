@@ -50,10 +50,16 @@ the same change, as text, valid UTF-8 (NUL bytes included), within what is left 
 byte budget, and the parser reads it, it replaces the binary section: the two apply to the same
 bytes. The file then carries the signal `diff_suppressed`, and `rank.v0` and
 `git-acquisition.v0` say why (`"diff_suppressed": "attribute"` when a `diff` attribute is unset
-or names a driver for the path, else `"content"`). No attribute is trusted or looked for first,
+or names a driver for the path, `"encoding"` for a UTF-16 or UTF-32 file, else `"content"`).
+A file hidden by a `diff` attribute carries the label also when its text cannot be read back
+(a byte that is not UTF-8, the byte budget): it then stays `binary_changed`. A UTF-16 or
+UTF-32 file is labelled and not decoded, so its code evidence is not found. No attribute is trusted or looked for first,
 and attributes keep every other effect (line endings, the user's filters). Still read as binary,
-with `binary_change` and no new label: a real binary (not UTF-8), and text whose second reading
-would pass the byte budget, and any change the 120 s limit leaves unread (each binary change
+with `binary_change` and no new label: a real binary (not UTF-8) that no attribute hides. A
+second reading that the byte budget or the 120 s limit cuts off never leaves a binary change
+silent: the attribute label stands, or the acquisition fails with the step named (exit 4 for the
+budget, 3 for the time limit); so a binary by content whose text form passes what is left of
+the 64 MiB budget is refused, where 0.9.0 read it as a binary change (each binary change
 costs one more Git call, about 8 ms: 300 changed images took 2.4 s instead of 0.25 s, measured
 2026-11-22). `--stdin-patch` reviews the patch it is given: a binary section a
 caller pipes in cannot be read again. A file pair (below) also shows a file with a NUL byte as

@@ -1464,3 +1464,40 @@ fn diff_context_in_the_repository_does_not_change_the_capture() {
     let range = GitSelection::parse_range("HEAD~1..HEAD").unwrap();
     hunk(&acquire_git(&r, &range, &options(false)).unwrap());
 }
+
+/// S3.17a.b: Git exits, but a process it started keeps Git's output pipes open. The readers were
+/// joined without a deadline after a normal exit, so one helper that outlived Git held the
+/// whole acquisition for as long as it lived (eight seconds here, per Git call, against a limit
+/// of 300 ms). Now the joins have the run's deadline: the acquisition stops at the limit.
+#[test]
+fn a_git_helper_that_outlives_git_cannot_stretch_the_acquisition() {
+    let fx = fixture("outlived");
+    let stub = fx.root.join("exiting-git");
+    // Written by a child process: a file this process wrote and then ran could be busy.
+    let made = Command::new("sh")
+        .args([
+            "-c",
+            "printf '#!/bin/sh\\nsleep 8 &\\nexit 0\\n' > \"$1\" && chmod 755 \"$1\"",
+            "sh",
+        ])
+        .arg(&stub)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let opts = GitAcquireOptions {
+        git_program: stub.into_os_string(),
+        time_limit: std::time::Duration::from_millis(300),
+        ..options(false)
+    };
+    let started = std::time::Instant::now();
+    let result = acquire_stub(&fx.root, &GitSelection::WorkingTree, &opts);
+    let took = started.elapsed();
+    assert!(
+        took < std::time::Duration::from_secs(4),
+        "a helper that outlived Git stretched the acquisition to {took:?}: {result:?}"
+    );
+    assert!(
+        matches!(result, Err(GitAcquireError::TimedOut { .. })),
+        "{result:?}"
+    );
+}

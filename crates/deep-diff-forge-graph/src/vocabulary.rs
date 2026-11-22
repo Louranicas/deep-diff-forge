@@ -156,7 +156,7 @@ pub const fn facts(signal: RiskSignal) -> SignalFacts {
         R::DiffSuppressed => (
             Security,
             "0.10.0",
-            "Git was told not to show this text file's changes (an attribute such as -diff, or a NUL byte); DDF read them as text.",
+            "Git was told not to show this text file's changes (an attribute such as -diff, a NUL byte, or a UTF-16 or UTF-32 encoding); DDF read them as text where it could.",
         ),
         R::LargeChange => (
             Shape,
