@@ -292,6 +292,11 @@ read from `/proc/self` and fell back to `0:0`, so on a host without `/proc`
 every gate ran as root inside the container. Gates refuse to run unless
 `DDF_COUNCIL_GATE_IMAGE` names a local image.
 
+The import lock (`decisions.lock`) is new in 0.10.0: an import by 0.9.0 or earlier takes
+none and can append beside a running 0.10.0 import of the same run, guarded only by the
+journal's length check. Do not run imports of one run with different versions at once. A host
+path to mount that is not UTF-8 or holds `:` or `,` is refused before the sandbox starts.
+
 ### Local learning store
 
 - Store directories and files must be owned by the effective user and remain
@@ -750,6 +755,15 @@ bounded form.** What it holds to:
   --gate` fails a registered timeout under 50. Each step is given the time that is left.
   Before, the steps' own limits added up to several minutes, and a client that ended the
   hook dropped its answer, which reads as a pass.
+- **Every child DDF waits for runs in a process group of its own.** The judge, the helper
+  that hashes the rankers, and the council's Git and tuicr calls are each the leader of their
+  own group, and the whole group is killed when the call ends, however it ends (time limit,
+  output cap, normal exit); the call returns by its time limit even when something holds its
+  output (0.9.0 let a judge's leftover child stretch a stop to 75 s:
+  [DDF-2026-008](docs/advisories/DDF-2026-008.md)). A process that leaves the group (`setsid`,
+  or a double fork into its own group) is not killed by DDF and runs on. Under Claude Code
+  2.1.330 the client ends a timed-out hook's descendants, including those in their own group
+  or session (measured 2026-11-22); a process that detaches from them is ended by no one.
 - **Text from the judge is data.** When a verdict fails or holds for something that is not a
   rule (an expired waiver, a note), the message repeats the judge's own words for it: at
   most twelve, each cut at 400 characters, escaped like every other text the hook did not
