@@ -2308,7 +2308,7 @@
       "id": "evidence/workflow-privilege-quoted",
       "kind": "evidence",
       "patch": "evidence/workflow-privilege-quoted.patch",
-      "origin": "S3.18, 2026-11-22: to YAML a quoted scalar is its content, and releases 0.8.3 to 0.9.0 found only the plain spelling of a key-value grant. A workflow gains id-token, packages and contents write and inherited secrets, each written with quotes (single, double, a quoted key, a JSON flow mapping); contents: 'read', actions: 'read' and a comment naming contents: 'write' are near misses that must stay unlabelled.",
+      "origin": "internal: plan of record S3.18, 2026-11-22: to YAML a quoted scalar is its content, and releases 0.8.2 to 0.9.0 (DDF-2026-005) found only the plain spelling of a key-value grant. A workflow gains id-token, packages and contents write and inherited secrets, each written with quotes (single, double, a quoted key, a JSON flow mapping); contents: 'read', actions: 'read' and a comment naming contents: 'write' are near misses that must stay unlabelled.",
       "expect": [
         {
           "path": ".github/workflows/release.yml",
@@ -2341,7 +2341,7 @@
       "id": "evidence/python-trivial-assert-ends",
       "kind": "evidence",
       "patch": "evidence/python-trivial-assert-ends.patch",
-      "origin": "S3.16, 2026-11-22: Python `assert True` cannot fail only where its statement ends. Release 0.9.0 labelled trivial_assert on the token whatever followed it; the seventeen rows of the hardening review (FINDINGS 0.1: eleven assertions that fail on every run, five that depend on a variable, a continued line) are hard negatives here, with `assert Trueish`. The statement ended by the line, a message, a comment or a `;` is labelled. `assert True or ready` also cannot fail and is not labelled: a declared miss, stated in the README row.",
+      "origin": "internal: plan of record S3.16, 2026-11-22: Python `assert True` cannot fail only where its statement ends. Release 0.9.0 labelled trivial_assert on the token whatever followed it; the seventeen rows of the hardening review (FINDINGS 0.1: eleven assertions that fail on every run, five that depend on a variable, a continued line) are hard negatives here, with `assert Trueish`. The statement ended by the line, a message, a comment or a `;` is labelled. `assert True or ready` also cannot fail and is not labelled: a declared miss, stated in the README row.",
       "expect": [
         {
           "path": "tests/test_flags.py",

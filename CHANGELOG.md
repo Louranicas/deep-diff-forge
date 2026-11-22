@@ -243,6 +243,26 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Fixed
 
+- **`ci_privilege` reads a key or a value in quotes as the key or value** (S3.18,
+  [DDF-2026-005](docs/advisories/DDF-2026-005.md)). 0.8.2 to 0.9.0 labelled `contents: write`
+  in a workflow but not `contents: 'write'`, `contents: "write"`, `id-token: 'write'`,
+  `"contents": "write"`, `{contents: 'write'}` or `contents : write`, which YAML reads the same:
+  a privilege grant was missed. A YAML text is now read a second time with each quoted scalar
+  that holds no escape as its content and the blanks around a key's `:` as one space, by the
+  bytes of the line; what the two readings find is united, so no line has fewer items than
+  before. Still not read, and stated in the README row: a value with an escape, a tag, a block
+  scalar, an explicit `?` key. `build_hook` reads the JSON key of `package.json` in every
+  spelling JSON allows but a `\u` escape, as before; that limit is now stated.
+- **`trivial_assert` no longer labels a Python `assert True` followed by more of an expression**
+  (S3.16; a change of a released label's behaviour). 0.9.0 gave the label ("an added assertion
+  cannot fail") to the token `assert True` whatever followed it, so to `assert True == False`,
+  `assert True and False`, `assert True in []` and eight more that fail on every run, to five
+  that depend on a variable (`assert True and ready`), and to `assert True \` continued on the
+  next line. Each of those labels was false. The label is now given only where the statement
+  ends: the end of the line, a `,` and a message, a `;` or a comment. `assert True or ready`,
+  which cannot fail, is no longer labelled either (a stated limit). The other spellings do not
+  change. Measured on the 0.9.0 release binary and on this tree before the change; 0.8.4 and
+  earlier had no such label.
 - **A fault during `council import-tuicr --execute` no longer blocks a run's journal for good,
   reports a recorded decision as refused, or leaves a cut back undetected** (S3.13,
   [DDF-2026-004](docs/advisories/DDF-2026-004.md); measured on 0.9.0 by fault injection from
