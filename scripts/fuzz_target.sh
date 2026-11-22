@@ -7,8 +7,9 @@
 #   scripts/fuzz_target.sh <target> <seconds>   seed a fresh private corpus, then fuzz for <seconds>
 #
 # Seeds: the patch fixtures for the patch parsers, review-policy/fuzz-seeds for the council
-# report, fuzz/seeds/<target> for the rest (stdio seeds are a cap byte, 255 = the server's real
-# cap, then stdio lines; see fuzz/fuzz_targets/stdio_invariants.rs). The corpus is a copy, so the
+# report, the CLI tests' forge-warden verdict fixtures for verdict_reader, fuzz/seeds/<target> for
+# the rest (stdio seeds are a cap byte, 255 = the server's real cap, then stdio lines; see
+# fuzz/fuzz_targets/stdio_invariants.rs). The corpus is a copy, so the
 # committed seeds stay unchanged. A crash is kept under fuzz/artifacts/<target>/.
 # Exit status: cargo fuzz's (non-zero on a crash, leak or timeout); 2 on a usage error, a target
 # this script has no seeds for, or no corpus root (DDF_FUZZ_CORPUS_ROOT, or RUNNER_TEMP in CI).
@@ -71,6 +72,13 @@ case "$target" in
   council_report)
     cp review-policy/fuzz-seeds/council_report.json "$corpus/seed.json"
     max_len=4096
+    ;;
+  verdict_reader)
+    # forge-warden's own verdict documents: v2 (its 0.2.0) and v3 (its main branch).
+    for f in crates/deep-diff-forge-cli/tests/fixtures/forge-warden-*/*.json; do
+      cp "$f" "$corpus/${f//\//_}"
+    done
+    max_len=65536
     ;;
   *)
     if [ ! -d "fuzz/seeds/$target" ]; then

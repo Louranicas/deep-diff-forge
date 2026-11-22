@@ -136,3 +136,10 @@ path = "fuzz_targets/judge_patch.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "verdict_reader"
+path = "fuzz_targets/verdict_reader.rs"
+test = false
+doc = false
+bench = false
