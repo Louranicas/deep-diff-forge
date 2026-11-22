@@ -26,7 +26,9 @@ calls the same parse → guard → seal path (`deep_diff_forge_patch::SealedRevi
 the CLI's `--json`, the daemon's `diff.compute`, `rpc`, the MCP `review_patch` tool
 and the Rust SDK's `review`. A patch gets the same document from each. Ranking is
 sealed the same way: the CLI's `--rank --json`, the daemon's `diff.rank` and the MCP
-`rank_patch` tool return one `deep-diff-forge.rank.v0` document. `--jsonl`,
+`rank_patch` tool return one `deep-diff-forge.rank.v0` document, in one byte form: the bytes
+`--rank --json` prints, which `diff.rank` carries in its member `canonical_json` and `rank_patch`
+as its text (0.10.0; before, those two gave a compact form, equal in value only). `--jsonl`,
 `diff.plan`, `session.open` and the cockpit use the same strict parser without the
 seal. The daemon is optional; no command needs it.
 
@@ -196,7 +198,7 @@ version is refused with domain error 2.
 | `daemon.shutdown` | — | `{stopping}`; on the daemon socket, the requests in progress are answered first (up to 30 s) and a request read afterwards is refused with error 8 (`rpc` serves one stdio stream and simply ends) | 0 |
 | `diff.plan` | `patch: string` | `[ranked file]` | 0 |
 | `diff.compute` | `patch: string, require_files?: boolean, require_hunks?: boolean` | the `deep-diff-forge.review.v0` document `--stdin-patch --json` prints for the same patch | 1 |
-| `diff.rank` | `patch: string, require_files?: boolean, require_hunks?: boolean` | the `deep-diff-forge.rank.v0` document `--stdin-patch --rank --json` prints for the same patch (with each file's code `evidence`, below) | 1 |
+| `diff.rank` | `patch: string, require_files?: boolean, require_hunks?: boolean` | the `deep-diff-forge.rank.v0` document `--stdin-patch --rank --json` prints for the same patch (with each file's code `evidence`, below), as its value plus `canonical_json`: a string holding exactly the bytes the CLI prints, final newline included (0.10.0). The answer carries the document twice (2.22 times the bytes of the 0.9.0 answer for a 2,000-file patch with evidence), so it meets the 80 MiB line cap (error 8) at under half the ranking size it did before | 1 |
 | `review.outline` | `patch: string, require_files?, require_hunks?, max_bytes?: integer, cursor?: string` | `deep-diff-forge.review-outline.v0`: files in review-risk order with their hunks' addresses, ranges, `@@` headings and counts, no line text; `next_cursor` continues | 1 |
 | `review.hunks` | `patch: string, require_files?, require_hunks?, addresses?: [string], paths?: [string], max_bytes?, cursor?` | `deep-diff-forge.review-hunks.v0`: the chosen hunks verbatim, continued at a line when one is too long for the page. A path selects every section of that path, an address every hunk with it; a name repeated in the list selects its hunks once, in the order of first mention; a view carries at most 256 bytes of an `@@` heading (`section_truncated: true`) | 1 |
 | `review.change` | `repo: string, selection: staged\|working_tree\|range, range?: A..B, include_untracked?, view?: outline\|hunks\|review\|rank`, plus the view's params | that view of the change Git returns, sealed over Git's bytes, with an `acquisition` member (repo, selection, base, target, `include_untracked`, and `omitted_untracked`: untracked directories such as nested repositories that are not in the files); only under an `--allow-repo` root, Git stopped after 30 s; Git failure is error 3 | 1 |
@@ -280,7 +282,7 @@ message per line (`crates/deep-diff-forge-cli/src/mcp.rs`).
 | Tool | Arguments | Backed by |
 | --- | --- | --- |
 | `review_patch` | `patch`, `detail?` (`auto` or `summary`), `paths?`, `require_files?`, `require_hunks?` | `diff.compute`; a review over 256 KiB returns `deep-diff-forge.review-summary.v0` |
-| `rank_patch` | `patch`, `require_files?`, `require_hunks?` | `diff.rank`: the sealed `rank.v0` document; a ranking over 256 KiB returns `deep-diff-forge.rank-summary.v0` with the same seal |
+| `rank_patch` | `patch`, `require_files?`, `require_hunks?` | `diff.rank`: the sealed `rank.v0` document, its text the canonical bytes `--rank --json` prints and `structuredContent` their value; a ranking whose canonical bytes are over 256 KiB returns `deep-diff-forge.rank-summary.v0` with the same seal (before 0.10.0 the cap counted the compact form, so a ranking near the cap now comes back as a summary sooner) |
 | `review_outline` | `patch`, `require_files?`, `require_hunks?`, `max_bytes?`, `cursor?` | `review.outline`; `max_bytes` (2 KiB–32 MiB, default 32 KiB) covers the whole answer, both copies: the view starts at half and is re-paged smaller while the escaped text copy still pushes the answer over |
 | `review_hunks` | `patch`, `addresses?` or `paths?`, `require_files?`, `require_hunks?`, `max_bytes?`, `cursor?` | `review.hunks`, budgeted the same way |
 | `review_change` | `repo`, `selection`, `range?`, `include_untracked?`, `view?` (`outline` or `hunks`), and that view's arguments | `review.change`, only when the server was started with `mcp --allow-repo PATH`; budgeted the same way |
@@ -307,7 +309,8 @@ pins the public signatures.
 `StdioClient(command=("deep-diff-forge", "rpc"), timeout=30.0)` and
 `SocketClient(path, timeout=30.0)`, each with `call(method, **params)`,
 `review_patch(patch, require_files=False, require_hunks=False)` (`diff.compute`),
-`rank_patch(patch, require_files=False, require_hunks=False)` (`diff.rank`),
+`rank_patch(patch, require_files=False, require_hunks=False)` (`diff.rank`; its
+`canonical_json` holds the exact bytes `--rank --json` prints),
 `verify_findings(patch, findings, require_files=False, require_hunks=False)`
 (`findings.verify`, protocol 2) and `methods()`.
 A JSON-RPC error raises `RpcError` (with the daemon's `code`); a transport
