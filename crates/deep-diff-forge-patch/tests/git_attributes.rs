@@ -10,9 +10,9 @@
     reason = "integration test: drives real processes and temp directories"
 )]
 
+use deep_diff_forge_core::DiffSuppression;
 use deep_diff_forge_patch::{
-    GitAcquireError, GitAcquireOptions, GitAcquisition, GitChange, GitPath, GitSelection,
-    acquire_git,
+    GitAcquireOptions, GitAcquisition, GitChange, GitPath, GitSelection, acquire_git,
 };
 use deep_diff_forge_testkit::Scratch;
 use std::ffi::OsString;
@@ -276,7 +276,7 @@ fn a_text_reading_over_the_byte_budget_leaves_the_binary_reading_standing() {
     assert_eq!(
         change(&tight, "big.rs")
             .diff_suppressed
-            .map(deep_diff_forge_core::DiffSuppression::label),
+            .map(DiffSuppression::label),
         Some("attribute"),
         "a reading over the budget left the hidden file unlabelled"
     );
@@ -308,11 +308,12 @@ fn slow_text_git(scratch: &Scratch, pause: u32) -> PathBuf {
 /// there never leaves a binary change silent. Six hidden files come first, each read again
 /// through a Git that takes two seconds over a `--text` reading, so a five-second limit ends
 /// among them; the payloads come last: `z.rs` (hidden by `*.rs -diff`) and `z.txt` (binary for
-/// a NUL byte alone, no attribute). Before, every failure of the second reading was swallowed:
-/// the acquisition succeeded with both payloads binary and unlabelled. Now the acquisition fails
-/// with the step that ran out named, or each payload is read or labelled with its true cause.
-/// The same for the budget: a NUL-only file whose text reading is over what is left of it fails
-/// the acquisition, where before it stood as a silent binary change.
+/// a NUL byte alone, no attribute). Before S3.27.d every failure of the second reading was
+/// swallowed: the acquisition succeeded with both payloads binary and unlabelled. S3.27.d made it
+/// fail; S3.27.g (the owner's decision: the review goes on and the file is loud) makes it succeed
+/// with every binary change labelled: read again with its cause, or `unread` once the limit has
+/// run out. The same for the budget: a NUL-only file whose text reading is over what is left of
+/// it stays binary, labelled `unread`.
 #[test]
 fn many_binary_files_before_a_payload_cannot_hide_it() {
     const NAMES: [&str; 8] = [
@@ -331,24 +332,24 @@ fn many_binary_files_before_a_payload_cannot_hide_it() {
         time_limit: std::time::Duration::from_secs(5),
         ..options(false, 1 << 20)
     };
-    match acquire_git(&root, &GitSelection::WorkingTree, &opts) {
-        Err(GitAcquireError::TimedOut { command, .. }) => assert!(
-            command == "git check-attr" || command.ends_with("--text"),
-            "the limit ran out outside the second reading: {command}"
-        ),
-        Ok(acq) => {
-            for (name, cause) in [("z.rs", "attribute"), ("z.txt", "content")] {
-                let c = change(&acq, name);
-                assert_eq!(
-                    c.diff_suppressed
-                        .map(deep_diff_forge_core::DiffSuppression::label),
-                    Some(cause),
-                    "a binary change was left silent or mislabelled: {name} {c:?}"
-                );
-            }
-        }
-        Err(other) => panic!("{other}"),
+    let acq = acquire_git(&root, &GitSelection::WorkingTree, &opts)
+        .unwrap_or_else(|e| panic!("the acquisition was refused: {e}"));
+    let cause = |name| {
+        change(&acq, name)
+            .diff_suppressed
+            .map(DiffSuppression::label)
+    };
+    for (name, read) in [("z.rs", "attribute"), ("z.txt", "content")] {
+        assert!(
+            [Some(read), Some("unread")].contains(&cause(name)),
+            "a binary change was left silent or mislabelled: {name} {:?}",
+            cause(name)
+        );
     }
+    assert!(
+        NAMES.iter().any(|name| cause(name) == Some("unread")),
+        "the limit did not end the second readings"
+    );
 
     let (root, _scratch) = repo("silent-budget", &[("keep.txt", b"k\n".to_vec())]);
     let mut big = b"fn main() {\n    // \0\n".to_vec();
@@ -359,10 +360,13 @@ fn many_binary_files_before_a_payload_cannot_hide_it() {
     big.extend_from_slice(b"}\n");
     std::fs::write(root.join("big.txt"), &big).unwrap();
     git(&root, &["add", "big.txt"]);
-    let tight = acquire_git(&root, &GitSelection::Staged, &options(false, 20_000));
-    assert!(
-        matches!(tight, Err(GitAcquireError::BudgetExceeded { .. })),
-        "a NUL-only file over the budget stood as a silent binary change: {:?}",
-        tight.map(|acq| change(&acq, "big.txt").clone())
+    let tight = acquire_git(&root, &GitSelection::Staged, &options(false, 20_000))
+        .unwrap_or_else(|e| panic!("the acquisition was refused: {e}"));
+    let big = change(&tight, "big.txt");
+    assert!(big.binary, "{big:?}");
+    assert_eq!(
+        big.diff_suppressed.map(DiffSuppression::label),
+        Some("unread"),
+        "a NUL-only file over the budget stood as a silent binary change"
     );
 }

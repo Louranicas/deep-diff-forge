@@ -50,17 +50,21 @@ the same change, as text, valid UTF-8 (NUL bytes included), within what is left 
 byte budget, and the parser reads it, it replaces the binary section: the two apply to the same
 bytes. The file then carries the signal `diff_suppressed`, and `rank.v0` and
 `git-acquisition.v0` say why (`"diff_suppressed": "attribute"` when a `diff` attribute is unset
-or names a driver for the path, `"encoding"` for a UTF-16 or UTF-32 file, else `"content"`).
+or names a driver for the path, `"encoding"` for a UTF-16 or UTF-32 file, `"unread"` when it
+could not be read again within the limits below, else `"content"`).
 A file hidden by a `diff` attribute carries the label also when its text cannot be read back
 (a byte that is not UTF-8, the byte budget): it then stays `binary_changed`. A UTF-16 or
 UTF-32 file is labelled and not decoded, so its code evidence is not found. No attribute is trusted or looked for first,
 and attributes keep every other effect (line endings, the user's filters). Still read as binary,
 with `binary_change` and no new label: a real binary (not UTF-8) that no attribute hides. A
-second reading that the byte budget or the 120 s limit cuts off never leaves a binary change
-silent: the attribute label stands, or the acquisition fails with the step named (exit 4 for the
-budget, 3 for the time limit); so a binary by content whose text form passes what is left of
-the 64 MiB budget is refused, where 0.9.0 read it as a binary change (each binary change
-costs one more Git call, about 8 ms: 300 changed images took 2.4 s instead of 0.25 s, measured
+second reading (or `git check-attr`) that the byte budget or the 120 s limit cuts off never
+leaves a binary change silent and never fails the review: the file stays `binary_changed`, and
+the attribute label stands, else it carries `"diff_suppressed": "unread"`. Paths are read again
+in Git's order, each within the budget less every other section as it stands, so a large file
+that does not fit is `unread` and the files after it are still read; once the time limit has
+run out, every binary change not yet read again is `unread`. A binary by content whose text
+form passes the 64 MiB budget is therefore labelled `unread` (each binary change costs up to
+two more Git calls, about 8 ms each: 300 changed images took 2.4 s instead of 0.25 s, measured
 2026-11-22). `--stdin-patch` reviews the patch it is given: a binary section a
 caller pipes in cannot be read again. A file pair (below) also shows a file with a NUL byte as
 binary.

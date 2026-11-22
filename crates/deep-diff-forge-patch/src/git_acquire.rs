@@ -840,7 +840,7 @@ pub fn acquire(
     } else {
         Vec::new()
     };
-    let diff = read_binary_again(&runner, &diff, &selection_args)?;
+    let diff = read_binary_again(&runner, &diff, &selection_args);
     Ok(GitAcquisition {
         root,
         selection: selection.clone(),
@@ -867,28 +867,41 @@ pub fn acquire(
 /// attribute) where its binary block stands too: a byte that is not UTF-8, a reading over the
 /// budget, a refusal. The text reading only adds evidence.
 ///
-/// # Errors
-/// The time limit or the byte budget ran out in the second reading of a change no label covers
-/// (S3.27.d): a reading that was cut off is no answer, and a binary change is never left silent.
+/// A second reading or a `git check-attr` cut off by the byte budget or the time limit is no
+/// answer and fails nothing (S3.27.g): the change keeps its binary block and is labelled, by its
+/// attribute when check-attr answered, else `unread`. Paths are read again in Git's order, each
+/// within the budget less every other section as it stands; one that does not fit is `unread`
+/// and the next is tried. Once the limit has run out, every binary change left is `unread`.
 fn read_binary_again(
     runner: &Runner<'_>,
     first: &StructuredDiff,
     selection: &[OsString],
-) -> Result<StructuredDiff, GitAcquireError> {
+) -> StructuredDiff {
     let mut read = first.clone();
     let mut labelled = first.clone();
-    let mut replaced = false;
+    let (mut replaced, mut out_of_time) = (false, false);
     for at in 0..first.changes().len() {
         let change = read.changes()[at].clone();
         if !change.binary {
             continue;
         }
-        let cause = suppression(runner, &change)?;
-        let out = match second_reading(runner, &read, &change, selection) {
-            Ok(out) => out,
-            Err(_) if cause != DiffSuppression::Content => None,
-            Err(cut) => return Err(cut),
-        };
+        let unread = (DiffSuppression::Unread, None);
+        let (cause, out) =
+            if let Some(Ok(cause)) = (!out_of_time).then(|| suppression(runner, &change)) {
+                match second_reading(runner, &read, &change, selection) {
+                    Ok(out) => (cause, out),
+                    Err(cut) => {
+                        out_of_time = matches!(cut, GitAcquireError::TimedOut { .. });
+                        match cause {
+                            DiffSuppression::Content => unread,
+                            told => (told, None),
+                        }
+                    }
+                }
+            } else {
+                out_of_time = true;
+                unread
+            };
         let again = out.and_then(|out| {
             let mut again = StructuredDiff::default();
             again.append_stream(&out, change.origin).ok()?;
@@ -923,11 +936,11 @@ fn read_binary_again(
         }
     }
     // Patch truth first: the whole patch must still parse to one file per block.
-    Ok(if replaced && read.capture().is_ok() {
+    if replaced && read.capture().is_ok() {
         read
     } else {
         labelled
-    })
+    }
 }
 
 /// Change `at` of `diff`, its block unchanged, marked `diff_suppressed` with `cause`.

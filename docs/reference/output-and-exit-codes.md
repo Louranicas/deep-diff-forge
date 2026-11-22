@@ -95,8 +95,9 @@ Strings are RFC 8259-escaped, and valid UTF-8 passes through. A hunk line decode
 marked `"lossy": true`; a header line that is not UTF-8 (a path, a mode, a hunk header) is
 refused with exit 3, because the name it gives would be a substitute; from a Git selection such a
 file name is the change's own input, refused with exit 4, and the daemon's `review.change` answers
-it with code 4; a file pair refuses such a name with exit 4 too, and so does a second reading
-of a binary change that the Git acquisition's byte budget cuts off. File statuses use one snake-case spelling everywhere: `added`, `modified`,
+it with code 4; a file pair refuses such a name with exit 4 too. A second reading of a binary change that
+the Git acquisition's byte budget or time limit cuts off refuses nothing: the file is labelled
+`"diff_suppressed": "unread"`. File statuses use one snake-case spelling everywhere: `added`, `modified`,
 `deleted`, `renamed`, `copied`, `type_changed` (a file, a symlink or a submodule became
 another), `mode_changed` (only the mode changed, such as the executable bit), `binary_changed`,
 `unknown`.
