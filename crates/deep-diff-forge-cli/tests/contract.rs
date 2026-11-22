@@ -990,9 +990,11 @@ fn envelope_exits_128_plus_the_signal_that_ended_the_command() {
 /// `docs/reference/*.md` stays inside the repository, names a file that exists and, with a
 /// fragment, a heading of that file; every document in the two directories but their
 /// `README.md` indexes is linked from `README.md`, `CHANGELOG.md` or an index; and the version
-/// headings of the changelog and the `X.Y.Z.md` files of `docs/release-notes/` correspond both
-/// ways, each file non-empty and beginning with a line that names its version. It does not check
-/// external URLs, or whether a host renders an anchor differently from the rule of `headings`.
+/// headings of the changelog and the files of `docs/release-notes/` but its index correspond
+/// both ways, each file non-empty and beginning with a line that names its version as a whole
+/// word. It does not check external URLs, or whether a host renders an anchor differently from
+/// the rule of `headings`; and it takes a link inside an HTML comment, or a reference definition
+/// nothing uses, for a link.
 #[test]
 fn the_front_page_stays_short_and_its_documents_stay_linked() {
     use std::path::{Path, PathBuf};
@@ -1083,8 +1085,9 @@ fn the_front_page_stays_short_and_its_documents_stay_linked() {
     release_notes_match_the_changelog(&root);
 }
 
-/// The version headings of `CHANGELOG.md` and the `X.Y.Z.md` files of `docs/release-notes/`
-/// correspond both ways; each such file is non-empty and its first line names its version.
+/// The version headings of `CHANGELOG.md` and the Markdown files of `docs/release-notes/` but its
+/// `README.md` correspond both ways; each such file is non-empty and its first line names its
+/// version as a whole word (`10.9.0` does not name `0.9.0`).
 fn release_notes_match_the_changelog(root: &std::path::Path) {
     let changelog = std::fs::read_to_string(root.join("CHANGELOG.md")).unwrap();
     let versions: Vec<&str> = changelog
@@ -1103,17 +1106,16 @@ fn release_notes_match_the_changelog(root: &std::path::Path) {
     for entry in std::fs::read_dir(root.join("docs/release-notes")).unwrap() {
         let path = entry.unwrap().path();
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        let Some(version) = name.strip_suffix(".md") else {
+        let Some(version) = name.strip_suffix(".md").filter(|stem| *stem != "README") else {
             continue;
         };
-        if version.split('.').count() != 3 || !version.split('.').all(|n| n.parse::<u32>().is_ok())
-        {
-            continue;
-        }
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(!text.trim().is_empty(), "{name} is empty");
         let first = text.lines().next().unwrap_or("");
-        assert!(first.contains(version), "{name} begins {first:?}");
+        assert!(
+            first.split_whitespace().any(|word| word == version),
+            "{name} begins {first:?}"
+        );
         assert!(
             versions.contains(&version),
             "{name} has no heading in the changelog"
@@ -1121,8 +1123,8 @@ fn release_notes_match_the_changelog(root: &std::path::Path) {
     }
 }
 
-/// The path a link names from `dir`, resolved by its components under `root`; `None` when it
-/// climbs out of `root`.
+/// The path a link names from `dir`, resolved by its components under `root`, a leading `/`
+/// meaning `root` as it does on the hosts; `None` when it climbs out of `root`.
 fn inside(root: &std::path::Path, dir: &std::path::Path, path: &str) -> Option<std::path::PathBuf> {
     use std::path::{Component, Path};
     let mut parts: Vec<_> = dir.strip_prefix(root).ok()?.components().collect();
@@ -1132,6 +1134,7 @@ fn inside(root: &std::path::Path, dir: &std::path::Path, path: &str) -> Option<s
                 parts.pop()?;
             }
             Component::Normal(_) => parts.push(part),
+            Component::RootDir => parts.clear(),
             _ => {}
         }
     }
