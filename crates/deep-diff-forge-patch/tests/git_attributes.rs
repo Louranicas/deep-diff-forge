@@ -320,11 +320,11 @@ fn many_binary_files_before_a_payload_cannot_hide_it() {
     ];
     let before: Vec<(&str, Vec<u8>)> = NAMES
         .iter()
-        .map(|name| (*name, source(name.ends_with(".txt"), false)))
+        .map(|name| (*name, source(*name == "z.txt", false)))
         .collect();
     let (root, scratch) = repo("many", &before);
     for name in NAMES {
-        std::fs::write(root.join(name), source(name.ends_with(".txt"), true)).unwrap();
+        std::fs::write(root.join(name), source(name == "z.txt", true)).unwrap();
     }
     let opts = GitAcquireOptions {
         git_program: slow_text_git(&scratch, 2).into_os_string(),
