@@ -134,8 +134,14 @@ fn schema_signals_and_explain_signal_answer_from_the_vocabulary() {
     assert_eq!(code, 0);
     let doc: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(doc["schema"], "deep-diff-forge.signals.v0");
-    // 21 labels, and the five integrity labels since the merge with them
-    assert_eq!(doc["signals"].as_array().unwrap().len(), 26);
+    // 21 labels, the five integrity labels since the merge with them, and `diff_suppressed`
+    assert_eq!(doc["signals"].as_array().unwrap().len(), 27);
+    let (code, stdout, _) = run(&["explain", "signal", "diff_suppressed"], "");
+    assert_eq!(code, 0);
+    assert!(
+        stdout.starts_with("diff_suppressed (security, direct, weight 5): "),
+        "{stdout}"
+    );
     let (code, stdout, _) = run(&["explain", "signal", "test_removed"], "");
     assert_eq!(code, 0);
     assert!(

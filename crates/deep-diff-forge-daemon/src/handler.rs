@@ -1156,6 +1156,9 @@ fn ranked_json(ranked: &[RankedFile]) -> Value {
                 if rf.evidence_truncated {
                     entry["evidence_truncated"] = json!(true);
                 }
+                if let Some(cause) = rf.diff_suppressed {
+                    entry["diff_suppressed"] = json!(cause.label());
+                }
                 entry
             })
             .collect(),

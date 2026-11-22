@@ -15,6 +15,9 @@ pub enum RiskSignal {
     DeletedFile,
     /// A binary change (no reviewable text).
     BinaryChange,
+    /// Git gave a text file's change as binary (an attribute such as `-diff`, or a NUL byte),
+    /// and the acquisition read it again as text ([`deep_diff_forge_core::PatchTwin::diff_suppressed`]).
+    DiffSuppressed,
     /// A large change by added+removed line count.
     LargeChange,
     /// Many hunks in one file.
@@ -47,6 +50,7 @@ impl RiskSignal {
             Self::NewFile => "new_file",
             Self::DeletedFile => "deleted_file",
             Self::BinaryChange => "binary_change",
+            Self::DiffSuppressed => "diff_suppressed",
             Self::LargeChange => "large_change",
             Self::ManyHunks => "many_hunks",
             Self::ConfigOrLockfile => "config_or_lockfile",
@@ -66,7 +70,7 @@ impl RiskSignal {
     #[must_use]
     pub const fn weight(self) -> u32 {
         match self {
-            Self::PublicApiSurface => 5,
+            Self::PublicApiSurface | Self::DiffSuppressed => 5,
             Self::DeletedFile | Self::LargeChange | Self::HazardousText | Self::SymlinkChange => 3,
             Self::NewFile | Self::ManyHunks | Self::ExecutableBit => 2,
             Self::BinaryChange | Self::ConfigOrLockfile => 1,
@@ -167,6 +171,7 @@ fn score_path_and_shape(file: &ReviewFile) -> (u32, Vec<RiskSignal>) {
     if is_generated_or_vendored(path) {
         signals.push(RiskSignal::GeneratedOrVendored);
         score += status_weight(file, &mut signals);
+        score += suppressed_weight(file, &mut signals);
         score += hazard_weight(file, &mut signals);
         score += mode_weight(file, &mut signals);
         return (score, signals);
@@ -192,6 +197,7 @@ fn score_path_and_shape(file: &ReviewFile) -> (u32, Vec<RiskSignal>) {
     }
 
     score += status_weight(file, &mut signals);
+    score += suppressed_weight(file, &mut signals);
     score += hazard_weight(file, &mut signals);
     score += mode_weight(file, &mut signals);
 
@@ -309,6 +315,16 @@ fn status_weight(file: &ReviewFile, signals: &mut Vec<RiskSignal>) -> u32 {
     };
     signals.push(signal);
     signal.weight()
+}
+
+/// +5 when Git was told not to show this text file's changes, recording the signal: the act
+/// itself is evidence, whatever the text then shows (S3.20).
+fn suppressed_weight(file: &ReviewFile, signals: &mut Vec<RiskSignal>) -> u32 {
+    if file.patch_twin.diff_suppressed.is_none() {
+        return 0;
+    }
+    signals.push(RiskSignal::DiffSuppressed);
+    RiskSignal::DiffSuppressed.weight()
 }
 
 /// Count added and removed lines across a file's hunks.

@@ -167,6 +167,9 @@ fn signal_phrase(signal: RiskSignal) -> &'static str {
         RiskSignal::NewFile => "New file.",
         RiskSignal::DeletedFile => "File deleted — check for lost behaviour.",
         RiskSignal::BinaryChange => "Binary change — no reviewable text.",
+        RiskSignal::DiffSuppressed => {
+            "Git was told not to show this text file's changes — read them here."
+        }
         RiskSignal::LargeChange => "Large change by line count.",
         RiskSignal::ManyHunks => "Many hunks — scattered edits.",
         RiskSignal::ConfigOrLockfile => "Config/lockfile change.",
