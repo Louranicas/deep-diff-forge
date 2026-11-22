@@ -19,6 +19,10 @@ import deep_diff_forge as ddf  # noqa: E402
 REPO = pathlib.Path(__file__).resolve().parents[2]
 BIN = os.environ.get("DDF_BIN", str(REPO / "target" / "debug" / "deep-diff-forge"))
 PATCH = "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new\n"
+REFUSAL = '{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"too long"}}'
+# A stand-in for `deep-diff-forge rpc` that answers each request line with an empty result.
+ECHO = ("import json, sys\nfor line in sys.stdin:\n    request = json.loads(line)\n"
+        "    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': {}}), flush=True)")
 
 
 def cli_review(patch, *mode):
@@ -205,6 +209,94 @@ class Bounds(unittest.TestCase):
             ddf.MAX_REQUEST_BYTES = original
 
 
+    def test_a_child_that_answers_and_breaks_the_pipe_is_killed(self):
+        # G-SDK-1.1. The child closes its stdin, so the write breaks, then answers and stays alive.
+        # Before, the broken pipe emptied the unsent request, so the out-of-step child lived on.
+        code = ("import os, sys, time\nos.close(0)\ntime.sleep(0.5)\n"
+                f"print({REFUSAL!r}, flush=True)\ntime.sleep(60)")
+        client = ddf.StdioClient((sys.executable, "-c", code), timeout=10)
+        try:
+            with self.assertRaises(ddf.RpcError) as refused:
+                client.review_patch("x" * (1 << 20))
+            self.assertEqual(refused.exception.code, -32600)
+            self.assertIsNotNone(client._process.poll(), "the out-of-step child is killed")
+            with self.assertRaisesRegex(ddf.TransportError, "has ended: it answered before taking"):
+                client.call("daemon.health")
+        finally:
+            _reap(client)
+
+    def test_a_call_after_close_is_a_transport_error(self):
+        # G-SDK-1.3. Before, the closed stdin raised a bare ValueError.
+        client = ddf.StdioClient((sys.executable, "-c", ECHO), timeout=10)
+        try:
+            self.assertEqual(client.call("daemon.health"), {})
+            client.close()
+            self.assertTrue(client._process.stdout.closed, "both pipes are closed")
+            with self.assertRaisesRegex(ddf.TransportError, "has ended: the client was closed"):
+                client.call("daemon.health")
+            client.close()
+        finally:
+            _reap(client)
+
+    def test_a_failed_read_of_the_answer_is_a_transport_error(self):
+        # G-SDK-1.2. A read that would block is waited out; any other read error is a transport
+        # failure that kills the child. Before, both escaped as bare OSErrors.
+        for raised, expected in [(BlockingIOError(11, "spurious"), None),
+                                 (OSError(5, "Input/output error"), "reading the answer .* failed: .*Input/output")]:
+            with self.subTest(raised=type(raised).__name__):
+                client = ddf.StdioClient((sys.executable, "-c", ECHO), timeout=10)
+                real, armed = ddf.os.read, [True]
+
+                def flaky(fd, size, _raised=raised, _client=client):
+                    if armed[0] and fd == _client._process.stdout.fileno():
+                        armed[0] = False
+                        raise _raised
+                    return real(fd, size)
+
+                ddf.os.read = flaky
+                try:
+                    if expected is None:
+                        self.assertEqual(client.call("daemon.health"), {})
+                    else:
+                        with self.assertRaisesRegex(ddf.TransportError, expected):
+                            client.call("daemon.health")
+                        self.assertIsNotNone(client._process.poll(), "the child is killed")
+                finally:
+                    ddf.os.read = real
+                    _reap(client)
+
+    def test_a_large_answer_is_read_in_linear_time(self):
+        # A 64 MiB answer in 64 KiB writes. Before, each chunk copied and rescanned the whole buffer:
+        # 14 s on the machine that measured it, against 0.3 s now.
+        code = ("import sys, time\nsys.stdin.readline()\nw = sys.stdout.buffer\n"
+                "w.write(b'{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"'); w.flush()\n"
+                "for _ in range(1024): w.write(b'a' * 65536); w.flush()\n"
+                "w.write(b'\"}\\n'); w.flush()\ntime.sleep(60)")
+        client = ddf.StdioClient((sys.executable, "-c", code), timeout=120)
+        try:
+            started = time.monotonic()
+            self.assertEqual(len(client.call("daemon.health")), 64 << 20)
+            self.assertLess(time.monotonic() - started, 5, "a 64 MiB answer is read in linear time")
+        finally:
+            _reap(client)
+
+    def test_an_answer_line_at_the_cap_is_read_and_one_byte_over_is_refused(self):
+        # One cap rule: an answer line is at most MAX_REQUEST_BYTES bytes, its newline counted. The
+        # lowered cap is not a multiple of a 64 KiB read, so the newline arrives past it in one read.
+        for extra in (0, 1):
+            with self.subTest(over=extra), _lowered_cap(100_000):
+                code = f"import sys, time\nsys.stdin.readline()\nsys.stdout.buffer.write({_capped_line(extra)!r}); sys.stdout.flush(); time.sleep(60)"
+                client = ddf.StdioClient((sys.executable, "-c", code), timeout=10)
+                try:
+                    if extra:
+                        with self.assertRaisesRegex(ddf.TransportError, "the answer exceeds the daemon's maximum size"):
+                            client.call("daemon.health")
+                    else:
+                        self.assertEqual(client.call("daemon.health"), {})
+                finally:
+                    _reap(client)
+
+
 class Socket(unittest.TestCase):
     def test_an_unreachable_daemon_is_a_transport_error(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -290,6 +382,32 @@ class Socket(unittest.TestCase):
                 with accepted:
                     accepted.settimeout(1)
                     self.assertEqual(accepted.recv(1), b"", "nothing was sent to that daemon")
+
+
+def _reap(client):
+    """Kill a test's child by its pid if it still runs, so no test leaves a process behind."""
+    if client._process.poll() is None:
+        os.kill(client._process.pid, 9)
+        client._process.wait()
+
+
+class _lowered_cap:
+    """MAX_REQUEST_BYTES lowered to ``cap`` while the block runs."""
+
+    def __init__(self, cap):
+        self.cap = cap
+
+    def __enter__(self):
+        self.original, ddf.MAX_REQUEST_BYTES = ddf.MAX_REQUEST_BYTES, self.cap
+
+    def __exit__(self, *_):
+        ddf.MAX_REQUEST_BYTES = self.original
+
+
+def _capped_line(extra):
+    """A valid answer to request 1 of exactly the (lowered) cap plus ``extra`` bytes, newline counted."""
+    body = b'{"jsonrpc":"2.0","id":1,"result":{}'
+    return body + b" " * (ddf.MAX_REQUEST_BYTES - len(body) - 2 + extra) + b"}\n"
 
 
 def _connected(path):
