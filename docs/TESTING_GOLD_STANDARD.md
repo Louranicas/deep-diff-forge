@@ -28,7 +28,7 @@ era) no longer holds. How the standard is enforced today:
   (`patch_parser`, `review_json`, `daemon_protocol`, `agent_annotation`,
   `council_report`, `stdio_mcp`, `stdio_rpc`, `structural_soundness`,
   `findings_verify`, `evidence_scan`, `rust_tokens`, `rust_code_view`, `rust_hunk_places`,
-  `hook_input`, `judge_patch`, `verdict_reader`, `journal_recover`: seventeen;
+  `hook_input`, `judge_patch`, `verdict_reader`, `journal_recover`, `git_raw_stream`: eighteen;
   `stdio_invariants.rs` is a shared module)
   runs for 10 s per pull request; CI fails if a declared target is not in the
   run list. Crash inputs become fixtures under
@@ -168,7 +168,15 @@ era) no longer holds. How the standard is enforced today:
   `verdict_reader` 11,837,523 runs, `journal_recover` 27,516 (about 91 a second: each input
   writes the run's files and imports three times). A panic planted in each reader (an
   `expect` in `verdict_v2::defect_in`, a `panic!` on a torn record in `reconcile`) crashed
-  its target within the first minute.
+  its target within the first minute. `git_raw_stream` reads any byte string up to 256 KiB
+  as a `git diff --raw -z --patch` stream (`StructuredDiff::parse`), appends a second stream
+  to the first (the input split where its first byte says) and seals what was read
+  (`capture`): no panic; a stream that is read keeps its patch bytes as given, each change
+  owns, in order and without overlap, a part of them that starts a `diff --git` block, and an
+  append that is refused leaves the diff as it was. Seeds: three streams that
+  `fuzz_target.sh` writes (a change, an addition, a rename). Five minutes on 2026-11-23 at
+  `a4805589`, no crash: 5,158,786 runs; an index one past the end planted in `change_patch`
+  crashed it at once.
 - **Cost of one long line (0.9.0):** one rule closes the class "cost quadratic in the length
   of one line" (FINDING-5, the secret rule, the empty-handler rule): no check walks from a
   match to the end of its line, or of its run, more than once for the line. One test holds
