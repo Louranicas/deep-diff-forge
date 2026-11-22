@@ -399,3 +399,62 @@ fn utf16_sources_are_labelled_encoding() {
         }
     }
 }
+
+/// S3.27.f: a changed file whose name is not UTF-8 cannot be named exactly in a review, so the
+/// change is refused. It exited 3 (`io`, which says "may be transient, retry"); retrying never
+/// helps, so it is now 4 (`change_input`), with the class of path named, in every Git mode. A
+/// repository that cannot be read at all is still an I/O failure, 3.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_non_utf8_file_name_is_a_change_input_refusal() {
+    use std::os::unix::ffi::OsStrExt as _;
+    for mode in MODES {
+        let scratch = Scratch::new(&format!("cli-attr-latin-{}", mode.len()));
+        let r = Repo(std::fs::canonicalize(scratch.path()).unwrap(), scratch);
+        let root = &r.0;
+        git(root, &["init", "-q"]);
+        let name = root.join(std::ffi::OsStr::from_bytes(b"caf\xe9.rs"));
+        std::fs::write(&name, b"fn a() {}\n").unwrap();
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-q", "-m", "base"]);
+        std::fs::write(&name, b"fn b() {}\n").unwrap();
+        match mode {
+            "--git-range" => {
+                git(root, &["add", "-A"]);
+                git(root, &["commit", "-q", "-m", "change"]);
+            }
+            "--git-staged" => git(root, &["add", "-A"]),
+            _ => {}
+        }
+        let out = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+            .envs(ISOLATE)
+            .args(selection(mode))
+            .arg("--repo")
+            .arg(root)
+            .args(["--rank", "--json"])
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(4), "{mode}: {stderr}");
+        assert!(out.stdout.is_empty(), "{mode}");
+        assert!(
+            stderr.contains("a file name that is not UTF-8"),
+            "{mode}: {stderr}"
+        );
+    }
+    let scratch = Scratch::new("cli-attr-gone");
+    let gone = scratch.join("no-such-repository");
+    let out = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .envs(ISOLATE)
+        .args(["--git-working-tree", "--repo"])
+        .arg(&gone)
+        .args(["--rank", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
