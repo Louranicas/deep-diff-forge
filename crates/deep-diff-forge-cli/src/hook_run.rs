@@ -7814,7 +7814,7 @@ mod tests {
             rule("a:b,c;d|e\n", false),
             rule("quiet", true),
         ];
-        assert_eq!(kept_reason(&both, &[], true), "no-secrets,a_b_c_d_e_;quiet");
+        assert_eq!(kept_reason(&both, &[], true), "no-secrets,a:b_c_d_e_;quiet");
         assert_eq!(kept_reason(&both[2..], &[], false), "quiet");
         assert_eq!(kept_reason(&[], &[], true), "");
         let names = |kept: &str, all_held: bool| -> Vec<(String, bool)> {
@@ -7825,10 +7825,10 @@ mod tests {
                 .collect()
         };
         assert_eq!(
-            names("no-secrets,a_b_c_d_e_;quiet", false),
+            names("no-secrets,a:b_c_d_e_;quiet", false),
             [
                 ("no-secrets".to_owned(), false),
-                ("a_b_c_d_e_".to_owned(), false),
+                ("a:b_c_d_e_".to_owned(), false),
                 ("quiet".to_owned(), true)
             ]
         );
