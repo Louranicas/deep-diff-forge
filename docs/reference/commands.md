@@ -39,6 +39,25 @@ filters, such as Git LFS, stay on by decision, and nothing else they configure r
 ([SECURITY.md](../../SECURITY.md#residual-risks-and-non-goals)). A filter name that is not UTF-8
 refuses the acquisition (`InvalidSelection`, which exits 2 today, measured 2026-11-01).
 
+The repository also decides which of its files Git calls binary: `-diff`, the `binary` macro or
+a `diff=` driver with `binary = true`, in a `.gitattributes` (committed, staged or never added),
+in `.git/info/attributes`, or in a file its own `core.attributesFile` names; or one NUL byte in a
+text file. Up to 0.9.0 such a file's change was reviewed as a binary change, and no evidence rule
+read it ([DDF-2026-006](../advisories/DDF-2026-006.md)). Since 0.10.0 every change Git gives as
+binary is asked for once more with `--text`, the same selection and flags. When the answer is
+the same change, as text, valid UTF-8 (NUL bytes included), within what is left of the 64 MiB
+byte budget, and the parser reads it, it replaces the binary section: the two apply to the same
+bytes. The file then carries the signal `diff_suppressed`, and `rank.v0` and
+`git-acquisition.v0` say why (`"diff_suppressed": "attribute"` when a `diff` attribute is unset
+or names a driver for the path, else `"content"`). No attribute is trusted or looked for first,
+and attributes keep every other effect (line endings, the user's filters). Still read as binary,
+with `binary_change` and no new label: a real binary (not UTF-8), and text whose second reading
+would pass the byte budget, and any change the 120 s limit leaves unread (each binary change
+costs one more Git call, about 8 ms: 300 changed images took 2.4 s instead of 0.25 s, measured
+2026-11-22). `--stdin-patch` reviews the patch it is given: a binary section a
+caller pipes in cannot be read again. A file pair (below) also shows a file with a NUL byte as
+binary.
+
 ### Compare two files
 
 `deep-diff-forge <old> <new>` reviews two regular files: Git writes the patch with

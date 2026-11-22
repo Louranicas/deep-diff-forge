@@ -211,6 +211,31 @@ pub struct PatchTwin {
     /// Patch lines of this file that were not UTF-8 and were decoded lossily (U+FFFD). 0 means
     /// every line is the exact input text; the input seal always covers the exact bytes.
     pub lossy_lines: u32,
+    /// Git first gave this file's change as binary, and the hunks are its text read again with
+    /// `--text`: why Git called the file binary. Only a Git acquisition sets it; a patch read
+    /// from input never does.
+    pub diff_suppressed: Option<DiffSuppression>,
+}
+
+/// Why Git gave a text file's change as binary ([`PatchTwin::diff_suppressed`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffSuppression {
+    /// The path's `diff` attribute is unset (`-diff`, the `binary` macro) or names a diff
+    /// driver, from any attributes file Git reads.
+    Attribute,
+    /// No `diff` attribute applies: Git's own content check (a NUL byte) called it binary.
+    Content,
+}
+
+impl DiffSuppression {
+    /// Stable label for machine output.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Attribute => "attribute",
+            Self::Content => "content",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

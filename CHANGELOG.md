@@ -207,6 +207,16 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Changed
 
+- **New signal `diff_suppressed`** (+5, class security, since 0.10.0; S3.20,
+  [DDF-2026-006](docs/advisories/DDF-2026-006.md)). A contract addition to `rank.v0`: a file whose
+  change Git gave as binary and DDF read again as text carries the label, and its ranked item the
+  member `"diff_suppressed": "attribute"` (a `diff` attribute unset or naming a driver for the
+  path, by `git check-attr`) or `"content"` (Git's own content check). `git-acquisition.v0`
+  marks the change with the same member. A consumer that does not know the label should hold.
+  `schema signals`, `explain signal`, the TUI and the reference tables list it. In the library,
+  `RiskSignal` has the variant `DiffSuppressed` (the enum is not `#[non_exhaustive]`, so an
+  outside `match` needs the arm), `PatchTwin`, `GitChange` and `RankedFile` a field
+  `diff_suppressed`, and `deep_diff_forge_core` the type `DiffSuppression`.
 - **New council exit code 3, `recorded_incomplete`** (`check_environment`, `may_be_transient`
   true; plan of record S3.13, [DDF-2026-004](docs/advisories/DDF-2026-004.md)). A contract
   addition: `council import-tuicr --execute` exits 3 when its decisions were recorded (the synced
@@ -243,6 +253,21 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Fixed
 
+- **A text file Git was told to show as binary is read as text** (S3.20,
+  [DDF-2026-006](docs/advisories/DDF-2026-006.md)). In the Git selections (and so in MCP and RPC
+  `review_change`), one line `*.rs -diff` in a `.gitattributes` the change need not contain, in
+  `.git/info/attributes` or in a file the repository's own `core.attributesFile` names, `* binary`,
+  a `diff=` driver with `binary = true`, or one NUL byte in a comment made `git diff` print a source
+  change as a `GIT binary patch`, and no evidence rule read it: a change that starts a process
+  ranked `binary_changed`, 3, `binary_change` (measured on the published 0.8.2, 0.8.3 and 0.9.0
+  binaries and the 0.8.4 release binary, every selection). The acquisition as it was stays the
+  first reading; every change Git gives as binary is asked for once more with `--text`, the same
+  selection and flags, limited to its own literal paths. When that is the same change, as text,
+  valid UTF-8 (NUL bytes included), within what is left of the byte budget, and the parser reads
+  it, it replaces the binary section (both apply to the same bytes; tests apply the reviewed patch
+  with a real `git apply`); otherwise the binary section stands. Real binaries and text over the
+  budget stay binary; `--stdin-patch` and file pairs are unchanged (stated limits in
+  `docs/reference/commands.md`). An ordinary repository's output is byte for byte what it was.
 - **`ci_privilege` reads a key or a value in quotes as the key or value** (S3.18,
   [DDF-2026-005](docs/advisories/DDF-2026-005.md)). 0.8.2 to 0.9.0 labelled `contents: write`
   in a workflow but not `contents: 'write'`, `contents: "write"`, `id-token: 'write'`,

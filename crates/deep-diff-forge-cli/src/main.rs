@@ -1880,6 +1880,9 @@ fn print_rank_json(ranked: &[deep_diff_forge_graph::RankedFile], seal: &InputSea
         if rf.evidence_truncated {
             items.push_str(", \"evidence_truncated\": true");
         }
+        if let Some(cause) = rf.diff_suppressed {
+            let _ = write!(items, ", \"diff_suppressed\": \"{}\"", cause.label());
+        }
         items.push('}');
     }
     let body = if items.is_empty() {

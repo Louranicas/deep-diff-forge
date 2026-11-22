@@ -25,6 +25,8 @@ pub struct RankedFile {
     pub evidence: Vec<Evidence>,
     /// More evidence was found than `evidence` holds (the score counts all of it).
     pub evidence_truncated: bool,
+    /// Why Git gave this text file's change as binary, when it did (`diff_suppressed`).
+    pub diff_suppressed: Option<deep_diff_forge_core::DiffSuppression>,
 }
 
 impl RankedFile {
@@ -56,6 +58,7 @@ impl RankedFile {
             signals: assessment.signals,
             evidence,
             evidence_truncated,
+            diff_suppressed: file.patch_twin.diff_suppressed,
         }
     }
 }

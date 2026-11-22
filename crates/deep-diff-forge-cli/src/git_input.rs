@@ -194,7 +194,7 @@ fn acquisition_json(acq: &GitAcquisition, include_untracked: bool, input: &[u8])
         }
         let _ = write!(
             changes,
-            "    {{\"status\": {}, \"score\": {}, \"origin\": {}, \"old_path\": {}, \"new_path\": {}, \"old_mode\": {}, \"new_mode\": {}, \"old_blob\": {}, \"new_blob\": {}, \"binary\": {}, \"patch_offset\": {}, \"patch_len\": {}, \"blocks\": {}}}",
+            "    {{\"status\": {}, \"score\": {}, \"origin\": {}, \"old_path\": {}, \"new_path\": {}, \"old_mode\": {}, \"new_mode\": {}, \"old_blob\": {}, \"new_blob\": {}, \"binary\": {}, \"patch_offset\": {}, \"patch_len\": {}, \"blocks\": {}",
             json_escape(c.kind.label()),
             c.score.map_or_else(|| "null".to_owned(), |s| s.to_string()),
             json_escape(c.origin.label()),
@@ -209,6 +209,10 @@ fn acquisition_json(acq: &GitAcquisition, include_untracked: bool, input: &[u8])
             c.patch_range.len(),
             c.block_count
         );
+        if let Some(cause) = c.diff_suppressed {
+            let _ = write!(changes, ", \"diff_suppressed\": \"{}\"", cause.label());
+        }
+        changes.push('}');
     }
     let omitted: Vec<String> = acq
         .omitted_untracked()
