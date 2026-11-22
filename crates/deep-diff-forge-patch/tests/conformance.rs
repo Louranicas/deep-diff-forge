@@ -633,6 +633,66 @@ fn row_binary_files() {
     s.refused(|e| matches!(e, PatchParseError::SectionWithoutPatch { .. }));
 }
 
+/// S3.6: a `GIT binary patch` body Git's `parse_binary` calls corrupt is refused: a hunk with no
+/// empty line to end it (at the end of the input, before the next section, or before the next
+/// `literal` line), a hunk with no data line, and a base85 group above 0xffffffff in either hunk.
+/// 0.9.0 read each as a binary change. What Git skips after the two hunks (a third hunk, more
+/// empty lines, a stray data line, even one that would not decode) is read, as Git reads it.
+/// Each body is checked against a real `git apply`. Deflate corruption is a stated limit
+/// (`a_deflate_corruption_is_a_stated_limit`).
+#[test]
+fn row_git_binary_patch_corrupt_bodies() {
+    let r = rig("git-binary-corrupt");
+    let empty = r.ids[3].clone();
+    let head = format!("diff --git a/e b/e\nindex {empty}..{empty} 100644\nGIT binary patch\n");
+    let hunk = "literal 0\nHcmV?d00001\n";
+    let next = "diff --git a/x b/x\nindex @OLD@..@NEW@ 100644\nBinary files a/x and b/x differ\n";
+    for body in [
+        hunk.to_owned(),
+        format!("{hunk}{next}"),
+        format!("{hunk}{hunk}\n"),
+        "literal 0\n\n".to_owned(),
+        format!("{hunk}\nliteral 0\n\n"),
+        "literal 0\nD~~~~~\n\n".to_owned(),
+        "literal 0\nD|NsC1\n\n".to_owned(),
+        format!("{hunk}\nliteral 0\nD~~~~~\n\n"),
+        format!("{hunk}\n{hunk}"),
+    ] {
+        let s = see(&r, &format!("{head}{body}"));
+        assert!(s.reading.is_none(), "Git reads {body:?}");
+        s.git_writes_nothing();
+        s.refused(|e| matches!(e, PatchParseError::UnsupportedFormat { .. }));
+    }
+    for body in [
+        format!("{hunk}\n"),
+        format!("{hunk}\n{hunk}\n"),
+        format!("{hunk}\n{hunk}\n{hunk}\n"),
+        format!("{hunk}\n\n{hunk}\n"),
+        format!("{hunk}\n\n"),
+        format!("{hunk}\nHcmV?d00001\n"),
+        format!("{hunk}\n\nliteral 0\nD~~~~~\n\n"),
+    ] {
+        let s = see(&r, &format!("{head}{body}"));
+        assert_eq!(s.git_tree()["e"], file("", false), "{body:?}");
+        assert_eq!(
+            s.status(),
+            ("e".into(), FileStatus::BinaryChanged),
+            "{body:?}"
+        );
+    }
+}
+
+/// S3.6.c: corruption inside the deflate stream is not detected (the patch crate depends on the
+/// core crate alone); `SECURITY.md` states it as a limit, and this test holds the sentence there.
+#[test]
+fn a_deflate_corruption_is_a_stated_limit() {
+    let security = include_str!("../../../SECURITY.md");
+    assert!(
+        security.contains("Deflate corruption is not detected: DDF does not\n  inflate the data"),
+        "SECURITY.md no longer states the deflate limit"
+    );
+}
+
 #[test]
 fn row_files_differ() {
     let r = rig("files-differ");
@@ -667,6 +727,118 @@ fn row_traditional() {
     // With no hunk: not a patch to Git.
     let s = see(&r, "--- a/x\n+++ b/x\n");
     assert!(s.reading.is_none());
+    s.refused(|e| matches!(e, PatchParseError::SectionWithoutPatch { .. }));
+}
+
+/// Open difference S3.4.b2 (L4): a traditional section with neither side `/dev/null` whose one
+/// hunk has no old line (`@@ -0,0`). Git leaves `is_new` open (`parse_single_patch`) and
+/// `--summary` says create; apply creates an absent file and refuses a present one (the hunk at
+/// line 0 does not apply). DDF reads `modified`, written in place, as released.
+#[test]
+fn row_traditional_open_creation() {
+    let r = rig("traditional-creation");
+    let says = |s: &Seen, word: &str| s.reading.as_deref().is_some_and(|g| g.contains(word));
+    let s = see(&r, "--- a/n\n+++ b/n\n@@ -0,0 +1 @@\n+stored\n");
+    assert!(says(&s, " create n"), "{:?}", s.reading);
+    assert_eq!(s.git_tree()["n"], file("stored\n", false));
+    assert_eq!(s.status(), ("n".into(), FileStatus::Modified));
+    let s = see(&r, "--- a/x\n+++ b/x\n@@ -0,0 +1 @@\n+z\n");
+    assert!(says(&s, " create x"), "{:?}", s.reading);
+    s.git_writes_nothing();
+    assert_eq!(s.status(), ("x".into(), FileStatus::Modified));
+}
+
+/// Open difference S3.4.b2, the deletion twin (`@@ -1 +0,0`, no `/dev/null`): `--summary` says
+/// delete, but apply leaves a present file empty (and refuses an absent one). DDF reads
+/// `modified`, written in place: what apply writes.
+#[test]
+fn row_traditional_open_deletion() {
+    let r = rig("traditional-deletion");
+    let says = |s: &Seen, word: &str| s.reading.as_deref().is_some_and(|g| g.contains(word));
+    let s = see(&r, "--- a/x\n+++ b/x\n@@ -1 +0,0 @@\n-a\n");
+    assert!(says(&s, " delete x"), "{:?}", s.reading);
+    assert_eq!(s.git_tree()["x"], file("", false));
+    assert_eq!(s.status(), ("x".into(), FileStatus::Modified));
+    let s = see(&r, "--- a/q\n+++ b/q\n@@ -1 +0,0 @@\n-a\n");
+    assert!(says(&s, " delete q"), "{:?}", s.reading);
+    s.git_writes_nothing();
+    assert_eq!(s.status(), ("q".into(), FileStatus::Modified));
+}
+
+/// S3.4 (G3): a binary creation, deletion or rename has the status `git apply --summary` gives
+/// it, where 0.9.0 read `binary_changed`; a change in place stays `binary_changed`. Every one
+/// stays binary (its `binary_change` signal comes from that).
+#[test]
+fn a_binary_creation_or_deletion_has_git_s_status() {
+    let r = rig("binary-status");
+    let (empty, zero) = (r.ids[3].clone(), "0".repeat(r.ids[3].len()));
+    for (patch, word, status) in [
+        (
+            "diff --git a/n b/n\nnew file mode 100644\nindex @ZERO@..@NEW@\nBinary files /dev/null and b/n differ\n".to_owned(),
+            " create mode 100644 n",
+            FileStatus::Added,
+        ),
+        (
+            format!("diff --git a/n b/n\nnew file mode 100644\nindex {zero}..{empty}\nGIT binary patch\nliteral 0\nHcmV?d00001\n\n"),
+            " create mode 100644 n",
+            FileStatus::Added,
+        ),
+        (
+            format!("{X}deleted file mode 100644\nindex @OLD@..@ZERO@\nBinary files a/x and /dev/null differ\n"),
+            " delete mode 100644 x",
+            FileStatus::Deleted,
+        ),
+        (
+            "diff --git a/x b/r\nsimilarity index 60%\nrename from x\nrename to r\nindex @OLD@..@NEW@ 100644\nBinary files a/x and b/r differ\n".to_owned(),
+            " rename x => r",
+            FileStatus::Renamed,
+        ),
+        (
+            format!("{X}index @OLD@..@NEW@ 100644\nBinary files a/x and b/x differ\n"),
+            "-\t-\tx",
+            FileStatus::BinaryChanged,
+        ),
+    ] {
+        let s = see(&r, &patch);
+        let reading = s.reading.clone().unwrap_or_default();
+        assert!(reading.contains(word), "git apply --summary on {patch:?}: {reading:?}");
+        let (_, ddf) = s.status();
+        assert_eq!(ddf, status, "DDF's status where git apply --summary says {reading:?}");
+        assert!(s.read()[0].patch_twin.is_binary(), "{patch:?}");
+        let _ = s.git_tree();
+    }
+}
+
+/// S3.5 (L1): input with no file section (zero bytes, whitespace, prose, a commit message alone)
+/// is no patch to Git: `git apply` refuses it ("No valid patches in input") unless given
+/// `--allow-empty`. DDF's parser finds no section and refuses nothing; `--stdin-patch` refuses
+/// that answer with exit 4 (`no_patch_in_input`) unless given `--allow-empty` (the CLI test
+/// `empty_and_prose_input_is_refused_as_git_refuses_it`).
+#[test]
+fn row_no_patch_in_input() {
+    let r = rig("no-patch");
+    for input in [
+        "",
+        " \n\t\n",
+        "hello\n",
+        "Subject: [PATCH] x\n\nOnly the message.\n---\n",
+    ] {
+        let s = see(&r, input);
+        assert!(s.reading.is_none(), "Git reads a patch in {input:?}");
+        let name = ".git/probe.patch";
+        let allowed = r.git(&["apply", "--check", "--allow-empty", name]);
+        assert!(allowed.status.success(), "{input:?}");
+        assert_eq!(s.read().len(), 0, "DDF reads a file in {input:?}");
+    }
+}
+
+/// S3.5 (L3): a nameless `diff --git` header alone is no patch to Git, and DDF refuses it.
+#[test]
+fn a_nameless_diff_git_header_alone_is_refused() {
+    let r = rig("nameless");
+    let s = see(&r, "diff --git a/x b/y\n");
+    assert!(s.reading.is_none(), "{:?}", s.reading);
+    s.git_writes_nothing();
     s.refused(|e| matches!(e, PatchParseError::SectionWithoutPatch { .. }));
 }
 

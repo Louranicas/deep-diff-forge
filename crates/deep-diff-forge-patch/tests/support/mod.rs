@@ -351,7 +351,7 @@ pub fn reviewed_tree(
             continue;
         }
         entry.content = match entry.content.take() {
-            _ if file.status == FileStatus::BinaryChanged => binary_result(file, blobs),
+            _ if file.patch_twin.is_binary() => binary_result(file, blobs),
             // An earlier section's binary change left content the review does not know; Git
             // applies a later section to it, and that is not checked here.
             None => None,

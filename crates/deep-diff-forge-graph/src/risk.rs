@@ -282,17 +282,19 @@ fn mode_weight(file: &ReviewFile, signals: &mut Vec<RiskSignal>) -> u32 {
 /// The weight of a file's status (added, deleted, binary), recording its signal.
 ///
 /// A binary section with a `new file mode` header also carries `new_file`, and one with a
-/// `deleted file mode` header `deleted_file`, with the weights of a text file; its status stays
-/// `binary_changed`. These are the headers Git acts on: with one, `git apply` creates or deletes
-/// the file, or refuses when the path's state disagrees. The names on the binary line are not
-/// read: Git does not read them either (review of 0.8.4, R84B-L-1, VR84B-M-1). 0.8.3 read
-/// `Files /dev/null and b/x differ` under `new file mode` as `added`, and without this such a
-/// creation ranked below 0.8.3 once the line became a binary marker (R84-M-1).
+/// `deleted file mode` header `deleted_file`, with the weights of a text file. These are the
+/// headers Git acts on: with one, `git apply` creates or deletes the file, or refuses when the
+/// path's state disagrees. The names on the binary line are not read: Git does not read them
+/// either (review of 0.8.4, R84B-L-1, VR84B-M-1). 0.8.3 read `Files /dev/null and b/x differ`
+/// under `new file mode` as `added`, and without this such a creation ranked below 0.8.3 once
+/// the line became a binary marker (R84-M-1). The binary reading comes from the marker, not the
+/// status: since 0.10.0 a binary creation, deletion or rename has Git's status (S3.4).
 fn status_weight(file: &ReviewFile, signals: &mut Vec<RiskSignal>) -> u32 {
+    let binary = file.patch_twin.is_binary();
     let signal = match file.status {
-        FileStatus::Added => RiskSignal::NewFile,
-        FileStatus::Deleted => RiskSignal::DeletedFile,
-        FileStatus::BinaryChanged => {
+        FileStatus::Added if !binary => RiskSignal::NewFile,
+        FileStatus::Deleted if !binary => RiskSignal::DeletedFile,
+        _ if binary => {
             let says = |header: &str| {
                 file.patch_twin
                     .metadata
@@ -836,8 +838,8 @@ mod tests {
     /// deletion written with it ranked as `added` or `deleted`. Read as a binary marker (G1), it
     /// lost `new_file`/`deleted_file` and scored below 0.8.3 (6 to 5, 4 to 3, 4 to 2). A binary
     /// section with a `new file mode` or `deleted file mode` header keeps that signal and its
-    /// weight; its status stays `binary_changed`. The scores of the published v0.8.3 binary are
-    /// beside each case.
+    /// weight; it stays binary (since 0.10.0 its status is Git's: S3.4). The scores of the
+    /// published v0.8.3 binary are beside each case.
     #[test]
     fn a_binary_creation_or_deletion_keeps_new_file_or_deleted_file() {
         use RiskSignal::{
@@ -896,12 +898,7 @@ mod tests {
                 (5, vec![TestOnly, DeletedFile, BinaryChange]),
             ),
         ] {
-            assert_eq!(
-                f.status,
-                FileStatus::BinaryChanged,
-                "{:?}",
-                f.patch_twin.metadata
-            );
+            assert!(f.patch_twin.is_binary(), "{:?}", f.patch_twin.metadata);
             let scored = score_file(&f);
             assert!(scored.0 >= v083, "{:?}", f.patch_twin.metadata);
             assert_eq!(scored, expected, "{:?}", f.patch_twin.metadata);
@@ -922,6 +919,44 @@ mod tests {
             )),
             (4, vec![GeneratedOrVendored, NewFile, BinaryChange])
         );
+    }
+
+    /// S3.4: a binary creation, deletion or rename has Git's status (`added`, `deleted`,
+    /// `renamed`), and keeps every signal and the score 0.9.0 gave it as `binary_changed`
+    /// (measured on the frozen 0.8.4 and 0.9.0 binaries, beside each case); the `binary_change`
+    /// signal comes from the marker, not the status.
+    #[test]
+    fn a_binary_status_change_keeps_every_signal_and_score() {
+        use RiskSignal::{BinaryChange, DeletedFile, ExecutableBit, NewFile, TestOnly};
+        const NULL: &str = "0000000000000000000000000000000000000000";
+        const BLOB: &str = "545a1639dc6dea3534198996319dd2847b002e4a";
+        let cases = [
+            (
+                format!("diff --git a/x b/x\nnew file mode 100644\nindex {NULL}..{BLOB}\nBinary files /dev/null and b/x differ\n"),
+                FileStatus::Added,
+                (5, vec![NewFile, BinaryChange]),
+            ),
+            (
+                format!("diff --git a/x b/x\nnew file mode 100755\nindex {NULL}..{BLOB}\nGIT binary patch\nliteral 0\nHcmV?d00001\n\nliteral 0\nHcmV?d00001\n\n"),
+                FileStatus::Added,
+                (7, vec![NewFile, BinaryChange, ExecutableBit]),
+            ),
+            (
+                format!("diff --git a/tests/a.rs b/tests/a.rs\ndeleted file mode 100644\nindex {BLOB}..{NULL}\nBinary files a/tests/a.rs and /dev/null differ\n"),
+                FileStatus::Deleted,
+                (5, vec![TestOnly, DeletedFile, BinaryChange]),
+            ),
+            (
+                "diff --git a/x b/r\nsimilarity index 60%\nrename from x\nrename to r\nindex 1111111..2222222 100644\nBinary files a/x and b/r differ\n".to_owned(),
+                FileStatus::Renamed,
+                (3, vec![BinaryChange]),
+            ),
+        ];
+        for (text, status, expected) in cases {
+            let f = file(&text);
+            assert_eq!(f.status, status, "{text}");
+            assert_eq!(score_file(&f), expected, "{text}");
+        }
     }
 
     /// Review of 0.8.4, R84B-L-1 and VR84B-M-1: the names on the binary line are not read, as

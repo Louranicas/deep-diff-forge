@@ -28,6 +28,8 @@ const FIXTURES: &[&str] = &[
 fn cli(patch: &str, mode: &[&str], flags: &[&str]) -> (i32, String, String) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
         .args(["--stdin-patch", "--json"])
+        // The daemon answers as the command line does with --allow-empty, until S3.15 decides whether the refusal moves into the shared builder.
+        .arg("--allow-empty")
         .args(mode)
         .args(flags)
         .stdin(Stdio::piped())

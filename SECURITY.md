@@ -152,6 +152,20 @@ selection.
   still applied it (`is_binary_body_line` and the regression test
   `a_text_change_after_a_binary_body_is_never_hidden_in_it` in
   `crates/deep-diff-forge-patch/src/parser.rs`).
+- Since 0.10.0 the body is also held to the hunk structure of Git's
+  `parse_binary` (S3.6): a `literal`/`delta` hunk needs at least one data line
+  and the empty line that ends it, a second (reverse) hunk is optional and held
+  to the same rules, and every base85 group must decode to at most 0xffffffff
+  (Git's `decode_85`). A body Git calls corrupt is refused with exit 4, where
+  0.9.0 reviewed it as a binary change. Lines after the two hunks, which Git
+  skips, are admitted as before. Deflate corruption is not detected: DDF does not
+  inflate the data, so a body whose structure is sound but whose data does not
+  inflate, or inflates to another size than its `literal N`/`delta N` says, is
+  reviewed as a binary change while `git apply` refuses it (after other sections,
+  Git stops there and applies only those: see the residual risk "A corrupt binary
+  body"). That is a stated
+  limit (the patch crate depends on the core crate alone and adds no inflate
+  code); the review shows such a section as binary and never shows text from it.
 - Human-facing terminal output passes through `core::display_safe`, which
   exposes ANSI/CSI/OSC controls, C0/C1 controls, carriage returns, DEL, bidi
   overrides/isolates, directional marks, zero-width characters, BOM and every
@@ -1044,6 +1058,8 @@ says when it closed:
   Git stops at a `GIT binary patch` body that does not inflate and exits 0, applying only the
   sections before it, while DDF, which checks the body's line grammar only, shows every section
   as changed: nothing unreviewed is written, but reviewed changes do not land.
+  Since 0.10.0 a body Git calls corrupt for its hunk structure or its base85 is refused (exit
+  4, S3.6); one whose data does not inflate is still read, the stated deflate limit.
 - **The review council trial is undesigned.** The council is used on this
   repository; no controlled trial of its review quality exists.
 
