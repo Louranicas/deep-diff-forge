@@ -414,16 +414,27 @@ pub(crate) fn did_not_run_output(event: Option<Event>, reason: &str) -> String {
 }
 
 /// What an advice hook prints, once per session and reason, when it could give no advice: a
-/// message for the user. `last`: no further reason will be told in this session.
+/// message for the user, and the same fact as context for the model. `last`: no further reason
+/// will be told in this session.
+///
+/// The model was told nothing: advice that stops without a word reads to it as a change with
+/// nothing to say (S3.17a.l).
 pub(crate) fn notice_output(reason: &str, last: bool) -> String {
+    let reason = display_safe(reason);
     let mut message = format!(
-        "deep-diff-forge: the hook did not run: {}. Nothing was judged. (Said once in this session; a stop says it again.)",
-        display_safe(reason)
+        "deep-diff-forge: the hook did not run: {reason}. Nothing was judged. (Said once in this session; a stop says it again.)"
     );
     if last {
         message.push_str(" No further notice of this kind is shown in this session.");
     }
-    json!({"systemMessage": message}).to_string()
+    let context = format!(
+        "deep-diff-forge: no advice was given after this tool call, and none is given after later ones while this lasts: {reason}. Your change was not read for findings, so the absence of advice says nothing about it. (Said once in this session.)"
+    );
+    json!({
+        "systemMessage": message,
+        "hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": context},
+    })
+    .to_string()
 }
 
 /// What a stop says when nothing could be judged before a repository or a base was found.

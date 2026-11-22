@@ -11543,3 +11543,39 @@ fn advice_names_a_signal_the_row_cap_left_without_a_row() {
     );
     assert!(!advice.contains("- unsafe_added at "), "{advice}");
 }
+
+/// S3.17a.l: when the advice after a tool call is off for a reason told once in the session, the
+/// model is told as well as the user: it was told nothing, and advice that stops without a word
+/// reads as a change with nothing to say.
+#[test]
+fn advice_off_is_told_to_the_model() {
+    use std::os::unix::ffi::OsStrExt as _;
+    let scratch = Scratch::new("hook-advice-off");
+    let root = repository(&scratch);
+    let event = input("PostToolUse", &root, "s1", false);
+    std::fs::write(
+        root.join(std::ffi::OsStr::from_bytes(b"n\xffm.rs")),
+        "fn n() {}\n",
+    )
+    .unwrap();
+    let (code, stdout, stderr) = hook("post-tool", &[], &event);
+    assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
+    let out: Value = serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{e}: {stdout:?}"));
+    let user = out["systemMessage"].as_str().unwrap_or_default();
+    assert!(user.contains("the hook did not run: "), "{stdout}");
+    assert_eq!(
+        out["hookSpecificOutput"]["hookEventName"], "PostToolUse",
+        "{stdout}"
+    );
+    let model = out["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the model is told nothing: {stdout}"));
+    assert!(
+        model.contains("no advice was given after this tool call")
+            && model.contains("says nothing about it"),
+        "{model}"
+    );
+    assert!(agent_facing_faults(model).is_empty(), "{model}");
+    // told once: the next tool call says nothing
+    assert_eq!(hook("post-tool", &[], &event).1, "");
+}
