@@ -217,6 +217,26 @@ pub struct PatchTwin {
     pub diff_suppressed: Option<DiffSuppression>,
 }
 
+/// A recorded header line that makes its section binary to Git: `GIT binary patch`,
+/// `Binary files … differ`, or `Files … differ` (the parser's reading, kept here once so the
+/// ranking reads it too).
+#[must_use]
+pub fn is_binary_marker(meta: &str) -> bool {
+    meta.starts_with("GIT binary patch")
+        || meta.starts_with("Binary files ")
+        || (meta.starts_with("Files ") && meta.ends_with(" differ"))
+}
+
+impl PatchTwin {
+    /// The section's content is a binary blob to Git: a marker among its headers. The status
+    /// says what Git does to the path (a binary creation is `added`, as `git apply --summary`
+    /// has it); this stays true for it (S3.4).
+    #[must_use]
+    pub fn is_binary(&self) -> bool {
+        self.metadata.iter().any(|m| is_binary_marker(m))
+    }
+}
+
 /// Why Git gave a text file's change as binary ([`PatchTwin::diff_suppressed`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffSuppression {

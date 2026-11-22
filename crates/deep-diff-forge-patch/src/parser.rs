@@ -4,7 +4,7 @@
 use crate::{DEFAULT_BYTE_BUDGET, DEFAULT_LINE_BUDGET, PatchParseError};
 use deep_diff_forge_core::{
     DiffStrategy, FileStatus, HunkId, PatchHunk, PatchLine, PatchLineKind, PatchTwin,
-    PlannerDecision, ReviewFile,
+    PlannerDecision, ReviewFile, is_binary_marker,
 };
 use std::collections::BTreeMap;
 
@@ -41,14 +41,6 @@ const MODE_PREFIXES: &[&str] = &[
 /// is one too: Git's two comparisons may overlap.
 fn is_files_notice(line: &str) -> bool {
     line.starts_with("Files ") && line.ends_with(" differ")
-}
-
-/// A recorded header line that makes its section binary to Git: `GIT binary patch`,
-/// `Binary files … differ`, or `Files … differ` (see [`is_files_notice`]).
-fn is_binary_marker(meta: &str) -> bool {
-    meta.starts_with("GIT binary patch")
-        || meta.starts_with("Binary files ")
-        || is_files_notice(meta)
 }
 
 /// One header line of a `diff --git` section, by kind (`CONFORMANCE.md` has one row for each).
@@ -1751,7 +1743,7 @@ impl FileBuf {
     fn into_review_file(self) -> ReviewFile {
         let status = self.resolve_status();
         let path = self.resolve_path();
-        let strategy = if status == FileStatus::BinaryChanged {
+        let strategy = if self.metadata.iter().any(|m| is_binary_marker(m)) {
             DiffStrategy::Binary
         } else {
             DiffStrategy::Line
@@ -1993,10 +1985,14 @@ impl FileBuf {
             (Some(old), Some(new)) if object_type(old) == object_type(new)
         );
 
-        if binary {
-            FileStatus::BinaryChanged
-        } else if self.rename_from.is_some() || self.rename_to.is_some() {
+        // A binary creation, deletion or rename has the status `git apply --summary` gives it
+        // (create, delete, rename); before, a binary marker made every one `binary_changed`
+        // (G3). The section stays binary ([`PatchTwin::is_binary`]), and so does its
+        // `binary_change` signal. A copy or a change in place stays `binary_changed`.
+        if self.rename_from.is_some() || self.rename_to.is_some() {
             FileStatus::Renamed
+        } else if binary && !new_file && !deleted {
+            FileStatus::BinaryChanged
         } else if has("copy from ") || has("copy to ") {
             FileStatus::Copied
         } else if new_file {

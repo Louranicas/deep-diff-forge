@@ -670,6 +670,85 @@ fn row_traditional() {
     s.refused(|e| matches!(e, PatchParseError::SectionWithoutPatch { .. }));
 }
 
+/// Open difference S3.4.b2 (L4): a traditional section with neither side `/dev/null` whose one
+/// hunk has no old line (`@@ -0,0`). Git leaves `is_new` open (`parse_single_patch`) and
+/// `--summary` says create; apply creates an absent file and refuses a present one (the hunk at
+/// line 0 does not apply). DDF reads `modified`, written in place, as released.
+#[test]
+fn row_traditional_open_creation() {
+    let r = rig("traditional-creation");
+    let says = |s: &Seen, word: &str| s.reading.as_deref().is_some_and(|g| g.contains(word));
+    let s = see(&r, "--- a/n\n+++ b/n\n@@ -0,0 +1 @@\n+stored\n");
+    assert!(says(&s, " create n"), "{:?}", s.reading);
+    assert_eq!(s.git_tree()["n"], file("stored\n", false));
+    assert_eq!(s.status(), ("n".into(), FileStatus::Modified));
+    let s = see(&r, "--- a/x\n+++ b/x\n@@ -0,0 +1 @@\n+z\n");
+    assert!(says(&s, " create x"), "{:?}", s.reading);
+    s.git_writes_nothing();
+    assert_eq!(s.status(), ("x".into(), FileStatus::Modified));
+}
+
+/// Open difference S3.4.b2, the deletion twin (`@@ -1 +0,0`, no `/dev/null`): `--summary` says
+/// delete, but apply leaves a present file empty (and refuses an absent one). DDF reads
+/// `modified`, written in place: what apply writes.
+#[test]
+fn row_traditional_open_deletion() {
+    let r = rig("traditional-deletion");
+    let says = |s: &Seen, word: &str| s.reading.as_deref().is_some_and(|g| g.contains(word));
+    let s = see(&r, "--- a/x\n+++ b/x\n@@ -1 +0,0 @@\n-a\n");
+    assert!(says(&s, " delete x"), "{:?}", s.reading);
+    assert_eq!(s.git_tree()["x"], file("", false));
+    assert_eq!(s.status(), ("x".into(), FileStatus::Modified));
+    let s = see(&r, "--- a/q\n+++ b/q\n@@ -1 +0,0 @@\n-a\n");
+    assert!(says(&s, " delete q"), "{:?}", s.reading);
+    s.git_writes_nothing();
+    assert_eq!(s.status(), ("q".into(), FileStatus::Modified));
+}
+
+/// S3.4 (G3): a binary creation, deletion or rename has the status `git apply --summary` gives
+/// it, where 0.9.0 read `binary_changed`; a change in place stays `binary_changed`. Every one
+/// stays binary (its `binary_change` signal comes from that).
+#[test]
+fn a_binary_creation_or_deletion_has_git_s_status() {
+    let r = rig("binary-status");
+    let (empty, zero) = (r.ids[3].clone(), "0".repeat(r.ids[3].len()));
+    for (patch, word, status) in [
+        (
+            "diff --git a/n b/n\nnew file mode 100644\nindex @ZERO@..@NEW@\nBinary files /dev/null and b/n differ\n".to_owned(),
+            " create mode 100644 n",
+            FileStatus::Added,
+        ),
+        (
+            format!("diff --git a/n b/n\nnew file mode 100644\nindex {zero}..{empty}\nGIT binary patch\nliteral 0\nHcmV?d00001\n\n"),
+            " create mode 100644 n",
+            FileStatus::Added,
+        ),
+        (
+            format!("{X}deleted file mode 100644\nindex @OLD@..@ZERO@\nBinary files a/x and /dev/null differ\n"),
+            " delete mode 100644 x",
+            FileStatus::Deleted,
+        ),
+        (
+            "diff --git a/x b/r\nsimilarity index 60%\nrename from x\nrename to r\nindex @OLD@..@NEW@ 100644\nBinary files a/x and b/r differ\n".to_owned(),
+            " rename x => r",
+            FileStatus::Renamed,
+        ),
+        (
+            format!("{X}index @OLD@..@NEW@ 100644\nBinary files a/x and b/x differ\n"),
+            "-\t-\tx",
+            FileStatus::BinaryChanged,
+        ),
+    ] {
+        let s = see(&r, &patch);
+        let reading = s.reading.clone().unwrap_or_default();
+        assert!(reading.contains(word), "git apply --summary on {patch:?}: {reading:?}");
+        let (_, ddf) = s.status();
+        assert_eq!(ddf, status, "DDF's status where git apply --summary says {reading:?}");
+        assert!(s.read()[0].patch_twin.is_binary(), "{patch:?}");
+        let _ = s.git_tree();
+    }
+}
+
 #[test]
 fn row_no_line_feed() {
     let r = rig("no-line-feed");
