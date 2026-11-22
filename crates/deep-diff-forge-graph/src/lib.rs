@@ -37,6 +37,16 @@ pub use vocabulary::{
     SignalKind, facts, remedy, signal_named, vocabulary,
 };
 
+/// The identity of the scorer this crate was built from: the SHA-256 of every file under `src/`
+/// but `lib.rs` (the rule tables, the secret prefixes and their byte classes, the readers, the
+/// path rules and weights, the order and the vocabulary), taken at build time by `build.rs`. It
+/// moves on any edit of those files, a comment included; `rank.v0` carries it as
+/// `tool.scorer_sha256`, since `tool.version` alone does not tell two scorers apart.
+#[must_use]
+pub fn scorer_sha256() -> &'static str {
+    include_str!(concat!(env!("OUT_DIR"), "/scorer_sha256"))
+}
+
 /// The `deep-diff-forge.rank.v0` document, rendered by one function for every surface (S3.15):
 /// [`RankDocument::to_json`] is the bytes `--stdin-patch --rank --json` prints, newline included,
 /// and the daemon's `diff.rank` (so `rpc` and MCP's `rank_patch`) carries the same bytes, its
@@ -61,10 +71,11 @@ impl RankDocument<'_> {
             format!("\n    {}\n  ", entries.join(",\n    "))
         };
         format!(
-            "{{\n  \"schema\": \"deep-diff-forge.rank.v0\",\n  \"input_sha256\": {},\n  \"tool\": {{\"name\": {}, \"version\": {}}},\n  \"ranked\": [{body}]\n}}\n",
+            "{{\n  \"schema\": \"deep-diff-forge.rank.v0\",\n  \"input_sha256\": {},\n  \"tool\": {{\"name\": {}, \"version\": {}, \"scorer_sha256\": {}}},\n  \"ranked\": [{body}]\n}}\n",
             json_escape(&self.seal.input_sha256),
             json_escape(InputSeal::TOOL_NAME),
             json_escape(&self.seal.tool_version),
+            json_escape(scorer_sha256()),
         )
     }
 }
@@ -147,6 +158,89 @@ mod tests {
     fn change_counts_reexport_works() {
         let files = parse("--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-a\n+b\n").unwrap();
         assert_eq!(change_counts(&files[0]), (1, 1));
+    }
+
+    /// The covered sources, as `build.rs` frames them: every file under `src/` but `lib.rs`.
+    fn scorer_sources() -> Vec<(String, String)> {
+        fn walk(dir: &std::path::Path, prefix: &str, out: &mut Vec<(String, String)>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let entry = entry.unwrap();
+                let name = format!("{prefix}{}", entry.file_name().to_string_lossy());
+                if entry.file_type().unwrap().is_dir() {
+                    walk(&entry.path(), &format!("{name}/"), out);
+                } else if entry.path().extension().is_some_and(|ext| ext == "rs")
+                    && name != "lib.rs"
+                {
+                    let text = std::fs::read_to_string(entry.path()).unwrap();
+                    out.push((name, text.replace("\r\n", "\n")));
+                }
+            }
+        }
+        let mut sources = Vec::new();
+        walk(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            "",
+            &mut sources,
+        );
+        sources.sort();
+        sources
+    }
+
+    fn digest_of(sources: &[(String, String)]) -> String {
+        let mut input = Vec::new();
+        for (name, text) in sources {
+            input.extend_from_slice(format!("{name}\0{}\0", text.len()).as_bytes());
+            input.extend_from_slice(text.as_bytes());
+        }
+        deep_diff_forge_core::sha256_hex(&input)
+    }
+
+    /// The build-time digest is the SHA-256 (core's, checked against NIST vectors) of exactly the
+    /// covered sources: a file left out, or a wrong digest, fails here.
+    #[test]
+    fn scorer_identity_is_the_digest_of_every_source_but_lib_rs() {
+        let sources = scorer_sources();
+        assert!(sources.len() >= 7, "{}", sources.len());
+        assert_eq!(
+            scorer_sha256(),
+            digest_of(&sources),
+            "the build-time scorer digest is not the digest of src/ without lib.rs"
+        );
+    }
+
+    /// Every table and reader that decides a label is in a covered file, and an edit of the line
+    /// that defines it moves the identity (the readers too, not only the tables: F2a can change a
+    /// reading with no table change).
+    #[test]
+    fn scorer_identity_moves_with_every_table() {
+        let sources = scorer_sources();
+        let base = digest_of(&sources);
+        for definition in [
+            "const RULES: &[Rule]",
+            "const LEGACY_RUST_RULES: &[Rule]",
+            "const RELEASED_RULES: &[Rule]",
+            "const SECRET_PREFIXES: [SecretPrefix;",
+            "pub const MAX_EVIDENCE_PER_FILE: usize",
+            "fn trivial_assert<",
+            "const WORDS: [(&[u8], Word);",
+            "const READ: [EvidenceSignal;",
+            "pub const LARGE_CHANGE_LINES: usize",
+            "pub fn vocabulary() -> Vec<SignalFacts>",
+        ] {
+            let at = sources
+                .iter()
+                .position(|(_, text)| text.contains(definition))
+                .unwrap_or_else(|| panic!("{definition:?} is in no covered source"));
+            let mut edited = sources.clone();
+            edited[at].1 = edited[at]
+                .1
+                .replacen(definition, &format!("{definition} "), 1);
+            assert_ne!(
+                digest_of(&edited),
+                base,
+                "{definition:?} does not move the identity"
+            );
+        }
     }
 
     #[test]
