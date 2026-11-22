@@ -165,6 +165,10 @@ attaches semantics.
 and Forgejo, nothing goes to GitHub (`github` and `github-release` are `skipped`), the release
 is the owner's signed tag and a local release, and crates.io is on hold.
 
+DDF reads a patch as a plain `git apply` reads it in Git's default configuration; the
+settings that change what Git writes are in
+[SECURITY.md](../../SECURITY.md#git-settings-that-change-what-git-apply-writes).
+
 ## Review council
 
 ```bash

@@ -155,6 +155,33 @@ const END_ANCHORED: &[&str] = &[
     "diff --git a/f b/f\nindex @F7@..@NEW7@ 100644\n--- a/f\n+++ b/f\n@@ -5,2 +5,2 @@\n a\n-b\n+B\n",
 ];
 
+/// Sections Git writes in four shapes no group above has (the deeper hardening review,
+/// 2026-11-18, part G), each with its name: a regular file that loses its final newline, an
+/// edit of an existing empty file, a file emptied without being deleted, and hunks whose two
+/// counts differ (lines only added, or only removed, inside a file).
+const SHAPES: &[(&str, &str)] = &[
+    (
+        "no final newline",
+        "diff --git a/y b/y\nindex @Y7@..@T7@ 100644\n--- a/y\n+++ b/y\n@@ -1 +1 @@\n-y\n+y\n\\ No newline at end of file\n",
+    ),
+    (
+        "empty file edited",
+        "diff --git a/e b/e\nindex @E7@..@NEW7@ 100644\n--- a/e\n+++ b/e\n@@ -0,0 +1 @@\n+stored\n",
+    ),
+    (
+        "file emptied",
+        "diff --git a/y b/y\nindex @Y7@..@E7@ 100644\n--- a/y\n+++ b/y\n@@ -1 +0,0 @@\n-y\n",
+    ),
+    (
+        "counts differ",
+        "diff --git a/m b/m\nindex @M7@..@NEW7@ 100644\n--- a/m\n+++ b/m\n@@ -1,4 +1,5 @@\n [prod]\n allow = false\n+x = 1\n [test]\n allow = false\n",
+    ),
+    (
+        "counts differ",
+        "diff --git a/m b/m\nindex @M7@..@NEW7@ 100644\n--- a/m\n+++ b/m\n@@ -1,4 +1,3 @@\n [prod]\n-allow = false\n [test]\n allow = false\n",
+    ),
+];
+
 /// Header lines of other rows, put into a section by the `insert` move.
 const FOREIGN: &[&str] = &[
     "similarity index 90%",
@@ -437,6 +464,8 @@ struct Generated {
     unanchored: bool,
     /// One of its sections is from [`END_ANCHORED`].
     end_anchored: bool,
+    /// The names of its sections from [`SHAPES`].
+    shapes: Vec<&'static str>,
 }
 
 fn generate(rng: &mut Rng) -> Generated {
@@ -445,10 +474,16 @@ fn generate(rng: &mut Rng) -> Generated {
         .chain(WRITTEN_U0)
         .chain(END_ANCHORED)
         .copied()
+        .chain(SHAPES.iter().map(|(_, section)| *section))
         .collect();
     let groups: Vec<&str> = (0..=rng.below(3)).map(|_| *rng.pick(&pool)).collect();
     let unanchored = groups.iter().any(|g| WRITTEN_U0.contains(g));
     let end_anchored = groups.iter().any(|g| END_ANCHORED.contains(g));
+    let shapes = SHAPES
+        .iter()
+        .filter(|(_, section)| groups.contains(section))
+        .map(|(name, _)| *name)
+        .collect();
     let mut paths: Vec<String> = Vec::new();
     let mut distinct = true;
     for group in &groups {
@@ -476,6 +511,7 @@ fn generate(rng: &mut Rng) -> Generated {
         moves,
         unanchored,
         end_anchored,
+        shapes,
     }
 }
 
@@ -503,6 +539,9 @@ struct Tally {
     /// DDF reads and Git applies as reviewed: a hand-written hunk Git anchors at the end
     /// ([`END_ANCHORED`]).
     end_anchored: usize,
+    /// DDF reads and Git applies as reviewed a patch with no move holding a section of the
+    /// shape ([`SHAPES`]), by the shape's name.
+    shapes: BTreeMap<&'static str, usize>,
     failures: Vec<String>,
 }
 
@@ -594,6 +633,11 @@ fn run(seeds: &[u64], tag: &str, format: &str) -> Tally {
                         Some(reviewed) if agree(&git, &reviewed) => {
                             tally.applied_as_read += 1;
                             tally.end_anchored += usize::from(generated.end_anchored);
+                            if generated.moves.is_empty() {
+                                for name in &generated.shapes {
+                                    *tally.shapes.entry(*name).or_default() += 1;
+                                }
+                            }
                         }
                         reviewed => tally.failures.push(format!(
                             "git apply writes otherwise than DDF reads: {case}\n git: {git:?}\n ddf: {reviewed:?}"
@@ -625,6 +669,22 @@ fn run(seeds: &[u64], tag: &str, format: &str) -> Tally {
     tally
 }
 
+/// The four shapes of [`SHAPES`] are each generated, read and applied as reviewed in a patch
+/// with no move (with the failures above: zero disagreements).
+fn every_shape_is_applied_as_reviewed(shapes: &BTreeMap<&str, usize>) {
+    for name in [
+        "no final newline",
+        "empty file edited",
+        "file emptied",
+        "counts differ",
+    ] {
+        assert!(
+            shapes.get(name).is_some_and(|n| *n > 0),
+            "no patch of the shape {name:?} was read and applied as reviewed: {shapes:?}"
+        );
+    }
+}
+
 #[test]
 fn every_generated_patch_ddf_reads_is_applied_by_git_as_reviewed() {
     let seeds: Vec<u64> = match std::env::var("DDF_DIFFERENTIAL_SEEDS") {
@@ -653,6 +713,9 @@ fn every_generated_patch_ddf_reads_is_applied_by_git_as_reviewed() {
         total.refused_whole += tally.refused_whole;
         total.unanchored += tally.unanchored;
         total.end_anchored += tally.end_anchored;
+        for (name, n) in tally.shapes {
+            *total.shapes.entry(name).or_default() += n;
+        }
         for (shape, n) in tally.git_only {
             *total.git_only.entry(shape).or_default() += n;
         }
@@ -678,6 +741,10 @@ fn every_generated_patch_ddf_reads_is_applied_by_git_as_reviewed() {
     eprintln!(
         "  written by hand, Git anchors at the end, applied as reviewed: {}",
         total.end_anchored
+    );
+    eprintln!(
+        "  Git's own shapes, no move, applied as reviewed: {:?}",
+        total.shapes
     );
     for failure in total.failures.iter().take(40) {
         eprintln!("  FAIL {}", failure.lines().next().unwrap_or_default());
@@ -708,6 +775,7 @@ fn every_generated_patch_ddf_reads_is_applied_by_git_as_reviewed() {
     );
     assert!(total.unanchored > 0, "no -U0 hunk was generated");
     assert!(total.end_anchored > 0, "no end-anchored hunk was applied");
+    every_shape_is_applied_as_reviewed(&total.shapes);
     assert!(
         total.applied_as_read * 4 >= total.patches,
         "only {} of {} patches were read and applied",

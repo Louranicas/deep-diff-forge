@@ -115,6 +115,8 @@ Limits of the promise:
   mode from the patch when it does not trust the executable bit. Leaving the `index` line out
   then changes the mode written (independent review of S3a, S3A-L-2). The patch does not carry
   the repository's configuration, so no reading of it can close this.
+  The settings measured against a real `git apply`, and every one DDF does not model, are
+  listed in SECURITY.md, "Git settings that change what `git apply` writes" (S3.7).
 
 This file is the table of what Git reads. It holds one row for each header line `git apply`
 recognises in a `diff --git` section, and one for the traditional `---`/`+++` form. Each row

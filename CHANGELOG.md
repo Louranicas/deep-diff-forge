@@ -286,6 +286,31 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   items in the core crate: `is_binary_marker` and `PatchTwin::is_binary`.
 
 
+- **The documents say what is built and where it is released** (S3.7, S3.10, S3.17a.k).
+  `SECURITY.md` lists every Git setting that changes what `git apply` writes (`apply.whitespace`,
+  `core.autocrlf`, `-p`, `--directory`, `--3way`, `core.fileMode`, a case-insensitive file
+  system), each declared, six measured against a real `git apply` by the test
+  `a_setting_that_changes_the_write_is_declared`. Linux x86_64 is built and tested, with its
+  receipt under "Runs on record" in the platforms page; arm64 and macOS are not built for this
+  release. Releases are on GitLab and mirrored on GitHub; 0.9.0 is on crates.io and publishing
+  the crates is a release step from 0.10.0; contributions are GitLab merge requests. The
+  generated differential draws four more shapes Git writes (no final newline, an edit of an
+  empty file, a file emptied, unequal hunk counts).
+
+
+- **`rank.v0` has one byte form on every surface** (S3.15): the bytes `--rank --json` prints.
+  They are built by one renderer. The daemon's `diff.rank` (so `rpc`, the Python SDK and
+  `review.change` with the rank view) keeps its value and adds those exact bytes as
+  `canonical_json`; MCP `rank_patch` gives them as its text and their value as
+  `structuredContent`, and its 256 KiB cap counts them. The command line's own output for a
+  patch is unchanged apart from one added member (7,421 comparison patches, identical once
+  that member is set aside): `tool.scorer_sha256`, a build-time SHA-256 of the ranking crate's
+  sources that decide labels (every source file of the graph crate but `lib.rs`), which moves
+  on any edit of them. A consumer that seals the ranking's bytes (forge-warden) sees its seals
+  change once by that member. `agent doctor`'s `rank_parity` now compares the command line's,
+  the daemon's and MCP's bytes. A `diff.rank` answer is about 2.2 times its earlier size.
+
+
 ### Fixed
 
 - **A text file Git was told to show as binary is read as text** (S3.20,
@@ -398,6 +423,19 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   write breaks with a connection reset. The reference states one line cap for the daemon
   protocol: 80 MiB counting the newline, in both directions (one stated exception: the server's
   answer bound still measures without the newline).
+
+- **`secret_like` finds GitLab tokens and fine-grained GitHub tokens** (S3.24,
+  [DDF-2026-007](docs/advisories/DDF-2026-007.md)): `glpat-` and its routable form, `gldt-`,
+  `glrt-` and `glcbt-` with 20 bytes or more, `glptt-` with 40, `gloas-` with 64, and
+  `github_pat_` with 82. Releases 0.5.0 to 0.9.0 missed them. The eleven earlier prefixes are
+  unchanged (a test holds "released implies now"), and the token is never copied into evidence.
+  Measured before release: no line of 2,086 real history patches gains the label; a repository
+  whose forge-warden policy forbids `secret_like` fails, from 0.10.0, a commit that adds a line
+  with one of the seven forms. The eval corpus gains the case `evidence/secret-forge-tokens`
+  (59 cases: precision 186 of 211, recall 186 of 264).
+
+- **The daemon answers a changed file name that is not UTF-8 with code 4** (`review.change`),
+  as the command line exits 4 (S3.27.f); it was code 3, which reads as "may be transient".
 
 ## [0.9.0] - 2026-11-18
 

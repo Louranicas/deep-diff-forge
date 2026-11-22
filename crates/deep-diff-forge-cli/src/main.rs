@@ -1813,32 +1813,22 @@ fn run_cluster(files: &[deep_diff_forge_core::ReviewFile], opts: &[String], seal
 fn print_cluster_json(run: &deep_diff_forge_cluster::ClusterRun, seal: &InputSeal) {
     use deep_diff_forge_cluster::{dimension_label, join_label, parallelism_label};
     use deep_diff_forge_core::json_escape;
-    use std::fmt::Write as _;
     let dims: Vec<String> = run
         .receipt
         .dimensions
         .iter()
         .map(|d| json_escape(dimension_label(*d)))
         .collect();
-    let mut ranked = String::new();
-    for (i, rf) in run.ranked.iter().enumerate() {
-        if i > 0 {
-            ranked.push_str(",\n");
-        }
-        let signals: Vec<String> = rf.signals.iter().map(|s| json_escape(s.label())).collect();
-        let _ = write!(
-            ranked,
-            "    {{\"path\": {}, \"status\": {}, \"score\": {}, \"signals\": [{}]}}",
-            json_escape(&rf.path),
-            json_escape(rf.status.label()),
-            rf.score,
-            signals.join(", ")
-        );
-    }
+    // rank.v0's entry renderer, without the members a cluster list has never carried.
+    let ranked: Vec<String> = run
+        .ranked
+        .iter()
+        .map(|rf| deep_diff_forge_graph::entry_json(rf, false))
+        .collect();
     let body = if ranked.is_empty() {
         String::new()
     } else {
-        format!("\n{ranked}\n  ")
+        format!("\n    {}\n  ", ranked.join(",\n    "))
     };
     emitln!(
         "{{\n  \"schema\": \"deep-diff-forge.cluster.v0\",\n{}  \"receipt\": {{\"dimensions\": [{}], \"parallelism\": {}, \"workers\": {}, \"join_policy\": {}, \"file_count\": {}}},\n  \"ranked\": [{}]\n}}",
@@ -1866,65 +1856,14 @@ fn print_rank_human(ranked: &[deep_diff_forge_graph::RankedFile]) {
     emitln!("{} file(s) ranked", ranked.len());
 }
 
+/// The bytes `--rank --json` prints: the one `rank.v0` renderer's, which the daemon's `diff.rank`,
+/// `rpc` and MCP carry too (`agent doctor`'s `rank_parity` compares them byte for byte).
+pub(crate) fn rank_json(ranked: &[deep_diff_forge_graph::RankedFile], seal: &InputSeal) -> String {
+    deep_diff_forge_graph::RankDocument { seal, ranked }.to_json()
+}
+
 fn print_rank_json(ranked: &[deep_diff_forge_graph::RankedFile], seal: &InputSeal) {
-    use deep_diff_forge_core::json_escape;
-    use std::fmt::Write as _;
-    let mut items = String::new();
-    for (i, rf) in ranked.iter().enumerate() {
-        if i > 0 {
-            items.push_str(",\n");
-        }
-        let signals: Vec<String> = rf.signals.iter().map(|s| json_escape(s.label())).collect();
-        let _ = write!(
-            items,
-            "    {{\"path\": {}, \"status\": {}, \"score\": {}, \"signals\": [{}]",
-            json_escape(&rf.path),
-            json_escape(rf.status.label()),
-            rf.score,
-            signals.join(", ")
-        );
-        // Present only when found, as `hazards` is (the daemon's `diff.rank` is the same
-        // document: cli/tests/daemon_parity.rs).
-        if !rf.evidence.is_empty() {
-            let evidence: Vec<String> = rf
-                .evidence
-                .iter()
-                .map(|e| {
-                    format!(
-                        "{{\"signal\": {}, \"address\": {}, \"side\": {}, \"line\": {}, \"basis\": {}{}}}",
-                        json_escape(e.signal.label()),
-                        json_escape(&e.address),
-                        json_escape(e.side.label()),
-                        e.line,
-                        json_escape(e.basis.label()),
-                        // Present only when true, as in the daemon's document.
-                        if e.test_likely {
-                            ", \"test_likely\": true"
-                        } else {
-                            ""
-                        }
-                    )
-                })
-                .collect();
-            let _ = write!(items, ", \"evidence\": [{}]", evidence.join(", "));
-        }
-        if rf.evidence_truncated {
-            items.push_str(", \"evidence_truncated\": true");
-        }
-        if let Some(cause) = rf.diff_suppressed {
-            let _ = write!(items, ", \"diff_suppressed\": \"{}\"", cause.label());
-        }
-        items.push('}');
-    }
-    let body = if items.is_empty() {
-        String::new()
-    } else {
-        format!("\n{items}\n  ")
-    };
-    emitln!(
-        "{{\n  \"schema\": \"deep-diff-forge.rank.v0\",\n{}  \"ranked\": [{body}]\n}}",
-        seal.json_members()
-    );
+    emit(&rank_json(ranked, seal));
 }
 
 /// `--max-bytes` and `--cursor` for `--outline` / `--hunks` (the daemon's view budget and page).

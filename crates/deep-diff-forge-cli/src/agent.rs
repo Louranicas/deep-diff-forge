@@ -171,6 +171,17 @@ fn mcp_call(server: &mut mcp::Server, id: u64, name: &str, arguments: &Value) ->
         .map_or(Value::Null, |v| v["result"]["structuredContent"].clone())
 }
 
+/// MCP's text copy of a tool's answer: for `rank_patch`, the document's canonical bytes.
+fn mcp_text(server: &mut mcp::Server, id: u64, name: &str, arguments: &Value) -> String {
+    let line = json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": name, "arguments": arguments}}).to_string();
+    server.handle_line(&line).map_or(String::new(), |v| {
+        v["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    })
+}
+
 fn daemon_call(method: &str, params: &Value) -> Value {
     let line = json!({"method": method, "params": params}).to_string();
     deep_diff_forge_daemon::parse_request(&line)
@@ -193,11 +204,14 @@ fn review_parity_ok(expected: &str, cli: &Value, daemon: &Value, via_mcp: &Value
     cli["input_sha256"] == expected && cli == daemon && daemon == via_mcp
 }
 
-/// The daemon's `rank.v0` is of the probe, and MCP returns the same document.
-fn rank_parity_ok(expected: &str, rank: &Value, rank_mcp: &Value) -> bool {
-    rank["schema"] == "deep-diff-forge.rank.v0"
-        && rank["input_sha256"] == expected
-        && rank == rank_mcp
+/// The CLI's `rank.v0` bytes are of the probe, and the daemon's `canonical_json` and MCP's text
+/// are those same bytes (S3.15: one byte form on every surface; a value check would pass a
+/// surface that reorders or re-spaces the document).
+fn rank_parity_ok(expected: &str, cli: &str, daemon: &Value, mcp_text: &str) -> bool {
+    serde_json::from_str::<Value>(cli).is_ok_and(|document| {
+        document["schema"] == "deep-diff-forge.rank.v0" && document["input_sha256"] == expected
+    }) && daemon["canonical_json"].as_str() == Some(cli)
+        && mcp_text == cli
 }
 
 /// The outline is of the probe, and the hunk fetched by its address is that hunk, within budget.
@@ -228,7 +242,7 @@ fn checks() -> Vec<Check> {
     });
 
     let expected = deep_diff_forge_core::sha256_hex(PROBE.as_bytes());
-    let cli = deep_diff_forge_patch::SealedReview::new(
+    let review = deep_diff_forge_patch::SealedReview::new(
         PROBE.as_bytes(),
         deep_diff_forge_patch::InputGuards {
             files: true,
@@ -236,9 +250,11 @@ fn checks() -> Vec<Check> {
         },
         env!("CARGO_PKG_VERSION"),
     )
-    .ok()
-    .and_then(|review| serde_json::from_str::<Value>(&review.to_json()).ok())
-    .unwrap_or(Value::Null);
+    .ok();
+    let cli = review
+        .as_ref()
+        .and_then(|review| serde_json::from_str::<Value>(&review.to_json()).ok())
+        .unwrap_or(Value::Null);
     let daemon = daemon_call("diff.compute", &json!({"patch": PROBE}));
     let via_mcp = mcp_call(&mut server, 3, "review_patch", &json!({"patch": PROBE}));
     checks.push(Check {
@@ -247,12 +263,17 @@ fn checks() -> Vec<Check> {
         detail: format!("CLI, daemon and MCP review.v0 for {}", &expected[..16]),
     });
 
+    let cli_rank = review.as_ref().map_or(String::new(), |review| {
+        crate::rank_json(&deep_diff_forge_graph::rank(review.files()), review.seal())
+    });
     let rank = daemon_call("diff.rank", &json!({"patch": PROBE}));
-    let rank_mcp = mcp_call(&mut server, 4, "rank_patch", &json!({"patch": PROBE}));
+    let rank_mcp = mcp_text(&mut server, 4, "rank_patch", &json!({"patch": PROBE}));
     checks.push(Check {
         name: "rank_parity",
-        ok: rank_parity_ok(&expected, &rank, &rank_mcp),
-        detail: "daemon diff.rank equals MCP rank_patch".into(),
+        ok: rank_parity_ok(&expected, &cli_rank, &rank, &rank_mcp),
+        detail:
+            "CLI --rank --json bytes equal daemon diff.rank canonical_json and MCP rank_patch text"
+                .into(),
     });
 
     let outline = mcp_call(&mut server, 5, "review_outline", &json!({"patch": PROBE}));
@@ -360,13 +381,17 @@ mod tests {
         assert!(!review_parity_ok("e", &doc, &other, &other));
         assert!(!review_parity_ok("e", &doc, &doc, &other));
 
-        let rank = json!({"schema": "deep-diff-forge.rank.v0", "input_sha256": "e"});
-        let wrong = json!({"schema": "deep-diff-forge.review.v0", "input_sha256": "e"});
-        let moved = json!({"schema": "deep-diff-forge.rank.v0", "input_sha256": "e", "x": 1});
-        assert!(rank_parity_ok("e", &rank, &rank));
-        assert!(!rank_parity_ok("e", &wrong, &wrong));
-        assert!(!rank_parity_ok("f", &rank, &rank));
-        assert!(!rank_parity_ok("e", &rank, &moved));
+        let rank = "{\"schema\": \"deep-diff-forge.rank.v0\", \"input_sha256\": \"e\"}\n";
+        let wrong = "{\"schema\": \"deep-diff-forge.review.v0\", \"input_sha256\": \"e\"}\n";
+        let spaced = "{\"schema\": \"deep-diff-forge.rank.v0\",  \"input_sha256\": \"e\"}\n";
+        let daemon = |bytes: &str| json!({"canonical_json": bytes});
+        assert!(rank_parity_ok("e", rank, &daemon(rank), rank));
+        assert!(!rank_parity_ok("e", wrong, &daemon(wrong), wrong));
+        assert!(!rank_parity_ok("f", rank, &daemon(rank), rank));
+        assert!(!rank_parity_ok("e", rank, &daemon(spaced), rank));
+        assert!(!rank_parity_ok("e", rank, &json!({}), rank));
+        assert!(!rank_parity_ok("e", rank, &daemon(rank), spaced));
+        assert!(!rank_parity_ok("e", spaced, &daemon(rank), rank));
 
         let outline = json!({"input_sha256": "e"});
         let address = json!("a1");

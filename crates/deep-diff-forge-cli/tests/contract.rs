@@ -1001,7 +1001,12 @@ fn envelope_exits_128_plus_the_signal_that_ended_the_command() {
 /// both ways, each file non-empty and beginning with a line that names its version as a whole
 /// word. It does not check external URLs, or whether a host renders an anchor differently from
 /// the rule of `headings`; and it takes a link inside an HTML comment, or a reference definition
-/// nothing uses, for a link.
+/// nothing uses, for a link. Four consequences, observed in its review (2026-11-22) and kept:
+/// `docs/release-notes/` holds release notes only, since any other Markdown file there fails as a
+/// version with no changelog heading; a first line that joins punctuation to the version
+/// (`v0.9.0`, `(0.9.0)`, `0.9.0,`) fails, because the version must be a whole word; an index is
+/// recognised only by the exact name `README.md`; and a protocol-relative target (`//host/x`) has
+/// no scheme, so it is read as a path under the root and fails as naming no file.
 #[test]
 fn the_front_page_stays_short_and_its_documents_stay_linked() {
     use std::path::{Path, PathBuf};

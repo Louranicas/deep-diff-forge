@@ -11,10 +11,10 @@ for.
 - 0.9.0 adds five integrity signals and the agent hooks, and fixes two defects of 0.8.4 and
   earlier ([DDF-2026-003](docs/advisories/DDF-2026-003.md)): a process spawn cut across two
   sections of one path that Git applies in order was not found, and one long JavaScript word or
-  run of secret prefixes cost ranking time quadratic in its length. 0.9.0 is a release once the
-  signed tag `v0.9.0` exists; until then `v0.8.4` is the latest. It has no GitHub release: once
-  tagged it is published as a signed tag on GitLab, Gitea and Forgejo; binaries built locally
-  for Linux x86_64. A forge-warden that does not know the five new signals reads each as an
+  run of secret prefixes cost ranking time quadratic in its length. 0.9.0 was released as the
+  signed tag `v0.9.0` (2026-11-18), published on GitLab, Gitea and Forgejo with a binary built
+  locally for Linux x86_64; GitHub mirrors its release page (since 2026-11-22), and its crates
+  are on crates.io (since 2026-11-23). A forge-warden that does not know the five new signals reads each as an
   unknown signal and holds.
 - 0.8.4 (the signed tag `v0.8.4`, 2026-11-17; published on GitLab, Gitea and Forgejo on
   2026-11-18), the release before 0.9.0, is a security release: v0.8.3 and earlier can review a patch otherwise than `git apply`
@@ -22,9 +22,10 @@ for.
   its object store) and for one path in several sections (Git applies them as a set): G1 and G2
   of the v0.8.3 rescore. They also hide Rust code after a nested block comment, a character
   literal with a long escape, or a comment an earlier hunk of a created file opened from the
-  Rust rules. It has no GitHub release: it is published on GitLab
+  Rust rules. It is published on GitLab
   (`https://gitlab.com/lukeomahoney/deep-diff-forge`), with mirrors on Gitea and Forgejo, as the
-  signed tag and a Linux x86_64 binary built on the owner's machine
+  signed tag and a Linux x86_64 binary built on the owner's machine; GitHub mirrors its release
+  page since 2026-11-22
   ([local release](docs/RELEASE_AND_PUBLICATION.md#local-release-from-084)). Advisories:
   [DDF-2026-001](docs/advisories/DDF-2026-001.md) (G1, G2) and
   [DDF-2026-002](docs/advisories/DDF-2026-002.md) (the Rust code view).
@@ -50,8 +51,9 @@ for.
   Every shipped binary is run in the release smoke test, the x86_64 macOS one under
   Rosetta 2. From 0.8.4 a release ships only `x86_64-unknown-linux-gnu`, built and smoke-tested on the owner's
   machine (Fedora 44 toolbox) by `scripts/release_local.sh`; the other three targets are not
-  built for 0.8.4 or 0.9.0. Not claimed: musl, Windows, other architectures, crates.io packages,
-  or a daemon shared between users on one host
+  built for this release. From 0.9.0 the crates are also published on crates.io, as source that
+  whoever installs them builds. Not claimed: musl,
+  Windows, other architectures, or a daemon shared between users on one host
   ([supported platforms](README.md#supported-platforms)).
 - Known limits are listed under [Residual risks](#residual-risks-and-non-goals).
 
@@ -124,6 +126,30 @@ The daemon is local IPC, not a multi-tenant network service. It must not be
 exposed through TCP forwarding, a shared container mount, or a socket directory
 writable by another account. Windows named-pipe support and TCP listeners are
 not implemented security boundaries.
+
+### Git settings that change what `git apply` writes
+
+DDF's promise about a patch is made for a plain `git apply` in Git's default configuration
+([`CONFORMANCE.md`](crates/deep-diff-forge-patch/CONFORMANCE.md#what-is-promised)): Git
+either refuses the whole patch and writes nothing, or writes what the review shows. A patch
+does not carry the configuration or the options of the `git apply` that will apply it, so DDF
+cannot read them. Each setting below is either `tested` (a test shows Git still writes the
+reviewed tree or nothing with it) or `declared` (Git writes otherwise, and DDF does not model
+it). The test `a_setting_that_changes_the_write_is_declared`
+(`crates/deep-diff-forge-patch/tests/conformance.rs`) reads this table and runs a real
+`git apply` with each measured value: a value that writes another tree than the default needs a
+`declared` row, a value a row says keeps the promise must keep it, and every test a row names
+must exist. Measured with Git 2.56 on Linux, 2026-11-23.
+
+| Setting | State | What DDF does not model |
+| --- | --- | --- |
+| `apply.whitespace` (`--whitespace`) | declared; measured by `a_setting_that_changes_the_write_is_declared` | With `fix` or `strip`, Git removes the trailing whitespace of the lines it adds, so it writes other bytes than the review shows. `nowarn` and `warn` (the default) write the reviewed lines; `error` and `error-all` refuse a patch with a whitespace error and write nothing. |
+| `core.autocrlf` | declared; measured by `a_setting_that_changes_the_write_is_declared` | With `true`, Git writes the lines of a text file with CRLF where the review shows LF; `input` writes the reviewed bytes. Attributes in the target tree (`eol`, `ident`, `working-tree-encoding`) change the bytes written as well (`CONFORMANCE.md`, "Attributes in the target tree"). |
+| `-p<n>` | declared; measured by `a_setting_that_changes_the_write_is_declared` | DDF strips one leading component from each name, as Git's default `-p1` does. With another `-p`, Git applies the hunks to other paths (`-p2` writes `x` for `a/d/x`) or refuses. |
+| `--directory=<root>` | declared; measured by `a_setting_that_changes_the_write_is_declared` | Git writes every path under `<root>`; the review shows the paths without it. |
+| `--3way` | declared; measured by `a_setting_that_changes_the_write_is_declared` | Where plain `git apply` refuses a hunk, Git merges with the blob the `index` line names and writes the result, with conflict markers when the merge conflicts, while it exits non-zero. DDF promises only the outcomes of a plain apply. |
+| `core.fileMode` | declared; measured by `a_setting_that_changes_the_write_is_declared` | With `false`, Git does not trust the executable bit: an edit of an executable file that names no mode is written as `100644`, and the mode an `index` line names is the one written (`CONFORMANCE.md`, "A non-default configuration"). |
+| A case-insensitive file system (`core.ignorecase`) | declared; not measured (it needs a file system that folds case) | DDF compares paths byte for byte. Where the file system folds case, two paths that differ only in case name one file, so what Git writes for one can land on the other. |
 
 ## Enforced controls
 
@@ -867,10 +893,13 @@ bounded form.** What it holds to:
   GitLab, Gitea and Forgejo. There is no build-provenance attestation and no CI run on the
   release commit; `scripts/ci_local.sh` passes on it instead. Only `x86_64-unknown-linux-gnu`
   is built ([local release](docs/RELEASE_AND_PUBLICATION.md#local-release-from-084)).
-- crates.io publication is on hold by owner decision until the codebase is
-  production-hardened. The `publish` job runs only on a tag and only when the
-  repository variable `DDF_CRATES_IO` is `open`; a configured
-  `CARGO_REGISTRY_TOKEN` alone does not lift the hold. It runs in the `release`
+- crates.io: the owner lifted the hold, and 0.9.0's fourteen crates were published on
+  2026-11-23 from the tag's commit on the owner's machine (`cargo publish --workspace --exclude
+  deep-diff-forge-testkit --locked`, after a dry run, with the token `cargo login` stored there);
+  the twelve names published at 0.2.0 keep that version as yanked. From 0.10.0 publishing is a
+  step of the local release. `release.yml`'s `publish` job is not used for it. That job runs
+  only on a tag and only when the repository variable `DDF_CRATES_IO` is `open`; a configured
+  `CARGO_REGISTRY_TOKEN` alone does not open it. It runs in the `release`
   environment, which only `v*` tags can deploy to, and an open gate without a
   token fails the job instead of passing without publishing. It would publish
   with that token; crates.io trusted publishing remains an account-level
@@ -879,9 +908,7 @@ bounded form.** What it holds to:
   waits for the owner's approval, and its deployment policy admits only `v*`
   tags (measured with `gh api .../environments`). Only the `publish` job uses
   that environment; the build, attestation and GitHub Release upload do not
-  wait for it. No crates.io release is recorded in
-  [`EVIDENCE.md`](EVIDENCE.md) (not re-checked against crates.io in this
-  refresh).
+  wait for it.
 - **Secret scanning (owner decision, 2026-11-01).** GitHub secret scanning is on
   with push protection and the provider patterns. Non-provider patterns and
   validity checks are not available for this user-owned repository: the API
@@ -975,7 +1002,10 @@ says when it closed:
   bounds every Git call of an acquisition: 120 s for the CLI's Git selections and
   30 s for `review.change`. A Git still running at the deadline is killed, and the
   acquisition fails with `TimedOut` (CLI exit 3). Before, `child.wait()` waited
-  forever on a stalled filesystem or hook.
+  forever on a stalled filesystem or hook. Git's output readers are joined against the
+  acquisition's deadline, so a helper Git leaves running cannot hold the review past the
+  limit; the helper itself is not killed by the acquisition (process groups are the general
+  runner's).
 - **Hidden text is flagged, not filtered.** Lines and paths carrying bidi controls, invisible
   or control characters, and paths that traverse or name `.git`, get `hazards` in `review.v0`
   and the views, and the `hazardous_text` risk signal. The patch text itself is never rewritten.
