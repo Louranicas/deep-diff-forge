@@ -15,11 +15,58 @@
 //! still be lowercase names). Everything else the schema fixes is fixed here, the members it
 //! makes optional included: when one is present it has the schema's form. The table of what
 //! the schema names is in the test `every_member_the_schema_names_is_read`.
+//!
+//! A `forge-warden.verdict.v3` document (forge-warden's main branch, for 0.3.0) is read the
+//! same way against its own schema (`schemas/verdict.v3.schema.json`), which differs from v2
+//! in three places, each read for what it means (S3.21):
+//! - `seals.claims` may also be bound (ADR 0012): `base`, `head` and `merge_base`, full
+//!   object ids of one length (40 or 64 digits), with `verified: true`. forge-warden says it
+//!   made the patch itself from a copy of the repository it checked. The stop hook gives no
+//!   `--repo`, cannot check that and does not use it: the claims never change an outcome,
+//!   and the verdict is bound to the hook's patch by the seals alone. The unverified form is
+//!   v2's, with no `merge_base`.
+//! - a rule of kind `builtin` (M7-Q64) has the id `builtin:` and a policy id, and only such a
+//!   rule has; it holds (severity and outcome `hold`) and no waiver covers its violations.
+//! - a note `code` may be `claims_unverified`, which the open note codes already admit.
+//!
+//! A document that names any other schema is no verdict of either.
 
 use serde_json::Value;
 
 /// The schema name every verdict carries.
 pub(crate) const SCHEMA: &str = "forge-warden.verdict.v2";
+
+/// The schema name of a version 3 verdict.
+pub(crate) const SCHEMA_V3: &str = "forge-warden.verdict.v3";
+
+/// The verdict schemas this build reads, as a sentence names them.
+pub(crate) const READS: &str = "forge-warden.verdict.v2 and forge-warden.verdict.v3";
+
+/// A version of the verdict schema this build reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Version {
+    V2,
+    V3,
+}
+
+impl Version {
+    /// The version `document` names, when it is one this build reads.
+    pub(crate) fn named_by(document: &Value) -> Option<Self> {
+        match document["schema"].as_str()? {
+            SCHEMA => Some(Self::V2),
+            SCHEMA_V3 => Some(Self::V3),
+            _ => None,
+        }
+    }
+
+    /// The schema name of this version.
+    pub(crate) const fn schema(self) -> &'static str {
+        match self {
+            Self::V2 => SCHEMA,
+            Self::V3 => SCHEMA_V3,
+        }
+    }
+}
 
 /// `verdict`, and the `exit` triple that belongs to it.
 const OUTCOMES: [(&str, u64, &str, &str); 3] = [
@@ -92,7 +139,18 @@ fn optional_strings(value: &Value, members: &[&str]) -> bool {
         .all(|member| value.get(*member).is_none_or(Value::is_string))
 }
 
-fn seals_defect(seals: &Value) -> Option<&'static str> {
+/// v3's bound claims: `base`, `head` and `merge_base` of one length, 40 or 64 lowercase hex
+/// digits, and `verified` is `true`.
+fn is_bound(claims: &Value) -> bool {
+    let length = claims["base"].as_str().map(str::len);
+    claims["verified"] == true
+        && matches!(length, Some(40 | 64))
+        && ["base", "head", "merge_base"].iter().all(|member| {
+            is_commit(&claims[*member]) && claims[*member].as_str().map(str::len) == length
+        })
+}
+
+fn seals_defect(seals: &Value, version: Version) -> Option<&'static str> {
     if !seals.is_object() {
         return Some("`seals` is not an object");
     }
@@ -133,9 +191,20 @@ fn seals_defect(seals: &Value) -> Option<&'static str> {
     }
     if let Some(claims) = seals.get("claims") {
         let commit = |member: &str| claims.get(member).is_none_or(is_commit);
-        if !(claims.is_object() && claims["verified"] == false && commit("base") && commit("head"))
-        {
-            return Some("`seals.claims` is not an unverified claim of two commits");
+        let asserted =
+            claims.is_object() && claims["verified"] == false && commit("base") && commit("head");
+        match version {
+            Version::V2 if !asserted => {
+                return Some("`seals.claims` is not an unverified claim of two commits");
+            }
+            Version::V3
+                if !((asserted && claims.get("merge_base").is_none()) || is_bound(claims)) =>
+            {
+                return Some(
+                    "`seals.claims` is neither an unverified claim of two commits nor a bound one of three",
+                );
+            }
+            _ => {}
         }
     }
     None
@@ -175,8 +244,18 @@ fn violation_is_whole(violation: &Value) -> bool {
         && violation.get("waived_by").is_none_or(Value::is_u64)
 }
 
-fn rule_defect(rule: &Value) -> Option<&'static str> {
-    if !(is_rule_id(&rule["id"])
+fn rule_defect(rule: &Value, version: Version) -> Option<&'static str> {
+    // v3: the id of a built-in rule is `builtin:` and a policy id; no other rule's is
+    let builtin = version == Version::V3 && rule["kind"] == "builtin";
+    let id = if builtin {
+        rule["id"]
+            .as_str()
+            .and_then(|id| id.strip_prefix("builtin:"))
+            .is_some_and(|id| is_rule_id(&Value::from(id)))
+    } else {
+        is_rule_id(&rule["id"])
+    };
+    if !(id
         && is_name(&rule["kind"])
         && is_one_of(&rule["severity"], &["fail", "hold"])
         && is_one_of(&rule["outcome"], &["pass", "waived", "hold", "fail"])
@@ -189,7 +268,16 @@ fn rule_defect(rule: &Value) -> Option<&'static str> {
     let whole = rule["violations"]
         .as_array()
         .is_some_and(|violations| violations.iter().all(violation_is_whole));
-    (!whole).then_some("a rule's violations are missing or malformed")
+    if !whole {
+        return Some("a rule's violations are missing or malformed");
+    }
+    let unwaived = || {
+        rule["violations"]
+            .as_array()
+            .is_some_and(|violations| violations.iter().all(|v| v.get("waived_by").is_none()))
+    };
+    (builtin && !(rule["severity"] == "hold" && rule["outcome"] == "hold" && unwaived()))
+        .then_some("a built-in rule is not a hold that no waiver covers")
 }
 
 fn lists_defect(document: &Value) -> Option<&'static str> {
@@ -219,13 +307,26 @@ fn lists_defect(document: &Value) -> Option<&'static str> {
 /// Why `document` is not a whole `forge-warden.verdict.v2`; `None` when it is.
 ///
 /// This says nothing about which stop the verdict is for: the caller compares the seals with
-/// the inputs it wrote and the outcome with the judge's exit code.
+/// the inputs it wrote and the outcome with the judge's exit code. The hook reads a document
+/// by the version it names ([`defect_in`]); this is the v2 reading the tests ask about.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the hook reads by the version a document names")
+)]
 pub(crate) fn defect(document: &Value) -> Option<&'static str> {
+    defect_in(document, Version::V2)
+}
+
+/// Why `document` is not a whole verdict of `version`; `None` when it is.
+pub(crate) fn defect_in(document: &Value, version: Version) -> Option<&'static str> {
     if !document.is_object() {
         return Some("it is not a JSON object");
     }
-    if document["schema"] != SCHEMA {
-        return Some("it does not name the schema forge-warden.verdict.v2");
+    if document["schema"] != version.schema() {
+        return Some(match version {
+            Version::V2 => "it does not name the schema forge-warden.verdict.v2",
+            Version::V3 => "it does not name the schema forge-warden.verdict.v3",
+        });
     }
     if !(document["tool"]["name"] == "forge-warden" && document["tool"]["version"].is_string()) {
         return Some("`tool` does not name forge-warden and its version");
@@ -233,7 +334,7 @@ pub(crate) fn defect(document: &Value) -> Option<&'static str> {
     if !is_date(&document["evaluated_on"]) {
         return Some("`evaluated_on` is not a date");
     }
-    if let Some(defect) = seals_defect(&document["seals"]) {
+    if let Some(defect) = seals_defect(&document["seals"], version) {
         return Some(defect);
     }
     // The outcome and the exit triple that belongs to it.
@@ -253,7 +354,7 @@ pub(crate) fn defect(document: &Value) -> Option<&'static str> {
     else {
         return Some("`rules` is missing or empty");
     };
-    if let Some(defect) = rules.iter().find_map(rule_defect) {
+    if let Some(defect) = rules.iter().find_map(|rule| rule_defect(rule, version)) {
         return Some(defect);
     }
     // The summary counts the rules beside it.
