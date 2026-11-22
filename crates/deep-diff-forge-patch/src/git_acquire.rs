@@ -576,6 +576,19 @@ impl Runner<'_> {
             std::thread::sleep(pause);
             pause = next_pause(pause);
         };
+        // Git has exited, but a process it started can still hold its pipes open: the readers
+        // are joined against the same deadline and detached when it passes (S3.17a.b).
+        while !(stdout_reader.is_finished() && stderr_reader.is_finished()) {
+            if std::time::Instant::now() >= self.deadline {
+                drop((stdout_reader, stderr_reader));
+                return Err(GitAcquireError::TimedOut {
+                    command,
+                    limit_ms: self.options.time_limit.as_millis(),
+                });
+            }
+            std::thread::sleep(pause);
+            pause = next_pause(pause);
+        }
         let (out, read) = stdout_reader.join().unwrap_or_default();
         let stderr = stderr_reader.join().unwrap_or_default();
         if out.len() > budget {
