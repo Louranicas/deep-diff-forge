@@ -25,7 +25,7 @@ Whoever writes a patch also chooses its paths, so a path can lower a file's scor
 
 | Signal | Lines | Finds (outside comments and strings) | Score |
 | --- | --- | --- | ---: |
-| `secret_like` | added | a private key header; an `AKIA…`, `ghp_…`, `xoxb-…` or `sk_live_…` token (read in strings and comments too; never copied out) | +5 |
+| `secret_like` | added | a private key header; an `AKIA…`, `ghp_…`, `xoxb-…` or `sk_live_…` token; a GitLab `glpat-…` (also its routable form), `gldt-…`, `glrt-…`, `glcbt-…` (20 bytes or more of letters, digits, `_` and `-`), `glptt-…` (40) or `gloas-…` (64) token, or a fine-grained GitHub `github_pat_…` token (82 bytes of letters, digits and `_`) (read since 0.10.0, missed by 0.5.0 to 0.9.0, [DDF-2026-007](../advisories/DDF-2026-007.md)); the prefix starts a word and is read in strings and comments too; never copied out; not read: a token split over two strings or built by code (`concat!`, `+`), a prefix in other case (`GLPAT-`), a body shorter than its least run, other GitLab prefixes; a placeholder of the right length (twenty `x`) is labelled | +5 |
 | `unsafe_added` | added | Rust `unsafe` | +4 |
 | `process_spawn` | added | `Command::new`; `subprocess.`, `os.system(`; `child_process`, or a `require`, `import` or `from` of `"child_process"` (the quoted name is read; `node:` optional; `import type`, `export type` and `typeof import(…)` do not count), `execSync(`; `exec.Command(` | +4 |
 | `dynamic_eval` | added | `eval(`, `exec(`, `compile(` (Python); `eval(`, `new Function(` (JS/TS); shell `eval` | +4 |
