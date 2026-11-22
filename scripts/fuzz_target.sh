@@ -10,8 +10,8 @@
 # report, fuzz/seeds/<target> for the rest (stdio seeds are a cap byte, 255 = the server's real
 # cap, then stdio lines; see fuzz/fuzz_targets/stdio_invariants.rs). The corpus is a copy, so the
 # committed seeds stay unchanged. A crash is kept under fuzz/artifacts/<target>/.
-# Exit status: cargo fuzz's (non-zero on a crash, leak or timeout); 2 on a usage error or a
-# target this script has no seeds for.
+# Exit status: cargo fuzz's (non-zero on a crash, leak or timeout); 2 on a usage error, a target
+# this script has no seeds for, or no corpus root (DDF_FUZZ_CORPUS_ROOT, or RUNNER_TEMP in CI).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -49,9 +49,15 @@ fi
 # A new private directory (mode 0700, unpredictable name) each run: a fixed name under a shared
 # /tmp could be planted by another user, with symlinks the seed copy would write through, or keep
 # inputs from an earlier run. It is removed afterwards; a crash is kept under fuzz/artifacts/.
-# The root (DDF_FUZZ_CORPUS_ROOT, else RUNNER_TEMP, else /tmp) is made if missing, since mktemp
-# makes only the last component; only the corpus inside it needs to be new and private.
-root="${DDF_FUZZ_CORPUS_ROOT:-${RUNNER_TEMP:-/tmp}}"
+# The root (DDF_FUZZ_CORPUS_ROOT, else CI's RUNNER_TEMP) is made if missing, since mktemp makes
+# only the last component; only the corpus inside it needs to be new and private. With neither set
+# the run is refused rather than put in /tmp, which on a workstation may be a small tmpfs (an inode
+# limit, and lost at power-off).
+root="${DDF_FUZZ_CORPUS_ROOT:-${RUNNER_TEMP:-}}"
+if [ -z "$root" ]; then
+  echo "set DDF_FUZZ_CORPUS_ROOT to a directory on disk for the fuzz corpus (not /tmp)" >&2
+  exit 2
+fi
 mkdir -p -- "$root"
 corpus="$(mktemp -d "$root/ddf-$target-corpus.XXXXXX")"
 trap 'rm -rf "$corpus"' EXIT

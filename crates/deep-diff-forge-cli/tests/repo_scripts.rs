@@ -394,6 +394,100 @@ fn fuzz_creates_a_corpus_root_that_does_not_exist_yet() {
     assert!(!corpus.exists(), "the corpus is removed after the run");
 }
 
+#[test]
+fn fuzz_refuses_to_choose_a_corpus_root_itself() {
+    // It fell back to /tmp, which here is a tmpfs with an inode limit, lost at power-off.
+    let s = scratch("fuzz-noroot");
+    tool(&s.0.join("bin/cargo"), "exit 0\n");
+    let out = run(Command::new("bash")
+        .env("PATH", path_with(&s.0.join("bin")))
+        .env_remove("DDF_FUZZ_CORPUS_ROOT")
+        .env_remove("RUNNER_TEMP")
+        .args([
+            &format!("{ROOT}/scripts/fuzz_target.sh"),
+            "patch_parser",
+            "1",
+        ]));
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("DDF_FUZZ_CORPUS_ROOT"));
+}
+
+// --- scripts/campaign_local.sh ------------------------------------------------------------
+
+/// Runs the campaign for 1 s a target with a cargo stand-in that logs each fuzz run's target to
+/// `<scratch>/runs.log` and fails, as cargo fuzz does on a crash, for the target `crash`.
+fn campaign(s: &Scratch, crash: &str) -> (Output, Vec<String>, String) {
+    let runs = s.0.join("runs.log");
+    tool(
+        &s.0.join("bin/cargo"),
+        &format!(
+            "[ \"$2\" = fuzz ] || {{ echo cargo-stand-in; exit 0; }}\necho \"$4 $7\" >> '{}'\n[ \"$4\" != '{crash}' ] || exit 77\n",
+            runs.display()
+        ),
+    );
+    let out = run(Command::new("bash")
+        .env("PATH", path_with(&s.0.join("bin")))
+        .env("DDF_FUZZ_CORPUS_ROOT", s.0.join("root"))
+        .args([&format!("{ROOT}/scripts/campaign_local.sh"), "1"]));
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let receipt = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("receipt: "))
+        .map(|path| std::fs::read_to_string(path).unwrap())
+        .unwrap_or_default();
+    let logged = std::fs::read_to_string(&runs).unwrap_or_default();
+    (out, logged.lines().map(str::to_owned).collect(), receipt)
+}
+
+#[test]
+fn campaign_runs_every_listed_target_and_fails_on_one_crash() {
+    let list = run(Command::new("bash").args([&format!("{ROOT}/scripts/fuzz_target.sh"), "--list"]));
+    let targets: Vec<String> = String::from_utf8_lossy(&list.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    assert!(targets.len() >= 10, "{list:?}");
+
+    let s = scratch("campaign-green");
+    let (out, runs, receipt) = campaign(&s, "no-such-target");
+    assert!(out.status.success(), "{out:?}");
+    let each: Vec<String> = targets
+        .iter()
+        .map(|t| format!("{t} -max_total_time=1"))
+        .collect();
+    assert_eq!(runs, each, "every listed target once, in order, for the time given");
+    for t in &targets {
+        assert!(receipt.contains(&format!("run: {t} rc=0 ")), "{t}: {receipt}");
+    }
+    let commit = run(Command::new("git").args(["-C", ROOT, "rev-parse", "HEAD"]));
+    for line in [
+        format!("commit: {}", String::from_utf8_lossy(&commit.stdout).trim()),
+        "toolchain: nightly-2026-10-25: cargo-stand-in".to_owned(),
+        "seconds per target: 1".to_owned(),
+        format!("result: GREEN, {} targets clean", targets.len()),
+    ] {
+        assert!(receipt.contains(&line), "{line}: {receipt}");
+    }
+
+    // One target crashes: the campaign stops there, red, and names it.
+    let crash = &targets[targets.len() / 2];
+    let s = scratch("campaign-red");
+    let (out, runs, receipt) = campaign(&s, crash);
+    assert_eq!(out.status.code(), Some(77), "the crash is the campaign's status: {out:?}");
+    assert_eq!(runs, each[..=targets.len() / 2], "it stops at the crash");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains(&format!("fuzz target {crash} failed")),
+        "{out:?}"
+    );
+    assert!(receipt.contains(&format!("result: RED at {crash} (rc 77)")), "{receipt}");
+
+    let justfile = std::fs::read_to_string(format!("{ROOT}/justfile")).unwrap();
+    assert!(
+        justfile.contains("[group(\"release\")]\nfuzz-campaign seconds=\"300\":\n    scripts/campaign_local.sh "),
+        "the campaign is a release recipe"
+    );
+}
+
 // --- scripts/sign_release_tag.sh ----------------------------------------------------------
 
 /// A repository with one commit and a fresh SSH key at `<scratch>/key`; `.github/allowed_signers`

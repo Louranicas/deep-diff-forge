@@ -199,6 +199,13 @@ release-local-verify tag outdir signers:
 release-local-test:
     scripts/test_release_local.sh
 
+# Release step, before `release-tag`: every fuzz target for <seconds> (300 s: 90 minutes for 18
+# targets) from its committed seeds; stops red at the first crash and writes a receipt
+# (scripts/campaign_local.sh). Needs DDF_FUZZ_CORPUS_ROOT on disk; run in the fedora-toolbox-44 toolbox.
+[group("release")]
+fuzz-campaign seconds="300":
+    scripts/campaign_local.sh "{{seconds}}"
+
 # Read-only Zellij observation. This never controls deployment truth.
 [group("observe")]
 zellij-observe:
