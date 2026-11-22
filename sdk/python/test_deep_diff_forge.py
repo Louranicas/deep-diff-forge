@@ -210,6 +210,10 @@ class Bounds(unittest.TestCase):
             ddf.MAX_REQUEST_BYTES = original
 
 
+    def test_the_cap_is_the_one_line_cap_of_the_daemon_reference(self):
+        reference = " ".join((REPO / "docs" / "reference" / "mcp-sdk-daemon.md").read_text(encoding="utf-8").split())
+        self.assertIn(f"at most 80 MiB ({ddf.MAX_REQUEST_BYTES:,} bytes, `MAX_REQUEST_BYTES`) counting its newline", reference)
+
     def test_a_child_that_answers_and_breaks_the_pipe_is_killed(self):
         # G-SDK-1.1. The child closes its stdin, so the write breaks, then answers and stays alive.
         # Before, the broken pipe emptied the unsent request, so the out-of-step child lived on.

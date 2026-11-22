@@ -3187,6 +3187,18 @@ mod tests {
         }
     }
 
+    /// The one line cap is stated once in the daemon reference, with the number and the meaning
+    /// the server's framing and the clients use.
+    #[test]
+    fn the_reference_states_the_one_line_cap() {
+        let reference = include_str!("../../../docs/reference/mcp-sdk-daemon.md");
+        let flat = reference.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert_eq!(MAX_REQUEST_BYTES, 83_886_080);
+        assert!(flat.contains(
+            "A line, request or answer, is at most 80 MiB (83,886,080 bytes, `MAX_REQUEST_BYTES`) counting its newline."
+        ));
+    }
+
     /// G-DAEMON-2: a daemon that takes 16 bytes of a request, answers and closes with the rest
     /// unread resets the connection. The line fills the client's send buffer, so the newline's
     /// write waits with nothing sent and breaks as a reset (Linux), not a broken pipe; the answer

@@ -70,9 +70,13 @@ with StdioClient() as client:
 
 `deep-diff-forge rpc` answers each stdin line with the socket server's own handler and framing:
 an 80 MiB cap that counts the newline, with an oversized request refused at once. It stops at
-`daemon.shutdown`. The Python client checks every answer's version and id, bounds each answer's
-size and time, and kills a child that exceeds either. CI runs the Python tests against the
-built binary over both transports.
+`daemon.shutdown`. The Python client checks every answer's version and id, holds each answer
+line to the line cap (see *One line cap* below) and each call to its `timeout`, and kills a child
+that exceeds either; it also kills a child that answers before taking the whole request. A
+`SocketClient` call has one deadline for connecting, sending and reading, and reads a refusal the
+daemon sends before taking the whole request. A transport failure, including a call after
+`close()`, raises `TransportError`; a JSON-RPC error raises `RpcError`. CI runs the Python tests
+against the built binary over both transports.
 
 # The optional daemon
 
@@ -100,8 +104,15 @@ server on an owner-private Unix domain socket.
   first served, so a heavy request waits rather than multiplying peak memory, and a waiting
   request is never overtaken.
 - **Bounded I/O.** Each request line has an absolute read deadline, each response write a
-  per-write timeout, and both are capped at 80 MiB. A response over the cap becomes a
+  per-write timeout, and both are held to the line cap. A response over the cap becomes a
   `RESOURCE_EXHAUSTED` (8) error for the same id.
+- **One line cap.** A line, request or answer, is at most 80 MiB (83,886,080 bytes,
+  `MAX_REQUEST_BYTES`) counting its newline. The daemon and `deep-diff-forge rpc` refuse a
+  longer request line as soon as its first byte over the cap is read. The Rust client
+  (`deep_diff_forge_daemon::request`, which the Rust SDK's `Client` wraps) and both Python clients
+  refuse to send a longer request and refuse a longer answer line. One exception remains: the
+  daemon's own answer bound does not count the newline, so an answer of exactly 80 MiB before
+  its newline is sent and the clients refuse it as one byte over.
 - **No repository unless allowed.** `review.change` reads Git only in a repository whose
   canonical path and Git top level are both at or under a root named with
   `daemon start --allow-repo PATH` (also `rpc` and `mcp`). Without one it reads nothing.
@@ -116,6 +127,8 @@ invalid) the daemon fails closed until you pass `--socket PATH`.
 `daemon.shutdown`, `diff.plan`, `diff.compute`, `diff.rank`, `review.outline`, `review.hunks`,
 `review.change`, `session.open`, `session.snapshot`, `session.close`, `daemon.metrics`,
 `findings.verify`.
+
+On the daemon, rpc, MCP and SDK surfaces a patch text in which no patch is found ranks nothing and is not an error; `--stdin-patch` on the command line refuses it (exit 4) unless `--allow-empty` is given.
 
 ```bash
 deep-diff-forge daemon start --foreground      # terminal 1
