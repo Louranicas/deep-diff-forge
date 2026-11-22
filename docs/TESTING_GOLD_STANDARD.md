@@ -28,7 +28,8 @@ era) no longer holds. How the standard is enforced today:
   (`patch_parser`, `review_json`, `daemon_protocol`, `agent_annotation`,
   `council_report`, `stdio_mcp`, `stdio_rpc`, `structural_soundness`,
   `findings_verify`, `evidence_scan`, `rust_tokens`, `rust_code_view`, `rust_hunk_places`,
-  `hook_input`, `judge_patch`: fifteen; `stdio_invariants.rs` is a shared module)
+  `hook_input`, `judge_patch`, `verdict_reader`, `journal_recover`, `git_raw_stream`: eighteen;
+  `stdio_invariants.rs` is a shared module)
   runs for 10 s per pull request; CI fails if a declared target is not in the
   run list. Crash inputs become fixtures under
   `fixtures/patch/regressions/`. `rust_code_view` has an oracle: the compiler's own lexer
@@ -148,6 +149,34 @@ era) no longer holds. How the standard is enforced today:
   changed, each once. Five minutes each on 2026-11-18, no crash: `hook_input` 4,046,034
   runs, `judge_patch` 8,102 (about 26 a second: each runs Git several times). Seeds:
   `fuzz/seeds/hook_input` (4), `fuzz/seeds/judge_patch` (5).
+  In 0.10.0 targets were added for readers of hostile bytes that the release added or
+  changed (S3.32). `verdict_reader` reads any byte string up to 256 KiB as a judge's verdict
+  document, through the CLI's own `hook` and `verdict_v2` modules: the duplicate-key walk,
+  both readings (`forge-warden.verdict.v2` and `.v3`) and the judging of exits 0, 7 and 8,
+  sealed to the seals the document names so that a sealed document reaches every check. A
+  document is whole for at most the version it names, a pass, hold or fail is given only on a
+  whole document that says that outcome, and exit 7 is never a pass or a hold. Seeds: the
+  CLI tests' forge-warden fixtures (six v2 documents of its 0.2.0, one v3 of its main
+  branch). `journal_recover` prepares one review run per process in a private scratch
+  directory beside the corpus (`DDF_FUZZ_SCRATCH`, made and removed by `fuzz_target.sh`),
+  imports two decisions, and then for each input damages the journal and its checkpoint
+  (checkpoint kept, emptied as 0.8.3 to 0.9.0 leave it, or removed; a temporary file; a cut
+  anywhere; arbitrary bytes after the cut) and imports dry and for real: no panic, the dry
+  run and the import plan as many events and announce the same repairs or both refuse, and
+  after an import that succeeds nothing is left to repair or append. Seeds: four damages
+  that `fuzz_target.sh` writes. Five minutes each on 2026-11-23 at `51c7be23`, no crash:
+  `verdict_reader` 11,837,523 runs, `journal_recover` 27,516 (about 91 a second: each input
+  writes the run's files and imports three times). A panic planted in each reader (an
+  `expect` in `verdict_v2::defect_in`, a `panic!` on a torn record in `reconcile`) crashed
+  its target within the first minute. `git_raw_stream` reads any byte string up to 256 KiB
+  as a `git diff --raw -z --patch` stream (`StructuredDiff::parse`), appends a second stream
+  to the first (the input split where its first byte says) and seals what was read
+  (`capture`): no panic; a stream that is read keeps its patch bytes as given, each change
+  owns, in order and without overlap, a part of them that starts a `diff --git` block, and an
+  append that is refused leaves the diff as it was. Seeds: three streams that
+  `fuzz_target.sh` writes (a change, an addition, a rename). Five minutes on 2026-11-23 at
+  `a4805589`, no crash: 5,158,786 runs; an index one past the end planted in `change_patch`
+  crashed it at once.
 - **Cost of one long line (0.9.0):** one rule closes the class "cost quadratic in the length
   of one line" (FINDING-5, the secret rule, the empty-handler rule): no check walks from a
   match to the end of its line, or of its run, more than once for the line. One test holds
@@ -174,7 +203,10 @@ era) no longer holds. How the standard is enforced today:
   `diff_mutation.sh` finds changed Rust files by NUL-separated name (not by
   diff header text) and runs at the repository root from any directory;
   `fuzz_target.sh` lists targets with a TOML parser and fuzzes a new private
-  corpus each run, under a root it makes if missing.
+  corpus each run, under a root it makes if missing, and refuses to run when no root is
+  named (`DDF_FUZZ_CORPUS_ROOT`, or `RUNNER_TEMP` in CI) rather than fall back to `/tmp`;
+  `campaign_local.sh` runs every listed target in turn and stops red, naming it, at the
+  first that fails (`campaign_runs_every_listed_target_and_fails_on_one_crash`).
 - **Evaluation gate** (`cli/tests/eval.rs`, every PR): the labelled corpus in
   `fixtures/eval` (59 cases, measured 2026-11-23 on the integrated tree) must score at least its floors,
   which are the measured values: ranking pairs 12/15, evidence precision 186/211,
@@ -199,6 +231,14 @@ era) no longer holds. How the standard is enforced today:
   open-fd growth over 4 between early and late samples, and an hour of fuzzing
   for every target in `fuzz/Cargo.toml` (`scripts/fuzz_target.sh`, the same
   script as CI's 10 s smoke). A crash keeps its input as an artifact.
+- **Local campaign, a release step (0.10.0):** `just fuzz-campaign`
+  ([`scripts/campaign_local.sh`](../scripts/campaign_local.sh)) runs every target that
+  `scripts/fuzz_target.sh --list` names, one after the other, for 300 s each by default
+  (90 minutes of fuzzing for 18 targets, plus their builds), from the committed seeds, on
+  corpora under `DDF_FUZZ_CORPUS_ROOT` (required: a directory on disk). It stops red at the
+  first target that fails, whose input cargo fuzz keeps under `fuzz/artifacts/<target>/`,
+  and writes a receipt (`RECEIPT` beside each target's log: commit, toolchain, seconds per
+  target, one line per run, result). It runs before `just release-tag`.
 - **TUI live loop** (2026-10-31): `run.rs` tests drive the production loop and
   terminal restore with scripted input against a `TestBackend` (frames drawn,
   burst coalescing, resize, failing and ending input, panic and failed-restore

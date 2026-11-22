@@ -136,3 +136,24 @@ path = "fuzz_targets/judge_patch.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "verdict_reader"
+path = "fuzz_targets/verdict_reader.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "journal_recover"
+path = "fuzz_targets/journal_recover.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "git_raw_stream"
+path = "fuzz_targets/git_raw_stream.rs"
+test = false
+doc = false
+bench = false
