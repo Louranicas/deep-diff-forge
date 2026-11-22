@@ -874,6 +874,27 @@ fn parse_patch_param(request: &Request) -> Result<Vec<ReviewFile>, RpcError> {
 /// characters, and the MCP server, which does not go through `error_response`, sent it whole.
 const ECHO_BYTES: usize = 1024;
 
+/// A `review.change` acquisition error as the daemon answers it.
+fn acquire_error(e: deep_diff_forge_patch::GitAcquireError) -> RpcError {
+    match e {
+        deep_diff_forge_patch::GitAcquireError::InvalidSelection { .. } => {
+            RpcError::invalid_params(e.to_string())
+        }
+        // A header Git wrote that is not UTF-8 (a file name) is the change's own: the command
+        // line's exit 4 (`change_input`), not 3 (`io`, retry) (S3.27.f).
+        deep_diff_forge_patch::GitAcquireError::Parse(
+            deep_diff_forge_patch::PatchParseError::LossyHeader { .. },
+        ) => RpcError::new(
+            PATCH_PARSE_FAILED,
+            format!("refused (a file name that is not UTF-8): {e}"),
+        ),
+        deep_diff_forge_patch::GitAcquireError::Parse(ref parse) => {
+            RpcError::new(i64::from(parse.exit_code()), e.to_string())
+        }
+        other => RpcError::new(crate::protocol::GIT_FAILED, other.to_string()),
+    }
+}
+
 /// `review.change`: acquire a change from Git in an allowed repository, seal it, and answer with
 /// the chosen view. Git runs with the acquisition crate's fixed argv and a 30 s limit; nothing
 /// is written. A repository outside every allowed root is refused before Git runs.
@@ -915,16 +936,7 @@ fn review_change(params: &Value, allowed: &[std::path::PathBuf]) -> Result<Value
             )));
         }
     };
-    let git = |e: deep_diff_forge_patch::GitAcquireError| match e {
-        deep_diff_forge_patch::GitAcquireError::InvalidSelection { .. } => {
-            RpcError::invalid_params(e.to_string())
-        }
-        deep_diff_forge_patch::GitAcquireError::Parse(ref parse) => {
-            RpcError::new(i64::from(parse.exit_code()), e.to_string())
-        }
-        other => RpcError::new(crate::protocol::GIT_FAILED, other.to_string()),
-    };
-    let acquisition = acquire_git(&canonical, &selection, &options).map_err(git)?;
+    let acquisition = acquire_git(&canonical, &selection, &options).map_err(acquire_error)?;
     crate::deadline::check()?;
     // The repository is Git's top level, which can lie above the path asked for: a subdirectory
     // of a larger repository would otherwise expose the whole outer repository's change.
@@ -936,11 +948,11 @@ fn review_change(params: &Value, allowed: &[std::path::PathBuf]) -> Result<Value
             deep_diff_forge_core::display_safe_bounded(&top.to_string_lossy(), ECHO_BYTES)
         )));
     }
-    let captured = acquisition.diff().capture().map_err(git)?;
+    let captured = acquisition.diff().capture().map_err(acquire_error)?;
     let review = acquisition
         .diff()
         .sealed_review(&captured, env!("CARGO_PKG_VERSION"))
-        .map_err(git)?;
+        .map_err(acquire_error)?;
     crate::deadline::check()?;
     let guards = deep_diff_forge_patch::InputGuards {
         files: bool_param(params, "require_files")?,
@@ -1182,6 +1194,42 @@ mod tests {
             (RESOURCE_EXHAUSTED, true),
             "{}",
             stopped.message
+        );
+    }
+
+    /// S3.27.f parity (handed over by lane A of W1): a changed file whose name is not UTF-8 is
+    /// refused as the change's own input, code 4 as the command line's exit 4, not 3 (retry).
+    #[test]
+    #[expect(clippy::disallowed_methods, reason = "test: makes a Git repository")]
+    fn a_non_utf8_file_name_is_a_change_input_refusal() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let scratch = deep_diff_forge_testkit::Scratch::new("change-latin");
+        let root = std::fs::canonicalize(scratch.path()).unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t.invalid"])
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{args:?}");
+        };
+        let name = root.join(std::ffi::OsStr::from_bytes(b"caf\xe9.rs"));
+        git(&["init", "-q"]);
+        std::fs::write(&name, b"fn a() {}\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "--no-gpg-sign", "-m", "base"]);
+        std::fs::write(&name, b"fn b() {}\n").unwrap();
+        let params =
+            serde_json::json!({"repo": root.to_str().unwrap(), "selection": "working_tree"});
+        let refused = review_change(&params, std::slice::from_ref(&root)).unwrap_err();
+        assert_eq!(refused.code, PATCH_PARSE_FAILED, "{}", refused.message);
+        assert!(
+            refused.message.contains("a file name that is not UTF-8"),
+            "{}",
+            refused.message
         );
     }
 
