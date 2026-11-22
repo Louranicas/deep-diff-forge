@@ -894,10 +894,12 @@ fn read_binary_again(
             again.append_stream(&out, change.origin).ok()?;
             Some(again)
         });
-        // A UTF-16 or UTF-32 file is binary to Git for the NULs of its encoding (S3.27.c).
-        let cause = match &again {
-            Some(again)
-                if cause == DiffSuppression::Content && wide_encoding(again.patch_bytes()) =>
+        // A UTF-16 or UTF-32 file is binary to Git for the NULs of its encoding (S3.27.c): its
+        // new side reads so, or its old side does and the change cannot be read as text.
+        let text = again.as_ref().and_then(|again| text_of(&change, again));
+        let cause = match again.map(|again| wide_encoding(again.patch_bytes())) {
+            Some([old, new])
+                if cause == DiffSuppression::Content && (new || (old && text.is_none())) =>
             {
                 DiffSuppression::Encoding
             }
@@ -907,7 +909,7 @@ fn read_binary_again(
         if told {
             mark(&mut labelled, at, cause);
         }
-        match again.and_then(|again| text_of(&change, &again)) {
+        match text {
             Some((text, bytes)) => {
                 let text = GitChange {
                     diff_suppressed: Some(cause),
@@ -1002,45 +1004,52 @@ fn text_of(change: &GitChange, again: &StructuredDiff) -> Option<(GitChange, Vec
     (same && !text.binary && readable).then(|| (text.clone(), again.patch_bytes().to_vec()))
 }
 
-/// Whether `patch`, a second reading as text, shows a UTF-16 or UTF-32 file (S3.27.c): the first
-/// line of a file (a hunk from line 1) opens with a byte order mark, or every hunk line of four
-/// bytes or more has a NUL at every other byte and none between. One pass over the lines; it
-/// can only add a label, never take evidence away. Decoding for the token readers is parked.
-fn wide_encoding(patch: &[u8]) -> bool {
+/// Whether the old and the new side of `patch`, a second reading as text, read as UTF-16 or
+/// UTF-32 (S3.27.c): the side's line 1 opens with a byte order mark, or at least as many of its
+/// lines of four bytes or more as not have one byte that is not NUL in every 2 (or every 4) and
+/// NULs between. One pass over the lines; it can only add a label, never take evidence away.
+/// Decoding for the token readers is parked.
+fn wide_encoding(patch: &[u8]) -> [bool; 2] {
     const MARKS: [&[u8]; 3] = [b"\xff\xfe", b"\xfe\xff", b"\0\0\xfe\xff"];
-    let alternate = |body: &[u8], nul: usize| {
-        body.iter()
-            .enumerate()
-            .all(|(at, &byte)| (byte == 0) == (at % 2 == nul))
+    let alternate = |body: &[u8], period: usize| {
+        (0..period).any(|phase| {
+            (body.iter().enumerate()).all(|(at, &byte)| (byte != 0) == (at % period == phase))
+        })
     };
-    let (mut first_line, mut in_hunk, mut wide, mut narrow) = (false, false, 0_usize, 0_usize);
+    // Per side, old then new: the next line is line 1, a mark opened line 1, wide and other lines.
+    let (mut first_line, mut marked, mut in_hunk) = ([false; 2], [false; 2], false);
+    let (mut wide, mut narrow) = ([0_usize; 2], [0_usize; 2]);
     for line in patch.split(|&byte| byte == b'\n') {
-        if line.starts_with(b"@@ ") {
+        if let Some(old) = line.strip_prefix(b"@@ -") {
             in_hunk = true;
-            first_line = [b"@@ -1,".as_slice(), b"@@ -1 ", b"@@ -0,0 +1"]
-                .iter()
-                .any(|head| line.starts_with(head));
+            let new = old.split(|&byte| byte == b'+').nth(1).unwrap_or_default();
+            first_line = [old, new].map(|at| at.starts_with(b"1,") || at.starts_with(b"1 "));
             continue;
         }
         if line.starts_with(b"diff --git ") {
             in_hunk = false;
             continue;
         }
-        let Some((&(b' ' | b'+' | b'-'), body)) = line.split_first().filter(|_| in_hunk) else {
+        let Some((&kind @ (b' ' | b'+' | b'-'), body)) = line.split_first().filter(|_| in_hunk)
+        else {
             continue;
         };
-        if std::mem::take(&mut first_line) && MARKS.iter().any(|mark| body.starts_with(mark)) {
-            return true;
-        }
-        if body.len() >= 4 {
-            if alternate(body, 0) || alternate(body, 1) {
-                wide += 1;
-            } else {
-                narrow += 1;
+        for side in [0, 1]
+            .into_iter()
+            .filter(|&side| kind == b' ' || kind == b"-+"[side])
+        {
+            let opens = MARKS.iter().any(|mark| body.starts_with(mark));
+            marked[side] |= std::mem::take(&mut first_line[side]) && opens;
+            if body.len() >= 4 {
+                if alternate(body, 2) || alternate(body, 4) {
+                    wide[side] += 1;
+                } else {
+                    narrow[side] += 1;
+                }
             }
         }
     }
-    wide > 0 && narrow == 0
+    [0, 1].map(|side| marked[side] || (wide[side] > 0 && wide[side] >= narrow[side]))
 }
 
 /// Why Git called `change`'s file binary: [`DiffSuppression::Content`] when `git check-attr`

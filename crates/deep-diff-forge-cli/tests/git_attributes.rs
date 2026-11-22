@@ -537,3 +537,131 @@ fn the_judge_path_and_the_git_selection_find_the_same_evidence() {
     assert!(!signals(&judge_entry).contains(&"diff_suppressed"));
     assert!(judge_entry.get("diff_suppressed").is_none());
 }
+
+/// A repository holding `file` as `before` (`None`: absent) in its base commit, changed to
+/// `after` (`None`: deleted) the way `mode` reads it. A placeholder keeps the base non-empty.
+fn changed(mode: &str, file: &str, before: Option<&[u8]>, after: Option<&[u8]>) -> Repo {
+    let scratch = Scratch::new(&format!("cli-attr-changed-{}", mode.len()));
+    let r = Repo(std::fs::canonicalize(scratch.path()).unwrap(), scratch);
+    let root = &r.0;
+    git(root, &["init", "-q"]);
+    std::fs::write(root.join("keep.txt"), b"keep\n").unwrap();
+    if let Some(bytes) = before {
+        std::fs::write(root.join(file), bytes).unwrap();
+    }
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "base"]);
+    match after {
+        Some(bytes) => std::fs::write(root.join(file), bytes).unwrap(),
+        None => std::fs::remove_file(root.join(file)).unwrap(),
+    }
+    match mode {
+        "--git-range" => {
+            git(root, &["add", "-A"]);
+            git(root, &["commit", "-q", "-m", "change"]);
+        }
+        "--git-staged" => git(root, &["add", "-A"]),
+        _ => {}
+    }
+    r
+}
+
+/// S3.27.c, the class closed per side: the encoding is judged on the lines of each side. Before,
+/// every hunk line counted, so a UTF-8 source rewritten in a wide encoding (its removed lines
+/// UTF-8) ranked `binary_changed` with no label: blind and unlabelled, the most natural form of
+/// the class. Now the new side alone decides, and the old side decides when the change cannot
+/// be read as text: UTF-16 and UTF-32, either byte order, with and without a mark; a new file;
+/// a deleted one; a wide file back to UTF-8; a wide file with an ordinary hunk; a short line
+/// among wide ones. A wide file without a mark turned back into UTF-8 is read as text, `content`.
+#[test]
+fn a_source_rewritten_in_a_wide_encoding_is_labelled_encoding() {
+    type Unit = fn(u32) -> Vec<u8>;
+    type Row = (&'static str, Option<Vec<u8>>, Option<Vec<u8>>, &'static str);
+    let le: Unit = |c| u16::try_from(c).unwrap().to_le_bytes().to_vec();
+    let be: Unit = |c| u16::try_from(c).unwrap().to_be_bytes().to_vec();
+    let le32: Unit = |c| c.to_le_bytes().to_vec();
+    let be32: Unit = |c| c.to_be_bytes().to_vec();
+    let utf8 = b"fn a() {}\n".to_vec();
+    let spawn = "use std::process::Command;\r\nfn a() { Command::new(\"sh\").spawn(); }\r\n";
+    let lines: String = (0..12)
+        .map(|n| ["line ", &n.to_string(), " of the script\r\n"].concat())
+        .collect();
+    let edited = lines.replace("line 3 of", "line three of");
+    let mut mixed = wide(&edited, b"", le);
+    mixed.extend_from_slice(b"\necho plain\n");
+    let mut short = wide(&lines, b"", le);
+    short.extend(wide("a\n", b"", le));
+    let mut rows: Vec<Row> = Vec::new();
+    for (name, unit, mark) in [
+        ("UTF-16LE", le, b"\xff\xfe".as_slice()),
+        ("UTF-16BE", be, b"\xfe\xff"),
+        ("UTF-32LE", le32, b"\xff\xfe\0\0"),
+        ("UTF-32BE", be32, b"\0\0\xfe\xff"),
+    ] {
+        rows.push((
+            name,
+            Some(utf8.clone()),
+            Some(wide(spawn, mark, unit)),
+            "encoding",
+        ));
+        rows.push((
+            name,
+            Some(utf8.clone()),
+            Some(wide(spawn, b"", unit)),
+            "encoding",
+        ));
+    }
+    rows.extend([
+        (
+            "new file",
+            None,
+            Some(wide(spawn, b"\xff\xfe", le)),
+            "encoding",
+        ),
+        (
+            "deleted",
+            Some(wide(spawn, b"\xff\xfe", le)),
+            None,
+            "encoding",
+        ),
+        (
+            "back to UTF-8",
+            Some(wide(spawn, b"\xff\xfe", le)),
+            Some(utf8.clone()),
+            "encoding",
+        ),
+        (
+            "back to UTF-8, no mark",
+            Some(wide(spawn, b"", le)),
+            Some(utf8),
+            "content",
+        ),
+        (
+            "wide and ordinary hunks",
+            Some(wide(&lines, b"", le)),
+            Some(mixed),
+            "encoding",
+        ),
+        (
+            "short line",
+            Some(wide(&lines, b"", le)),
+            Some(short),
+            "encoding",
+        ),
+    ]);
+    for (name, before, after, cause) in &rows {
+        for mode in MODES {
+            if before.is_none() && mode == "--git-working-tree" {
+                continue; // an untracked file is not in the working-tree selection
+            }
+            let r = changed(mode, "m.rs", before.as_deref(), after.as_deref());
+            let entry = ranked(&r, mode, "m.rs");
+            let row = format!("{name} {mode}: {entry}");
+            assert!(
+                signals(&entry).contains(&"diff_suppressed"),
+                "a source rewritten in a wide encoding is unlabelled: {row}"
+            );
+            assert_eq!(entry["diff_suppressed"], *cause, "{row}");
+        }
+    }
+}
