@@ -95,23 +95,111 @@ pub(crate) fn read_untrusted(root: &Path, relative: &Path, cap: u64) -> Result<V
 pub(crate) fn read_json<T: serde::de::DeserializeOwned>(path: &Path, cap: u64) -> Result<T> {
     Ok(serde_json::from_slice(&read_bytes(path, cap)?)?)
 }
-pub(crate) fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
-    let mut f = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)?;
-    f.write_all(bytes)?;
-    f.sync_all()?;
-    File::open(path.parent().unwrap_or(Path::new(".")))?.sync_all()?;
+/// Names of [`Staged`] files begin with this. A reader that lists a directory skips them: a
+/// process killed between writing one and putting it in place leaves it behind.
+pub(crate) const TEMPORARY_PREFIX: &str = ".ddf-tmp.";
+pub(crate) fn is_temporary(name: &str) -> bool {
+    name.starts_with(TEMPORARY_PREFIX)
+}
+// Unit tests make the named step fail with an I/O error; elsewhere this does nothing.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static FAIL_AT: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+}
+#[cfg_attr(
+    not(test),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "the seam fails only in unit tests"
+    )
+)]
+pub(crate) fn fault(step: &'static str) -> std::io::Result<()> {
+    #[cfg(test)]
+    if FAIL_AT.with(|at| at.get() == Some(step)) {
+        return Err(std::io::Error::from_raw_os_error(nix::libc::EIO));
+    }
+    let _ = step;
     Ok(())
+}
+/// An I/O error that names the file it happened on.
+pub(crate) fn named(path: &Path) -> impl Fn(std::io::Error) -> ReviewFailure + '_ {
+    move |e| ReviewFailure(format!("{}: {e}", path.display()))
+}
+/// A file written and synced under a temporary name beside `path`, not yet visible at `path`.
+/// Dropped without [`Staged::commit`], it removes the temporary file.
+pub(crate) struct Staged {
+    temporary: PathBuf,
+    path: PathBuf,
+}
+impl Staged {
+    pub(crate) fn new(path: &Path, bytes: &[u8]) -> Result<Self> {
+        static COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let exists = |p: &Path| fs::symlink_metadata(p).is_ok();
+        if exists(path) {
+            return Err(named(path)(std::io::ErrorKind::AlreadyExists.into()));
+        }
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        let n = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let temporary = path.with_file_name(format!(
+            "{TEMPORARY_PREFIX}{name}.{}-{n}",
+            std::process::id()
+        ));
+        // Only a dead process can have left a file under this process's id.
+        if exists(&temporary) {
+            fs::remove_file(&temporary).map_err(named(&temporary))?;
+        }
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(nix::libc::O_NOFOLLOW)
+            .open(&temporary)
+            .map_err(named(path))?;
+        let staged = Self {
+            temporary,
+            path: path.to_owned(),
+        };
+        fault("stage-write")
+            .and_then(|()| file.write_all(bytes))
+            .and_then(|()| fault("stage-sync"))
+            .and_then(|()| file.sync_all())
+            .map_err(named(path))?;
+        Ok(staged)
+    }
+    /// Put the file at its name, failing if the name exists, and sync the directory. On failure
+    /// the name is left as it was.
+    pub(crate) fn commit(self) -> Result<()> {
+        fault("link")
+            .and_then(|()| fs::hard_link(&self.temporary, &self.path))
+            .map_err(named(&self.path))?;
+        let _ = fs::remove_file(&self.temporary);
+        let synced = File::open(self.path.parent().unwrap_or(Path::new(".")))
+            .and_then(|d| d.sync_all())
+            .map_err(named(&self.path));
+        if synced.is_err() {
+            let _ = fs::remove_file(&self.path);
+        }
+        synced
+    }
+}
+impl Drop for Staged {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.temporary);
+    }
+}
+/// Create `path` with `bytes`, all or nothing: either the whole content is at `path`, or `path`
+/// is as it was. An existing `path` is refused.
+pub(crate) fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
+    Staged::new(path, bytes)?.commit()
 }
 pub(crate) fn write_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
     write_new(path, &serde_json::to_vec_pretty(value)?)
 }
 pub(crate) fn make_dir(path: &Path) -> Result<()> {
-    fs::DirBuilder::new().mode(0o700).create(path)?;
-    Ok(())
+    fs::DirBuilder::new()
+        .mode(0o700)
+        .create(path)
+        .map_err(named(path))
 }
 fn capture(id: String, path: &Path, remaining: &mut usize) -> Result<Artifact> {
     let data = read_bytes(path, *remaining as u64)?;
