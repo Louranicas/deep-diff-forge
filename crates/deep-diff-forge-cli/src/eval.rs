@@ -18,7 +18,8 @@
 //!
 //! The receipt also splits evidence precision and recall by signal (`by_signal`) and by the
 //! language of the item's file (`by_language`); each adds up to the two evidence metrics. The
-//! text summary prints the four metrics only.
+//! text summary prints the four metrics only. A case whose patch the parser refuses is listed
+//! in `refused` with the parser's reason and is a failure; the other cases are still scored.
 //!
 //! The corpus cannot drift silently. The manifest is refused when a file does not match its
 //! SHA-256, when a case has no `origin`, a field its kind does not read, or the id of another
@@ -26,6 +27,7 @@
 //! the floors.
 
 use deep_diff_forge_core::PatchLineKind;
+use deep_diff_forge_patch::SealedReview;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -309,6 +311,9 @@ pub struct Scores {
     /// Declared misses, counted as wrong in their metric but not failures.
     pub declared: Vec<String>,
     pub failures: Vec<String>,
+    /// Cases whose patch the parser refuses, as `{case, reason}`: not scored, and each is also
+    /// a failure, so the other cases are still scored and the receipt still printed.
+    pub refused: Vec<Value>,
 }
 
 impl Scores {
@@ -348,7 +353,8 @@ fn language(files: &[deep_diff_forge_core::ReviewFile], path: &str) -> String {
         .map_or_else(|| "none".to_owned(), |l| format!("{l:?}").to_lowercase())
 }
 
-fn sealed(bytes: &[u8]) -> Result<deep_diff_forge_patch::SealedReview, EvalError> {
+/// The review of a case's patch, or the parser's reason for refusing it.
+fn sealed(bytes: &[u8]) -> Result<SealedReview, String> {
     deep_diff_forge_patch::SealedReview::new(
         bytes,
         deep_diff_forge_patch::InputGuards {
@@ -357,7 +363,7 @@ fn sealed(bytes: &[u8]) -> Result<deep_diff_forge_patch::SealedReview, EvalError
         },
         env!("CARGO_PKG_VERSION"),
     )
-    .map_err(|e| EvalError::Corpus(format!("a case patch does not parse: {e}")))
+    .map_err(|e| e.to_string())
 }
 
 /// The `[high, low]` path pairs under `key` (none when it is absent). A pair is exactly two
@@ -380,8 +386,7 @@ fn pairs<'v>(case: &'v Value, key: &str) -> Result<Vec<(&'v str, &'v str)>, Eval
         .collect()
 }
 
-fn ranking(corpus: &Corpus<'_>, case: &Value, scores: &mut Scores) -> Result<(), EvalError> {
-    let review = sealed(&checked(corpus, case, "patch", "sha256")?)?;
+fn ranking(review: &SealedReview, case: &Value, scores: &mut Scores) -> Result<(), EvalError> {
     let order: Vec<String> = deep_diff_forge_graph::rank(review.files())
         .into_iter()
         .map(|r| r.path)
@@ -452,8 +457,7 @@ fn items(case: &Value, key: &str) -> Result<Vec<(String, String, String, u64)>, 
     }
 }
 
-fn evidence(corpus: &Corpus<'_>, case: &Value, scores: &mut Scores) -> Result<(), EvalError> {
-    let review = sealed(&checked(corpus, case, "patch", "sha256")?)?;
+fn evidence(review: &SealedReview, case: &Value, scores: &mut Scores) -> Result<(), EvalError> {
     let expected = items(case, "expect")?;
     let known = items(case, "known_miss")?;
     let false_positives = items(case, "known_false_positive")?;
@@ -532,8 +536,12 @@ fn evidence(corpus: &Corpus<'_>, case: &Value, scores: &mut Scores) -> Result<()
     Ok(())
 }
 
-fn findings(corpus: &Corpus<'_>, case: &Value, scores: &mut Scores) -> Result<(), EvalError> {
-    let review = sealed(&checked(corpus, case, "patch", "sha256")?)?;
+fn findings(
+    corpus: &Corpus<'_>,
+    review: &SealedReview,
+    case: &Value,
+    scores: &mut Scores,
+) -> Result<(), EvalError> {
     let raw = checked(corpus, case, "findings", "findings_sha256")?;
     let raw = String::from_utf8(raw)
         .map_err(|_| EvalError::Encoding(format!("case {}: findings are not UTF-8", id(case))))?;
@@ -609,10 +617,25 @@ pub fn run(dir: &Path) -> Result<Value, EvalError> {
     }
     let mut scores = Scores::default();
     for (case, kind) in cases.iter().zip(kinds) {
+        let review = match sealed(&checked(&corpus, case, "patch", "sha256")?) {
+            Ok(review) => review,
+            Err(reason) => {
+                // Refused, not scored: a failure of the case; its findings file is still checked.
+                if kind == "findings" {
+                    checked(&corpus, case, "findings", "findings_sha256")?;
+                }
+                let failure = format!("{}: refused: {reason}", id(case));
+                scores.failures.push(failure);
+                scores
+                    .refused
+                    .push(json!({"case": id(case), "reason": reason}));
+                continue;
+            }
+        };
         match kind {
-            "ranking" => ranking(&corpus, case, &mut scores)?,
-            "evidence" => evidence(&corpus, case, &mut scores)?,
-            _ => findings(&corpus, case, &mut scores)?,
+            "ranking" => ranking(&review, case, &mut scores)?,
+            "evidence" => evidence(&review, case, &mut scores)?,
+            _ => findings(&corpus, &review, case, &mut scores)?,
         }
     }
     Ok(json!({
@@ -628,6 +651,7 @@ pub fn run(dir: &Path) -> Result<Value, EvalError> {
         },
         "by_signal": splits(&scores.by_signal),
         "by_language": splits(&scores.by_language),
+        "refused": scores.refused,
         "known_misses": scores.known_misses,
         "declared": scores.declared,
         "failures": scores.failures,

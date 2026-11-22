@@ -462,6 +462,51 @@ fn the_gate_fails_for_the_reason_it_names() {
     assert_eq!(eval(&missing.0).0, 3);
 }
 
+/// S3.35.c: a case whose patch the parser refuses (here a hunk with no context, which plain
+/// `git apply` places at the end of the file) is reported in `refused` with the parser's reason
+/// and is a failure (exit 7), and every other case is still scored: before, the first refusal
+/// ended the run with exit 4 and no figures.
+#[test]
+fn a_refused_case_is_reported_and_the_batch_continues() {
+    let (_, whole, _) = eval(&corpus());
+    let copy = Copy::new("refused");
+    let file = copy.0.join("evidence/bash-dev-tcp.patch");
+    let original = std::fs::read_to_string(&file).unwrap();
+    let patch = original.replace("@@ -1,1 +1,3 @@\n set -eu\n", "@@ -5 +5,2 @@\n-set -eu\n");
+    assert_ne!(patch, original);
+    std::fs::write(&file, &patch).unwrap();
+    let mut items = 0;
+    edit_case(&copy, "evidence/bash-dev-tcp", |c| {
+        c["sha256"] = deep_diff_forge_core::sha256_hex(patch.as_bytes()).into();
+        items = c["expect"].as_array().unwrap().len() + c["known_miss"].as_array().unwrap().len();
+    });
+    let (code, receipt, stderr) = eval(&copy.0);
+    assert_eq!(
+        code, 7,
+        "the run ends with a failure and a receipt: {stderr}"
+    );
+    let reason = receipt["refused"][0]["reason"].as_str().unwrap_or_default();
+    assert_eq!(
+        receipt["refused"],
+        serde_json::json!([{"case": "evidence/bash-dev-tcp", "reason": reason}])
+    );
+    assert!(
+        reason.contains("it has no context, so Git places it at the end of the file"),
+        "{reason}"
+    );
+    assert_eq!(
+        receipt["failures"],
+        serde_json::json!([format!("evidence/bash-dev-tcp: refused: {reason}")])
+    );
+    // The other cases are scored: only the refused case's items leave the totals.
+    let (m, all) = (&receipt["metrics"], &whole["metrics"]);
+    assert_eq!(receipt["cases"], whole["cases"]);
+    assert_eq!(m["ranking_pairs"], all["ranking_pairs"]);
+    assert_eq!(m["findings_verdicts"], all["findings_verdicts"]);
+    let recall = |m: &Value| m["evidence_recall"]["total"].as_u64().unwrap();
+    assert_eq!(recall(m) + u64::try_from(items).unwrap(), recall(all));
+}
+
 /// The manifest of `copy` after `edit` changes the case `case`.
 fn edit_case(copy: &Copy, case: &str, edit: impl FnOnce(&mut Value)) {
     let mut manifest = copy.manifest();
