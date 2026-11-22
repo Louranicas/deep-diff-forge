@@ -97,5 +97,7 @@ step "release-script self-test" scripts/test_release_local.sh
 step "comparison corpus manifest" bash -c 'c=${DDF_COMPARE_CORPUS:-$HOME/.local/state/habitat-claude/ddf-corpus/compare-v1}
 [ -d "$c" ] || { echo "skipped: no corpus here ($c)"; exit 0; }
 cd "$c" && sha256sum -c --quiet MANIFEST.sha256 && echo "manifest digest $(sha256sum MANIFEST.sha256 | cut -c1-64)"'
+# The contract with forge-warden (F4): stand-in rows always; the real rows when FW_BIN names one.
+step "contract matrix" bash -c 'cargo build -q --locked -p deep-diff-forge-cli && scripts/contract_matrix.sh target/debug/deep-diff-forge'
 echo "steps failed: $failed"
 [ "$failed" -eq 0 ]

@@ -18,6 +18,7 @@ const SETUP_ONLY: &[&str] = &["install host cargo-deny", "install cargo-audit"];
 const LOCAL_ONLY: &[&str] = &[
     "release-script self-test",
     "comparison corpus manifest",
+    "contract matrix",
 ];
 
 /// One step of a CI job: its name (if any) and whether it has a `run:` (else it `uses:` an action).
