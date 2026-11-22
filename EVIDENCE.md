@@ -595,7 +595,7 @@ codebase is production-ready.
 ## Release dry runs and fuzzing (2026-10-28)
 
 Measured by the operator unless labelled otherwise. Code changes: PRs #21–#23
-(see [`CHANGELOG.md`](CHANGELOG.md)).
+(see [`docs/release-notes/`](docs/release-notes/README.md)).
 
 ### Release dry runs
 
@@ -1157,8 +1157,8 @@ independent rescore of 2026-11-02 found missing from this file (its gap 18).
   up-to-date policy, no bypass actors).
 - **Python install from a checkout:** in a clean venv, `pip install ./sdk/python` from `1eaba47`
   installed `sdk/python/build/lib/deep_diff_forge.py` (byte-identical to the stale copy, not to
-  the source module). From this change's tree it installs the source module. See CHANGELOG,
-  Unreleased, Fixed.
+  the source module). From this change's tree it installs the source module. See
+  [release notes 0.6.0](docs/release-notes/0.6.0.md), Fixed.
 - **Not yet measured:** the weekly `campaign.yml` cron (`41 5 * * 1`) had not fired at the time
   of writing. Every campaign so far was a manual dispatch.
 
@@ -1169,7 +1169,7 @@ Measured with `gh` on 2026-11-02.
 - **First dry run, run 41386917463 on `aac52a6`** (#87 merged): **failed**.
   - The quality jobs passed, and three of the four builds passed (`x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`, `x86_64-apple-darwin`).
   - `build aarch64-unknown-linux-gnu` failed in `smoke the release binary` with `ModuleNotFoundError: No module named 'tomllib'`: the `ubuntu-22.04-arm` runner's Python is 3.10. Nothing was published; a dispatched run never publishes.
-  - The cause was the same defect `ci.yml` had (DDF-CI-ARM-001, #82). It had been latent in `release.yml` since #79 added the target. Fixed in #88 (DDF-REL-ARM-002; CHANGELOG 0.6.0, Fixed).
+  - The cause was the same defect `ci.yml` had (DDF-CI-ARM-001, #82). It had been latent in `release.yml` since #79 added the target. Fixed in #88 (DDF-REL-ARM-002; [release notes 0.6.0](docs/release-notes/0.6.0.md), Fixed).
 - **Second dry run, run 41397808294 on `9c7a875`** (#88 merged): **success**.
   - Every quality job passed: gate, supply chain, review-controller evidence, MSRV, macOS tests, Linux arm64 tests and the secret scan.
   - All four builds built and smoked their binaries, `aarch64-unknown-linux-gnu` included.
@@ -1319,7 +1319,7 @@ Dates here are UTC unless marked. The tag was signed at 16:39Z on 2026-11-11, wh
     - `new file mode 160000` with `Binary files … differ`: Git reports `create mode 160000 vendor/lib`; v0.8.2 showed a binary change. v0.8.3 refuses it (`invalid file mode at line 4`).
     - `index 1111111..2222222 160000` over a one-line hunk on an existing regular file: `git apply --check` refuses it (`wrong type`); v0.8.2 showed the file modified. v0.8.3 refuses it (`invalid file mode at line 7`).
   - **Controls.** A plain new file, a binary change with its `index` line, and a new submodule (`new file mode 160000` with a `Subproject commit` line) are accepted by both versions and read as Git reads them.
-- **Not measured here.** v0.8.3 as released has had no independent rescore. F1 of the same rescore (a binary body Git finds corrupt is shown as applied), F4 and F5 are not fixed in 0.8.3 ([CHANGELOG](CHANGELOG.md), Known limits). The patches were compared with Git's `--numstat --summary` and, for one, `--check`; no patch was applied to a working tree for this section. The macOS and arm64 archives were checked by checksum and attestation only, not run.
+- **Not measured here.** v0.8.3 as released has had no independent rescore. F1 of the same rescore (a binary body Git finds corrupt is shown as applied), F4 and F5 are not fixed in 0.8.3 ([release notes 0.8.3](docs/release-notes/0.8.3.md), Known limits). The patches were compared with Git's `--numstat --summary` and, for one, `--check`; no patch was applied to a working tree for this section. The macOS and arm64 archives were checked by checksum and attestation only, not run.
 
 ## 0.8.4 release commit (2026-11-16)
 
@@ -1426,7 +1426,7 @@ its build and checks are the local ones below ([local release](docs/RELEASE_AND_
   build machine (glibc 2.43), not on an older system. No binary was built for
   `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin` or `aarch64-apple-darwin`. G3, F1, F4 and
   F5 are open ([SECURITY.md](SECURITY.md#residual-risks-and-non-goals) for G3 and F1; the
-  0.8.3 Known limits of the [CHANGELOG](CHANGELOG.md) for F1, F4 and F5).
+  0.8.3 Known limits of the [release notes](docs/release-notes/0.8.3.md) for F1, F4 and F5).
 
 ## 0.9.0 release commit (2026-11-18)
 

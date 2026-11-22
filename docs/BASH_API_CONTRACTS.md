@@ -142,8 +142,8 @@ Rules:
 
 Measured on 0.3.0 for a one-line change. Since 0.4.0 each hunk also carries `old_lines`,
 `new_lines`, `section`, `address` and `body_sha256`, and a file or line with hidden or
-traversing text a `hazards` list (additive, still `review.v0`; see the README's
-[output formats](../README.md#output-formats-and-schemas)):
+traversing text a `hazards` list (additive, still `review.v0`; see the
+[output formats](reference/output-and-exit-codes.md#output-formats-and-schemas)):
 
 ```json
 {

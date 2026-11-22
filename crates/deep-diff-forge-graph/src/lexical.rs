@@ -3250,7 +3250,7 @@ mod tests {
     /// (the `/` of `/*/` closes nothing), and a nested comment over two lines ends where its
     /// last `*/` is. The reading of 0.8.3 ends a comment at the first `*/`, so the `//` cuts
     /// the line: until this reading was added, the call after it was hidden from every rule,
-    /// in every release from 0.5.0 to 0.8.3 (see the CHANGELOG).
+    /// in every release from 0.5.0 to 0.8.3 (see docs/release-notes/0.8.4.md).
     #[test]
     fn rust_block_comments_nest() {
         blank_before(
@@ -3293,7 +3293,7 @@ mod tests {
     /// backslash): after `'\x41'` it is one quote out of step, takes the `"` of `'"'` for the
     /// start of a string, and `"/*"` then opens a comment over the rest of the hunk. Until
     /// this reading was added that hid the code below such a line, in every release from
-    /// 0.5.0 to 0.8.3 (see the CHANGELOG).
+    /// 0.5.0 to 0.8.3 (see docs/release-notes/0.8.4.md).
     #[test]
     fn rust_character_and_byte_literals_are_read_whole() {
         for literal in [

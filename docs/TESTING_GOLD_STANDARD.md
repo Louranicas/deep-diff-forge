@@ -99,7 +99,8 @@ era) no longer holds. How the standard is enforced today:
   them. `evidence_scan` also holds what a scan keeps in memory: the readings alive at one
   moment never hold more lines than the file has (a unit test in the graph crate holds
   the exact figure: one reading of the longest text; it counts the lines of the views a
-  reading holds, not memory, and the README's memory figures are measured, not held by
+  reading holds, not memory, and the memory figures of
+  [`reference/risk-ranking.md`](reference/risk-ranking.md) are measured, not held by
   it). In round 18 no form is read at the end of a side (a hunk side is read as text that
   ends there; nothing is inferred from how it ends: in a macro that takes any tokens
   `.unwrap::` goes on as anything, and after a range `unwrap` is a free function), and
