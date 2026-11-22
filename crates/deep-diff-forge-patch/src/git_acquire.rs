@@ -875,16 +875,30 @@ fn read_binary_again(
             continue;
         }
         let cause = suppression(runner, &change)?;
+        let out = match second_reading(runner, &read, &change, selection) {
+            Ok(out) => out,
+            Err(_) if cause != DiffSuppression::Content => None,
+            Err(cut) => return Err(cut),
+        };
+        let again = out.and_then(|out| {
+            let mut again = StructuredDiff::default();
+            again.append_stream(&out, change.origin).ok()?;
+            Some(again)
+        });
+        // A UTF-16 or UTF-32 file is binary to Git for the NULs of its encoding (S3.27.c).
+        let cause = match &again {
+            Some(again)
+                if cause == DiffSuppression::Content && wide_encoding(again.patch_bytes()) =>
+            {
+                DiffSuppression::Encoding
+            }
+            _ => cause,
+        };
         let told = cause != DiffSuppression::Content;
         if told {
             mark(&mut labelled, at, cause);
         }
-        let out = match second_reading(runner, &read, &change, selection) {
-            Ok(out) => out,
-            Err(_) if told => None,
-            Err(cut) => return Err(cut),
-        };
-        match out.and_then(|out| text_of(&change, &out)) {
+        match again.and_then(|again| text_of(&change, &again)) {
             Some((text, bytes)) => {
                 let text = GitChange {
                     diff_suppressed: Some(cause),
@@ -964,11 +978,9 @@ fn second_reading(
     }
 }
 
-/// The text block in `out`, the second reading of `change`, when it is the same change as text
-/// DDF can read; see [`read_binary_again`].
-fn text_of(change: &GitChange, out: &[u8]) -> Option<(GitChange, Vec<u8>)> {
-    let mut again = StructuredDiff::default();
-    again.append_stream(out, change.origin).ok()?;
+/// The text block in `again`, the second reading of `change`, when it is the same change as
+/// text DDF can read; see [`read_binary_again`].
+fn text_of(change: &GitChange, again: &StructuredDiff) -> Option<(GitChange, Vec<u8>)> {
     let [text] = again.changes() else {
         return None;
     };
@@ -979,6 +991,47 @@ fn text_of(change: &GitChange, out: &[u8]) -> Option<(GitChange, Vec<u8>)> {
     } == *change;
     let readable = std::str::from_utf8(again.patch_bytes()).is_ok() && again.capture().is_ok();
     (same && !text.binary && readable).then(|| (text.clone(), again.patch_bytes().to_vec()))
+}
+
+/// Whether `patch`, a second reading as text, shows a UTF-16 or UTF-32 file (S3.27.c): the first
+/// line of a file (a hunk from line 1) opens with a byte order mark, or every hunk line of four
+/// bytes or more has a NUL at every other byte and none between. One pass over the lines; it
+/// can only add a label, never take evidence away. Decoding for the token readers is parked.
+fn wide_encoding(patch: &[u8]) -> bool {
+    const MARKS: [&[u8]; 3] = [b"\xff\xfe", b"\xfe\xff", b"\0\0\xfe\xff"];
+    let alternate = |body: &[u8], nul: usize| {
+        body.iter()
+            .enumerate()
+            .all(|(at, &byte)| (byte == 0) == (at % 2 == nul))
+    };
+    let (mut first_line, mut in_hunk, mut wide, mut narrow) = (false, false, 0_usize, 0_usize);
+    for line in patch.split(|&byte| byte == b'\n') {
+        if line.starts_with(b"@@ ") {
+            in_hunk = true;
+            first_line = [b"@@ -1,".as_slice(), b"@@ -1 ", b"@@ -0,0 +1"]
+                .iter()
+                .any(|head| line.starts_with(head));
+            continue;
+        }
+        if line.starts_with(b"diff --git ") {
+            in_hunk = false;
+            continue;
+        }
+        let Some((&(b' ' | b'+' | b'-'), body)) = line.split_first().filter(|_| in_hunk) else {
+            continue;
+        };
+        if std::mem::take(&mut first_line) && MARKS.iter().any(|mark| body.starts_with(mark)) {
+            return true;
+        }
+        if body.len() >= 4 {
+            if alternate(body, 0) || alternate(body, 1) {
+                wide += 1;
+            } else {
+                narrow += 1;
+            }
+        }
+    }
+    wide > 0 && narrow == 0
 }
 
 /// Why Git called `change`'s file binary: [`DiffSuppression::Content`] when `git check-attr`

@@ -342,3 +342,60 @@ fn an_attribute_hidden_file_is_labelled_even_when_unreadable() {
         }
     }
 }
+
+/// `text` in UTF-16 (little or big endian) or UTF-32 little endian, after `bom` bytes.
+fn wide(text: &str, bom: &[u8], unit: fn(u32) -> Vec<u8>) -> Vec<u8> {
+    let mut bytes = bom.to_vec();
+    for c in text.chars() {
+        bytes.extend(unit(u32::from(c)));
+    }
+    bytes
+}
+
+/// S3.27.c: a PowerShell script saved as UTF-16 (a common default on Windows) is binary to Git
+/// for the NULs of its encoding, and every evidence rule was blind to it: it ranked as a plain
+/// binary change with no label (measured on the corpus's Git part, 0.9.0 and the S3.20 tree).
+/// Now the second reading names it: `diff_suppressed` with cause `encoding`, for a byte order
+/// mark (UTF-16 either way, UTF-32) and for UTF-16 without one. Decoding the text for the token
+/// readers is parked; the label is the answer for now. A NUL byte in a UTF-8 comment stays
+/// `content` (`a_text_file_git_was_told_to_hide_is_read_and_the_act_is_labelled`).
+#[test]
+fn utf16_sources_are_labelled_encoding() {
+    let le = |c: u32| u16::try_from(c).unwrap().to_le_bytes().to_vec();
+    let be = |c: u32| u16::try_from(c).unwrap().to_be_bytes().to_vec();
+    let le32 = |c: u32| c.to_le_bytes().to_vec();
+    let script = |payload: bool| {
+        let mut text = String::from("Write-Output 'start'\r\n");
+        if payload {
+            text.push_str("Start-Process powershell -ArgumentList '-enc','AAAA'\r\n");
+        }
+        text.push_str("Write-Output 'done'\r\n");
+        text
+    };
+    let rows: [(&str, &[u8], fn(u32) -> Vec<u8>, &str); 4] = [
+        ("UTF-16LE with a mark", b"\xff\xfe", le, "binary_changed"),
+        ("UTF-16BE with a mark", b"\xfe\xff", be, "binary_changed"),
+        (
+            "UTF-32LE with a mark",
+            b"\xff\xfe\0\0",
+            le32,
+            "binary_changed",
+        ),
+        ("UTF-16LE without a mark", b"", le, "modified"),
+    ];
+    for (name, bom, unit, status) in rows {
+        let before = wide(&script(false), bom, unit);
+        let after = wide(&script(true), bom, unit);
+        for mode in MODES {
+            let r = custom(mode, b"", "b.ps1", &before, &after);
+            let entry = ranked(&r, mode, "b.ps1");
+            let row = format!("{name} {mode}: {entry}");
+            assert!(
+                signals(&entry).contains(&"diff_suppressed"),
+                "a wide-encoded file lost its encoding label: {row}"
+            );
+            assert_eq!(entry["diff_suppressed"], "encoding", "{row}");
+            assert_eq!(entry["status"], status, "{row}");
+        }
+    }
+}
