@@ -21,6 +21,8 @@ What exists today, checked against `crates/deep-diff-forge-daemon/src/` and the
   socket (connect refused) is replaced; a non-socket file is never deleted.
 - A stop drains (since 2026-10-31): the requests in progress are answered first, for up to 30 s,
   and `daemon stop` returns once the daemon has exited ([lifecycle](#daemon-lifecycle-implemented)).
+  With nothing in progress it returns within a second, also when idle clients hold every data
+  and control slot (since 0.10.0; before, it got no answer until a control slot freed).
   A systemd user unit and a launchd agent ship in `contrib/` ([running as a
   service](#running-as-a-service)).
 - Not implemented: any cache (`cache_entries` is always 0), the `cache`
@@ -65,6 +67,7 @@ The daemon exists for top-tail latency and coordination:
 | --- | --- |
 | Unix with `$XDG_RUNTIME_DIR` | `$XDG_RUNTIME_DIR/deep-diff-forge/deep-diff-forge.sock` |
 | Unix without `$XDG_RUNTIME_DIR` | Fails closed — pass `--socket PATH`; there is no `/tmp` fallback |
+| A path of 108 bytes or more | Refused by `daemon path` and `daemon start`, exit 2 (since 0.10.0): Linux holds a socket path and its NUL in 108 bytes (`sun_path`) |
 | Windows | Daemon unsupported; no named-pipe implementation |
 
 ## Daemon Lifecycle (implemented)
@@ -132,7 +135,8 @@ stateDiagram-v2
 
 The implemented daemon refuses startup unless:
 
-- a secure runtime base is available or an explicit socket path is supplied;
+- a secure runtime base is available or an explicit socket path is supplied, and the path is
+  shorter than 108 bytes;
 - the socket parent exists as, or can be created as, an effective-user-owned
   non-symlink directory with mode `0700`;
 - an existing socket path is either absent or verifiably a socket rather than a
@@ -348,7 +352,7 @@ deep-diff-forge cache prune --max-size 20GiB
 | Oversized payload | Reject with structured error. | Request over 80 MiB: `INVALID_REQUEST`, then the connection closes. Response over 80 MiB, an error included, measured as written: `RESOURCE_EXHAUSTED` (8). An error message is cut at 4 KiB (`MAX_ERROR_MESSAGE_BYTES`), on the socket and in the MCP server's tool and protocol errors. |
 | Client disconnect | Cancel session subscription, keep shared cache. | No subscriptions or cache; the worker ends and frees its slot. |
 | Out of budget | Preserve patch twin and record semantic fallback. | Patch input over its byte or line budget is refused (exit 4 on the CLI). |
-| Ninth connection | Apply backpressure. | Since DDF-HUNT-DAEMON-7 (2026-11-03) two control slots sit beyond the eight data slots. A connection on one gets one request of at most 4 KiB, read within 5 s. `daemon.health`, `daemon.status`, `daemon.metrics` and `daemon.shutdown` are answered; any other method is refused `RESOURCE_EXHAUSTED` (8) with "connection limit"; then the connection closes. So `daemon health` and `daemon stop` work while eight clients hold every data slot. With the control slots taken as well, a connection is accepted and closed at once, with no response, and the CLI reports `no answer from the daemon at PATH (it may be at its connection limit; retry)`, exit 6, not `no daemon at`. SIGTERM or SIGINT always stops the daemon cleanly. |
+| Ninth connection | Apply backpressure. | Since DDF-HUNT-DAEMON-7 (2026-11-03) two control slots sit beyond the eight data slots. A connection on one gets one request of at most 4 KiB, read within 5 s. `daemon.health`, `daemon.status`, `daemon.metrics` and `daemon.shutdown` are answered; any other method is refused `RESOURCE_EXHAUSTED` (8) with "connection limit"; then the connection closes. So `daemon health` and `daemon stop` work while eight clients hold every data slot. With the control slots taken as well, a connection has 250 ms to send `daemon.shutdown`, which the accept loop answers itself, so `daemon stop` still works (since 0.10.0); anything else is closed with no response, and the CLI reports `no answer from the daemon at PATH (it may be at its connection limit; retry)`, exit 6, not `no daemon at`. SIGTERM or SIGINT always stops the daemon cleanly. |
 
 ## Observability
 

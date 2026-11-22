@@ -214,6 +214,13 @@ selection.
   verify` printed a finding's patch path with the raw CSI. A
   downstream program that decodes those JSON strings must apply its own
   terminal-safe rendering before displaying them.
+- A gate flag's refusal does not depend on who reads stdout. Every `--require-*` refusal
+  (`--require-files`, `--require-hunks`, `--require-findings`, `--require-all`) is decided
+  before the output is written, and exits 7 with its reason when the reader of stdout has gone;
+  a diagnostic that cannot be written (`2>/dev/full`) leaves the exit code as it was. Before
+  0.10.0 `findings verify --require-findings` and `--require-all` exited 0 when the reader had
+  gone ([DDF-2026-010](docs/advisories/DDF-2026-010.md)), and an unwritable stderr turned any
+  exit into 101.
 - Annotation provenance is fail-closed: a claimed `source` is not trusted until
   evidence grounds it.
 
@@ -245,6 +252,8 @@ flowchart LR
   by the effective user with mode `0700`; its socket is mode `0600`
   (`SECURE_DIR_MODE`, `SECURE_SOCKET_MODE` in `security.rs`). There is no `/tmp`
   fallback when `$XDG_RUNTIME_DIR` is unset: the CLI exits 2.
+- A socket path of 108 bytes or more (Linux's `sun_path`, its NUL included) is refused by
+  `daemon path` and `daemon start` with exit 2 before anything is created (since 0.10.0).
 - Explicit `--socket PATH` locations require an owner-private parent. A missing
   parent is created at `0700`; an existing parent is validated and never
   chmodded, so a `0755` parent is refused. Symlinks, wrong-owner directories,
@@ -262,7 +271,7 @@ flowchart LR
 - JSON-RPC envelopes are shape-checked, including protocol version, method,
   identifier, and parameter types.
 - Request and response lines are capped at 80 MiB (`MAX_REQUEST_BYTES`,
-  `MAX_RESPONSE_BYTES`). An oversized request gets one `INVALID_REQUEST` error
+  `MAX_RESPONSE_BYTES`), the newline counted (the answer bound counts it since 0.10.0). An oversized request gets one `INVALID_REQUEST` error
   and the connection closes. A response over the cap is replaced by a
   `RESOURCE_EXHAUSTED` (8) error naming its size (`bounded_response`); before
   2026-10-28 the server sent it and the client failed. Since 2026-11-01 an error
@@ -278,8 +287,11 @@ flowchart LR
   control slots (`CONTROL_CONNECTIONS`) take one request each, of at most 4 KiB read within
   5 s, and answer only `daemon.health`, `daemon.status`, `daemon.metrics` and
   `daemon.shutdown` (anything else is refused `RESOURCE_EXHAUSTED`). A connection beyond those
-  is accepted and closed at once, with no response; the CLI reports that as no answer (exit 6),
-  not as no daemon. SIGTERM and SIGINT stop the daemon as `daemon stop` does. Workers share one
+  has 250 ms (`FULL_READ_TIMEOUT`) to send `daemon.shutdown`, which the accept loop answers
+  itself, so `daemon stop` answers within a second with every slot held by idle clients (since
+  0.10.0; before, the stop was closed unanswered until a control slot's client timed out after
+  5 s). Anything else beyond the slots is closed with no response; the CLI reports that as no
+  answer (exit 6), not as no daemon. SIGTERM and SIGINT stop the daemon as `daemon stop` does. Workers share one
   engine and their requests run in parallel. Only the session table is locked, and
   only for bookkeeping; parsing, ranking and Git run outside it. The request bytes
   in flight are capped at 128 MiB (`MAX_IN_FLIGHT_BYTES`, `admission.rs`), first
