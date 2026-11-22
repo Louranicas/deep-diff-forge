@@ -458,3 +458,80 @@ fn a_non_utf8_file_name_is_a_change_input_refusal() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// The evidence signals of a ranked entry, in order.
+fn evidence(entry: &Value) -> Vec<&str> {
+    entry["evidence"]
+        .as_array()
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| row["signal"].as_str())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// S3.27.b (G-02): the hook's judge makes its patch with an empty attribute source, so Git never
+/// hides a file there, while `--git-working-tree` reads what Git hid a second time. For one
+/// attribute-hidden change both find the same evidence; the act of hiding, `diff_suppressed`,
+/// is known only to the Git selection.
+#[test]
+fn the_judge_path_and_the_git_selection_find_the_same_evidence() {
+    use std::io::Write as _;
+    let r = repo(Hide::InfoAttributes, "--git-working-tree");
+    let git_entry = ranked(&r, "--git-working-tree", "m.rs");
+
+    let scratch = Scratch::new("cli-attr-judge");
+    let work = scratch.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let options = deep_diff_forge_patch::GitAcquireOptions {
+        env: ISOLATE
+            .iter()
+            .map(|(k, v)| (std::ffi::OsString::from(k), std::ffi::OsString::from(v)))
+            .collect(),
+        ..deep_diff_forge_patch::GitAcquireOptions::default()
+    };
+    let patch = deep_diff_forge_patch::judge_patch(&r.0, "HEAD", &work, &options).unwrap();
+    assert!(
+        !String::from_utf8_lossy(&patch.bytes).contains("GIT binary patch"),
+        "the judge's patch hid the file"
+    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .args(["--stdin-patch", "--rank", "--json"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(&patch.bytes).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success());
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let judge_entry = doc["ranked"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["path"] == "m.rs")
+        .cloned()
+        .unwrap();
+
+    assert!(
+        !evidence(&judge_entry).is_empty(),
+        "the judge path found nothing: {judge_entry}"
+    );
+    assert_eq!(
+        evidence(&git_entry),
+        evidence(&judge_entry),
+        "the Git selection and the judge path found different evidence:\n{git_entry}\n{judge_entry}"
+    );
+    let without = |entry: &Value| -> Vec<String> {
+        signals(entry)
+            .into_iter()
+            .filter(|s| *s != "diff_suppressed")
+            .map(str::to_owned)
+            .collect()
+    };
+    assert_eq!(without(&git_entry), without(&judge_entry));
+    assert!(signals(&git_entry).contains(&"diff_suppressed"));
+    assert!(!signals(&judge_entry).contains(&"diff_suppressed"));
+    assert!(judge_entry.get("diff_suppressed").is_none());
+}
