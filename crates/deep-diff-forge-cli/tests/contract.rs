@@ -1362,3 +1362,81 @@ fn an_unwritable_error_stream_keeps_the_exit_code() {
         );
     }
 }
+
+/// Run the binary with stdout on a pipe whose reader has already gone; its exit code and stderr.
+fn run_with_stdout_closed(args: &[&str], stdin: &[u8]) -> (Option<i32>, String) {
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(writer))
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let _ = child.stdin.take().unwrap().write_all(stdin);
+    let out = child.wait_with_output().unwrap();
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// S3.17a.g2 (DDF-2026-010): every `--require-*` refusal exits 7 with its reason when the reader
+/// of stdout has gone. `findings verify --require-findings` and `--require-all` wrote the verdict
+/// first and treated the broken pipe as a clean exit 0 with an empty stderr, so a gate that
+/// closed its reader early passed; `--require-files` and `--require-hunks` refuse before writing.
+#[test]
+fn a_pending_refusal_survives_a_closed_stdout() {
+    let scratch = deep_diff_forge_testkit::Scratch::new("pending-refusal");
+    let empty = scratch.write("empty.jsonl", "");
+    let refused = scratch.write(
+        "refused.jsonl",
+        "{\"agent\": \"codex\", \"severity\": \"low\", \"title\": \"u\", \"body\": \"c\", \"path\": \"nope\"}\n",
+    );
+    let (empty, refused) = (empty.to_str().unwrap(), refused.to_str().unwrap());
+    let no_files = "just some prose that is not a diff\n";
+    let header_only = "diff --git a/x b/x\nold mode 100644\nnew mode 100755\n";
+    for (args, stdin, reason) in [
+        (
+            &["--stdin-patch", "--json", "--require-files"][..],
+            no_files,
+            "refused: 0 files in input (--require-files)\n",
+        ),
+        (
+            &["--stdin-patch", "--json", "--require-hunks"][..],
+            header_only,
+            "refused: 0 hunks in input (--require-hunks)\n",
+        ),
+        (
+            &[
+                "findings",
+                "verify",
+                "--findings",
+                empty,
+                "--require-findings",
+            ][..],
+            PATCH,
+            "refused: 0 findings in the findings file (--require-findings)\n",
+        ),
+        (
+            &["findings", "verify", "--findings", refused, "--require-all"][..],
+            PATCH,
+            "",
+        ),
+    ] {
+        // The same refusal with stdout open, and with its reader gone.
+        let (code, stdout, stderr) = run(args, stdin);
+        assert_eq!(
+            (code, stderr.as_str()),
+            (7, reason),
+            "{args:?} open: {stdout}"
+        );
+        let (code, stderr) = run_with_stdout_closed(args, stdin.as_bytes());
+        assert_eq!(
+            (code, stderr.as_str()),
+            (Some(7), reason),
+            "{args:?} with the reader of stdout gone"
+        );
+    }
+}

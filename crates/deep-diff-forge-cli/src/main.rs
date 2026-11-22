@@ -44,11 +44,28 @@ fn emit(s: &str) {
     let mut stdout = std::io::stdout();
     if let Err(err) = stdout.write_all(s.as_bytes()).and_then(|()| stdout.flush()) {
         if err.kind() == std::io::ErrorKind::BrokenPipe {
+            if let Some(reason) = PENDING_REFUSAL.get() {
+                refuse_now(reason);
+            }
             std::process::exit(exit::SUCCESS);
         }
         eprintln!("error: write failed: {err}");
         std::process::exit(exit::IO);
     }
+}
+
+/// A refusal decided before its command writes its output, with its stderr line (empty for
+/// none). A reader that closes stdout then still gets exit 7, not the clean exit of a broken pipe:
+/// `findings verify --require-findings` exited 0 with an empty stderr when its reader had gone
+/// (S3.17a.g2, DDF-2026-010).
+static PENDING_REFUSAL: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
+/// Exit 7 with `reason` on stderr (nothing when it is empty).
+fn refuse_now(reason: &str) -> ! {
+    if !reason.is_empty() {
+        eprintln!("{reason}");
+    }
+    std::process::exit(EXIT_REFUSED);
 }
 
 /// `println!`-shaped wrapper over [`emit`] for broken-pipe-tolerant line output.
@@ -1542,15 +1559,23 @@ fn findings_cmd(opts: &[String]) {
         &deep_diff_forge_core::sha256_hex(text.as_bytes()),
         &seal.tool_version,
     );
-    emit_pretty_json(&doc);
     let required = |flag: &str| opts.iter().any(|a| a == flag);
-    if required("--require-findings") && verdict.total() == 0 {
-        eprintln!("refused: 0 findings in the findings file (--require-findings)");
-        std::process::exit(EXIT_REFUSED);
-    }
     let all_accepted = verdict.refused.is_empty() && verdict.over_limit == 0;
-    if required("--require-all") && !all_accepted {
-        std::process::exit(EXIT_REFUSED);
+    // Decided before the verdict is written, so a reader that closes stdout cannot turn the
+    // refusal into a clean exit (S3.17a.g2).
+    let refusal = if required("--require-findings") && verdict.total() == 0 {
+        Some("refused: 0 findings in the findings file (--require-findings)")
+    } else if required("--require-all") && !all_accepted {
+        Some("")
+    } else {
+        None
+    };
+    if let Some(reason) = refusal {
+        let _ = PENDING_REFUSAL.set(reason);
+    }
+    emit_pretty_json(&doc);
+    if let Some(reason) = refusal {
+        refuse_now(reason);
     }
 }
 
