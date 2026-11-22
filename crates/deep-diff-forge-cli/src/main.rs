@@ -1813,32 +1813,22 @@ fn run_cluster(files: &[deep_diff_forge_core::ReviewFile], opts: &[String], seal
 fn print_cluster_json(run: &deep_diff_forge_cluster::ClusterRun, seal: &InputSeal) {
     use deep_diff_forge_cluster::{dimension_label, join_label, parallelism_label};
     use deep_diff_forge_core::json_escape;
-    use std::fmt::Write as _;
     let dims: Vec<String> = run
         .receipt
         .dimensions
         .iter()
         .map(|d| json_escape(dimension_label(*d)))
         .collect();
-    let mut ranked = String::new();
-    for (i, rf) in run.ranked.iter().enumerate() {
-        if i > 0 {
-            ranked.push_str(",\n");
-        }
-        let signals: Vec<String> = rf.signals.iter().map(|s| json_escape(s.label())).collect();
-        let _ = write!(
-            ranked,
-            "    {{\"path\": {}, \"status\": {}, \"score\": {}, \"signals\": [{}]}}",
-            json_escape(&rf.path),
-            json_escape(rf.status.label()),
-            rf.score,
-            signals.join(", ")
-        );
-    }
+    // rank.v0's entry renderer, without the members a cluster list has never carried.
+    let ranked: Vec<String> = run
+        .ranked
+        .iter()
+        .map(|rf| deep_diff_forge_graph::entry_json(rf, false))
+        .collect();
     let body = if ranked.is_empty() {
         String::new()
     } else {
-        format!("\n{ranked}\n  ")
+        format!("\n    {}\n  ", ranked.join(",\n    "))
     };
     emitln!(
         "{{\n  \"schema\": \"deep-diff-forge.cluster.v0\",\n{}  \"receipt\": {{\"dimensions\": [{}], \"parallelism\": {}, \"workers\": {}, \"join_policy\": {}, \"file_count\": {}}},\n  \"ranked\": [{}]\n}}",
@@ -1866,8 +1856,8 @@ fn print_rank_human(ranked: &[deep_diff_forge_graph::RankedFile]) {
     emitln!("{} file(s) ranked", ranked.len());
 }
 
-/// The bytes `--rank --json` prints: the one `rank.v0` renderer's (the daemon's `diff.rank` is
-/// the same document).
+/// The bytes `--rank --json` prints: the one `rank.v0` renderer's, which the daemon's `diff.rank`,
+/// `rpc` and MCP carry too (`agent doctor`'s `rank_parity` compares them byte for byte).
 pub(crate) fn rank_json(ranked: &[deep_diff_forge_graph::RankedFile], seal: &InputSeal) -> String {
     deep_diff_forge_graph::RankDocument { seal, ranked }.to_json()
 }
