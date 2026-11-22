@@ -516,10 +516,12 @@ Additive members, so the schema names stay `v0`. They are present only when foun
     of a file the patch creates is reported like any other and carries this member.
   - Items are ordered by hunk, then line, then signal. `evidence_truncated: true` follows when more
     than 32 were found; the score counts all of them. Each signal also appears in `signals`.
-  - `diff_suppressed: "attribute"`, `"content"` or `"encoding"` follows (since 0.10.0, Git input only) when
+  - `diff_suppressed: "attribute"`, `"content"`, `"encoding"` or `"unread"` follows (since 0.10.0, Git input only) when
     Git gave the file's change as binary and the acquisition read it again as text: a `diff`
     attribute unset or naming a driver for the path (also when the text cannot be read back),
-    Git's own content check (a NUL byte), or a UTF-16 or UTF-32 file (labelled, not decoded).
+    Git's own content check (a NUL byte), or a UTF-16 or UTF-32 file (labelled, not decoded);
+    `"unread"` when no attribute label covers it and its second reading was cut off by the byte
+    budget or the time limit (the file stays a binary change).
     The file then carries the signal `diff_suppressed` (+5). The member is absent otherwise; the
     same member marks the change in `git-acquisition.v0`.
   - At the bound the list is not simply the first 32 in that order (since release 0.8.4, which
