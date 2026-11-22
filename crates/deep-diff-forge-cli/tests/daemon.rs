@@ -129,6 +129,33 @@ fn daemon_unknown_subcommand_reports_usage_without_runtime_dir() {
     assert!(!stderr.contains("XDG_RUNTIME_DIR"));
 }
 
+/// S3.8.c: Linux holds a socket path and its NUL in 108 bytes, so a path of 108 bytes or more
+/// can be neither bound nor reached. `daemon path` and `daemon start` refuse it with exit 2 and an
+/// empty stdout; before, `daemon path` printed it with exit 0.
+#[test]
+fn daemon_path_refuses_a_path_past_sun_len() {
+    let path_of = |bytes: usize| format!("/{}", "s".repeat(bytes - 1));
+    let (code, stdout, stderr) = run(&["daemon", "path", "--socket", &path_of(107)]);
+    assert_eq!(
+        (code, stdout.trim()),
+        (0, path_of(107).as_str()),
+        "{stderr}"
+    );
+    for bytes in [108, 160] {
+        let (code, stdout, stderr) = run(&["daemon", "path", "--socket", &path_of(bytes)]);
+        assert_eq!((code, stdout.as_str()), (2, ""), "{bytes} bytes: {stderr}");
+        assert!(stderr.contains(&format!("is {bytes} bytes")), "{stderr}");
+    }
+    let scratch = Scratch::new("sunlen");
+    let long = scratch.join("s".repeat(108)).join("d.sock");
+    let (code, stdout, stderr) = run(&["daemon", "start", "--socket", long.to_str().unwrap()]);
+    assert_eq!((code, stdout.as_str()), (2, ""), "{stderr}");
+    assert!(
+        stderr.contains("a Unix socket path is at most 107"),
+        "{stderr}"
+    );
+}
+
 #[test]
 fn daemon_path_respects_socket_flag() {
     let (code, stdout, _) = run(&["daemon", "path", "--socket", "/tmp/custom.sock"]);
