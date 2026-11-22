@@ -16,13 +16,18 @@
 //! (ranking pairs, recall or precision) and is listed in the receipt's `declared`, but it is not
 //! a failure. It becomes one when the engine gets it right, so the label moves with the engine.
 //!
+//! The receipt also splits evidence precision and recall by signal (`by_signal`) and by the
+//! language of the item's file (`by_language`); each adds up to the two evidence metrics. The
+//! text summary prints the four metrics only.
+//!
 //! The corpus cannot drift silently. The manifest is refused when a file does not match its
 //! SHA-256, when a case has no `origin`, a field its kind does not read, or the id of another
 //! case, and when a file of the corpus directory is named by no case. `cli/tests/eval.rs` holds
 //! the floors.
 
+use deep_diff_forge_core::PatchLineKind;
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 /// Why the corpus could not be scored.
@@ -269,6 +274,21 @@ impl Tally {
     }
 }
 
+/// Evidence precision and recall for one signal or one language, and the evidence cases that
+/// hold an item of it.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Split {
+    pub precision: Tally,
+    pub recall: Tally,
+    pub cases: u64,
+}
+
+impl Split {
+    fn json(self) -> Value {
+        json!({"precision": self.precision.json(), "recall": self.recall.json(), "cases": self.cases})
+    }
+}
+
 /// The scores and the failures behind them.
 #[derive(Debug, Default)]
 pub struct Scores {
@@ -278,12 +298,54 @@ pub struct Scores {
     /// Expected evidence items that were reported, out of all expected items.
     pub evidence_recall: Tally,
     pub findings_verdicts: Tally,
+    /// The evidence tallies split by signal and by the language of the item's file (the
+    /// `eval.v0` members `by_signal` and `by_language`): each item is in one entry of each, so
+    /// either map adds up to `evidence_precision` and `evidence_recall`.
+    pub by_signal: BTreeMap<String, Split>,
+    pub by_language: BTreeMap<String, Split>,
     /// Evidence `known_miss` items the engine does not find (the `eval.v0` field
     /// `known_misses`, unchanged in meaning; `declared` lists every kind).
     pub known_misses: u64,
     /// Declared misses, counted as wrong in their metric but not failures.
     pub declared: Vec<String>,
     pub failures: Vec<String>,
+}
+
+impl Scores {
+    /// Count an evidence item of `signal` in a file of `language`, right or not, in recall or
+    /// in precision.
+    fn split(&mut self, signal: &str, language: &str, recall: bool, right: bool) {
+        for split in [
+            self.by_signal.entry(signal.to_owned()).or_default(),
+            self.by_language.entry(language.to_owned()).or_default(),
+        ] {
+            let tally = if recall {
+                &mut split.recall
+            } else {
+                &mut split.precision
+            };
+            tally.add(right);
+        }
+    }
+}
+
+fn splits(map: &BTreeMap<String, Split>) -> Value {
+    let map = map.iter().map(|(name, split)| (name.clone(), split.json()));
+    Value::Object(map.collect())
+}
+
+/// The language the engine reads `path` in first, lower case: `Language::of` on the path and,
+/// as release 0.8.4 reads a file with no known extension, a shebang on the first line of a
+/// first hunk whose new side starts at line 1. `none` where no language applies.
+fn language(files: &[deep_diff_forge_core::ReviewFile], path: &str) -> String {
+    let first_line = files.iter().find(|f| f.path == path);
+    let first_line = first_line
+        .and_then(|f| f.patch_twin.hunks.first())
+        .filter(|h| h.new_start == Some(1))
+        .and_then(|h| h.lines.iter().find(|l| l.kind != PatchLineKind::Removed))
+        .map(|l| l.text.as_str());
+    deep_diff_forge_graph::lexical::Language::of(path, first_line)
+        .map_or_else(|| "none".to_owned(), |l| format!("{l:?}").to_lowercase())
 }
 
 fn sealed(bytes: &[u8]) -> Result<deep_diff_forge_patch::SealedReview, EvalError> {
@@ -408,9 +470,18 @@ fn evidence(corpus: &Corpus<'_>, case: &Value, scores: &mut Scores) -> Result<()
             })
         })
         .collect();
+    let lang = |path: &str| language(review.files(), path);
+    let held: Vec<_> = reported.iter().chain(&expected).chain(&known).collect();
+    for signal in held.iter().map(|i| &i.1).collect::<BTreeSet<_>>() {
+        scores.by_signal.entry(signal.clone()).or_default().cases += 1;
+    }
+    for language in held.iter().map(|i| lang(&i.0)).collect::<BTreeSet<_>>() {
+        scores.by_language.entry(language).or_default().cases += 1;
+    }
     for got in &reported {
         let right = expected.contains(got);
         scores.evidence_precision.add(right);
+        scores.split(&got.1, &lang(&got.0), false, right);
         if right {
             continue;
         }
@@ -427,6 +498,7 @@ fn evidence(corpus: &Corpus<'_>, case: &Value, scores: &mut Scores) -> Result<()
     for want in &expected {
         let found = reported.contains(want);
         scores.evidence_recall.add(found);
+        scores.split(&want.1, &lang(&want.0), true, found);
         if !found {
             scores
                 .failures
@@ -436,6 +508,7 @@ fn evidence(corpus: &Corpus<'_>, case: &Value, scores: &mut Scores) -> Result<()
     for miss in &known {
         let found = reported.contains(miss);
         scores.evidence_recall.add(found);
+        scores.split(&miss.1, &lang(&miss.0), true, found);
         if found {
             scores.failures.push(format!(
                 "{}: a known miss {miss:?} is now found: move it to expect",
@@ -553,6 +626,8 @@ pub fn run(dir: &Path) -> Result<Value, EvalError> {
             "evidence_recall": scores.evidence_recall.json(),
             "findings_verdicts": scores.findings_verdicts.json(),
         },
+        "by_signal": splits(&scores.by_signal),
+        "by_language": splits(&scores.by_language),
         "known_misses": scores.known_misses,
         "declared": scores.declared,
         "failures": scores.failures,

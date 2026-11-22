@@ -277,6 +277,39 @@ fn the_corpus_meets_its_floors() {
     }
 }
 
+/// S3.35.b: the receipt splits evidence precision and recall by signal (`by_signal`) and by
+/// the language of the item's file (`by_language`), and each split adds up to the aggregate the
+/// floors hold. The `trivial_assert` pair (precision and recall; S3.16 narrowed it) and
+/// the Python case count are held exactly, so a change to them shows here by name.
+#[test]
+fn eval_receipt_carries_per_signal_tallies() {
+    let (code, receipt, stderr) = eval(&corpus());
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(
+        receipt["by_signal"]["trivial_assert"],
+        serde_json::json!({
+            "precision": {"right": 14, "total": 14, "ppm": 1_000_000},
+            "recall": {"right": 14, "total": 29, "ppm": 482_758},
+            "cases": 13
+        }),
+        "the trivial_assert pair in {receipt:#}"
+    );
+    assert_eq!(receipt["by_language"]["python"]["cases"], 14, "{receipt:#}");
+    let m = &receipt["metrics"];
+    for member in ["by_signal", "by_language"] {
+        let split = receipt[member].as_object().unwrap();
+        for (metric, part) in [
+            ("evidence_precision", "precision"),
+            ("evidence_recall", "recall"),
+        ] {
+            for key in ["right", "total"] {
+                let sum: u64 = split.values().map(|s| s[part][key].as_u64().unwrap()).sum();
+                assert_eq!(sum, m[metric][key], "{member}: the sum of {part} {key}");
+            }
+        }
+    }
+}
+
 /// A copy of the corpus inside a scratch directory, removed when the test ends.
 struct Copy(
     PathBuf,
