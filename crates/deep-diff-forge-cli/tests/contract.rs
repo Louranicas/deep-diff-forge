@@ -1483,3 +1483,249 @@ fn status_lines_hold_after_the_tag() {
         "a status line that goes stale at the tag; say what the document describes: {found:?}"
     );
 }
+
+/// The repository's text file at `path`, relative to its root.
+fn repo_text(path: &str) -> String {
+    std::fs::read_to_string(format!("{}/../../{path}", env!("CARGO_MANIFEST_DIR")))
+        .unwrap_or_else(|e| panic!("{path}: {e}"))
+}
+
+/// The rows of the Markdown table under `header` in `text`, split into trimmed cells.
+fn table_rows(text: &str, header: &str) -> Vec<Vec<String>> {
+    let table = &text[text.find(header).unwrap_or_else(|| panic!("{header}"))..];
+    table
+        .lines()
+        .skip(2)
+        .take_while(|l| l.starts_with("| "))
+        .map(|l| {
+            l.trim_matches('|')
+                .split(" | ")
+                .map(|cell| cell.trim().to_owned())
+                .collect()
+        })
+        .collect()
+}
+
+/// F7.h1: the reason classes of exit 7 are one registry. The table "Refusal reasons (exit 7)" of
+/// `docs/reference/output-and-exit-codes.md`, `schema exit-codes`, `explain 7 --json` and the MCP
+/// tools `explain_exit_code` (code 7) and `exit_code_registry` list the same classes in the same
+/// order, with the same tag, commands, stdout, action and release; each documented reason line is
+/// `refused: <text> (<tag>)`.
+#[test]
+fn refusal_reasons_match_the_registry() {
+    let (code, stdout, _) = run(&["schema", "exit-codes"], "");
+    assert_eq!(code, 0);
+    let schema: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let registry = schema["refusals"]
+        .as_array()
+        .expect("schema exit-codes has refusals");
+    assert!(!registry.is_empty());
+    let (code, stdout, _) = run(&["explain", "7", "--json"], "");
+    assert_eq!(code, 0);
+    let explained: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        &explained["refusals"], &schema["refusals"],
+        "explain 7 --json"
+    );
+    let (code, stdout, _) = run(&["explain", "4", "--json"], "");
+    assert_eq!(code, 0);
+    assert!(serde_json::from_str::<serde_json::Value>(&stdout).unwrap()["refusals"].is_null());
+    let lines = [
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"contract","version":"1"}}}"#,
+        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"explain_exit_code","arguments":{"code":7}}}"#,
+        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"exit_code_registry","arguments":{}}}"#,
+    ];
+    let (code, stdout, stderr) = run(&["mcp"], &format!("{}\n", lines.join("\n")));
+    assert_eq!(code, 0, "{stderr}");
+    let answers: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    for id in [2, 3] {
+        let answer = answers.iter().find(|a| a["id"] == id).unwrap();
+        assert_eq!(
+            &answer["result"]["structuredContent"]["refusals"], &schema["refusals"],
+            "MCP answer {id}"
+        );
+    }
+    let rows = table_rows(
+        &repo_text("docs/reference/output-and-exit-codes.md"),
+        "| Class | Tag | Commands | Stdout | Next | Since | Reason line |",
+    );
+    let names: Vec<&str> = registry
+        .iter()
+        .map(|r| r["class"].as_str().unwrap())
+        .collect();
+    for (row, entry) in rows.iter().zip(registry) {
+        let class = entry["class"].as_str().unwrap();
+        let cell = |name: &str| format!("`{}`", entry[name].as_str().unwrap());
+        assert_eq!(
+            row[..6],
+            [
+                cell("class"),
+                cell("tag"),
+                entry["commands"].as_str().unwrap().to_owned(),
+                cell("stdout"),
+                cell("action"),
+                entry["since"].as_str().unwrap().to_owned(),
+            ],
+            "the documented row of the class {class}"
+        );
+        let line = row[6].trim_matches('`');
+        assert!(
+            line.starts_with("refused: ")
+                && line.ends_with(&format!(" ({})", entry["tag"].as_str().unwrap())),
+            "{class}: {line}"
+        );
+    }
+    let documented: Vec<&str> = rows.iter().map(|r| r[0].trim_matches('`')).collect();
+    assert_eq!(
+        documented, names,
+        "the documented classes and the registry's"
+    );
+}
+
+/// F7.h1: the codes of `deep-diff-forge.diagnostics.v0`. `fixtures/diagnostics/codes.v0.txt` (it
+/// only grows) equals the code table of `docs/reference/diagnostics.md`, line for line; every line
+/// is `<label>@line` or `<label>@file`; the table names every label of `schema signals` once, with
+/// its class, and every label has an `@file` code.
+#[test]
+fn diagnostics_codes_are_pinned_and_documented() {
+    let pinned = repo_text("fixtures/diagnostics/codes.v0.txt");
+    let pinned: Vec<&str> = pinned.lines().collect();
+    let doc = repo_text("docs/reference/diagnostics.md");
+    let rows = table_rows(&doc, "| Label | Class | Codes |");
+    let mut documented = Vec::new();
+    for row in &rows {
+        for code in row[2].split(", ") {
+            let anchor = code.trim_matches('`');
+            documented.push(format!("{}{anchor}", row[0].trim_matches('`')));
+        }
+    }
+    assert_eq!(
+        pinned, documented,
+        "codes.v0.txt and the table of diagnostics.md"
+    );
+    let (code, stdout, _) = run(&["schema", "signals"], "");
+    assert_eq!(code, 0);
+    let signals: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let signals: Vec<(String, String)> = signals["signals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            (
+                s["label"].as_str().unwrap().to_owned(),
+                s["class"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    for line in &pinned {
+        let (label, anchor) = line
+            .split_once('@')
+            .unwrap_or_else(|| panic!("{line}: not <label>@<anchor>"));
+        assert!(
+            ["line", "file"].contains(&anchor) && signals.iter().any(|(l, _)| l == label),
+            "{line}: not <label>@line or <label>@file of a known label"
+        );
+    }
+    let mut labels: Vec<(String, String)> = rows
+        .iter()
+        .map(|r| (r[0].trim_matches('`').to_owned(), r[1].clone()))
+        .collect();
+    let mut known = signals.clone();
+    labels.sort();
+    known.sort();
+    assert_eq!(
+        labels, known,
+        "the labels and classes of the code table and of schema signals"
+    );
+    for (label, _) in &signals {
+        assert!(
+            pinned.contains(&format!("{label}@file").as_str()),
+            "{label} has no @file code"
+        );
+    }
+}
+
+/// F7.h1: no action text reachable from exit 7 advises dropping the contract that refused. The
+/// two definitions are pinned byte for byte in `docs/reference/output-and-exit-codes.md` and in
+/// the `NextAction` doc comments; every reason class carries the action of this table, and none
+/// says `fix_invocation`.
+#[test]
+fn action_texts_reachable_from_exit_7_are_pinned() {
+    const CHANGE_INPUT: &str = "change the input or the state the message names (a stale admission, an existing artifact); the same input is refused again.";
+    const REVIEW_EVIDENCE: &str = "read the reason and the evidence the message or the council reported; a person decides what changes; rerunning does not change it.";
+    let doc = repo_text("docs/reference/output-and-exit-codes.md");
+    // The action list, each item joined across its wrapped lines.
+    let mut items: Vec<String> = Vec::new();
+    for line in doc.lines() {
+        if line.starts_with("- `") {
+            items.push(line.to_owned());
+        } else if let (Some(last), true) = (items.last_mut(), line.starts_with("  ")) {
+            last.push(' ');
+            last.push_str(line.trim());
+        }
+    }
+    let item = |name: &str| {
+        items
+            .iter()
+            .find_map(|i| i.strip_prefix(&format!("- `{name}`: ")))
+            .unwrap_or_else(|| panic!("no action item {name}"))
+            .to_owned()
+    };
+    assert_eq!(item("change_input"), CHANGE_INPUT);
+    assert_eq!(item("review_evidence"), REVIEW_EVIDENCE);
+    // The doc comments: the sentence starts with a capital there.
+    let source = repo_text("crates/deep-diff-forge-core/src/exit.rs");
+    let comment = |variant: &str| {
+        let before = &source[..source
+            .find(&format!("    {variant},\n"))
+            .unwrap_or_else(|| panic!("{variant}"))];
+        let lines: Vec<&str> = before
+            .lines()
+            .rev()
+            .take_while(|l| l.trim_start().starts_with("///"))
+            .collect();
+        lines
+            .iter()
+            .rev()
+            .map(|l| l.trim_start().trim_start_matches("///").trim())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let capital = |s: &str| {
+        let mut chars = s.chars();
+        chars.next().map_or_else(String::new, |c| {
+            c.to_ascii_uppercase().to_string() + chars.as_str()
+        })
+    };
+    assert_eq!(comment("ChangeInput"), capital(CHANGE_INPUT));
+    assert_eq!(comment("ReviewEvidence"), capital(REVIEW_EVIDENCE));
+    let (code, stdout, _) = run(&["schema", "exit-codes"], "");
+    assert_eq!(code, 0);
+    let schema: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let actions: Vec<(&str, &str)> = schema["refusals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r["class"].as_str().unwrap(), r["action"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        actions,
+        [
+            ("require_files", "change_input"),
+            ("require_hunks", "change_input"),
+            ("require_findings", "review_evidence"),
+            ("require_all", "review_evidence"),
+            ("eval_failed", "review_evidence"),
+            ("chain_not_ready", "check_environment"),
+        ]
+    );
+    for (class, action) in &actions {
+        assert_ne!(*action, "fix_invocation", "{class}");
+        let text = item(action);
+        assert!(!text.contains("drop the contract"), "{class}: {text}");
+    }
+}

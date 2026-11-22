@@ -9,7 +9,7 @@
 //! Framing is the stdio binding's: one JSON-RPC message per line, nothing else on stdout. A line
 //! longer than [`LINE_CAP`] is refused and skipped, so input can never grow memory past the cap.
 
-use deep_diff_forge_core::exit::{EXIT_CODES, ExitCode, lookup};
+use deep_diff_forge_core::exit::{EXIT_CODES, ExitCode, REFUSALS, Refusal, lookup};
 use deep_diff_forge_daemon::{
     Engine, INPUT_CONTRACT_REFUSED, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, PARSE_ERROR,
     PATCH_PARSE_FAILED, Request, RpcError, bounded_message, dispatch,
@@ -455,6 +455,10 @@ fn exit_tools() -> Vec<Value> {
         },
         "required": ["family", "code", "name", "meaning", "action", "may_be_transient"],
     });
+    let refusals = json!({"type": "array", "items": refusal_schema(), "description": "The reason classes of engine exit 7; stderr names one per reason."});
+    // `explain_exit_code` for engine 7 also lists the reason classes; the schema stays open.
+    let mut explained = exit_entry.clone();
+    explained["properties"]["refusals"] = refusals.clone();
     vec![
         json!({
             "name": "explain_exit_code",
@@ -469,7 +473,7 @@ fn exit_tools() -> Vec<Value> {
                 "required": ["code"],
                 "additionalProperties": false,
             },
-            "outputSchema": exit_entry,
+            "outputSchema": explained,
             "annotations": read_only,
         }),
         json!({
@@ -479,7 +483,7 @@ fn exit_tools() -> Vec<Value> {
             "inputSchema": {"type": "object", "additionalProperties": false},
             "outputSchema": {
                 "type": "object",
-                "properties": {"codes": {"type": "array", "items": exit_entry}},
+                "properties": {"codes": {"type": "array", "items": exit_entry}, "refusals": refusals},
                 "required": ["codes"],
             },
             "annotations": read_only,
@@ -545,7 +549,9 @@ fn call_tool(mut params: Value, allowed: &[std::path::PathBuf]) -> Result<Value,
             daemon_value("findings.verify", arguments).map_or_else(|error| error, structured)
         }
         "explain_exit_code" => explain(&arguments),
-        _ => structured(json!({"codes": EXIT_CODES.iter().map(entry_json).collect::<Vec<_>>()})),
+        _ => structured(
+            json!({"codes": EXIT_CODES.iter().map(entry_json).collect::<Vec<_>>(), "refusals": refusals_json()}),
+        ),
     })
 }
 
@@ -816,6 +822,44 @@ pub(crate) fn entry_json(entry: &ExitCode) -> Value {
     json!({"family": entry.family, "code": entry.code, "name": entry.name, "meaning": entry.meaning, "action": entry.action.name(), "may_be_transient": entry.action.may_be_transient()})
 }
 
+/// One reason class of engine exit 7 as JSON, the same in `schema exit-codes`, `explain 7 --json`
+/// and MCP (F7.h1). Its `action` and `may_be_transient` refine the code's for that class.
+fn refusal_json(refusal: &Refusal) -> Value {
+    json!({"class": refusal.class, "tag": refusal.tag, "commands": refusal.commands, "stdout": refusal.stdout.name(), "action": refusal.action.name(), "may_be_transient": refusal.action.may_be_transient(), "since": refusal.since})
+}
+
+/// Every reason class of engine exit 7 ([`REFUSALS`]), in registry order.
+pub(crate) fn refusals_json() -> Vec<Value> {
+    REFUSALS.iter().map(refusal_json).collect()
+}
+
+/// One registry entry as [`entry_json`] gives it, with the reason classes for engine exit 7.
+pub(crate) fn explained_json(entry: &ExitCode) -> Value {
+    let mut value = entry_json(entry);
+    if (entry.family, entry.code) == ("engine", deep_diff_forge_core::exit::INPUT_CONTRACT_REFUSED)
+    {
+        value["refusals"] = json!(refusals_json());
+    }
+    value
+}
+
+/// The output schema of one reason class.
+fn refusal_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "class": {"type": "string"},
+            "tag": {"type": "string"},
+            "commands": {"type": "string"},
+            "stdout": {"enum": ["empty", "document"]},
+            "action": {"type": "string"},
+            "may_be_transient": {"type": "boolean"},
+            "since": {"type": "string"},
+        },
+        "required": ["class", "tag", "commands", "stdout", "action", "may_be_transient", "since"],
+    })
+}
+
 fn explain(arguments: &Map<String, Value>) -> Value {
     let family = arguments
         .get("family")
@@ -833,7 +877,7 @@ fn explain(arguments: &Map<String, Value>) -> Value {
                 "exit code {code} is not documented for the {family} family"
             ))
         },
-        |e| structured(entry_json(e)),
+        |e| structured(explained_json(e)),
     )
 }
 

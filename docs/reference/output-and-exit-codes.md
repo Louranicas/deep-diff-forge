@@ -111,7 +111,7 @@ another), `mode_changed` (only the mode changed, such as the executable bit), `b
 | 3 | I/O or encoding failure: reading input (stdin, a file, Git, the learning store), non-UTF-8 input, or writing output. | `check_environment` |
 | 4 | Invalid input: a patch or analysis input that fails to parse or validate, `--stdin-patch` input in which Git finds no patch (`no_patch_in_input`), input over the byte budget, an invalid receipt, a named path that is not a regular file, or a refused Git acquisition or file pair. | `change_input` |
 | 6 | Daemon / interactive-terminal failure. | `check_environment` |
-| 7 | Input contract refused. `--require-files`: the (well-formed) patch describes 0 files — stderr `refused: 0 files in input (--require-files)`. `--require-hunks`: the patch has 0 hunks or 0 added+removed lines (header-only, rename-only, context-only) — stderr `refused: 0 hunks in input (--require-hunks)`. Gates should pass both. | `change_input` |
+| 7 | Input contract refused. A contract the caller asked for, or the check the command exists to make, did not hold; stderr names the reason class in one line `refused: <text> (<tag>)` (see [Refusal reasons (exit 7)](#refusal-reasons-exit-7)). Gates should pass both `--require-files` and `--require-hunks`. | `change_input` |
 | 101 | Internal error (a panic). Report it as a bug. | `report_bug` |
 
 On `--stdin-patch` the refusals come in this order: a parse error (4), then `--require-files` / `--require-hunks` (7), then input in which Git finds no patch (4, stderr `error: no_patch_in_input: …`, unless `--allow-empty`).
@@ -141,11 +141,34 @@ and the MCP tools report it as `action`, with `may_be_transient`, which is true 
 - `check_environment`: check what the message names (a file or stream, the terminal, the daemon);
   the same command can succeed once that is fixed.
 - `change_input`: change the input or the state the message names (a stale admission, an
-  existing artifact), or drop the contract that refused it; the same input is refused again.
-- `review_evidence`: read the evidence the council reported and decide; rerunning does not change it.
+  existing artifact); the same input is refused again.
+- `review_evidence`: read the reason and the evidence the message or the council reported; a
+  person decides what changes; rerunning does not change it.
 - `report_bug`: report the command and its input; do not retry blindly.
 
 Both tables come from one registry in the binary, and a test fails if this document drifts from it.
+
+### Refusal reasons (exit 7)
+
+Exit 7 of the engine family has one meaning, and every exit 7 names its reason class on stderr: for
+each reason that holds, one line `refused: <text> (<tag>)`, in the order of this table; the first
+is the primary reason. The text holds counts, flag names, label names and class names, never a
+path or other text of the input; other stderr lines may come before or after it. A class's **Next**
+refines exit 7's `change_input` for that class. `schema exit-codes` lists the classes as
+`refusals` beside `codes`; `explain 7 [--json]` and the MCP tools `explain_exit_code` (code 7) and
+`exit_code_registry` list the same.
+
+| Class | Tag | Commands | Stdout | Next | Since | Reason line |
+| --- | --- | --- | --- | --- | --- | --- |
+| `require_files` | `--require-files` | `--stdin-patch`, `--git-*`, `<old> <new>`, `findings verify`; daemon `require_files` | `empty` | `change_input` | 0.3.0 | `refused: 0 files in input (--require-files)` |
+| `require_hunks` | `--require-hunks` | `--stdin-patch`, `--git-*`, `<old> <new>`, `findings verify`; daemon `require_hunks` | `empty` | `change_input` | 0.3.0 | `refused: 0 hunks in input (--require-hunks)` |
+| `require_findings` | `--require-findings` | `findings verify` | `document` | `review_evidence` | 0.8.0 | `refused: 0 findings in the findings file (--require-findings)` |
+| `require_all` | `--require-all` | `findings verify` | `document` | `review_evidence` | 0.5.0 | `refused: N of M findings were refused or over the limit (--require-all)` |
+| `eval_failed` | `eval` | `eval` | `document` | `review_evidence` | 0.5.0 | `refused: N cases failed (eval)` |
+| `chain_not_ready` | `agent doctor` | `agent doctor` | `document` | `check_environment` | 0.9.0 | `refused: N checks failed (agent doctor)` |
+Input refusals (stdout `empty`) end the command before anything is written. Verdict refusals
+(stdout `document`) print the judged document first, then the reason. `--require-hunks` refuses a
+patch with 0 hunks or 0 added and removed lines (header-only, rename-only, context-only).
 
 ### Machine contract (`ddf.result.v1`)
 

@@ -7,6 +7,7 @@ moved from that page. The [README](../../README.md#reference) says what each hol
 - [Command reference](commands.md#command-reference)
 - [Output formats and schemas](output-and-exit-codes.md#output-formats-and-schemas)
 - [Exit codes](output-and-exit-codes.md#exit-codes)
+- [Diagnostics](diagnostics.md#diagnostics)
 - [MCP server](mcp-sdk-daemon.md#mcp-server)
 - [SDKs](mcp-sdk-daemon.md#sdks)
 - [The optional daemon](mcp-sdk-daemon.md#the-optional-daemon)

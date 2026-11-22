@@ -1,13 +1,13 @@
 {
   "SPDXID": "SPDXRef-DOCUMENT",
   "creationInfo": {
-    "created": "2026-11-22T13:09:06Z",
+    "created": "2026-11-22T14:50:34Z",
     "creators": [
       "Tool: deep-diff-forge scripts/security/generate_spdx_sbom.py"
     ]
   },
   "dataLicense": "CC0-1.0",
-  "documentNamespace": "https://github.com/Louranicas/deep-diff-forge/sbom/fab516e807363993f09b26d9d8c91a99",
+  "documentNamespace": "https://github.com/Louranicas/deep-diff-forge/sbom/8149d857b41e9b9be85588a64b853c64",
   "name": "deep-diff-forge-cargo-lock-sbom",
   "packages": [
     {
@@ -443,7 +443,7 @@
       "versionInfo": "0.23.0"
     },
     {
-      "SPDXID": "SPDXRef-Package-deep-diff-forge-agent-1c10876cc377c781",
+      "SPDXID": "SPDXRef-Package-deep-diff-forge-agent-c7f67d1024c4ec7f",
       "checksums": [],
       "copyrightText": "NOASSERTION",
       "downloadLocation": "NOASSERTION",
@@ -453,10 +453,10 @@
       "licenseDeclared": "MIT OR Apache-2.0",
       "name": "deep-diff-forge-agent",
       "primaryPackagePurpose": "APPLICATION",
-      "versionInfo": "0.9.0"
+      "versionInfo": "0.11.0-dev"
     },
     {
-      "SPDXID": "SPDXRef-Package-deep-diff-forge-cli-a2a24d4f8b74c57f",
+      "SPDXID": "SPDXRef-Package-deep-diff-forge-cli-2258aebc43185b43",
       "checksums": [],
       "copyrightText": "NOASSERTION",
       "downloadLocation": "NOASSERTION",
@@ -466,10 +466,10 @@
       "licenseDeclared": "MIT OR Apache-2.0",
       "name": "deep-diff-forge-cli",
       "primaryPackagePurpose": "APPLICATION",
-      "versionInfo": "0.9.0"
+      "versionInfo": "0.11.0-dev"
     },
     {
-      "SPDXID": "SPDXRef-Package-deep-diff-forge-cluster-ddda40af51fb7847",
+      "SPDXID": "SPDXRef-Package-deep-diff-forge-cluster-25c2a6b112cd0f13",
       "checksums": [],
       "copyrightText": "NOASSERTION",
       "downloadLocation": "NOASSERTION",
@@ -479,10 +479,10 @@
       "licenseDeclared": "MIT OR Apache-2.0",
       "name": "deep-diff-forge-cluster",
       "primaryPackagePurpose": "APPLICATION",
-      "versionInfo": "0.9.0"
+      "versionInfo": "0.11.0-dev"
     },
     {
-      "SPDXID": "SPDXRef-Package-deep-diff-forge-core-be83538dc117d625",
+      "SPDXID": "SPDXRef-Package-deep-diff-forge-core-e71d9b6556f6d8aa",
       "checksums": [],
       "copyrightText": "NOASSERTION",
       "downloadLocation": "NOASSERTION",
@@ -492,10 +492,10 @@
       "licenseDeclared": "MIT OR Apache-2.0",
       "name": "deep-diff-forge-core",
       "primaryPackagePurpose": "APPLICATION",
-      "versionInfo": "0.9.0"
+      "versionInfo": "0.11.0-dev"
     },
     {
-      "SPDXID": "SPDXRef-Package-deep-diff-forge-daemon-c9d78246b04ec5ce",
+      "SPDXID": "SPDXRef-Package-deep-diff-forge-daemon-137ac302e4d7b33f",
       "checksums": [],
       "copyrightText": "NOASSERTION",
       "downloadLocation": "NOASSERTION",
@@ -505,10 +505,10 @@
       "licenseDeclared": "MIT OR Apache-2.0",
       "name": "deep-diff-forge-daemon",
       "primaryPackagePurpose": "APPLICATION",
-      "versionInfo": "0.9.0"
+      "versionInfo": "0.11.0-dev"
     },
     {
-      "SPDXID": "SPDXRef-Package-deep-diff-forge-graph-2b59645751b1ee27",
+      "SPDXID": "SPDXRef-Package-deep-diff-forge-graph-b9cff8cc5396e27b",
       "checksums": [],
       "copyrightText": "NOASSERTION",
       "downloadLocation": "NOASSERTION",
@@ -518,10 +518,10 @@
       "licenseDeclared": "MIT OR Apache-2.0",
       "name": "deep-diff-forge-graph",
       "primaryPackagePurpose": "APPLICATION",
-      "versionInfo": "0.9.0"
+      "versionInfo": "0.11.0-dev"
     },
     {
-      "SPDXID": "SPDXRef-Package-deep-diff-forge-learning-75ab333672bf16ca",
+      "SPDXID": "SPDXRef-Package-deep-diff-forge-learning-679969a225884353",
       "checksums": [],
       "copyrightText": "NOASSERTION",
       "downloadLocation": "NOASSERTION",
@@ -531,10 +531,10 @@
       "licenseDeclared": "MIT OR Apache-2.0",
       "name": "deep-diff-forge-learning",
       "primaryPackagePurpose": "APPLICATION",
-      "versionInfo": "0.9.0"
+      "versionInfo": "0.11.0-dev"
     },
     {
-      "SPDXID": "SPDXRef-Package-deep-diff-forge-patch-b7d91904d1cbd467",
+      "SPDXID": "SPDXRef-Package-deep-diff-forge-patch-b6c11a0f71e8a2e3",
       "checksums": [],
       "copyrightText": "NOASSERTION",
       "downloadLocation": "NOASSERTION",
@@ -544,10 +544,10 @@
       "licenseDeclared": "MIT OR Apache-2.0",
       "name": "deep-diff-forge-patch",
       "primaryPackagePurpose": "APPLICATION",
-      "versionInfo": "0.9.0"
+      "versionInfo": "0.11.0-dev"
     },
     {
-      "SPDXID": "SPDXRef-Package-deep-diff-forge-pipeline-7dad71cc4c317ecc",
+      "SPDXID": "SPDXRef-Package-deep-diff-forge-pipeline-86910d2383ec63a2",
       "checksums": [],
       "copyrightText": "NOASSERTION",
       "downloadLocation": "NOASSERTION",
@@ -557,10 +557,10 @@
       "licenseDeclared": "MIT OR Apache-2.0",
       "name": "deep-diff-forge-pipeline",
       "primaryPackagePurpose": "APPLICATION",
-      "versionInfo": "0.9.0"
+      "versionInfo": "0.11.0-dev"
     },
     {
-      "SPDXID": "SPDXRef-Package-deep-diff-forge-projection-80cea99badf3b04b",
+      "SPDXID": "SPDXRef-Package-deep-diff-forge-projection-86b48e438c73bb07",
       "checksums": [],
       "copyrightText": "NOASSERTION",
       "downloadLocation": "NOASSERTION",
@@ -570,10 +570,10 @@
       "licenseDeclared": "MIT OR Apache-2.0",
       "name": "deep-diff-forge-projection",
       "primaryPackagePurpose": "APPLICATION",
-      "versionInfo": "0.9.0"
+      "versionInfo": "0.11.0-dev"
     },
     {
-      "SPDXID": "SPDXRef-Package-deep-diff-forge-review-0c9d8aab436692ee",
+      "SPDXID": "SPDXRef-Package-deep-diff-forge-review-80526aea5ae0c88e",
       "checksums": [],
       "copyrightText": "NOASSERTION",
       "downloadLocation": "NOASSERTION",
@@ -583,10 +583,10 @@
       "licenseDeclared": "MIT OR Apache-2.0",
       "name": "deep-diff-forge-review",
       "primaryPackagePurpose": "APPLICATION",
-      "versionInfo": "0.9.0"
+      "versionInfo": "0.11.0-dev"
     },
     {
-      "SPDXID": "SPDXRef-Package-deep-diff-forge-sdk-04a4c2956b424d9b",
+      "SPDXID": "SPDXRef-Package-deep-diff-forge-sdk-56359cb28c7cfc27",
       "checksums": [],
       "copyrightText": "NOASSERTION",
       "downloadLocation": "NOASSERTION",
@@ -596,10 +596,10 @@
       "licenseDeclared": "MIT OR Apache-2.0",
       "name": "deep-diff-forge-sdk",
       "primaryPackagePurpose": "APPLICATION",
-      "versionInfo": "0.9.0"
+      "versionInfo": "0.11.0-dev"
     },
     {
-      "SPDXID": "SPDXRef-Package-deep-diff-forge-syntax-788bd54c6add3319",
+      "SPDXID": "SPDXRef-Package-deep-diff-forge-syntax-8ffa24a8e60c12b7",
       "checksums": [],
       "copyrightText": "NOASSERTION",
       "downloadLocation": "NOASSERTION",
@@ -609,10 +609,10 @@
       "licenseDeclared": "MIT OR Apache-2.0",
       "name": "deep-diff-forge-syntax",
       "primaryPackagePurpose": "APPLICATION",
-      "versionInfo": "0.9.0"
+      "versionInfo": "0.11.0-dev"
     },
     {
-      "SPDXID": "SPDXRef-Package-deep-diff-forge-testkit-cc46c4def7708919",
+      "SPDXID": "SPDXRef-Package-deep-diff-forge-testkit-5a056a9f18eee436",
       "checksums": [],
       "copyrightText": "NOASSERTION",
       "downloadLocation": "NOASSERTION",
@@ -622,10 +622,10 @@
       "licenseDeclared": "MIT OR Apache-2.0",
       "name": "deep-diff-forge-testkit",
       "primaryPackagePurpose": "APPLICATION",
-      "versionInfo": "0.9.0"
+      "versionInfo": "0.11.0-dev"
     },
     {
-      "SPDXID": "SPDXRef-Package-deep-diff-forge-tui-600bda50ef3cf380",
+      "SPDXID": "SPDXRef-Package-deep-diff-forge-tui-a43094d3f37ace93",
       "checksums": [],
       "copyrightText": "NOASSERTION",
       "downloadLocation": "NOASSERTION",
@@ -635,7 +635,7 @@
       "licenseDeclared": "MIT OR Apache-2.0",
       "name": "deep-diff-forge-tui",
       "primaryPackagePurpose": "APPLICATION",
-      "versionInfo": "0.9.0"
+      "versionInfo": "0.11.0-dev"
     },
     {
       "SPDXID": "SPDXRef-Package-deranged-73df6ff589006077",
@@ -2920,77 +2920,77 @@
   ],
   "relationships": [
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-agent-1c10876cc377c781",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-agent-c7f67d1024c4ec7f",
       "relationshipType": "DESCRIBES",
       "spdxElementId": "SPDXRef-DOCUMENT"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-cli-a2a24d4f8b74c57f",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-cli-2258aebc43185b43",
       "relationshipType": "DESCRIBES",
       "spdxElementId": "SPDXRef-DOCUMENT"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-cluster-ddda40af51fb7847",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-cluster-25c2a6b112cd0f13",
       "relationshipType": "DESCRIBES",
       "spdxElementId": "SPDXRef-DOCUMENT"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-core-be83538dc117d625",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-core-e71d9b6556f6d8aa",
       "relationshipType": "DESCRIBES",
       "spdxElementId": "SPDXRef-DOCUMENT"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-daemon-c9d78246b04ec5ce",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-daemon-137ac302e4d7b33f",
       "relationshipType": "DESCRIBES",
       "spdxElementId": "SPDXRef-DOCUMENT"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-graph-2b59645751b1ee27",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-graph-b9cff8cc5396e27b",
       "relationshipType": "DESCRIBES",
       "spdxElementId": "SPDXRef-DOCUMENT"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-learning-75ab333672bf16ca",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-learning-679969a225884353",
       "relationshipType": "DESCRIBES",
       "spdxElementId": "SPDXRef-DOCUMENT"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-patch-b7d91904d1cbd467",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-patch-b6c11a0f71e8a2e3",
       "relationshipType": "DESCRIBES",
       "spdxElementId": "SPDXRef-DOCUMENT"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-pipeline-7dad71cc4c317ecc",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-pipeline-86910d2383ec63a2",
       "relationshipType": "DESCRIBES",
       "spdxElementId": "SPDXRef-DOCUMENT"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-projection-80cea99badf3b04b",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-projection-86b48e438c73bb07",
       "relationshipType": "DESCRIBES",
       "spdxElementId": "SPDXRef-DOCUMENT"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-review-0c9d8aab436692ee",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-review-80526aea5ae0c88e",
       "relationshipType": "DESCRIBES",
       "spdxElementId": "SPDXRef-DOCUMENT"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-sdk-04a4c2956b424d9b",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-sdk-56359cb28c7cfc27",
       "relationshipType": "DESCRIBES",
       "spdxElementId": "SPDXRef-DOCUMENT"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-syntax-788bd54c6add3319",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-syntax-8ffa24a8e60c12b7",
       "relationshipType": "DESCRIBES",
       "spdxElementId": "SPDXRef-DOCUMENT"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-testkit-cc46c4def7708919",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-testkit-5a056a9f18eee436",
       "relationshipType": "DESCRIBES",
       "spdxElementId": "SPDXRef-DOCUMENT"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-tui-600bda50ef3cf380",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-tui-a43094d3f37ace93",
       "relationshipType": "DESCRIBES",
       "spdxElementId": "SPDXRef-DOCUMENT"
     },
@@ -3165,374 +3165,374 @@
       "spdxElementId": "SPDXRef-Package-darling-macro-b70079d39253c9e7"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-core-be83538dc117d625",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-core-e71d9b6556f6d8aa",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-agent-1c10876cc377c781"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-agent-c7f67d1024c4ec7f"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-patch-b7d91904d1cbd467",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-patch-b6c11a0f71e8a2e3",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-agent-1c10876cc377c781"
-    },
-    {
-      "relatedSpdxElement": "SPDXRef-Package-serde-json-0a8bc9687473eff2",
-      "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-agent-1c10876cc377c781"
-    },
-    {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-agent-1c10876cc377c781",
-      "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-a2a24d4f8b74c57f"
-    },
-    {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-cluster-ddda40af51fb7847",
-      "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-a2a24d4f8b74c57f"
-    },
-    {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-core-be83538dc117d625",
-      "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-a2a24d4f8b74c57f"
-    },
-    {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-daemon-c9d78246b04ec5ce",
-      "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-a2a24d4f8b74c57f"
-    },
-    {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-graph-2b59645751b1ee27",
-      "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-a2a24d4f8b74c57f"
-    },
-    {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-learning-75ab333672bf16ca",
-      "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-a2a24d4f8b74c57f"
-    },
-    {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-patch-b7d91904d1cbd467",
-      "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-a2a24d4f8b74c57f"
-    },
-    {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-pipeline-7dad71cc4c317ecc",
-      "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-a2a24d4f8b74c57f"
-    },
-    {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-projection-80cea99badf3b04b",
-      "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-a2a24d4f8b74c57f"
-    },
-    {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-review-0c9d8aab436692ee",
-      "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-a2a24d4f8b74c57f"
-    },
-    {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-syntax-788bd54c6add3319",
-      "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-a2a24d4f8b74c57f"
-    },
-    {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-testkit-cc46c4def7708919",
-      "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-a2a24d4f8b74c57f"
-    },
-    {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-tui-600bda50ef3cf380",
-      "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-a2a24d4f8b74c57f"
-    },
-    {
-      "relatedSpdxElement": "SPDXRef-Package-nix-0b222db49a8b7665",
-      "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-a2a24d4f8b74c57f"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-agent-c7f67d1024c4ec7f"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-serde-json-0a8bc9687473eff2",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-a2a24d4f8b74c57f"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-agent-c7f67d1024c4ec7f"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-core-be83538dc117d625",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-agent-c7f67d1024c4ec7f",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cluster-ddda40af51fb7847"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-2258aebc43185b43"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-graph-2b59645751b1ee27",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-cluster-25c2a6b112cd0f13",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cluster-ddda40af51fb7847"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-2258aebc43185b43"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-patch-b7d91904d1cbd467",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-core-e71d9b6556f6d8aa",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cluster-ddda40af51fb7847"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-2258aebc43185b43"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-daemon-137ac302e4d7b33f",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-2258aebc43185b43"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-graph-b9cff8cc5396e27b",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-2258aebc43185b43"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-learning-679969a225884353",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-2258aebc43185b43"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-patch-b6c11a0f71e8a2e3",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-2258aebc43185b43"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-pipeline-86910d2383ec63a2",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-2258aebc43185b43"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-projection-86b48e438c73bb07",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-2258aebc43185b43"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-review-80526aea5ae0c88e",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-2258aebc43185b43"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-syntax-8ffa24a8e60c12b7",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-2258aebc43185b43"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-testkit-5a056a9f18eee436",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-2258aebc43185b43"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-tui-a43094d3f37ace93",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-2258aebc43185b43"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-nix-0b222db49a8b7665",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-core-be83538dc117d625"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-2258aebc43185b43"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-agent-1c10876cc377c781",
+      "relatedSpdxElement": "SPDXRef-Package-serde-json-0a8bc9687473eff2",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-c9d78246b04ec5ce"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cli-2258aebc43185b43"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-core-be83538dc117d625",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-core-e71d9b6556f6d8aa",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-c9d78246b04ec5ce"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cluster-25c2a6b112cd0f13"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-graph-2b59645751b1ee27",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-graph-b9cff8cc5396e27b",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-c9d78246b04ec5ce"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cluster-25c2a6b112cd0f13"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-patch-b7d91904d1cbd467",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-patch-b6c11a0f71e8a2e3",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-c9d78246b04ec5ce"
-    },
-    {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-testkit-cc46c4def7708919",
-      "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-c9d78246b04ec5ce"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-cluster-25c2a6b112cd0f13"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-nix-0b222db49a8b7665",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-c9d78246b04ec5ce"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-core-e71d9b6556f6d8aa"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-agent-c7f67d1024c4ec7f",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-137ac302e4d7b33f"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-core-e71d9b6556f6d8aa",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-137ac302e4d7b33f"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-graph-b9cff8cc5396e27b",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-137ac302e4d7b33f"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-patch-b6c11a0f71e8a2e3",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-137ac302e4d7b33f"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-testkit-5a056a9f18eee436",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-137ac302e4d7b33f"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-nix-0b222db49a8b7665",
+      "relationshipType": "DEPENDS_ON",
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-137ac302e4d7b33f"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-rustix-14a74502c8eb0211",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-c9d78246b04ec5ce"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-137ac302e4d7b33f"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-serde-d11d11b1d493a45c",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-c9d78246b04ec5ce"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-137ac302e4d7b33f"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-serde-json-0a8bc9687473eff2",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-c9d78246b04ec5ce"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-137ac302e4d7b33f"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-signal-hook-90e1840f419317b3",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-c9d78246b04ec5ce"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-daemon-137ac302e4d7b33f"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-core-be83538dc117d625",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-core-e71d9b6556f6d8aa",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-graph-2b59645751b1ee27"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-graph-b9cff8cc5396e27b"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-patch-b7d91904d1cbd467",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-patch-b6c11a0f71e8a2e3",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-graph-2b59645751b1ee27"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-graph-b9cff8cc5396e27b"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-testkit-cc46c4def7708919",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-testkit-5a056a9f18eee436",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-learning-75ab333672bf16ca"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-learning-679969a225884353"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-rustix-14a74502c8eb0211",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-learning-75ab333672bf16ca"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-learning-679969a225884353"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-serde-d11d11b1d493a45c",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-learning-75ab333672bf16ca"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-learning-679969a225884353"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-serde-json-0a8bc9687473eff2",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-learning-75ab333672bf16ca"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-learning-679969a225884353"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-core-be83538dc117d625",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-core-e71d9b6556f6d8aa",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-patch-b7d91904d1cbd467"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-patch-b6c11a0f71e8a2e3"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-testkit-cc46c4def7708919",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-testkit-5a056a9f18eee436",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-patch-b7d91904d1cbd467"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-patch-b6c11a0f71e8a2e3"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-core-be83538dc117d625",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-core-e71d9b6556f6d8aa",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-pipeline-7dad71cc4c317ecc"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-pipeline-86910d2383ec63a2"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-graph-2b59645751b1ee27",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-graph-b9cff8cc5396e27b",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-pipeline-7dad71cc4c317ecc"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-pipeline-86910d2383ec63a2"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-patch-b7d91904d1cbd467",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-patch-b6c11a0f71e8a2e3",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-pipeline-7dad71cc4c317ecc"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-pipeline-86910d2383ec63a2"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-projection-80cea99badf3b04b",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-projection-86b48e438c73bb07",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-pipeline-7dad71cc4c317ecc"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-pipeline-86910d2383ec63a2"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-syntax-788bd54c6add3319",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-syntax-8ffa24a8e60c12b7",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-pipeline-7dad71cc4c317ecc"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-pipeline-86910d2383ec63a2"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-core-be83538dc117d625",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-core-e71d9b6556f6d8aa",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-projection-80cea99badf3b04b"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-projection-86b48e438c73bb07"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-patch-b7d91904d1cbd467",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-patch-b6c11a0f71e8a2e3",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-projection-80cea99badf3b04b"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-projection-86b48e438c73bb07"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-unicode-segmentation-50bc3c61e7242234",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-projection-80cea99badf3b04b"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-projection-86b48e438c73bb07"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-unicode-width-418fa349874c0d3b",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-projection-80cea99badf3b04b"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-projection-86b48e438c73bb07"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-core-be83538dc117d625",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-core-e71d9b6556f6d8aa",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-review-0c9d8aab436692ee"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-review-80526aea5ae0c88e"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-testkit-cc46c4def7708919",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-testkit-5a056a9f18eee436",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-review-0c9d8aab436692ee"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-review-80526aea5ae0c88e"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-nix-0b222db49a8b7665",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-review-0c9d8aab436692ee"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-review-80526aea5ae0c88e"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-serde-d11d11b1d493a45c",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-review-0c9d8aab436692ee"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-review-80526aea5ae0c88e"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-serde-json-0a8bc9687473eff2",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-review-0c9d8aab436692ee"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-review-80526aea5ae0c88e"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-core-be83538dc117d625",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-core-e71d9b6556f6d8aa",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-sdk-04a4c2956b424d9b"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-sdk-56359cb28c7cfc27"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-daemon-c9d78246b04ec5ce",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-daemon-137ac302e4d7b33f",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-sdk-04a4c2956b424d9b"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-sdk-56359cb28c7cfc27"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-graph-2b59645751b1ee27",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-graph-b9cff8cc5396e27b",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-sdk-04a4c2956b424d9b"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-sdk-56359cb28c7cfc27"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-patch-b7d91904d1cbd467",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-patch-b6c11a0f71e8a2e3",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-sdk-04a4c2956b424d9b"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-sdk-56359cb28c7cfc27"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-testkit-cc46c4def7708919",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-testkit-5a056a9f18eee436",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-sdk-04a4c2956b424d9b"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-sdk-56359cb28c7cfc27"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-serde-json-0a8bc9687473eff2",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-sdk-04a4c2956b424d9b"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-sdk-56359cb28c7cfc27"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-core-be83538dc117d625",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-core-e71d9b6556f6d8aa",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-syntax-788bd54c6add3319"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-syntax-8ffa24a8e60c12b7"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-tree-sitter-rust-6a42dc667c15beba",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-syntax-788bd54c6add3319"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-syntax-8ffa24a8e60c12b7"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-tree-sitter-23c293f9d545b1fe",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-syntax-788bd54c6add3319"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-syntax-8ffa24a8e60c12b7"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-agent-1c10876cc377c781",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-agent-c7f67d1024c4ec7f",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-tui-600bda50ef3cf380"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-tui-a43094d3f37ace93"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-cluster-ddda40af51fb7847",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-cluster-25c2a6b112cd0f13",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-tui-600bda50ef3cf380"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-tui-a43094d3f37ace93"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-core-be83538dc117d625",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-core-e71d9b6556f6d8aa",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-tui-600bda50ef3cf380"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-tui-a43094d3f37ace93"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-daemon-c9d78246b04ec5ce",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-daemon-137ac302e4d7b33f",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-tui-600bda50ef3cf380"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-tui-a43094d3f37ace93"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-graph-2b59645751b1ee27",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-graph-b9cff8cc5396e27b",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-tui-600bda50ef3cf380"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-tui-a43094d3f37ace93"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-learning-75ab333672bf16ca",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-learning-679969a225884353",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-tui-600bda50ef3cf380"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-tui-a43094d3f37ace93"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-patch-b7d91904d1cbd467",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-patch-b6c11a0f71e8a2e3",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-tui-600bda50ef3cf380"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-tui-a43094d3f37ace93"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-projection-80cea99badf3b04b",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-projection-86b48e438c73bb07",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-tui-600bda50ef3cf380"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-tui-a43094d3f37ace93"
     },
     {
-      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-syntax-788bd54c6add3319",
+      "relatedSpdxElement": "SPDXRef-Package-deep-diff-forge-syntax-8ffa24a8e60c12b7",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-tui-600bda50ef3cf380"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-tui-a43094d3f37ace93"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-crossterm-f09249501ce7359b",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-tui-600bda50ef3cf380"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-tui-a43094d3f37ace93"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-ratatui-0d30b3939eabce4e",
       "relationshipType": "DEPENDS_ON",
-      "spdxElementId": "SPDXRef-Package-deep-diff-forge-tui-600bda50ef3cf380"
+      "spdxElementId": "SPDXRef-Package-deep-diff-forge-tui-a43094d3f37ace93"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-derive-more-impl-c490e15c2cf970f6",

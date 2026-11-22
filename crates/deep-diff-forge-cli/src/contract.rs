@@ -73,15 +73,31 @@ pub fn explain(args: &[String]) -> Result<String, String> {
     let code = code.ok_or_else(|| format!("usage: {EXPLAIN_USAGE}"))?;
     let entry = lookup(family, code)
         .ok_or_else(|| format!("exit code {code} is not documented for the {family} family"))?;
-    Ok(if json {
-        format!("{}\n", entry_json(entry))
-    } else {
-        format!(
-            "{} {} ({}): {}\n",
-            entry.family, entry.code, entry.name, entry.meaning
-        )
-    })
+    if json {
+        return Ok(format!("{}\n", crate::mcp::explained_json(entry)));
+    }
+    let mut text = format!(
+        "{} {} ({}): {}\n",
+        entry.family, entry.code, entry.name, entry.meaning
+    );
+    // F7.h1: engine 7 has one meaning and names its reason class on stderr.
+    if (entry.family, entry.code) == ("engine", exit::INPUT_CONTRACT_REFUSED) {
+        text.push_str(REFUSAL_PREAMBLE);
+        for r in exit::REFUSALS {
+            text.push_str(&format!(
+                "  {:<18} ({}) stdout {}, next {}\n",
+                r.class,
+                r.tag,
+                r.stdout.name(),
+                r.action.name()
+            ));
+        }
+    }
+    Ok(text)
 }
+
+/// What `explain 7` says exit 7 covers, before its reason classes.
+const REFUSAL_PREAMBLE: &str = "A contract the caller asked for, or the check the command exists to make, did not hold; stderr names the reason class in a line `refused: <text> (<tag>)`:\n";
 
 /// The `tool` member every document of this binary carries.
 fn tool() -> Value {
@@ -191,6 +207,7 @@ pub fn schema(args: &[String]) -> Result<String, String> {
         Some("exit-codes") => json!({
             "schema": EXIT_CODES_SCHEMA,
             "codes": EXIT_CODES.iter().map(entry_json).collect::<Vec<_>>(),
+            "refusals": crate::mcp::refusals_json(),
         }),
         Some("signals") => json!({
             "schema": SIGNALS_SCHEMA,
@@ -556,9 +573,24 @@ mod tests {
                 .starts_with("engine 0 (success)")
         );
         assert!(explain(&args(&["7", "4"])).is_err());
+        // F7.h1: the first line as before, then exit 7's reason classes, one line each.
+        let seven = explain(&args(&["7"])).unwrap();
+        assert!(
+            seven.starts_with(
+                "engine 7 (input_contract_refused): Input contract refused.\nA contract the caller asked for"
+            ),
+            "{seven}"
+        );
         assert_eq!(
-            explain(&args(&["7"])).unwrap(),
-            "engine 7 (input_contract_refused): Input contract refused.\n"
+            seven.lines().count(),
+            2 + deep_diff_forge_core::exit::REFUSALS.len(),
+            "{seven}"
+        );
+        assert!(
+            seven.contains(
+                "  require_all        (--require-all) stdout document, next review_evidence\n"
+            ),
+            "{seven}"
         );
         assert!(
             explain(&args(&["7", "--family", "council"]))
