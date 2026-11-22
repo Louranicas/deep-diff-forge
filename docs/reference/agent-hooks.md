@@ -738,6 +738,10 @@ Stated limits, which the judge on the pull request covers:
   - An untracked `.gitignore` that ignores itself (`*`), at the top or in a subdirectory,
     hides itself and the failing work beside it: the stop is silent, with no run of the
     judge.
+  - A directory named `.git` below the top hides from Git everything in it (Git lists and
+    stages no path with a `.git` component; measured with Git 2.56.1): files an agent puts
+    there are in the working tree, are never part of a patch, and cannot be committed. The
+    stop does not see them.
   - A very large sparse file (`truncate -s 400G`, no disk used) makes Git's staging run out
     of the hook's time: the stop is UNJUDGED ("`git add` did not finish in the time a hook
     has and was stopped", 41 seconds), with no run of the judge, at every stop while the file

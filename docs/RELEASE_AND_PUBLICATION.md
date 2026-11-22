@@ -238,6 +238,10 @@ the local repository. Its self-test is `scripts/test_release_local.sh` (`just re
 - **Sign.** The owner signs `SHA256SUMS` with the release key, in a namespace used for nothing
   else (a signature in namespace `git` is one git accepts on a tag or commit):
 
+The receipt lists the checks run on the artefact and the gate's result: set `DDF_GATE_LOG` to
+the log of `scripts/ci_local.sh` for the release commit (its `gate on` and `steps failed`
+lines); without it the receipt says "not given".
+
   ```bash
   ssh-keygen -Y sign -f ~/.ssh/id_ed25519_ddf_release_signing -n deep-diff-forge-release-sha256sums <outdir>/SHA256SUMS
   ```

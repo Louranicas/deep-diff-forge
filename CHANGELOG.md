@@ -342,6 +342,19 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   measures. The hooks' mutation misses of the 0.9.0 run are answered by six new tests (S3.34.b).
 
 
+- **The local gate is honest about what it runs, and runs the contract with forge-warden**
+  (S3.17b.b, F4.a, F4.b). The gate's SBOM step writes nothing into the checkout (it rewrote the
+  tracked `sbom.spdx.json` in place and restored it, with no trap). The gate now also runs the
+  release-script self-test, checks the comparison corpus's manifest where that corpus exists,
+  and runs `scripts/contract_matrix.sh`: the hooks against stand-in judges for verdict v2 and
+  v3 (pass, hold, fail, an unreadable document, exit 4, a hang, a policy that requires verified
+  claims, the judge patch's bytes), and, when `FW_BIN` names a recorded forge-warden binary,
+  against that binary (the stop, the rank bytes, unknown labels, an empty patch with this
+  ranker and with 0.9.0's). Steps that exist only locally are listed in `ci_replica.rs`. The
+  gate has 35 steps (it had 32). The release receipt records the gate's result and the checks
+  run on the artefact.
+
+
 ### Fixed
 
 - **A text file Git was told to show as binary is read as text** (S3.20,

@@ -808,8 +808,8 @@ bounded form.** What it holds to:
   `--submodule=short`, `--ignore-submodules=none`, the store's commit-graph and multi-pack
   index not read), held byte for byte by a test that runs a recorded copy of `make_patch.sh`.
 - **Not a boundary: work hidden with Git's own rules.** A judged agent can hide work from the
-  hooks with a directory of mode 000 or an untracked `.gitignore` that ignores itself (the stop
-  is then silent), or make staging run out of time with a very large sparse file (UNJUDGED,
+  hooks with a directory of mode 000, an untracked `.gitignore` that ignores itself, or a
+  directory named `.git` below the top, whose content Git never lists (the stop is then silent), or make staging run out of time with a very large sparse file (UNJUDGED,
   with no run of the judge). These are stated limits of 0.10.0: the working tree and the merge
   request still show the work, and release 0.11.0 targets them (F12, F13).
 - **`agent doctor --gate` reads a registered stop hook only in the form `agent setup --hooks`
