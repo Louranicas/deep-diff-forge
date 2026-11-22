@@ -11,7 +11,9 @@
 # verify; 5 github.com in an argument, an environment variable or the gitlab remote's URL is
 # refused; 6 a commit whose binary differs between two builds writes nothing; 7 an archive that
 # also holds ./D/deep-diff-forge (another binary, which `tar -xzf` leaves in place of the good
-# one), with its checksums recomputed and signed by the good key, fails verify.
+# one), with its checksums recomputed and signed by the good key, fails verify; 8 the gate's SBOM
+# step (scripts/ci_local.sh --sbom-gate), stopped after the generator ran or run to its end, leaves
+# sbom.spdx.json untouched. Case 1 also checks the receipt's gate result and artefact checks.
 #
 # Run it where cargo builds (here: in the fedora-toolbox-44 toolbox), from a clean checkout:
 #   scripts/test_release_local.sh
@@ -67,7 +69,13 @@ dist="deep-diff-forge-v$version-x86_64-unknown-linux-gnu.tar.gz"
 echo "throwaway clone $t/repo at $head (version $version)"
 
 # 1: a good build, signed with the test key, verifies.
-expect "1a build $head" 0 "both builds:" "$tool" build "$head" "$t/out"
+printf 'gate on %s\nPASS one\nsteps failed: 0\n' "$head" >"$t/gate.log"
+expect "1a build $head" 0 "both builds:" env DDF_GATE_LOG="$t/gate.log" "$tool" build "$head" "$t/out"
+expect "1c the receipt names the gate and the checks on the artefact" 0 "gate pass" python3 -I -c '
+import json, sys
+r = json.load(open(sys.argv[1])); g = r["gate"]
+assert (g["result"], g["commit"], g["steps"], len(r["checks_on_artefact"])) == ("pass", sys.argv[2], 1, 5), r
+print("gate", g["result"])' "$t/out/release-receipt.json" "$head"
 ssh-keygen -q -Y sign -f "$t/keys/good" -n "$ns" "$t/out/SHA256SUMS"
 expect "1b verify v$version" 0 "verify v$version: PASS" "$tool" verify "v$version" "$t/out" "$t/allowed_signers"
 
@@ -127,6 +135,34 @@ with tarfile.open(p, "w:gz", format=tarfile.GNU_FORMAT) as t:
 ssh-keygen -q -Y sign -f "$t/keys/good" -n "$ns" "$t/p-member/SHA256SUMS"
 expect "7 a second spelling of the binary in the archive" 1 "the archive's members are not exactly" \
   "$tool" verify "v$version" "$t/p-member" "$t/allowed_signers"
+
+# 8 (an_interrupted_sbom_step_leaves_the_tracked_file): a python3 shim marks the end of the
+# generator's run and waits; the step's process group is stopped there by its recorded pid. With
+# SOURCE_DATE_EPOCH=1 a regenerated file would differ from HEAD (the comparison ignores the time).
+mkdir "$t/shim" "$t/gate-tmp"
+printf '#!/bin/sh\n%q "$@"; rc=$?; : >%q; sleep 60; exit $rc\n' "$(command -v python3)" "$t/gen-done" >"$t/shim/python3"
+chmod 755 "$t/shim/python3"
+before="$(stat -c '%i %Y' sbom.spdx.json)"
+setsid env PATH="$t/shim:$PATH" TMPDIR="$t/gate-tmp" SOURCE_DATE_EPOCH=1 \
+  "$here/ci_local.sh" --sbom-gate "$t/repo" </dev/null >"$t/sbom.log" 2>&1 &
+pid=$!
+for _ in $(seq 240); do [ -e "$t/gen-done" ] || ! kill -0 "$pid" 2>/dev/null && break; sleep 0.5; done
+kill -TERM -- "-$pid" 2>/dev/null || true
+wait "$pid" || true
+untouched() {
+  if [ -e "$t/gen-done" ] && [ -z "$(git status --porcelain sbom.spdx.json)" ] &&
+    [ "$(stat -c '%i %Y' sbom.spdx.json)" = "$before" ] && [ -z "$(ls -A "$t/gate-tmp")" ]; then
+    echo "PASS $1"
+  else
+    echo "FAIL $1: sbom.spdx.json differs from HEAD or was rewritten, or the scratch is left"
+    git status --porcelain sbom.spdx.json | sed 's/^/    /'; tail -n 5 "$t/sbom.log" | sed 's/^/    /'
+    failures=$((failures + 1))
+  fi
+}
+untouched "8a an_interrupted_sbom_step_leaves_the_tracked_file"
+expect "8b the SBOM step run to its end passes" 0 "the SBOM matches HEAD" \
+  env TMPDIR="$t/gate-tmp" SOURCE_DATE_EPOCH=1 "$here/ci_local.sh" --sbom-gate "$t/repo"
+untouched "8c the SBOM step run to its end leaves the tracked file"
 
 # 6: a plant that makes the binary differ between builds (a build script's time in the binary).
 git checkout --quiet -b plant-unreproducible "$head"
