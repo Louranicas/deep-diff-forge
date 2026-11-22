@@ -1365,10 +1365,15 @@ pub fn request(location: &SocketLocation, line: &str) -> std::io::Result<String>
     settle_write_timeout(stream.set_write_timeout(Some(WRITE_TIMEOUT)))?;
     // A daemon that refuses a line early (its read budget is full) answers and closes before the
     // rest arrives, so the write breaks with the answer already waiting: read it, and report the
-    // broken pipe only when there is none.
+    // broken write only when there is none. It breaks as a broken pipe, or as a reset when it was
+    // waiting with nothing sent as the daemon closed with bytes unread (Linux); before, a reset
+    // lost the answer (G-DAEMON-2).
     let sent = writeln!(stream, "{line}").and_then(|()| stream.flush());
     if let Err(err) = &sent
-        && err.kind() != std::io::ErrorKind::BrokenPipe
+        && !matches!(
+            err.kind(),
+            std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+        )
     {
         return Err(sent.unwrap_err());
     }
@@ -3170,10 +3175,60 @@ mod tests {
 
     #[test]
     fn client_rejects_response_over_cap() {
-        let (_parent, location, daemon) =
-            fake_daemon("resp-over", vec![b'x'; MAX_RESPONSE_BYTES + 1]);
-        let err = request(&location, r#"{"method":"daemon.health"}"#).unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        // One byte over the cap with the newline counted (the cap rule of
+        // docs/reference/mcp-sdk-daemon.md), and a line with no newline at all.
+        let mut framed = vec![b'x'; MAX_RESPONSE_BYTES];
+        framed.push(b'\n');
+        for response in [framed, vec![b'x'; MAX_RESPONSE_BYTES + 1]] {
+            let (_parent, location, daemon) = fake_daemon("resp-over", response);
+            let err = request(&location, r#"{"method":"daemon.health"}"#).unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+            joined(daemon).unwrap();
+        }
+    }
+
+    /// The one line cap is stated once in the daemon reference, with the number and the meaning
+    /// the server's framing and the clients use.
+    #[test]
+    fn the_reference_states_the_one_line_cap() {
+        let reference = include_str!("../../../docs/reference/mcp-sdk-daemon.md");
+        let flat = reference.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert_eq!(MAX_REQUEST_BYTES, 83_886_080);
+        assert!(flat.contains(
+            "A line, request or answer, is at most 80 MiB (83,886,080 bytes, `MAX_REQUEST_BYTES`) counting its newline."
+        ));
+    }
+
+    /// G-DAEMON-2: a daemon that takes 16 bytes of a request, answers and closes with the rest
+    /// unread resets the connection. The line fills the client's send buffer, so the newline's
+    /// write waits with nothing sent and breaks as a reset (Linux), not a broken pipe; the answer
+    /// already waiting is still read. Before, only a broken pipe was tolerated and the call failed
+    /// with `ConnectionReset`.
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test: lets the client fill its send buffer and wait before the daemon closes"
+    )]
+    fn client_reads_the_answer_after_a_connection_reset() {
+        use std::io::Read as _;
+        let answer = r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"busy"}}"#;
+        let (_parent, sock) = explicit_scratch("reset", 0o700);
+        let listener = UnixListener::bind(&sock).expect("bind fake daemon");
+        let daemon = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            // Time for the client to fill its send buffer and wait on the newline's write.
+            thread::sleep(Duration::from_millis(200));
+            let mut first = [0_u8; 16];
+            stream
+                .read_exact(&mut first)
+                .expect("the request's first bytes");
+            let _ = writeln!(stream, "{answer}");
+        });
+        let (probe, _) = UnixStream::pair().expect("socketpair");
+        let fill = rustix::net::sockopt::socket_send_buffer_size(&probe).expect("send buffer");
+        let got = request(&SocketLocation::at(sock), &"x".repeat(fill))
+            .expect("the answer waiting after the reset is read");
+        assert_eq!(got, answer);
         joined(daemon).unwrap();
     }
 

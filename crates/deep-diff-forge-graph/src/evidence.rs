@@ -3817,7 +3817,7 @@ type SecretPrefix = (&'static str, usize, fn(u8) -> bool);
 
 /// The token prefixes [`looks_like_secret`] knows, each with the least number of bytes of its
 /// kind that must follow it, in the order they are tried.
-const SECRET_PREFIXES: [SecretPrefix; 11] = {
+const SECRET_PREFIXES: [SecretPrefix; 18] = {
     const fn upper_digit(b: u8) -> bool {
         b.is_ascii_uppercase() || b.is_ascii_digit()
     }
@@ -3826,6 +3826,12 @@ const SECRET_PREFIXES: [SecretPrefix; 11] = {
     }
     const fn slack(b: u8) -> bool {
         b.is_ascii_alphanumeric() || b == b'-'
+    }
+    const fn word(b: u8) -> bool {
+        b.is_ascii_alphanumeric() || b == b'_'
+    }
+    const fn gitlab(b: u8) -> bool {
+        b.is_ascii_alphanumeric() || b == b'-' || b == b'_'
     }
     [
         ("AKIA", 16, upper_digit),
@@ -3839,6 +3845,16 @@ const SECRET_PREFIXES: [SecretPrefix; 11] = {
         ("xoxa-", 10, slack),
         ("xoxr-", 10, slack),
         ("sk_live_", 16, alnum),
+        // Added in 0.10.0 (DDF-2026-007), the rows above unchanged: GitLab personal (also the
+        // routable form, whose payload before its first `.` is longer), deploy, runner,
+        // pipeline trigger, CI job and OAuth application secrets; GitHub fine-grained tokens.
+        ("glpat-", 20, gitlab),
+        ("gldt-", 20, gitlab),
+        ("glrt-", 20, gitlab),
+        ("glptt-", 40, gitlab),
+        ("glcbt-", 20, gitlab),
+        ("gloas-", 64, gitlab),
+        ("github_pat_", 82, word),
     ]
 };
 
@@ -4537,11 +4553,38 @@ mod tests {
         assert!(found > 200, "{found} items found by the released reading");
     }
 
-    /// The secret rule reads at most the bytes of a run its length test needs, and answers as
-    /// the walk to the run's end did: 20,000 generated lines of credential prefixes, runs of
-    /// their bytes and breaks between them, each compared with the rule of release 0.8.3.
+    /// The forms 0.10.0 adds (DDF-2026-007): prefix, least run, and whether `-` is a body byte
+    /// (GitLab's bodies are letters, digits, `_` and `-`; GitHub's are letters, digits and `_`).
+    const ADDED_SECRETS: [(&str, usize, bool); 7] = [
+        ("glpat-", 20, true),
+        ("gldt-", 20, true),
+        ("glrt-", 20, true),
+        ("glptt-", 40, true),
+        ("glcbt-", 20, true),
+        ("gloas-", 64, true),
+        ("github_pat_", 82, false),
+    ];
+
+    /// Whether `text` holds the added form `(prefix, min, dash)`, its run walked to the end.
+    fn added_secret(text: &str, (prefix, min, dash): (&str, usize, bool)) -> bool {
+        text.match_indices(prefix).any(|(i, _)| {
+            let before = i.checked_sub(1).map(|j| text.as_bytes()[j]);
+            let boundary = before.is_none_or(|b| !b.is_ascii_alphanumeric());
+            let run = text.as_bytes()[i + prefix.len()..]
+                .iter()
+                .take_while(|b| b.is_ascii_alphanumeric() || **b == b'_' || (dash && **b == b'-'))
+                .count();
+            boundary && run >= min
+        })
+    }
+
+    /// The secret rule keeps the released reading whole and reads at most the bytes of a run
+    /// its length test needs: 20,000 generated lines of credential prefixes, runs of their bytes
+    /// and breaks between them. Every line the rule of release 0.8.3 calls a secret is still one
+    /// (released implies now), and the rule answers as that rule or the forms added in 0.10.0
+    /// (DDF-2026-007), each walked to its run's end.
     #[test]
-    fn the_bounded_secret_reading_is_the_released_one() {
+    fn the_released_secret_reading_is_kept() {
         /// [`looks_like_secret`] as release 0.8.3 had it.
         fn released(text: &str) -> bool {
             if text.contains("-----BEGIN") && text.contains("PRIVATE KEY") {
@@ -4570,7 +4613,7 @@ mod tests {
                     .any(|p| tail(p, 10, slack))
                 || tail("sk_live_", 16, alnum)
         }
-        const ATOMS: [&str; 16] = [
+        const ATOMS: [&str; 25] = [
             "AKIA",
             "ghp_",
             "ghr_",
@@ -4587,6 +4630,15 @@ mod tests {
             "-----BEGIN",
             "PRIVATE KEY",
             "é",
+            "glpat-",
+            "gldt-",
+            "glrt-",
+            "glptt-",
+            "glcbt-",
+            "gloas-",
+            "github_pat_",
+            "gl",
+            "github",
         ];
         let mut seed = 0x5EED_F1D5_0000_0008_u64;
         let mut next = move |below: usize| {
@@ -4595,19 +4647,32 @@ mod tests {
             seed ^= seed << 17;
             usize::try_from(seed % (below as u64)).unwrap()
         };
-        let mut yes = 0;
+        let (mut yes, mut gained) = (0, [0_usize; ADDED_SECRETS.len()]);
         for _ in 0..20_000 {
             let mut line = String::new();
             for _ in 0..=next(12) {
                 let atom = ATOMS[next(ATOMS.len())];
                 line.push_str(&atom.repeat(1 + next(3) * next(20)));
             }
-            assert_eq!(looks_like_secret(&line), released(&line), "{line:?}");
-            yes += usize::from(released(&line));
+            let (now, old) = (looks_like_secret(&line), released(&line));
+            assert!(now || !old, "released implies now: {line:?}");
+            let new: Vec<bool> = ADDED_SECRETS
+                .iter()
+                .map(|f| added_secret(&line, *f))
+                .collect();
+            assert_eq!(now, old || new.contains(&true), "{line:?}");
+            yes += usize::from(old);
+            for (count, hit) in gained.iter_mut().zip(new) {
+                *count += usize::from(hit && !old);
+            }
         }
         assert!(
             (2_000..18_000).contains(&yes),
-            "{yes} of 20,000 lines look like secrets"
+            "{yes} of 20,000 lines look like secrets to release 0.8.3"
+        );
+        assert!(
+            gained.iter().all(|count| *count >= 20),
+            "lines only an added form finds, per form of {ADDED_SECRETS:?}: {gained:?}"
         );
     }
 
@@ -7780,6 +7845,79 @@ mod tests {
         assert!(
             !format!("{found:?}").contains("AKIA"),
             "a secret was copied into evidence"
+        );
+    }
+
+    /// The GitLab and fine-grained GitHub forms added in 0.10.0 (DDF-2026-007): each is a
+    /// secret at its least run of its own bytes, and a near miss is not: a byte short, glued to
+    /// a word, a byte outside its class, a placeholder, the prefix in prose. Every line is built
+    /// at run time, so no token is in the source, and the evidence never repeats one.
+    #[test]
+    fn forge_tokens_are_secrets_and_near_misses_are_not() {
+        // Prefix (in two parts), least run, the body's bytes besides letters and digits, and a
+        // byte its class does not hold.
+        let forms: [(&str, &str, usize, &str, &str); 7] = [
+            ("gl", "pat-", 20, "_-", "."),
+            ("gl", "dt-", 20, "_-", "."),
+            ("gl", "rt-", 20, "_-", "."),
+            ("gl", "ptt-", 40, "_-", "."),
+            ("gl", "cbt-", 20, "_-", "."),
+            ("gl", "oas-", 64, "_-", "."),
+            ("github", "_pat_", 82, "_", "-"),
+        ];
+        for (head, rest, min, extra, outside) in forms {
+            let prefix = format!("{head}{rest}");
+            let alphabet: Vec<char> = "aZ09".chars().chain(extra.chars()).collect();
+            let body: String = (0..min).map(|i| alphabet[i % alphabet.len()]).collect();
+            let mut positives = vec![
+                format!("token = \"{prefix}{body}\""),
+                format!("{prefix}{body}"),
+                format!("export T={prefix}{body}{body} # rotated"),
+            ];
+            if rest == "pat-" {
+                // The routable form: a longer payload, then `.01.` and a check part.
+                positives.push(format!(
+                    "{prefix}{body}{}.01.{}",
+                    "x7".repeat(4),
+                    "0a1b2c3d4"
+                ));
+            }
+            for line in &positives {
+                let file = added("notes.txt", &[line]);
+                assert_eq!(
+                    signals(&file),
+                    [S::SecretLike],
+                    "{prefix} min {min}: {line}"
+                );
+                let found = format!("{:?}", file_evidence(&file));
+                assert!(
+                    !found.contains(&prefix) && !found.contains(&body),
+                    "a {prefix} token was copied into evidence: {found}"
+                );
+            }
+            let mut broken = body.clone();
+            broken.replace_range(min - 1.., outside);
+            for line in [
+                format!("{prefix}{}", &body[..min - 1]),
+                format!("x{prefix}{body}"),
+                format!("t = \"{prefix}{broken}\""),
+                format!("t = \"{prefix}xxxxxxxx\""),
+                format!("Create a token; its value starts with {prefix} and is shown once."),
+            ] {
+                assert_eq!(
+                    signals(&added("notes.txt", &[&line])),
+                    [],
+                    "near miss of {prefix} min {min}: {line}"
+                );
+            }
+        }
+        let gitlab = format!("t = \"gl{}{}\"", "pat-", "q".repeat(20));
+        let github = format!("t = github{}{}", "_pat_", "Q".repeat(82));
+        let found = file_evidence(&added("notes.txt", &[&gitlab, "x = 1", &github]));
+        assert_eq!(
+            found.iter().map(|e| (e.signal, e.line)).collect::<Vec<_>>(),
+            [(S::SecretLike, 2), (S::SecretLike, 4)],
+            "one item per token line"
         );
     }
 

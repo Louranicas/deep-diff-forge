@@ -9510,7 +9510,10 @@ mod tests {
         let long = long
             .join("g".repeat(250))
             .join("h".repeat(250))
+            .join("i".repeat(250))
             .join("tree");
+        // Six segments of 250 bytes pass 1,300 whatever the temporary directory is
+        // (five did so only under a directory of 41 bytes or more).
         assert!(long.as_os_str().len() > 1_300);
         let pointer = scratch.write("gitdir", format!("{}/.git\n", long.display()));
         assert_eq!(pointed_path(&pointer, b"", &root), Some(long.join(".git")));

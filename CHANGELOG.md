@@ -251,6 +251,41 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   `rename from`/`rename to` before the `index` line, where Git writes them, so that DDF's
   rendering is a shape Git writes. Before, they came after it.
 
+- **The repository no longer links into the maintainer's private Obsidian vault** (S3.17b.a).
+  251 links of the `obsidian` scheme in 103 tracked files were replaced by in-repository pointers (in
+  source comments, with every line number kept) or removed (in documents), and the contract
+  test `no_tracked_file_links_the_private_vault` keeps them out. The two policy scripts that
+  are compiled into the binary changed in one comment line each, so the release binary's hash
+  changes; its answers do not (7,421 comparison patches, identical in both directions).
+
+- **`deep-diff-forge.tuicr-import.v1` gains `repairs`** (S3.17a.d; additive): the repairs an
+  import made to the journal are returned in the document, and the command line prints the same
+  `note:` lines as before. `TuicrImportError::Incomplete` carries the I/O error as its `source`
+  (library users of `deep-diff-forge-review`: the field `reason: String` is replaced). The refusal
+  for a held import lock names what to do first, so that it survives the 200-byte cut.
+
+
+- **Binary creations, deletions and renames carry Git's status** (S3.4): `added`, `deleted`,
+  `renamed`, the word `git apply --summary` gives, instead of `binary_changed`. They stay binary
+  (strategy `binary`, signal `binary_change`) and score as in 0.9.0; a binary change in place and
+  a binary copy stay `binary_changed`. A traditional diff that creates or deletes a file without
+  `/dev/null` still reads `modified` (an open difference recorded in `CONFORMANCE.md`).
+
+- **`--stdin-patch` refuses input in which Git finds no patch** (S3.5): zero bytes, whitespace,
+  prose, a commit message alone. Exit 4 with `error: no_patch_in_input`, as `git apply` refuses
+  it; before, it was exit 0 with zero files, which read as a clean change. Git's own
+  `--allow-empty` (new, admitted with `--stdin-patch` only) restores the empty answer for a
+  pipeline that means it. `--require-files` and `--require-hunks` still refuse first with exit
+  7; Git selections, file pairs and the daemon, rpc, MCP and SDK surfaces are unchanged.
+  forge-warden: with a 0.10.0 ranker, an authority check of an empty patch ends in "the ranker
+  exited 4" (its exit 3) instead of a holding verdict document.
+
+- **A `GIT binary patch` body that `git apply` calls corrupt is refused** with exit 4 (S3.6): a
+  hunk without its terminating empty line or without data, or a base85 group above 0xffffffff.
+  Corruption inside the deflate data is still not detected (stated in `SECURITY.md`). New public
+  items in the core crate: `is_binary_marker` and `PatchTwin::is_binary`.
+
+
 ### Fixed
 
 - **A text file Git was told to show as binary is read as text** (S3.20,
@@ -332,6 +367,47 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - **A moved file's old path is squashed as Git squashes it** (independent review of S3a,
   S3A-L-1, low). `rename from d//x` or `copy from d//x` was reported as `old_path` `d//x`, while
   `git apply` read `d/x`. It is `d/x` now (`render::old_path`), with a real-apply test.
+
+- **A judge that left a process holding its output could stretch an agent's stop past its limit**
+  (S3.17a.a, [DDF-2026-008](docs/advisories/DDF-2026-008.md)). Measured on 0.9.0: a stand-in judge
+  that exits at once and leaves a child holding its standard output held the stop for 75 s against
+  the documented 45 s. Every child DDF waits for (the judge, the ranker seal, the council's Git and
+  tuicr calls) now runs in a process group of its own; the whole group is killed on every exit path
+  (time limit, output cap, normal exit), and the output is joined only until the deadline. The same
+  stop now takes 0.15 s. A process that leaves the group (`setsid`, a double fork) is not killed by
+  DDF, and Ctrl-C on an interactive council command no longer reaches its Git or tuicr child: both
+  are stated in `SECURITY.md` and in the module's documentation.
+
+- **`council import-tuicr`: four low findings of the journal review** (S3.17a.d, S3.17a.e). The
+  journal is no longer appended through a link at `decisions.jsonl` (a dangling link used to create
+  and fill its target). A session that is refused no longer triggers the journal's repairs. A failed
+  directory sync of a bare file name no longer removes the file. Temporary files that a killed writer
+  left in the export ledger, the reports and the job directories are removed when their writer has
+  ended, and named when it is still running. A mounted host path of the gate sandbox that holds `:`
+  or `,` is refused before it reaches `--volume`.
+
+- **The daemon's clients** (S3.14). Python `StdioClient`: reads a large answer in linear time
+  (64 MiB: 14 s before, 0.3 s now), holds the answer line to the 80 MiB line cap with its newline
+  counted, kills a child that broke the pipe before taking the whole request, turns read errors
+  into `TransportError`, closes both pipes on every exit, and raises `TransportError` for a call
+  after `close()` (it was `ValueError`). Python `SocketClient`: reads the daemon's early refusal
+  after a broken or reset send (it said "could not be reached"), applies one deadline to the whole
+  call ("no answer from the daemon at PATH within T s"), holds the answer line to the line cap,
+  and reads `SO_PEERCRED` user ids at or above 2^31 correctly. Rust client
+  (`deep_diff_forge_daemon::request`, the SDK's `Client`): reads the daemon's answer when the
+  write breaks with a connection reset. The reference states one line cap for the daemon
+  protocol: 80 MiB counting the newline, in both directions (one stated exception: the server's
+  answer bound still measures without the newline).
+
+- **`secret_like` finds GitLab tokens and fine-grained GitHub tokens** (S3.24,
+  [DDF-2026-007](docs/advisories/DDF-2026-007.md)): `glpat-` and its routable form, `gldt-`,
+  `glrt-` and `glcbt-` with 20 bytes or more, `glptt-` with 40, `gloas-` with 64, and
+  `github_pat_` with 82. Releases 0.5.0 to 0.9.0 missed them. The eleven earlier prefixes are
+  unchanged (a test holds "released implies now"), and the token is never copied into evidence.
+  Measured before release: no line of 2,086 real history patches gains the label; a repository
+  whose forge-warden policy forbids `secret_like` fails, from 0.10.0, a commit that adds a line
+  with one of the seven forms. The eval corpus gains the case `evidence/secret-forge-tokens`
+  (59 cases: precision 186 of 211, recall 186 of 264).
 
 ## [0.9.0] - 2026-11-18
 

@@ -74,8 +74,7 @@ fn ddf_numstat(files: &[ReviewFile]) -> Vec<Numstat> {
     files
         .iter()
         .map(|file| {
-            let binary =
-                file.status == FileStatus::BinaryChanged || !file.patch_twin.binary_body.is_empty();
+            let binary = file.patch_twin.is_binary() || !file.patch_twin.binary_body.is_empty();
             let lines = || file.patch_twin.hunks.iter().flat_map(|h| &h.lines);
             let count = |kind| lines().filter(|l| l.kind == kind).count();
             let counts =
@@ -1154,7 +1153,7 @@ mod real_apply {
                 entry.executable = mode == "100755";
                 entry.symlink = mode == "120000";
             }
-            entry.content = if file.status == FileStatus::BinaryChanged {
+            entry.content = if file.patch_twin.is_binary() {
                 None
             } else {
                 Some(patched(entry.content.as_deref().unwrap_or_default(), file))

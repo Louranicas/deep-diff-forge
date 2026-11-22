@@ -169,7 +169,7 @@ fn jsonl_escapes_del_in_path() {
 
 #[test]
 fn json_empty_input_schema_snapshot_is_stable() {
-    let (code, out) = run_with_stdin(&["--stdin-patch", "--json"], b"");
+    let (code, out) = run_with_stdin(&["--stdin-patch", "--json", "--allow-empty"], b"");
     assert_eq!(code, 0);
     let text = String::from_utf8(out).expect("json output is utf8");
     assert!(text.contains("\"schema\": \"deep-diff-forge.review.v0\""));
@@ -182,7 +182,7 @@ fn json_empty_input_schema_snapshot_is_stable() {
 
 #[test]
 fn jsonl_empty_input_is_zero_read_success() {
-    let (code, out) = run_with_stdin(&["--stdin-patch", "--jsonl"], b"");
+    let (code, out) = run_with_stdin(&["--stdin-patch", "--jsonl", "--allow-empty"], b"");
     assert_eq!(code, 0);
     assert!(
         out.is_empty(),

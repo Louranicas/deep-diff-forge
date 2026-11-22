@@ -8,6 +8,7 @@ use crate::{
     report_schema, require, validate_report, validate_request,
 };
 use deep_diff_forge_core::sha256_hex;
+use nix::{sys::signal::kill, unistd::Pid};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::{
     fs::{self, File, OpenOptions},
@@ -101,6 +102,41 @@ pub(crate) const TEMPORARY_PREFIX: &str = ".ddf-tmp.";
 pub(crate) fn is_temporary(name: &str) -> bool {
     name.starts_with(TEMPORARY_PREFIX)
 }
+/// The [`Staged`] temporaries in `dir` (none when it is not a directory), each with whether its
+/// writer has ended: the number before the last `-` of the name is the writer's process id, and
+/// no process has it now. A file with a running process's number (a write in progress, or a
+/// process that took the number since) is not one a reader may remove.
+pub(crate) fn temporaries(dir: &Path) -> Result<Vec<(PathBuf, bool)>> {
+    use std::io::ErrorKind::{NotADirectory, NotFound};
+    let entries = match fs::read_dir(dir) {
+        Err(e) if matches!(e.kind(), NotFound | NotADirectory) => return Ok(Vec::new()),
+        entries => entries.map_err(named(dir))?,
+    };
+    let mut found = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(named(dir))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if is_temporary(&name) {
+            let ended = (name.rsplit_once('.'))
+                .and_then(|(_, tail)| tail.split_once('-'))
+                .and_then(|(pid, _)| pid.parse::<i32>().ok())
+                .is_some_and(|pid| {
+                    pid > 0 && kill(Pid::from_raw(pid), None) == Err(nix::errno::Errno::ESRCH)
+                });
+            found.push((entry.path(), ended));
+        }
+    }
+    Ok(found)
+}
+/// Remove the [`temporaries`] in `dir` whose writer has ended.
+pub(crate) fn remove_left_temporaries(dir: &Path) -> Result<()> {
+    for (path, ended) in temporaries(dir)? {
+        if ended {
+            fs::remove_file(&path).map_err(named(&path))?;
+        }
+    }
+    Ok(())
+}
 // Unit tests make the named step fail with an I/O error; elsewhere this does nothing.
 #[cfg(test)]
 thread_local! {
@@ -167,20 +203,31 @@ impl Staged {
         Ok(staged)
     }
     /// Put the file at its name, failing if the name exists, and sync the directory. On failure
-    /// the name is left as it was.
+    /// the name is left as it was: when the directory cannot be synced after the link, the name
+    /// is removed again (decided, S3.17a.d), so every caller can write it again; the content was
+    /// synced before the link, so a name a crash brings back holds all of it.
     pub(crate) fn commit(self) -> Result<()> {
-        fault("link")
-            .and_then(|()| fs::hard_link(&self.temporary, &self.path))
-            .map_err(named(&self.path))?;
+        let path = self.path.clone();
+        self.commit_io().map_err(named(&path))
+    }
+    /// [`Staged::commit`], with the I/O error as it came.
+    pub(crate) fn commit_io(self) -> std::io::Result<()> {
+        fault("link").and_then(|()| fs::hard_link(&self.temporary, &self.path))?;
         let _ = fs::remove_file(&self.temporary);
-        let synced = File::open(self.path.parent().unwrap_or(Path::new(".")))
-            .and_then(|d| d.sync_all())
-            .map_err(named(&self.path));
+        let synced = fault("dir-sync")
+            .and_then(|()| File::open(directory_of(&self.path)))
+            .and_then(|d| d.sync_all());
         if synced.is_err() {
             let _ = fs::remove_file(&self.path);
         }
         synced
     }
+}
+/// The directory `path` is in: the current one for a bare name, whose parent is the empty path.
+fn directory_of(path: &Path) -> &Path {
+    path.parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
 }
 impl Drop for Staged {
     fn drop(&mut self) {
@@ -808,6 +855,7 @@ pub(crate) fn report_path(directory: &Path, id: &str, round: Round) -> Result<Pa
         .join(format!("{}-{}.json", crate::segment(id)?, round.label())))
 }
 pub(crate) fn reports(directory: &Path, manifest: &Manifest) -> Result<Vec<Report>> {
+    remove_left_temporaries(&directory.join("reports"))?;
     let mut result = Vec::new();
     for reviewer in &manifest.request.reviewers {
         for round in [Round::Independent, Round::Challenge] {
@@ -838,6 +886,7 @@ pub(crate) fn executions(directory: &Path, manifest: &Manifest) -> Result<Vec<Ex
     let mut result = Vec::new();
     for entry in fs::read_dir(directory.join("jobs"))? {
         let jobdir = entry?.path();
+        remove_left_temporaries(&jobdir)?;
         let path = jobdir.join("execution.json");
         if path.exists() {
             let mut receipt: Execution = read_json(&path, REPORT_CAP)?;
@@ -925,6 +974,15 @@ pub(crate) fn executions(directory: &Path, manifest: &Manifest) -> Result<Vec<Ex
 mod tests {
     use super::*;
     use deep_diff_forge_testkit::Scratch;
+
+    /// G-S313-1a: the directory synced after a link is the one the name is in; for a bare name,
+    /// whose parent is the empty path (which opens nothing), the current one.
+    #[test]
+    fn a_bare_name_is_synced_in_its_own_directory() {
+        assert_eq!(directory_of(Path::new("a.json")), Path::new("."));
+        assert_eq!(directory_of(Path::new("run/a.json")), Path::new("run"));
+        assert_eq!(directory_of(Path::new("/run/a.json")), Path::new("/run"));
+    }
 
     /// Anchor C-03: the run id is an unkeyed digest of the manifest, so a manifest edited and
     /// resealed passes the seal. A mutation base without its sealed diff (or the reverse) must

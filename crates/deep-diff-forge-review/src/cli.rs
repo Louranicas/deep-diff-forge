@@ -229,6 +229,17 @@ fn import_tuicr(args: &[String]) -> Result<(String, i32)> {
         }
         other => other?,
     };
+    let verb = if result.executed {
+        "repair"
+    } else {
+        "would repair"
+    };
+    for what in &result.repairs {
+        eprintln!(
+            "note: tuicr import {verb}: {}",
+            deep_diff_forge_core::display_safe(what)
+        );
+    }
     // Names its own schema (`deep-diff-forge.tuicr-import.v1`).
     output(&result, result.conflicts == 0)
 }

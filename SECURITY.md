@@ -152,6 +152,20 @@ selection.
   still applied it (`is_binary_body_line` and the regression test
   `a_text_change_after_a_binary_body_is_never_hidden_in_it` in
   `crates/deep-diff-forge-patch/src/parser.rs`).
+- Since 0.10.0 the body is also held to the hunk structure of Git's
+  `parse_binary` (S3.6): a `literal`/`delta` hunk needs at least one data line
+  and the empty line that ends it, a second (reverse) hunk is optional and held
+  to the same rules, and every base85 group must decode to at most 0xffffffff
+  (Git's `decode_85`). A body Git calls corrupt is refused with exit 4, where
+  0.9.0 reviewed it as a binary change. Lines after the two hunks, which Git
+  skips, are admitted as before. Deflate corruption is not detected: DDF does not
+  inflate the data, so a body whose structure is sound but whose data does not
+  inflate, or inflates to another size than its `literal N`/`delta N` says, is
+  reviewed as a binary change while `git apply` refuses it (after other sections,
+  Git stops there and applies only those: see the residual risk "A corrupt binary
+  body"). That is a stated
+  limit (the patch crate depends on the core crate alone and adds no inflate
+  code); the review shows such a section as binary and never shows text from it.
 - Human-facing terminal output passes through `core::display_safe`, which
   exposes ANSI/CSI/OSC controls, C0/C1 controls, carriage returns, DEL, bidi
   overrides/isolates, directional marks, zero-width characters, BOM and every
@@ -277,6 +291,11 @@ The container runs as the controller's own `uid:gid`, taken from
 read from `/proc/self` and fell back to `0:0`, so on a host without `/proc`
 every gate ran as root inside the container. Gates refuse to run unless
 `DDF_COUNCIL_GATE_IMAGE` names a local image.
+
+The import lock (`decisions.lock`) is new in 0.10.0: an import by 0.9.0 or earlier takes
+none and can append beside a running 0.10.0 import of the same run, guarded only by the
+journal's length check. Do not run imports of one run with different versions at once. A host
+path to mount that is not UTF-8 or holds `:` or `,` is refused before the sandbox starts.
 
 ### Local learning store
 
@@ -736,6 +755,15 @@ bounded form.** What it holds to:
   --gate` fails a registered timeout under 50. Each step is given the time that is left.
   Before, the steps' own limits added up to several minutes, and a client that ended the
   hook dropped its answer, which reads as a pass.
+- **Every child DDF waits for runs in a process group of its own.** The judge, the helper
+  that hashes the rankers, and the council's Git and tuicr calls are each the leader of their
+  own group, and the whole group is killed when the call ends, however it ends (time limit,
+  output cap, normal exit); the call returns by its time limit even when something holds its
+  output (0.9.0 let a judge's leftover child stretch a stop to 75 s:
+  [DDF-2026-008](docs/advisories/DDF-2026-008.md)). A process that leaves the group (`setsid`,
+  or a double fork into its own group) is not killed by DDF and runs on. Under Claude Code
+  2.1.330 the client ends a timed-out hook's descendants, including those in their own group
+  or session (measured 2026-11-22); a process that detaches from them is ended by no one.
 - **Text from the judge is data.** When a verdict fails or holds for something that is not a
   rule (an expired waiver, a note), the message repeats the judge's own words for it: at
   most twelve, each cut at 400 characters, escaped like every other text the hook did not
@@ -1044,6 +1072,8 @@ says when it closed:
   Git stops at a `GIT binary patch` body that does not inflate and exits 0, applying only the
   sections before it, while DDF, which checks the body's line grammar only, shows every section
   as changed: nothing unreviewed is written, but reviewed changes do not land.
+  Since 0.10.0 a body Git calls corrupt for its hunk structure or its base85 is refused (exit
+  4, S3.6); one whose data does not inflate is still read, the stated deflate limit.
 - **The review council trial is undesigned.** The council is used on this
   repository; no controlled trial of its review quality exists.
 
