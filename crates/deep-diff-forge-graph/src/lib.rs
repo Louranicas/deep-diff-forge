@@ -220,10 +220,12 @@ mod tests {
             "const LEGACY_RUST_RULES: &[Rule]",
             "const RELEASED_RULES: &[Rule]",
             "const SECRET_PREFIXES: [SecretPrefix;",
-            // The byte classes of the secret prefixes (wave W1 adds `gitlab` and `word`).
+            // The byte classes of the secret prefixes.
             "const fn upper_digit(b: u8) -> bool",
             "const fn alnum(b: u8) -> bool",
             "const fn slack(b: u8) -> bool",
+            "const fn word(b: u8) -> bool",
+            "const fn gitlab(b: u8) -> bool",
             "pub const MAX_EVIDENCE_PER_FILE: usize",
             "fn trivial_assert<",
             "const WORDS: [(&[u8], Word);",
