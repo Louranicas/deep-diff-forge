@@ -937,3 +937,74 @@ fn every_section_that_left_the_corpus_is_refused_for_its_reason() {
     }
     assert_eq!(rows.len(), 16);
 }
+
+/// The `right/total` written after `label` in `text` (spaces and a table's `|` allowed around
+/// it), or `None` when the label or the figure is not there.
+fn figure_after(text: &str, label: &str) -> Option<(u64, u64)> {
+    let rest = &text[text.find(label)? + label.len()..];
+    let (right, rest) = rest.trim_start_matches([' ', '|']).split_once('/')?;
+    let total: String = rest
+        .trim_start()
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    Some((right.trim().parse().ok()?, total.parse().ok()?))
+}
+
+/// S3.35.e: the figures the documents write are the ones the corpus measures. The four metric
+/// rows of the table in `docs/reference/evaluation.md`, and the case count and the four
+/// figures of the evaluation gate in `docs/TESTING_GOLD_STANDARD.md`, equal the receipt; until
+/// now both were carried by hand.
+#[test]
+fn the_figures_in_the_documents_are_the_measured_ones() {
+    let (code, receipt, stderr) = eval(&corpus());
+    assert_eq!(code, 0, "{stderr}");
+    let m = &receipt["metrics"];
+    let measured = |metric: &str| {
+        let (right, total) = (&m[metric]["right"], &m[metric]["total"]);
+        Some((right.as_u64().unwrap(), total.as_u64().unwrap()))
+    };
+    let doc = |rel: &str| {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(rel);
+        std::fs::read_to_string(path).unwrap()
+    };
+    let table = doc("docs/reference/evaluation.md");
+    let gold = doc("docs/TESTING_GOLD_STANDARD.md");
+    let gate = &gold[gold
+        .find("**Evaluation gate**")
+        .expect("the evaluation gate")..];
+    let gate = gate[..gate.find("\n- ").unwrap_or(gate.len())]
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    for (metric, row, sentence) in [
+        ("ranking_pairs", "| ranking pairs |", "ranking pairs "),
+        (
+            "evidence_precision",
+            "| evidence precision |",
+            "evidence precision ",
+        ),
+        ("evidence_recall", "| evidence recall |", "evidence recall "),
+        ("findings_verdicts", "| findings verdicts |", "findings "),
+    ] {
+        assert_eq!(
+            table.matches(row).count(),
+            1,
+            "one row {row} in evaluation.md"
+        );
+        assert_eq!(
+            figure_after(&table, row),
+            measured(metric),
+            "evaluation.md, the row {row}"
+        );
+        assert_eq!(
+            figure_after(&gate, sentence),
+            measured(metric),
+            "TESTING_GOLD_STANDARD.md, {sentence}in: {gate}"
+        );
+    }
+    let cases = format!("`fixtures/eval` ({} cases,", receipt["cases"]);
+    assert!(gate.contains(&cases), "{cases} in: {gate}");
+}
