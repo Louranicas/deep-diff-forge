@@ -20,13 +20,12 @@
 - **Gate uid:gid.** Gate containers run as the controller's effective uid and gid, taken from the kernel with `geteuid`/`getegid` (`operator()` in `crates/deep-diff-forge-review/src/sandbox.rs`). Before PR #21 (`7a2f5ae`), the controller read `/proc/self` and fell back to `0:0`. On a host without `/proc`, such as macOS, every gate container therefore ran as root. The first macOS test run found it (CI run 40618280385). The test now takes the expected `--user` from POSIX `id`, which is independent of the code under test (`crates/deep-diff-forge-cli/tests/council.rs`). The [Podman invocation](#podman-invocation) table is updated to match.
 - **Releases and evidence.** Release dry runs and fuzz numbers for 2026-10-28 are in [`EVIDENCE.md`](../EVIDENCE.md#release-dry-runs-and-fuzzing-2026-10-28).
 - **Paths in examples.** `ddf-integration-20261025` and `ddf-council-20261025` are helpers on the operator workstation. Anyone else runs `deep-diff-forge council …` from a build of `deep-diff-forge-cli`.
-- **Links.** Every `obsidian://` link in this document opens the owner's local vault. These links do not resolve on GitHub.
 
 Related current docs: [release and publication](RELEASE_AND_PUBLICATION.md), [operations and daemon](OPERATIONS_AND_DAEMON.md), [testing standard](TESTING_GOLD_STANDARD.md).
 
 This is the local implementation of the requested Claude Code/Codex review roster and expert circle. It connects the existing analysis.v1 artifact to captured review context, independent provider rounds, explicit counter-review and measured quality gates. It makes unsupported, missing, failed and stale results visible. The final state is **ready_for_human_review**, never automatic approval.
 
-[Vault hub](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FReview%20Council) (owner's local vault) · [Implementation ledger](RECOMMENDATION_INTEGRATION.md) · [Quality workflow](../.github/workflows/ci.yml) · [HDD reference provenance](../review-policy/provenance.json)
+[Implementation ledger](RECOMMENDATION_INTEGRATION.md) · [Quality workflow](../.github/workflows/ci.yml) · [HDD reference provenance](../review-policy/provenance.json)
 
 ## Scope and maturity
 
@@ -866,7 +865,7 @@ Remaining work includes live provider/account qualification, observed actual mod
 
 Public API boundary; separate typed review claims from controller-owned execution and human authority.
 
-[Exact crate/module](../crates/deep-diff-forge-review/src/lib.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--src--lib)
+[Exact crate/module](../crates/deep-diff-forge-review/src/lib.rs)
 
 <a id="typed-protocol"></a>
 
@@ -874,7 +873,7 @@ Public API boundary; separate typed review claims from controller-owned executio
 
 Typed providers, personas, phases, findings, citations, execution outcomes and final qualification.
 
-[Exact crate/module](../crates/deep-diff-forge-review/src/model.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--src--model)
+[Exact crate/module](../crates/deep-diff-forge-review/src/model.rs)
 
 <a id="admission-and-synthesis"></a>
 
@@ -882,7 +881,7 @@ Typed providers, personas, phases, findings, citations, execution outcomes and f
 
 Fail-closed request/report admission and synthesis: no missing quorum, stale evidence or vote-based approval.
 
-[Exact crate/module](../crates/deep-diff-forge-review/src/policy.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--src--policy)
+[Exact crate/module](../crates/deep-diff-forge-review/src/policy.rs)
 
 <a id="capture-and-storage"></a>
 
@@ -890,7 +889,7 @@ Fail-closed request/report admission and synthesis: no missing quorum, stale evi
 
 Bounded private context capture, canonical candidate snapshot verification, source inventory and identity, sealed source snapshot export, and immutable qualified artifacts in which refusal markers win.
 
-[Exact crate/module](../crates/deep-diff-forge-review/src/storage.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--src--storage)
+[Exact crate/module](../crates/deep-diff-forge-review/src/storage.rs)
 
 <a id="execution-controller"></a>
 
@@ -898,7 +897,7 @@ Bounded private context capture, canonical candidate snapshot verification, sour
 
 Fixed provider/gate argv, admission before any job slot, sandboxed gate jobs on read-only per-job snapshot copies, candidate toolchain-config refusal, one networked vendoring job whose output is sealed before use, the embedded policy checker, deadlines, owned process groups, output limits and non-vacuous work qualification.
 
-[Exact crate/module](../crates/deep-diff-forge-review/src/execution.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--src--execution)
+[Exact crate/module](../crates/deep-diff-forge-review/src/execution.rs)
 
 <a id="gate-sandbox-module"></a>
 
@@ -929,7 +928,7 @@ an array, and each result in it carries the field); `prepare` prints the manifes
 `deep-diff-forge.tuicr-export.v1` and `deep-diff-forge.tuicr-import.v1`. `example` prints a
 request template for `prepare`, which refuses unknown fields, so it has none.
 
-[Exact crate/module](../crates/deep-diff-forge-review/src/cli.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--src--cli)
+[Exact crate/module](../crates/deep-diff-forge-review/src/cli.rs)
 
 <a id="policy-controls"></a>
 
@@ -937,7 +936,7 @@ request template for `prepare`, which refuses unknown fields, so it has none.
 
 Planted negative controls for authority, phase, freshness, citations, missing evidence and budgets.
 
-[Exact crate/module](../crates/deep-diff-forge-review/tests/contracts.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--tests--contracts)
+[Exact crate/module](../crates/deep-diff-forge-review/tests/contracts.rs)
 
 <a id="cli-controls"></a>
 
@@ -945,7 +944,7 @@ Planted negative controls for authority, phase, freshness, citations, missing ev
 
 Actual CLI process lifecycle with fake providers and tools, plus timeout/owned-child cleanup and zero-work refusals.
 
-[Exact crate/module](../crates/deep-diff-forge-cli/tests/council.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-cli--tests--council)
+[Exact crate/module](../crates/deep-diff-forge-cli/tests/council.rs)
 
 <a id="tuicr-export-module"></a>
 
@@ -977,7 +976,7 @@ Export and decision-journal import through the actual CLI with fake providers an
 
 One canonical changed-source digest reused by analysis and council; explicit absence and framed paths/bytes.
 
-[Exact crate/module](../crates/deep-diff-forge-core/src/snapshot.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-core--src--snapshot)
+[Exact crate/module](../crates/deep-diff-forge-core/src/snapshot.rs)
 
 <a id="parsed-antipattern-guard"></a>
 
@@ -985,7 +984,7 @@ One canonical changed-source digest reused by analysis and council; explicit abs
 
 Canonical, pinned checker: parse workspace TOML and provenance JSON; check lint inheritance and source labels without pretending to detect all semantic antipatterns. The controller embeds this file and runs it inside the gate sandbox with the snapshot copy as working directory. `scripts/security/review_policy_check.py` is a compatibility wrapper for CI and humans that runs it against the repository root; council gates never execute the wrapper.
 
-[Exact crate/module](../crates/deep-diff-forge-review/policy/review_policy_check.py) · [compatibility wrapper](../scripts/security/review_policy_check.py) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--scripts--security--review_policy_check)
+[Exact crate/module](../crates/deep-diff-forge-review/policy/review_policy_check.py) · [compatibility wrapper](../scripts/security/review_policy_check.py)
 
 ### crates/deep-diff-forge-review/policy/exemption_oracle.py
 
@@ -999,7 +998,7 @@ Mutation-exemption oracle: list the mutation scope with the gate's cargo-mutants
 
 Bounded untrusted report parsing, validation and accepted-output serialization stability.
 
-[Exact crate/module](../fuzz/fuzz_targets/council_report.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--fuzz--fuzz_targets--council_report)
+[Exact crate/module](../fuzz/fuzz_targets/council_report.rs)
 
 <a id="reference-provenance"></a>
 
@@ -1007,7 +1006,7 @@ Bounded untrusted report parsing, validation and accepted-output serialization s
 
 Exact HDD paths, source commits and checksums; copied references retain their original qualification and license.
 
-[Exact crate/module](../review-policy/provenance.json) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--review-policy--provenance)
+[Exact crate/module](../review-policy/provenance.json)
 
 <a id="advisory-catalogue"></a>
 
@@ -1015,7 +1014,7 @@ Exact HDD paths, source commits and checksums; copied references retain their or
 
 All 50 imported AP rows are byte-preserved advisory reference data, not automatic findings or qualified detectors.
 
-[Exact crate/module](../crates/deep-diff-forge-review/policy/antipatterns.json) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--policy--antipatterns)
+[Exact crate/module](../crates/deep-diff-forge-review/policy/antipatterns.json)
 
 
 ## Local execution environment

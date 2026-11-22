@@ -226,7 +226,6 @@ Remaining, in order:
 4. **crates.io:** on hold until the codebase is production-ready and the
    repository documentation is current.
 
-Open work after the anchor list: see the vault note [Strategy/Remaining Work 2026-10-28](obsidian://open?vault=deep-diff-forge.vault&file=Strategy%2FRemaining%20Work%202026-10-28) (owner's local vault).
 
 ## Deployment Link
 
@@ -235,4 +234,4 @@ Open work after the anchor list: see the vault note [Strategy/Remaining Work 202
 
 ## Review integration route
 
-[Implementation status and delivery gates](RECOMMENDATION_INTEGRATION.md#remaining-module-routes) ↔ [Module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdocs--ROADMAP) (owner's local vault). This route records planned and evaluation-dependent work without claiming it is implemented.
+[Implementation status and delivery gates](RECOMMENDATION_INTEGRATION.md#remaining-module-routes). This route records planned and evaluation-dependent work without claiming it is implemented.

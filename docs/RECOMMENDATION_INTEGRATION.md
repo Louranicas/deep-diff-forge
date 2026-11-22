@@ -14,7 +14,7 @@
 - The sentence "This branch is local; it has not been merged, pushed, released or published" is no longer true. `codex/assimilate-review-20261025` is an ancestor of `main` at `2f03f40` (measured: `git merge-base --is-ancestor`). It reached `main` through later merges. It was not released on its own; the published GitHub releases are `v0.1.0` and `v0.2.0`, and 0.3.0 is untagged.
 - Still true at 0.3.0: the daemon and TUI do not use the analysis service. The daemon's `engine.methods` lists no analysis method (`daemon.*`, `diff.compute`, `diff.plan`, `session.*`, `engine.*` only; measured with the binary). `analyze <patch> <base-dir> <cand-dir>` is a CLI command only.
 - Findings implemented after 2026-10-25 are recorded in [`CHANGELOG.md`](../CHANGELOG.md) and [`EVIDENCE.md`](../EVIDENCE.md), not here.
-- **Links.** Every `obsidian://` link in this ledger opens the owner's local vault and does not resolve on GitHub. "Local verification evidence" is a directory on the operator workstation.
+- **Links.** "Local verification evidence" is a directory on the operator workstation.
 
 Current docs: [architecture](ARCHITECTURE.md), [API and IPC](API_AND_IPC.md), [review council](REVIEW_COUNCIL.md), [roadmap](ROADMAP.md).
 
@@ -22,7 +22,7 @@ This document is the executable integration ledger for the 60 commit-pinned tuic
 
 Base: `1b39d66bcb6caf5c30680f18a28fe06d2b35bbbd` (0.2.1). Local implementation branch: `codex/assimilate-review-20261025`. Original source/review checkouts remain unchanged. This branch is local; it has not been merged, pushed, released or published.
 
-[Vault integration hub](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FRecommendation%20Integration) · [Vault original review](obsidian://open?vault=deep-diff-forge.vault&file=Reviews%2FTuicr%20Full%20Stack%20Review) · [Local verification evidence] (local evidence directory, not published)
+[Local verification evidence] (local evidence directory, not published)
 
 ## Assimilation assessment
 
@@ -83,19 +83,19 @@ Every substantive changed module has a source comment naming its finding IDs, a 
 
 Preserve source bytes and exact original input independently of normalized display; use Git as the application oracle.
 
-- [crates/deep-diff-forge-core/src/lib.rs](../crates/deep-diff-forge-core/src/lib.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-core--lib)
-- [crates/deep-diff-forge-patch/src/lib.rs](../crates/deep-diff-forge-patch/src/lib.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--lib)
-- [crates/deep-diff-forge-patch/src/parser.rs](../crates/deep-diff-forge-patch/src/parser.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--parser)
-- [crates/deep-diff-forge-patch/src/render.rs](../crates/deep-diff-forge-patch/src/render.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--render)
-- [crates/deep-diff-forge-patch/src/paths.rs](../crates/deep-diff-forge-patch/src/paths.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--paths)
-- [crates/deep-diff-forge-patch/tests/git_oracle.rs](../crates/deep-diff-forge-patch/tests/git_oracle.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--git_oracle)
-- [crates/deep-diff-forge-patch/tests/git_differential.rs](../crates/deep-diff-forge-patch/tests/git_differential.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--git_differential)
-- [crates/deep-diff-forge-patch/tests/round_trip.rs](../crates/deep-diff-forge-patch/tests/round_trip.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--round_trip)
-- [crates/deep-diff-forge-patch/src/git_raw.rs](../crates/deep-diff-forge-patch/src/git_raw.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--git_raw)
-- [crates/deep-diff-forge-patch/src/git_acquire.rs](../crates/deep-diff-forge-patch/src/git_acquire.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--git_acquire)
-- [crates/deep-diff-forge-patch/tests/git_acquire.rs](../crates/deep-diff-forge-patch/tests/git_acquire.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--git_acquire)
-- [crates/deep-diff-forge-cli/src/git_input.rs](../crates/deep-diff-forge-cli/src/git_input.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--git_input)
-- [crates/deep-diff-forge-cli/tests/git_input.rs](../crates/deep-diff-forge-cli/tests/git_input.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--tests--git_input)
+- [crates/deep-diff-forge-core/src/lib.rs](../crates/deep-diff-forge-core/src/lib.rs)
+- [crates/deep-diff-forge-patch/src/lib.rs](../crates/deep-diff-forge-patch/src/lib.rs)
+- [crates/deep-diff-forge-patch/src/parser.rs](../crates/deep-diff-forge-patch/src/parser.rs)
+- [crates/deep-diff-forge-patch/src/render.rs](../crates/deep-diff-forge-patch/src/render.rs)
+- [crates/deep-diff-forge-patch/src/paths.rs](../crates/deep-diff-forge-patch/src/paths.rs)
+- [crates/deep-diff-forge-patch/tests/git_oracle.rs](../crates/deep-diff-forge-patch/tests/git_oracle.rs)
+- [crates/deep-diff-forge-patch/tests/git_differential.rs](../crates/deep-diff-forge-patch/tests/git_differential.rs)
+- [crates/deep-diff-forge-patch/tests/round_trip.rs](../crates/deep-diff-forge-patch/tests/round_trip.rs)
+- [crates/deep-diff-forge-patch/src/git_raw.rs](../crates/deep-diff-forge-patch/src/git_raw.rs)
+- [crates/deep-diff-forge-patch/src/git_acquire.rs](../crates/deep-diff-forge-patch/src/git_acquire.rs)
+- [crates/deep-diff-forge-patch/tests/git_acquire.rs](../crates/deep-diff-forge-patch/tests/git_acquire.rs)
+- [crates/deep-diff-forge-cli/src/git_input.rs](../crates/deep-diff-forge-cli/src/git_input.rs)
+- [crates/deep-diff-forge-cli/tests/git_input.rs](../crates/deep-diff-forge-cli/tests/git_input.rs)
 
 ## Shared review service and source pairs
 
@@ -103,10 +103,10 @@ Preserve source bytes and exact original input independently of normalized displ
 
 Validate that a patch transforms the captured base into the captured candidate before attaching semantics; export explicit coverage and snapshot scope.
 
-- [crates/deep-diff-forge-pipeline/src/review.rs](../crates/deep-diff-forge-pipeline/src/review.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-pipeline--review)
-- [crates/deep-diff-forge-pipeline/src/lib.rs](../crates/deep-diff-forge-pipeline/src/lib.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-pipeline--lib)
-- [crates/deep-diff-forge-cli/src/analysis.rs](../crates/deep-diff-forge-cli/src/analysis.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--analysis)
-- [crates/deep-diff-forge-cli/src/main.rs](../crates/deep-diff-forge-cli/src/main.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--main)
+- [crates/deep-diff-forge-pipeline/src/review.rs](../crates/deep-diff-forge-pipeline/src/review.rs)
+- [crates/deep-diff-forge-pipeline/src/lib.rs](../crates/deep-diff-forge-pipeline/src/lib.rs)
+- [crates/deep-diff-forge-cli/src/analysis.rs](../crates/deep-diff-forge-cli/src/analysis.rs)
+- [crates/deep-diff-forge-cli/src/main.rs](../crates/deep-diff-forge-cli/src/main.rs)
 
 ## Syntax availability and budgets
 
@@ -114,10 +114,10 @@ Validate that a patch transforms the captured base into the captured candidate b
 
 Never turn a failed analysis into formatting-only or behavioral safety; parser time cancellation is cooperative, node limits are post-parse.
 
-- [crates/deep-diff-forge-syntax/src/lib.rs](../crates/deep-diff-forge-syntax/src/lib.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-syntax--lib)
-- [crates/deep-diff-forge-syntax/src/analyze.rs](../crates/deep-diff-forge-syntax/src/analyze.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-syntax--analyze)
-- [crates/deep-diff-forge-syntax/src/structural.rs](../crates/deep-diff-forge-syntax/src/structural.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-syntax--structural)
-- [crates/deep-diff-forge-syntax/src/highlight.rs](../crates/deep-diff-forge-syntax/src/highlight.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-syntax--highlight)
+- [crates/deep-diff-forge-syntax/src/lib.rs](../crates/deep-diff-forge-syntax/src/lib.rs)
+- [crates/deep-diff-forge-syntax/src/analyze.rs](../crates/deep-diff-forge-syntax/src/analyze.rs)
+- [crates/deep-diff-forge-syntax/src/structural.rs](../crates/deep-diff-forge-syntax/src/structural.rs)
+- [crates/deep-diff-forge-syntax/src/highlight.rs](../crates/deep-diff-forge-syntax/src/highlight.rs)
 
 ## Agent ingestion, identity and evidence
 
@@ -125,11 +125,11 @@ Never turn a failed analysis into formatting-only or behavioral safety; parser t
 
 Separate asserted citations from captured artifact integrity, trusted evaluator support and revision freshness. Do not resolve duplicate IDs together.
 
-- [crates/deep-diff-forge-agent/src/lib.rs](../crates/deep-diff-forge-agent/src/lib.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-agent--lib)
-- [crates/deep-diff-forge-agent/src/store.rs](../crates/deep-diff-forge-agent/src/store.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-agent--store)
-- [crates/deep-diff-forge-agent/src/evidence.rs](../crates/deep-diff-forge-agent/src/evidence.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-agent--evidence)
-- [crates/deep-diff-forge-agent/tests/flow.rs](../crates/deep-diff-forge-agent/tests/flow.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-agent--tests--flow)
-- [crates/deep-diff-forge-tui/src/notes.rs](../crates/deep-diff-forge-tui/src/notes.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-tui--notes)
+- [crates/deep-diff-forge-agent/src/lib.rs](../crates/deep-diff-forge-agent/src/lib.rs)
+- [crates/deep-diff-forge-agent/src/store.rs](../crates/deep-diff-forge-agent/src/store.rs)
+- [crates/deep-diff-forge-agent/src/evidence.rs](../crates/deep-diff-forge-agent/src/evidence.rs)
+- [crates/deep-diff-forge-agent/tests/flow.rs](../crates/deep-diff-forge-agent/tests/flow.rs)
+- [crates/deep-diff-forge-tui/src/notes.rs](../crates/deep-diff-forge-tui/src/notes.rs)
 
 ## Terminal cell geometry
 
@@ -137,10 +137,10 @@ Separate asserted citations from captured artifact integrity, trusted evaluator 
 
 Measure displayed cells and preserve grapheme boundaries after terminal-safety escaping; keep remaining chrome/wrap geometry visible as work.
 
-- [crates/deep-diff-forge-projection/src/lib.rs](../crates/deep-diff-forge-projection/src/lib.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-projection--lib)
-- [crates/deep-diff-forge-projection/src/width.rs](../crates/deep-diff-forge-projection/src/width.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-projection--width)
-- [crates/deep-diff-forge-projection/src/side_by_side.rs](../crates/deep-diff-forge-projection/src/side_by_side.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-projection--side_by_side)
-- [crates/deep-diff-forge-tui/src/diffview.rs](../crates/deep-diff-forge-tui/src/diffview.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-tui--diffview)
+- [crates/deep-diff-forge-projection/src/lib.rs](../crates/deep-diff-forge-projection/src/lib.rs)
+- [crates/deep-diff-forge-projection/src/width.rs](../crates/deep-diff-forge-projection/src/width.rs)
+- [crates/deep-diff-forge-projection/src/side_by_side.rs](../crates/deep-diff-forge-projection/src/side_by_side.rs)
+- [crates/deep-diff-forge-tui/src/diffview.rs](../crates/deep-diff-forge-tui/src/diffview.rs)
 
 ## Learning promotion validity
 
@@ -148,7 +148,7 @@ Measure displayed cells and preserve grapheme boundaries after terminal-safety e
 
 Reject nonfinite metrics and policy tolerances before comparing promotion thresholds; receipt existence still does not prove causal improvement.
 
-- [crates/deep-diff-forge-learning/src/promote.rs](../crates/deep-diff-forge-learning/src/promote.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-learning--promote)
+- [crates/deep-diff-forge-learning/src/promote.rs](../crates/deep-diff-forge-learning/src/promote.rs)
 
 ## Runtime atomic compatibility
 
@@ -156,7 +156,7 @@ Reject nonfinite metrics and policy tolerances before comparing promotion thresh
 
 Preserve bounded connection admission on Rust 1.88 using compare-exchange; this does not solve the separate global-lock recommendation.
 
-- [crates/deep-diff-forge-daemon/src/serve.rs](../crates/deep-diff-forge-daemon/src/serve.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-daemon--serve)
+- [crates/deep-diff-forge-daemon/src/serve.rs](../crates/deep-diff-forge-daemon/src/serve.rs)
 
 ## Executable quality and release gates
 
@@ -164,13 +164,13 @@ Preserve bounded connection admission on Rust 1.88 using compare-exchange; this 
 
 Make checks fail closed, preserve fuzz crash evidence, use the actual build output path and gate tag publication on the quality workflow.
 
-- [.github/workflows/ci.yml](../.github/workflows/ci.yml) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2F.github--workflows--ci)
-- [.github/workflows/release.yml](../.github/workflows/release.yml) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2F.github--workflows--release)
-- [fuzz/fuzz_targets/agent_annotation.rs](../fuzz/fuzz_targets/agent_annotation.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Ffuzz--fuzz_targets--agent_annotation)
-- [fuzz/fuzz_targets/patch_parser.rs](../fuzz/fuzz_targets/patch_parser.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Ffuzz--fuzz_targets--patch_parser)
-- [scripts/security/privacy_probe.py](../scripts/security/privacy_probe.py) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--privacy_probe)
-- [scripts/security/test_privacy_probe.py](../scripts/security/test_privacy_probe.py) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--test_privacy_probe)
-- [scripts/security/daemon_soak.py](../scripts/security/daemon_soak.py) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--daemon_soak)
+- [.github/workflows/ci.yml](../.github/workflows/ci.yml)
+- [.github/workflows/release.yml](../.github/workflows/release.yml)
+- [fuzz/fuzz_targets/agent_annotation.rs](../fuzz/fuzz_targets/agent_annotation.rs)
+- [fuzz/fuzz_targets/patch_parser.rs](../fuzz/fuzz_targets/patch_parser.rs)
+- [scripts/security/privacy_probe.py](../scripts/security/privacy_probe.py)
+- [scripts/security/test_privacy_probe.py](../scripts/security/test_privacy_probe.py)
+- [scripts/security/daemon_soak.py](../scripts/security/daemon_soak.py)
 
 ## Recommendation ledger
 
@@ -180,7 +180,6 @@ Make checks fail closed, preserve fuzz crash evidence, use the actual build outp
 
 The complete 60-item integration ledger, original review preservation and module/vault traceability routes are present. This is scope accounting, not a claim that planned capabilities are implemented.
 
-Delivery/design home: [vault architecture and experiments](obsidian://open?vault=deep-diff-forge.vault&file=Strategy%2FExperiments%20and%20Delivery%20Gates).
 
 **Original recommendation:** Retain/evolve the Rust foundation. First repair patch fidelity, false-clean analysis and revision/evidence identity; then connect one complete Rust analysis-to-evidence workflow. Study current Hunk shared semantics and tuicr persistence/forge patterns, and evaluate adapters before duplicating their surfaces.
 
@@ -192,7 +191,7 @@ Delivery/design home: [vault architecture and experiments](obsidian://open?vault
 
 Patch truth remains immutable in CapturedPatch; semantic enrichment operates on a separate copy.
 
-Original source anchor: [crates/deep-diff-forge-core/src/lib.rs](../crates/deep-diff-forge-core/src/lib.rs). Delivery/design home: [vault architecture and experiments](obsidian://open?vault=deep-diff-forge.vault&file=Strategy%2FExperiments%20and%20Delivery%20Gates).
+Original source anchor: [crates/deep-diff-forge-core/src/lib.rs](../crates/deep-diff-forge-core/src/lib.rs).
 
 **Original recommendation:** Preserve this separation while strengthening the underlying representation and using immutable captured input artifacts. Analysis, ranking, annotations and UI must never replace the bytes the review describes.
 
@@ -204,7 +203,7 @@ Original source anchor: [crates/deep-diff-forge-core/src/lib.rs](../crates/deep-
 
 Immutable original patch capture and framed identities for supplied changed-source pairs are implemented. Native structured Git acquisition (`--git-working-tree [--include-untracked]`, `--git-staged`, `--git-range A..B`) now binds the old side to a resolved commit ID (or the empty tree for an unborn `HEAD`) and a range's new side to a resolved commit ID, records per-file old/new modes and blob IDs from `--raw -z` records, and captures dirty and untracked working-tree changes without mutating the index (measured by the Git fixture tests). Still partial: the working-tree/index new side has no snapshot identity beyond per-file blob IDs (a mode-only working-tree change has no new blob ID), Git config/attribute identity is not recorded, review JSON does not yet carry the acquisition identity (it is in the separate `deep-diff-forge.git-acquisition.v0` document), and immutable repository materialization remains.
 
-Original source anchor: [crates/deep-diff-forge-core/src/lib.rs](../crates/deep-diff-forge-core/src/lib.rs). Implementation trace: [crates/deep-diff-forge-core/src/lib.rs](../crates/deep-diff-forge-core/src/lib.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-core--lib), [crates/deep-diff-forge-patch/src/lib.rs](../crates/deep-diff-forge-patch/src/lib.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--lib), [crates/deep-diff-forge-patch/src/parser.rs](../crates/deep-diff-forge-patch/src/parser.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--parser), [crates/deep-diff-forge-patch/src/render.rs](../crates/deep-diff-forge-patch/src/render.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--render), [crates/deep-diff-forge-patch/src/paths.rs](../crates/deep-diff-forge-patch/src/paths.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--paths), [crates/deep-diff-forge-patch/tests/git_oracle.rs](../crates/deep-diff-forge-patch/tests/git_oracle.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--git_oracle), [crates/deep-diff-forge-patch/tests/round_trip.rs](../crates/deep-diff-forge-patch/tests/round_trip.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--round_trip), [crates/deep-diff-forge-pipeline/src/review.rs](../crates/deep-diff-forge-pipeline/src/review.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-pipeline--review), [crates/deep-diff-forge-pipeline/src/lib.rs](../crates/deep-diff-forge-pipeline/src/lib.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-pipeline--lib), [crates/deep-diff-forge-cli/src/analysis.rs](../crates/deep-diff-forge-cli/src/analysis.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--analysis), [crates/deep-diff-forge-cli/src/main.rs](../crates/deep-diff-forge-cli/src/main.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--main), [crates/deep-diff-forge-patch/src/git_raw.rs](../crates/deep-diff-forge-patch/src/git_raw.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--git_raw), [crates/deep-diff-forge-patch/src/git_acquire.rs](../crates/deep-diff-forge-patch/src/git_acquire.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--git_acquire), [crates/deep-diff-forge-patch/tests/git_acquire.rs](../crates/deep-diff-forge-patch/tests/git_acquire.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--git_acquire), [crates/deep-diff-forge-cli/src/git_input.rs](../crates/deep-diff-forge-cli/src/git_input.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--git_input), [crates/deep-diff-forge-cli/tests/git_input.rs](../crates/deep-diff-forge-cli/tests/git_input.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--tests--git_input).
+Original source anchor: [crates/deep-diff-forge-core/src/lib.rs](../crates/deep-diff-forge-core/src/lib.rs). Implementation trace: [crates/deep-diff-forge-core/src/lib.rs](../crates/deep-diff-forge-core/src/lib.rs), [crates/deep-diff-forge-patch/src/lib.rs](../crates/deep-diff-forge-patch/src/lib.rs), [crates/deep-diff-forge-patch/src/parser.rs](../crates/deep-diff-forge-patch/src/parser.rs), [crates/deep-diff-forge-patch/src/render.rs](../crates/deep-diff-forge-patch/src/render.rs), [crates/deep-diff-forge-patch/src/paths.rs](../crates/deep-diff-forge-patch/src/paths.rs), [crates/deep-diff-forge-patch/tests/git_oracle.rs](../crates/deep-diff-forge-patch/tests/git_oracle.rs), [crates/deep-diff-forge-patch/tests/round_trip.rs](../crates/deep-diff-forge-patch/tests/round_trip.rs), [crates/deep-diff-forge-pipeline/src/review.rs](../crates/deep-diff-forge-pipeline/src/review.rs), [crates/deep-diff-forge-pipeline/src/lib.rs](../crates/deep-diff-forge-pipeline/src/lib.rs), [crates/deep-diff-forge-cli/src/analysis.rs](../crates/deep-diff-forge-cli/src/analysis.rs), [crates/deep-diff-forge-cli/src/main.rs](../crates/deep-diff-forge-cli/src/main.rs), [crates/deep-diff-forge-patch/src/git_raw.rs](../crates/deep-diff-forge-patch/src/git_raw.rs), [crates/deep-diff-forge-patch/src/git_acquire.rs](../crates/deep-diff-forge-patch/src/git_acquire.rs), [crates/deep-diff-forge-patch/tests/git_acquire.rs](../crates/deep-diff-forge-patch/tests/git_acquire.rs), [crates/deep-diff-forge-cli/src/git_input.rs](../crates/deep-diff-forge-cli/src/git_input.rs), [crates/deep-diff-forge-cli/tests/git_input.rs](../crates/deep-diff-forge-cli/tests/git_input.rs).
 
 **Original recommendation:** Add SourceSnapshot/ChangeSet identities, old/new file/blob/mode identities, original-patch artifact references and declared input capabilities. Materialize dirty worktree/untracked content before analysis. Keep patch-only input supported with explicitly missing context.
 
@@ -216,7 +215,7 @@ Original source anchor: [crates/deep-diff-forge-core/src/lib.rs](../crates/deep-
 
 Typed per-line EOF state, encoded binary body, original capture and format/path rejection now exist. For natively acquired Git input, each change now carries a typed operation (added/deleted/modified/renamed/copied/type-changed), similarity score, exact old/new path bytes, old/new modes and blob IDs, and the byte range of its block(s) in the authoritative patch; a fixture covering Unicode/tab/newline names, binary, rename+modify, mode change, type change, deletion, missing final newline, CRLF and untracked files applies with `git apply --check` and `git apply` in a clean clone and reproduces the working-tree bytes and executable bits. Still partial: stdin patch input has no such typed metadata, the text review model still requires UTF-8 patches (non-UTF-8 content or paths are a typed refusal, not a reconstruction), and applicability capability negotiation remains.
 
-Original source anchor: [crates/deep-diff-forge-core/src/lib.rs](../crates/deep-diff-forge-core/src/lib.rs). Implementation trace: [crates/deep-diff-forge-core/src/lib.rs](../crates/deep-diff-forge-core/src/lib.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-core--lib), [crates/deep-diff-forge-patch/src/lib.rs](../crates/deep-diff-forge-patch/src/lib.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--lib), [crates/deep-diff-forge-patch/src/parser.rs](../crates/deep-diff-forge-patch/src/parser.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--parser), [crates/deep-diff-forge-patch/src/render.rs](../crates/deep-diff-forge-patch/src/render.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--render), [crates/deep-diff-forge-patch/src/paths.rs](../crates/deep-diff-forge-patch/src/paths.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--paths), [crates/deep-diff-forge-patch/tests/git_oracle.rs](../crates/deep-diff-forge-patch/tests/git_oracle.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--git_oracle), [crates/deep-diff-forge-patch/tests/round_trip.rs](../crates/deep-diff-forge-patch/tests/round_trip.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--round_trip), [crates/deep-diff-forge-patch/src/git_raw.rs](../crates/deep-diff-forge-patch/src/git_raw.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--git_raw), [crates/deep-diff-forge-patch/src/git_acquire.rs](../crates/deep-diff-forge-patch/src/git_acquire.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--git_acquire), [crates/deep-diff-forge-patch/tests/git_acquire.rs](../crates/deep-diff-forge-patch/tests/git_acquire.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--git_acquire), [crates/deep-diff-forge-cli/src/git_input.rs](../crates/deep-diff-forge-cli/src/git_input.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--git_input), [crates/deep-diff-forge-cli/tests/git_input.rs](../crates/deep-diff-forge-cli/tests/git_input.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--tests--git_input).
+Original source anchor: [crates/deep-diff-forge-core/src/lib.rs](../crates/deep-diff-forge-core/src/lib.rs). Implementation trace: [crates/deep-diff-forge-core/src/lib.rs](../crates/deep-diff-forge-core/src/lib.rs), [crates/deep-diff-forge-patch/src/lib.rs](../crates/deep-diff-forge-patch/src/lib.rs), [crates/deep-diff-forge-patch/src/parser.rs](../crates/deep-diff-forge-patch/src/parser.rs), [crates/deep-diff-forge-patch/src/render.rs](../crates/deep-diff-forge-patch/src/render.rs), [crates/deep-diff-forge-patch/src/paths.rs](../crates/deep-diff-forge-patch/src/paths.rs), [crates/deep-diff-forge-patch/tests/git_oracle.rs](../crates/deep-diff-forge-patch/tests/git_oracle.rs), [crates/deep-diff-forge-patch/tests/round_trip.rs](../crates/deep-diff-forge-patch/tests/round_trip.rs), [crates/deep-diff-forge-patch/src/git_raw.rs](../crates/deep-diff-forge-patch/src/git_raw.rs), [crates/deep-diff-forge-patch/src/git_acquire.rs](../crates/deep-diff-forge-patch/src/git_acquire.rs), [crates/deep-diff-forge-patch/tests/git_acquire.rs](../crates/deep-diff-forge-patch/tests/git_acquire.rs), [crates/deep-diff-forge-cli/src/git_input.rs](../crates/deep-diff-forge-cli/src/git_input.rs), [crates/deep-diff-forge-cli/tests/git_input.rs](../crates/deep-diff-forge-cli/tests/git_input.rs).
 
 **Original recommendation:** Retain original bytes and add typed line termination, binary operations, exact old/new paths/modes, format capabilities and reconstruction/applicability status. Explicitly reject or mark partial unsupported operations instead of successful-looking normalization.
 
@@ -228,7 +227,7 @@ Original source anchor: [crates/deep-diff-forge-core/src/lib.rs](../crates/deep-
 
 EOF markers are attached to specific patch lines and re-emitted there; malformed/orphan/duplicate markers fail explicitly, and so does a marker followed by another line of the side it ended (Git would join that line onto the marked one; bug hunt 2026-11-01).
 
-Original source anchor: [crates/deep-diff-forge-patch/src/render.rs](../crates/deep-diff-forge-patch/src/render.rs). Implementation trace: [crates/deep-diff-forge-core/src/lib.rs](../crates/deep-diff-forge-core/src/lib.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-core--lib), [crates/deep-diff-forge-patch/src/lib.rs](../crates/deep-diff-forge-patch/src/lib.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--lib), [crates/deep-diff-forge-patch/src/parser.rs](../crates/deep-diff-forge-patch/src/parser.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--parser), [crates/deep-diff-forge-patch/src/render.rs](../crates/deep-diff-forge-patch/src/render.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--render), [crates/deep-diff-forge-patch/src/paths.rs](../crates/deep-diff-forge-patch/src/paths.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--paths), [crates/deep-diff-forge-patch/tests/git_oracle.rs](../crates/deep-diff-forge-patch/tests/git_oracle.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--git_oracle), [crates/deep-diff-forge-patch/tests/round_trip.rs](../crates/deep-diff-forge-patch/tests/round_trip.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--round_trip).
+Original source anchor: [crates/deep-diff-forge-patch/src/render.rs](../crates/deep-diff-forge-patch/src/render.rs). Implementation trace: [crates/deep-diff-forge-core/src/lib.rs](../crates/deep-diff-forge-core/src/lib.rs), [crates/deep-diff-forge-patch/src/lib.rs](../crates/deep-diff-forge-patch/src/lib.rs), [crates/deep-diff-forge-patch/src/parser.rs](../crates/deep-diff-forge-patch/src/parser.rs), [crates/deep-diff-forge-patch/src/render.rs](../crates/deep-diff-forge-patch/src/render.rs), [crates/deep-diff-forge-patch/src/paths.rs](../crates/deep-diff-forge-patch/src/paths.rs), [crates/deep-diff-forge-patch/tests/git_oracle.rs](../crates/deep-diff-forge-patch/tests/git_oracle.rs), [crates/deep-diff-forge-patch/tests/round_trip.rs](../crates/deep-diff-forge-patch/tests/round_trip.rs).
 
 **Original recommendation:** Represent line termination on the preceding old/new content side and emit markers at the correct hunk position. Keep original patch bytes independently of display projections.
 
@@ -240,7 +239,7 @@ Original source anchor: [crates/deep-diff-forge-patch/src/render.rs](../crates/d
 
 LF framing preserves content CR bytes. Independent Git oracle covers CRLF and mixed endings.
 
-Original source anchor: [crates/deep-diff-forge-patch/src/parser.rs](../crates/deep-diff-forge-patch/src/parser.rs). Implementation trace: [crates/deep-diff-forge-core/src/lib.rs](../crates/deep-diff-forge-core/src/lib.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-core--lib), [crates/deep-diff-forge-patch/src/lib.rs](../crates/deep-diff-forge-patch/src/lib.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--lib), [crates/deep-diff-forge-patch/src/parser.rs](../crates/deep-diff-forge-patch/src/parser.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--parser), [crates/deep-diff-forge-patch/src/render.rs](../crates/deep-diff-forge-patch/src/render.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--render), [crates/deep-diff-forge-patch/src/paths.rs](../crates/deep-diff-forge-patch/src/paths.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--paths), [crates/deep-diff-forge-patch/tests/git_oracle.rs](../crates/deep-diff-forge-patch/tests/git_oracle.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--git_oracle), [crates/deep-diff-forge-patch/tests/round_trip.rs](../crates/deep-diff-forge-patch/tests/round_trip.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--round_trip).
+Original source anchor: [crates/deep-diff-forge-patch/src/parser.rs](../crates/deep-diff-forge-patch/src/parser.rs). Implementation trace: [crates/deep-diff-forge-core/src/lib.rs](../crates/deep-diff-forge-core/src/lib.rs), [crates/deep-diff-forge-patch/src/lib.rs](../crates/deep-diff-forge-patch/src/lib.rs), [crates/deep-diff-forge-patch/src/parser.rs](../crates/deep-diff-forge-patch/src/parser.rs), [crates/deep-diff-forge-patch/src/render.rs](../crates/deep-diff-forge-patch/src/render.rs), [crates/deep-diff-forge-patch/src/paths.rs](../crates/deep-diff-forge-patch/src/paths.rs), [crates/deep-diff-forge-patch/tests/git_oracle.rs](../crates/deep-diff-forge-patch/tests/git_oracle.rs), [crates/deep-diff-forge-patch/tests/round_trip.rs](../crates/deep-diff-forge-patch/tests/round_trip.rs).
 
 **Original recommendation:** Separate patch framing from the represented content line terminators and preserve original bytes. Define the supported LF/CRLF/mixed termination behavior explicitly.
 
@@ -252,7 +251,7 @@ Original source anchor: [crates/deep-diff-forge-patch/src/parser.rs](../crates/d
 
 Encoded Git binary payload bodies are retained and rendered; Git applies the reconstructed fixture to exact candidate bytes.
 
-Original source anchor: [crates/deep-diff-forge-patch/src/parser.rs](../crates/deep-diff-forge-patch/src/parser.rs). Implementation trace: [crates/deep-diff-forge-core/src/lib.rs](../crates/deep-diff-forge-core/src/lib.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-core--lib), [crates/deep-diff-forge-patch/src/lib.rs](../crates/deep-diff-forge-patch/src/lib.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--lib), [crates/deep-diff-forge-patch/src/parser.rs](../crates/deep-diff-forge-patch/src/parser.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--parser), [crates/deep-diff-forge-patch/src/render.rs](../crates/deep-diff-forge-patch/src/render.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--render), [crates/deep-diff-forge-patch/src/paths.rs](../crates/deep-diff-forge-patch/src/paths.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--paths), [crates/deep-diff-forge-patch/tests/git_oracle.rs](../crates/deep-diff-forge-patch/tests/git_oracle.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--git_oracle), [crates/deep-diff-forge-patch/tests/round_trip.rs](../crates/deep-diff-forge-patch/tests/round_trip.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--round_trip).
+Original source anchor: [crates/deep-diff-forge-patch/src/parser.rs](../crates/deep-diff-forge-patch/src/parser.rs). Implementation trace: [crates/deep-diff-forge-core/src/lib.rs](../crates/deep-diff-forge-core/src/lib.rs), [crates/deep-diff-forge-patch/src/lib.rs](../crates/deep-diff-forge-patch/src/lib.rs), [crates/deep-diff-forge-patch/src/parser.rs](../crates/deep-diff-forge-patch/src/parser.rs), [crates/deep-diff-forge-patch/src/render.rs](../crates/deep-diff-forge-patch/src/render.rs), [crates/deep-diff-forge-patch/src/paths.rs](../crates/deep-diff-forge-patch/src/paths.rs), [crates/deep-diff-forge-patch/tests/git_oracle.rs](../crates/deep-diff-forge-patch/tests/git_oracle.rs), [crates/deep-diff-forge-patch/tests/round_trip.rs](../crates/deep-diff-forge-patch/tests/round_trip.rs).
 
 **Original recommendation:** Retain typed binary payload/operations or refuse to advertise reconstructed applicability for binary inputs. Always preserve the original byte artifact.
 
@@ -266,7 +265,7 @@ Git C-quoted UTF-8 path decoding/encoding preserves octal UTF-8, tabs and quotes
 
 Native acquisition now follows the tuicr approach (MIT, attributed in `git_raw.rs`): Git runs with a fixed argv (`--raw -z --patch`, `core.quotePath=false`, pinned `a/`/`b/` prefixes, no colour/external diff/textconv/hooks/fsmonitor), path/status/mode/blob identity comes only from NUL-delimited raw records with separate old/new path bytes (`GitPath`, lossless `OsString` on Unix), each record is paired with its `diff --git` block(s), and a count mismatch, re-ordered block, wrong header bytes, missing `new file`/`deleted file`/rename/mode lines or a disagreeing `index` object ID is a typed refusal. Review-model paths for Git input are taken from the records, so a display-header defect cannot mislabel them. The one this guarded against (a mode-only change under `x b/y` parsed as `y`) was fixed in the parser on 2026-11-01, which now splits a `diff --git` line where both halves name one path, as `git apply` does; the fixture test checks that the records and the display parse agree on `x b/y`. Partial: non-UTF-8 paths are preserved in the structured records and in `--acquisition-json` (hex), but the text review model refuses them; trailing-space and Unix non-UTF-8 paths have no real-repository fixture yet (the non-UTF-8 case is unit-tested on synthetic raw output).
 
-Original source anchor: [crates/deep-diff-forge-patch/src/parser.rs](../crates/deep-diff-forge-patch/src/parser.rs). Implementation trace: [crates/deep-diff-forge-core/src/lib.rs](../crates/deep-diff-forge-core/src/lib.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-core--lib), [crates/deep-diff-forge-patch/src/lib.rs](../crates/deep-diff-forge-patch/src/lib.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--lib), [crates/deep-diff-forge-patch/src/parser.rs](../crates/deep-diff-forge-patch/src/parser.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--parser), [crates/deep-diff-forge-patch/src/render.rs](../crates/deep-diff-forge-patch/src/render.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--render), [crates/deep-diff-forge-patch/src/paths.rs](../crates/deep-diff-forge-patch/src/paths.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--paths), [crates/deep-diff-forge-patch/tests/git_oracle.rs](../crates/deep-diff-forge-patch/tests/git_oracle.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--git_oracle), [crates/deep-diff-forge-patch/tests/round_trip.rs](../crates/deep-diff-forge-patch/tests/round_trip.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--round_trip), [crates/deep-diff-forge-patch/src/git_raw.rs](../crates/deep-diff-forge-patch/src/git_raw.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--git_raw), [crates/deep-diff-forge-patch/src/git_acquire.rs](../crates/deep-diff-forge-patch/src/git_acquire.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--git_acquire), [crates/deep-diff-forge-patch/tests/git_acquire.rs](../crates/deep-diff-forge-patch/tests/git_acquire.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--git_acquire), [crates/deep-diff-forge-cli/src/git_input.rs](../crates/deep-diff-forge-cli/src/git_input.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--git_input), [crates/deep-diff-forge-cli/tests/git_input.rs](../crates/deep-diff-forge-cli/tests/git_input.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--tests--git_input).
+Original source anchor: [crates/deep-diff-forge-patch/src/parser.rs](../crates/deep-diff-forge-patch/src/parser.rs). Implementation trace: [crates/deep-diff-forge-core/src/lib.rs](../crates/deep-diff-forge-core/src/lib.rs), [crates/deep-diff-forge-patch/src/lib.rs](../crates/deep-diff-forge-patch/src/lib.rs), [crates/deep-diff-forge-patch/src/parser.rs](../crates/deep-diff-forge-patch/src/parser.rs), [crates/deep-diff-forge-patch/src/render.rs](../crates/deep-diff-forge-patch/src/render.rs), [crates/deep-diff-forge-patch/src/paths.rs](../crates/deep-diff-forge-patch/src/paths.rs), [crates/deep-diff-forge-patch/tests/git_oracle.rs](../crates/deep-diff-forge-patch/tests/git_oracle.rs), [crates/deep-diff-forge-patch/tests/round_trip.rs](../crates/deep-diff-forge-patch/tests/round_trip.rs), [crates/deep-diff-forge-patch/src/git_raw.rs](../crates/deep-diff-forge-patch/src/git_raw.rs), [crates/deep-diff-forge-patch/src/git_acquire.rs](../crates/deep-diff-forge-patch/src/git_acquire.rs), [crates/deep-diff-forge-patch/tests/git_acquire.rs](../crates/deep-diff-forge-patch/tests/git_acquire.rs), [crates/deep-diff-forge-cli/src/git_input.rs](../crates/deep-diff-forge-cli/src/git_input.rs), [crates/deep-diff-forge-cli/tests/git_input.rs](../crates/deep-diff-forge-cli/tests/git_input.rs).
 
 **Original recommendation:** Implement Git path quoting correctly for patch input; for native acquisition, use NUL-delimited machine metadata with separate old/new path identities, as tuicr does. Keep exact path bytes separate from safe display text.
 
@@ -278,7 +277,7 @@ Original source anchor: [crates/deep-diff-forge-patch/src/parser.rs](../crates/d
 
 Checked tokenization returns typed unavailable results for unsupported, oversized, erroneous or cancelled parsing; reformat_only stays false on failure.
 
-Original source anchor: [crates/deep-diff-forge-syntax/src/structural.rs](../crates/deep-diff-forge-syntax/src/structural.rs). Implementation trace: [crates/deep-diff-forge-syntax/src/lib.rs](../crates/deep-diff-forge-syntax/src/lib.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-syntax--lib), [crates/deep-diff-forge-syntax/src/analyze.rs](../crates/deep-diff-forge-syntax/src/analyze.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-syntax--analyze), [crates/deep-diff-forge-syntax/src/structural.rs](../crates/deep-diff-forge-syntax/src/structural.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-syntax--structural), [crates/deep-diff-forge-syntax/src/highlight.rs](../crates/deep-diff-forge-syntax/src/highlight.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-syntax--highlight).
+Original source anchor: [crates/deep-diff-forge-syntax/src/structural.rs](../crates/deep-diff-forge-syntax/src/structural.rs). Implementation trace: [crates/deep-diff-forge-syntax/src/lib.rs](../crates/deep-diff-forge-syntax/src/lib.rs), [crates/deep-diff-forge-syntax/src/analyze.rs](../crates/deep-diff-forge-syntax/src/analyze.rs), [crates/deep-diff-forge-syntax/src/structural.rs](../crates/deep-diff-forge-syntax/src/structural.rs), [crates/deep-diff-forge-syntax/src/highlight.rs](../crates/deep-diff-forge-syntax/src/highlight.rs).
 
 **Original recommendation:** Return a typed tokenization/analysis outcome and propagate explicit unavailable/partial/budget reasons. Only classify equivalent observed token streams after both analyses succeeded under the declared capability.
 
@@ -290,7 +289,7 @@ Original source anchor: [crates/deep-diff-forge-syntax/src/structural.rs](../cra
 
 The new shared service verifies full source pairs, computes Rust structural results and attaches source-line spans to existing hunks in a separate enriched model. Rename/copy/binary semantics and existing UI adapters remain.
 
-Original source anchor: [crates/deep-diff-forge-cli/src/main.rs](../crates/deep-diff-forge-cli/src/main.rs). Implementation trace: [crates/deep-diff-forge-pipeline/src/review.rs](../crates/deep-diff-forge-pipeline/src/review.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-pipeline--review), [crates/deep-diff-forge-pipeline/src/lib.rs](../crates/deep-diff-forge-pipeline/src/lib.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-pipeline--lib), [crates/deep-diff-forge-cli/src/analysis.rs](../crates/deep-diff-forge-cli/src/analysis.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--analysis), [crates/deep-diff-forge-cli/src/main.rs](../crates/deep-diff-forge-cli/src/main.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--main).
+Original source anchor: [crates/deep-diff-forge-cli/src/main.rs](../crates/deep-diff-forge-cli/src/main.rs). Implementation trace: [crates/deep-diff-forge-pipeline/src/review.rs](../crates/deep-diff-forge-pipeline/src/review.rs), [crates/deep-diff-forge-pipeline/src/lib.rs](../crates/deep-diff-forge-pipeline/src/lib.rs), [crates/deep-diff-forge-cli/src/analysis.rs](../crates/deep-diff-forge-cli/src/analysis.rs), [crates/deep-diff-forge-cli/src/main.rs](../crates/deep-diff-forge-cli/src/main.rs).
 
 **Original recommendation:** Route immutable source acquisition, supported Rust analysis, validated hunk/range joining and typed fallback through a shared analysis service used by CLI/TUI/daemon.
 
@@ -302,7 +301,7 @@ Original source anchor: [crates/deep-diff-forge-cli/src/main.rs](../crates/deep-
 
 Byte guards, post-parse node caps, bounded LCS work and a shared 250ms cooperative parser callback exist. Hard process isolation, complete stage resource receipts and hostile-input performance campaigns remain.
 
-Original source anchor: [crates/deep-diff-forge-syntax/src/analyze.rs](../crates/deep-diff-forge-syntax/src/analyze.rs). Implementation trace: [crates/deep-diff-forge-syntax/src/lib.rs](../crates/deep-diff-forge-syntax/src/lib.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-syntax--lib), [crates/deep-diff-forge-syntax/src/analyze.rs](../crates/deep-diff-forge-syntax/src/analyze.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-syntax--analyze), [crates/deep-diff-forge-syntax/src/structural.rs](../crates/deep-diff-forge-syntax/src/structural.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-syntax--structural), [crates/deep-diff-forge-syntax/src/highlight.rs](../crates/deep-diff-forge-syntax/src/highlight.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-syntax--highlight).
+Original source anchor: [crates/deep-diff-forge-syntax/src/analyze.rs](../crates/deep-diff-forge-syntax/src/analyze.rs). Implementation trace: [crates/deep-diff-forge-syntax/src/lib.rs](../crates/deep-diff-forge-syntax/src/lib.rs), [crates/deep-diff-forge-syntax/src/analyze.rs](../crates/deep-diff-forge-syntax/src/analyze.rs), [crates/deep-diff-forge-syntax/src/structural.rs](../crates/deep-diff-forge-syntax/src/structural.rs), [crates/deep-diff-forge-syntax/src/highlight.rs](../crates/deep-diff-forge-syntax/src/highlight.rs).
 
 **Original recommendation:** Pass byte/work/node/time/memory budgets to analyzer jobs, record attempted/completed coverage, and use cooperative cancellation or isolated worker termination as appropriate for soft versus hard limits.
 
@@ -314,7 +313,7 @@ Original source anchor: [crates/deep-diff-forge-syntax/src/analyze.rs](../crates
 
 Maintain separate syntax and behavior evidence. Run held-out semantic counterexample evaluations before claiming equivalence.
 
-Original source anchor: [crates/deep-diff-forge-syntax/src/structural.rs](../crates/deep-diff-forge-syntax/src/structural.rs). Implementation trace: [crates/deep-diff-forge-syntax/src/lib.rs](../crates/deep-diff-forge-syntax/src/lib.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-syntax--lib), [crates/deep-diff-forge-syntax/src/analyze.rs](../crates/deep-diff-forge-syntax/src/analyze.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-syntax--analyze), [crates/deep-diff-forge-syntax/src/structural.rs](../crates/deep-diff-forge-syntax/src/structural.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-syntax--structural), [crates/deep-diff-forge-syntax/src/highlight.rs](../crates/deep-diff-forge-syntax/src/highlight.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-syntax--highlight).
+Original source anchor: [crates/deep-diff-forge-syntax/src/structural.rs](../crates/deep-diff-forge-syntax/src/structural.rs). Implementation trace: [crates/deep-diff-forge-syntax/src/lib.rs](../crates/deep-diff-forge-syntax/src/lib.rs), [crates/deep-diff-forge-syntax/src/analyze.rs](../crates/deep-diff-forge-syntax/src/analyze.rs), [crates/deep-diff-forge-syntax/src/structural.rs](../crates/deep-diff-forge-syntax/src/structural.rs), [crates/deep-diff-forge-syntax/src/highlight.rs](../crates/deep-diff-forge-syntax/src/highlight.rs).
 
 **Original recommendation:** Expose analyzer capability/version and scope alongside results. Build syntax, resolved relationships, observed tests and agent interpretations as distinct evidence tiers; select additional languages from actual evaluated workloads.
 
@@ -326,7 +325,7 @@ Original source anchor: [crates/deep-diff-forge-syntax/src/structural.rs](../cra
 
 Build typed symbol/dependency/call/test relationships over revision-bound inputs; validate edge provenance and unknown edges.
 
-Original source anchor: [crates/deep-diff-forge-graph/src/risk.rs](../crates/deep-diff-forge-graph/src/risk.rs). Delivery/design home: [vault architecture and experiments](obsidian://open?vault=deep-diff-forge.vault&file=Strategy%2FExperiments%20and%20Delivery%20Gates).
+Original source anchor: [crates/deep-diff-forge-graph/src/risk.rs](../crates/deep-diff-forge-graph/src/risk.rs).
 
 **Original recommendation:** Add typed, revision-bound relationships with derivation method, source artifacts and coverage. Distinguish compiler-derived edges, heuristics and agent hypotheses. Rank the complete inventory using those observations.
 
@@ -338,7 +337,7 @@ Original source anchor: [crates/deep-diff-forge-graph/src/risk.rs](../crates/dee
 
 Treat generated suppression as a visible review policy; preserve and expose suppressed input coverage.
 
-Original source anchor: [crates/deep-diff-forge-graph/src/risk.rs](../crates/deep-diff-forge-graph/src/risk.rs). Delivery/design home: [vault architecture and experiments](obsidian://open?vault=deep-diff-forge.vault&file=Strategy%2FExperiments%20and%20Delivery%20Gates).
+Original source anchor: [crates/deep-diff-forge-graph/src/risk.rs](../crates/deep-diff-forge-graph/src/risk.rs).
 
 **Original recommendation:** Keep every changed operation in coverage, distinguish presentation priority from severity/verification requirements, and allow policy-sensitive generated/test changes to surface explicitly.
 
@@ -350,7 +349,7 @@ Original source anchor: [crates/deep-diff-forge-graph/src/risk.rs](../crates/dee
 
 Legacy evidence strings and grounded flags no longer establish verified support. A separate registry tracks captured bytes, evaluator assessment and staleness.
 
-Original source anchor: [crates/deep-diff-forge-agent/src/lib.rs](../crates/deep-diff-forge-agent/src/lib.rs). Implementation trace: [crates/deep-diff-forge-agent/src/lib.rs](../crates/deep-diff-forge-agent/src/lib.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-agent--lib), [crates/deep-diff-forge-agent/src/store.rs](../crates/deep-diff-forge-agent/src/store.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-agent--store), [crates/deep-diff-forge-agent/src/evidence.rs](../crates/deep-diff-forge-agent/src/evidence.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-agent--evidence), [crates/deep-diff-forge-agent/tests/flow.rs](../crates/deep-diff-forge-agent/tests/flow.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-agent--tests--flow), [crates/deep-diff-forge-tui/src/notes.rs](../crates/deep-diff-forge-tui/src/notes.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-tui--notes).
+Original source anchor: [crates/deep-diff-forge-agent/src/lib.rs](../crates/deep-diff-forge-agent/src/lib.rs). Implementation trace: [crates/deep-diff-forge-agent/src/lib.rs](../crates/deep-diff-forge-agent/src/lib.rs), [crates/deep-diff-forge-agent/src/store.rs](../crates/deep-diff-forge-agent/src/store.rs), [crates/deep-diff-forge-agent/src/evidence.rs](../crates/deep-diff-forge-agent/src/evidence.rs), [crates/deep-diff-forge-agent/tests/flow.rs](../crates/deep-diff-forge-agent/tests/flow.rs), [crates/deep-diff-forge-tui/src/notes.rs](../crates/deep-diff-forge-tui/src/notes.rs).
 
 **Original recommendation:** Replace the Boolean collapse with asserted/evidence-linked/checked-supported-with-scope/contradicted/inconclusive/stale states. Resolve evidence artifacts and verify relevance to the exact candidate and proposition.
 
@@ -362,7 +361,7 @@ Original source anchor: [crates/deep-diff-forge-agent/src/lib.rs](../crates/deep
 
 Untrusted insertion sanitizes body text, clears claimed grounding and reserved engine identity, and rejects empty/duplicate IDs.
 
-Original source anchor: [crates/deep-diff-forge-agent/src/store.rs](../crates/deep-diff-forge-agent/src/store.rs). Implementation trace: [crates/deep-diff-forge-agent/src/lib.rs](../crates/deep-diff-forge-agent/src/lib.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-agent--lib), [crates/deep-diff-forge-agent/src/store.rs](../crates/deep-diff-forge-agent/src/store.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-agent--store), [crates/deep-diff-forge-agent/src/evidence.rs](../crates/deep-diff-forge-agent/src/evidence.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-agent--evidence), [crates/deep-diff-forge-agent/tests/flow.rs](../crates/deep-diff-forge-agent/tests/flow.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-agent--tests--flow), [crates/deep-diff-forge-tui/src/notes.rs](../crates/deep-diff-forge-tui/src/notes.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-tui--notes).
+Original source anchor: [crates/deep-diff-forge-agent/src/store.rs](../crates/deep-diff-forge-agent/src/store.rs). Implementation trace: [crates/deep-diff-forge-agent/src/lib.rs](../crates/deep-diff-forge-agent/src/lib.rs), [crates/deep-diff-forge-agent/src/store.rs](../crates/deep-diff-forge-agent/src/store.rs), [crates/deep-diff-forge-agent/src/evidence.rs](../crates/deep-diff-forge-agent/src/evidence.rs), [crates/deep-diff-forge-agent/tests/flow.rs](../crates/deep-diff-forge-agent/tests/flow.rs), [crates/deep-diff-forge-tui/src/notes.rs](../crates/deep-diff-forge-tui/src/notes.rs).
 
 **Original recommendation:** Create one validated ingestion API taking revision context and authenticated producer facts. Validate schema/size, identity, anchor, body and evidence references transactionally before storing an asserted claim.
 
@@ -374,7 +373,7 @@ Original source anchor: [crates/deep-diff-forge-agent/src/store.rs](../crates/de
 
 BoundAnchor checks review identity plus document membership. Full-source callers can bind to ReviewBundle.id; legacy path/counter APIs remain explicitly document-local. Durable migration, conflict handling and reattachment UX remain.
 
-Original source anchor: [crates/deep-diff-forge-agent/src/anchor.rs](../crates/deep-diff-forge-agent/src/anchor.rs). Implementation trace: [crates/deep-diff-forge-agent/src/lib.rs](../crates/deep-diff-forge-agent/src/lib.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-agent--lib), [crates/deep-diff-forge-agent/src/store.rs](../crates/deep-diff-forge-agent/src/store.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-agent--store), [crates/deep-diff-forge-agent/src/evidence.rs](../crates/deep-diff-forge-agent/src/evidence.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-agent--evidence), [crates/deep-diff-forge-agent/tests/flow.rs](../crates/deep-diff-forge-agent/tests/flow.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-agent--tests--flow), [crates/deep-diff-forge-tui/src/notes.rs](../crates/deep-diff-forge-tui/src/notes.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-tui--notes).
+Original source anchor: [crates/deep-diff-forge-agent/src/anchor.rs](../crates/deep-diff-forge-agent/src/anchor.rs). Implementation trace: [crates/deep-diff-forge-agent/src/lib.rs](../crates/deep-diff-forge-agent/src/lib.rs), [crates/deep-diff-forge-agent/src/store.rs](../crates/deep-diff-forge-agent/src/store.rs), [crates/deep-diff-forge-agent/src/evidence.rs](../crates/deep-diff-forge-agent/src/evidence.rs), [crates/deep-diff-forge-agent/tests/flow.rs](../crates/deep-diff-forge-agent/tests/flow.rs), [crates/deep-diff-forge-tui/src/notes.rs](../crates/deep-diff-forge-tui/src/notes.rs).
 
 **Original recommendation:** Require captured change/file/content identity on external anchors. Separate identity from layout/order. Remapping after edits must return exact/relocated/ambiguous/stale and record lineage explicitly.
 
@@ -386,7 +385,7 @@ Original source anchor: [crates/deep-diff-forge-agent/src/anchor.rs](../crates/d
 
 Trusted and untrusted stores reject duplicate IDs without replacing an annotation or inheriting resolution.
 
-Original source anchor: [crates/deep-diff-forge-agent/src/store.rs](../crates/deep-diff-forge-agent/src/store.rs). Implementation trace: [crates/deep-diff-forge-agent/src/lib.rs](../crates/deep-diff-forge-agent/src/lib.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-agent--lib), [crates/deep-diff-forge-agent/src/store.rs](../crates/deep-diff-forge-agent/src/store.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-agent--store), [crates/deep-diff-forge-agent/src/evidence.rs](../crates/deep-diff-forge-agent/src/evidence.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-agent--evidence), [crates/deep-diff-forge-agent/tests/flow.rs](../crates/deep-diff-forge-agent/tests/flow.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-agent--tests--flow), [crates/deep-diff-forge-tui/src/notes.rs](../crates/deep-diff-forge-tui/src/notes.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-tui--notes).
+Original source anchor: [crates/deep-diff-forge-agent/src/store.rs](../crates/deep-diff-forge-agent/src/store.rs). Implementation trace: [crates/deep-diff-forge-agent/src/lib.rs](../crates/deep-diff-forge-agent/src/lib.rs), [crates/deep-diff-forge-agent/src/store.rs](../crates/deep-diff-forge-agent/src/store.rs), [crates/deep-diff-forge-agent/src/evidence.rs](../crates/deep-diff-forge-agent/src/evidence.rs), [crates/deep-diff-forge-agent/tests/flow.rs](../crates/deep-diff-forge-agent/tests/flow.rs), [crates/deep-diff-forge-tui/src/notes.rs](../crates/deep-diff-forge-tui/src/notes.rs).
 
 **Original recommendation:** Enforce identity uniqueness or explicit idempotent insertion with immutable-content checks. Scope resolution to a specific revision-bound claim and record actor/reason/event identity.
 
@@ -398,7 +397,7 @@ Original source anchor: [crates/deep-diff-forge-agent/src/store.rs](../crates/de
 
 Persist reviewer-owned decisions in a versioned journal with optimistic conflict detection and schema migration.
 
-Original source anchor: [crates/deep-diff-forge-agent/src/store.rs](../crates/deep-diff-forge-agent/src/store.rs). Delivery/design home: [vault architecture and experiments](obsidian://open?vault=deep-diff-forge.vault&file=Strategy%2FExperiments%20and%20Delivery%20Gates).
+Original source anchor: [crates/deep-diff-forge-agent/src/store.rs](../crates/deep-diff-forge-agent/src/store.rs).
 
 **Original recommendation:** Introduce durable append-only claim/decision events with actor, candidate, reason, evidence references and explicit supersession. Derive UI projections from that state. Study tuicr ReviewStore/manifest/merge semantics.
 
@@ -410,7 +409,7 @@ Original source anchor: [crates/deep-diff-forge-agent/src/store.rs](../crates/de
 
 A shared capture/validation/syntax/rank/export service and analyze CLI adapter are implemented. Existing review, daemon and TUI entry points still need migration to this service.
 
-Original source anchor: [crates/deep-diff-forge-pipeline/src/lib.rs](../crates/deep-diff-forge-pipeline/src/lib.rs). Implementation trace: [crates/deep-diff-forge-pipeline/src/review.rs](../crates/deep-diff-forge-pipeline/src/review.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-pipeline--review), [crates/deep-diff-forge-pipeline/src/lib.rs](../crates/deep-diff-forge-pipeline/src/lib.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-pipeline--lib), [crates/deep-diff-forge-cli/src/analysis.rs](../crates/deep-diff-forge-cli/src/analysis.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--analysis), [crates/deep-diff-forge-cli/src/main.rs](../crates/deep-diff-forge-cli/src/main.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--main).
+Original source anchor: [crates/deep-diff-forge-pipeline/src/lib.rs](../crates/deep-diff-forge-pipeline/src/lib.rs). Implementation trace: [crates/deep-diff-forge-pipeline/src/review.rs](../crates/deep-diff-forge-pipeline/src/review.rs), [crates/deep-diff-forge-pipeline/src/lib.rs](../crates/deep-diff-forge-pipeline/src/lib.rs), [crates/deep-diff-forge-cli/src/analysis.rs](../crates/deep-diff-forge-cli/src/analysis.rs), [crates/deep-diff-forge-cli/src/main.rs](../crates/deep-diff-forge-cli/src/main.rs).
 
 **Original recommendation:** Introduce one revision-aware analysis/job/result service with source, analyzer, artifact and verification ports. CLI, TUI and daemon consume the same canonical findings/coverage and shared action semantics.
 
@@ -422,7 +421,7 @@ Original source anchor: [crates/deep-diff-forge-pipeline/src/lib.rs](../crates/d
 
 Introduce versioned start/file/coverage/diagnostic/end JSONL envelopes and migrate consumers together.
 
-Original source anchor: [crates/deep-diff-forge-pipeline/src/jsonl.rs](../crates/deep-diff-forge-pipeline/src/jsonl.rs). Delivery/design home: [vault architecture and experiments](obsidian://open?vault=deep-diff-forge.vault&file=Strategy%2FExperiments%20and%20Delivery%20Gates).
+Original source anchor: [crates/deep-diff-forge-pipeline/src/jsonl.rs](../crates/deep-diff-forge-pipeline/src/jsonl.rs).
 
 **Original recommendation:** Define a versioned envelope with change/job/event IDs, producer/analyzer config, sequence, typed payload and terminal coverage. Bound in-flight output; distinguish transport progress order from deterministic final results.
 
@@ -434,7 +433,7 @@ Original source anchor: [crates/deep-diff-forge-pipeline/src/jsonl.rs](../crates
 
 analysis.v1 reports one explicit coverage record per changed file. Legacy JSON/JSONL surfaces still need coverage-aware schema migration.
 
-Original source anchor: [crates/deep-diff-forge-patch/src/json.rs](../crates/deep-diff-forge-patch/src/json.rs). Implementation trace: [crates/deep-diff-forge-pipeline/src/review.rs](../crates/deep-diff-forge-pipeline/src/review.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-pipeline--review), [crates/deep-diff-forge-pipeline/src/lib.rs](../crates/deep-diff-forge-pipeline/src/lib.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-pipeline--lib), [crates/deep-diff-forge-cli/src/analysis.rs](../crates/deep-diff-forge-cli/src/analysis.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--analysis), [crates/deep-diff-forge-cli/src/main.rs](../crates/deep-diff-forge-cli/src/main.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--main).
+Original source anchor: [crates/deep-diff-forge-patch/src/json.rs](../crates/deep-diff-forge-patch/src/json.rs). Implementation trace: [crates/deep-diff-forge-pipeline/src/review.rs](../crates/deep-diff-forge-pipeline/src/review.rs), [crates/deep-diff-forge-pipeline/src/lib.rs](../crates/deep-diff-forge-pipeline/src/lib.rs), [crates/deep-diff-forge-cli/src/analysis.rs](../crates/deep-diff-forge-cli/src/analysis.rs), [crates/deep-diff-forge-cli/src/main.rs](../crates/deep-diff-forge-cli/src/main.rs).
 
 **Original recommendation:** Add explicit requested/completed/skipped/partial/unavailable analysis coverage and common provenance. Version material meaning changes deliberately and preserve tested compatibility for legacy consumers.
 
@@ -446,7 +445,7 @@ Original source anchor: [crates/deep-diff-forge-patch/src/json.rs](../crates/dee
 
 Reject unknown, duplicate and incompatible options consistently across CLI commands.
 
-Original source anchor: [crates/deep-diff-forge-cli/src/main.rs](../crates/deep-diff-forge-cli/src/main.rs). Delivery/design home: [vault architecture and experiments](obsidian://open?vault=deep-diff-forge.vault&file=Strategy%2FExperiments%20and%20Delivery%20Gates).
+Original source anchor: [crates/deep-diff-forge-cli/src/main.rs](../crates/deep-diff-forge-cli/src/main.rs).
 
 **Original recommendation:** Use typed argument validation and a declared mode/capability matrix. Compose supported operations through the shared service, and return an actionable error for unsupported combinations or malformed budgets.
 
@@ -458,7 +457,7 @@ Original source anchor: [crates/deep-diff-forge-cli/src/main.rs](../crates/deep-
 
 Describe the current cluster as deterministic local planning until remote worker transport and failure tests exist.
 
-Original source anchor: [crates/deep-diff-forge-cluster/src/cluster.rs](../crates/deep-diff-forge-cluster/src/cluster.rs). Delivery/design home: [vault architecture and experiments](obsidian://open?vault=deep-diff-forge.vault&file=Strategy%2FExperiments%20and%20Delivery%20Gates).
+Original source anchor: [crates/deep-diff-forge-cluster/src/cluster.rs](../crates/deep-diff-forge-cluster/src/cluster.rs).
 
 **Original recommendation:** Keep deterministic bounded local execution, but model per-job/per-lane inputs, completion, omissions, failures, costs and cancellation before generalizing the scheduler. Use external coordinators for agent task ownership.
 
@@ -470,7 +469,7 @@ Original source anchor: [crates/deep-diff-forge-cluster/src/cluster.rs](../crate
 
 Existing deterministic ranking and input order remain; source-pair identities are sorted and length-framed.
 
-Original source anchor: [crates/deep-diff-forge-cluster/src/scheduler.rs](../crates/deep-diff-forge-cluster/src/scheduler.rs). Delivery/design home: [vault architecture and experiments](obsidian://open?vault=deep-diff-forge.vault&file=Strategy%2FExperiments%20and%20Delivery%20Gates).
+Original source anchor: [crates/deep-diff-forge-cluster/src/scheduler.rs](../crates/deep-diff-forge-cluster/src/scheduler.rs).
 
 **Original recommendation:** Preserve these invariants when adding scheduling, cancellation and richer analysis. Update the stale nearby comment that still says a panicking lane drops a chunk.
 
@@ -482,7 +481,7 @@ Original source anchor: [crates/deep-diff-forge-cluster/src/scheduler.rs](../cra
 
 Move expensive work outside the daemon global lock using immutable snapshots and bounded task ownership.
 
-Original source anchor: [crates/deep-diff-forge-daemon/src/serve.rs](../crates/deep-diff-forge-daemon/src/serve.rs). Implementation trace: [crates/deep-diff-forge-daemon/src/serve.rs](../crates/deep-diff-forge-daemon/src/serve.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-daemon--serve).
+Original source anchor: [crates/deep-diff-forge-daemon/src/serve.rs](../crates/deep-diff-forge-daemon/src/serve.rs). Implementation trace: [crates/deep-diff-forge-daemon/src/serve.rs](../crates/deep-diff-forge-daemon/src/serve.rs).
 
 **Original recommendation:** Keep short locks around session/job metadata and run bounded immutable analysis work outside them. Define queue limits, cancellation and fairness before increasing connection counts.
 
@@ -494,7 +493,7 @@ Original source anchor: [crates/deep-diff-forge-daemon/src/serve.rs](../crates/d
 
 Cache by snapshot, parser/config/version and stage input; test invalidation and eviction with evidence.
 
-Original source anchor: [crates/deep-diff-forge-daemon/src/handler.rs](../crates/deep-diff-forge-daemon/src/handler.rs). Delivery/design home: [vault architecture and experiments](obsidian://open?vault=deep-diff-forge.vault&file=Strategy%2FExperiments%20and%20Delivery%20Gates).
+Original source anchor: [crates/deep-diff-forge-daemon/src/handler.rs](../crates/deep-diff-forge-daemon/src/handler.rs).
 
 **Original recommendation:** Introduce artifact/analyzer cache keys covering source IDs, grammar/analyzer version, options, build configuration and relevant dependency closure. Preserve explicit invalidation and retention policy; clarify current docs.
 
@@ -506,7 +505,7 @@ Original source anchor: [crates/deep-diff-forge-daemon/src/handler.rs](../crates
 
 Track actual stage CPU/time/bytes/nodes plus retained session/cache memory and enforce aggregate limits.
 
-Original source anchor: [crates/deep-diff-forge-daemon/src/handler.rs](../crates/deep-diff-forge-daemon/src/handler.rs). Delivery/design home: [vault architecture and experiments](obsidian://open?vault=deep-diff-forge.vault&file=Strategy%2FExperiments%20and%20Delivery%20Gates).
+Original source anchor: [crates/deep-diff-forge-daemon/src/handler.rs](../crates/deep-diff-forge-daemon/src/handler.rs).
 
 **Original recommendation:** Account retained, in-flight, queued and serialized resources independently. Publish measured peak RSS/latency on fixed hardware/workloads and enforce hard worker limits where needed.
 
@@ -518,7 +517,7 @@ Original source anchor: [crates/deep-diff-forge-daemon/src/handler.rs](../crates
 
 Existing socket ownership/mode and connection-budget checks remain; no weakening was introduced.
 
-Original source anchor: [crates/deep-diff-forge-daemon/src/security.rs](../crates/deep-diff-forge-daemon/src/security.rs). Implementation trace: [crates/deep-diff-forge-daemon/src/serve.rs](../crates/deep-diff-forge-daemon/src/serve.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-daemon--serve).
+Original source anchor: [crates/deep-diff-forge-daemon/src/security.rs](../crates/deep-diff-forge-daemon/src/security.rs). Implementation trace: [crates/deep-diff-forge-daemon/src/serve.rs](../crates/deep-diff-forge-daemon/src/serve.rs).
 
 **Original recommendation:** Preserve these tests and boundaries as richer protocols/adapters arrive. Distinguish local transport identity from the truth of agent claims; stronger broker authentication may be appropriate only when the deployment needs it.
 
@@ -530,7 +529,7 @@ Original source anchor: [crates/deep-diff-forge-daemon/src/security.rs](../crate
 
 Version protocol negotiation, limits, request IDs, errors and replay/compatibility tests.
 
-Original source anchor: [crates/deep-diff-forge-daemon/src/handler.rs](../crates/deep-diff-forge-daemon/src/handler.rs). Delivery/design home: [vault architecture and experiments](obsidian://open?vault=deep-diff-forge.vault&file=Strategy%2FExperiments%20and%20Delivery%20Gates).
+Original source anchor: [crates/deep-diff-forge-daemon/src/handler.rs](../crates/deep-diff-forge-daemon/src/handler.rs).
 
 **Original recommendation:** Evolve the protocol around the shared result model with explicit version/capability negotiation, generation/revision checks, idempotency and terminal job coverage. Keep optional daemon acceleration semantically equivalent to CLI execution.
 
@@ -542,7 +541,7 @@ Original source anchor: [crates/deep-diff-forge-daemon/src/handler.rs](../crates
 
 Render only the viewport and cache full-file highlighting by snapshot; measure before choosing rendering changes.
 
-Original source anchor: [crates/deep-diff-forge-tui/src/diffview.rs](../crates/deep-diff-forge-tui/src/diffview.rs). Delivery/design home: [vault architecture and experiments](obsidian://open?vault=deep-diff-forge.vault&file=Strategy%2FExperiments%20and%20Delivery%20Gates).
+Original source anchor: [crates/deep-diff-forge-tui/src/diffview.rs](../crates/deep-diff-forge-tui/src/diffview.rs).
 
 **Original recommendation:** Use a revision-aware projection/geometry layer, viewport-oriented rendering and bounded reusable full-source highlight results. Preserve safe display behavior and responsive cancellation.
 
@@ -554,7 +553,7 @@ Original source anchor: [crates/deep-diff-forge-tui/src/diffview.rs](../crates/d
 
 Projection and primary TUI diff cells use shared grapheme/cell fitting and inline chunking. Chrome, sidebar word wrapping, click geometry and all viewport paths still need migration. Since 2026-11-01 the projection's line-number fields are as wide as the file's largest line number (they were a fixed four, so rows past 9999 shifted), and a `\` note row follows what a cell cannot show (a lossy line, a missing final newline, a pair whose printed text looks the same, such as a tab against the spaces it advances to, a trailing or no-break space, or a change past the side-by-side cut; inline judges its raw tabs by 8-column stops, side-by-side shows them as four spaces; look-alike letters are not noted). The TUI diff view still has fixed-width number fields and none of those notes.
 
-Original source anchor: [crates/deep-diff-forge-projection/src/side_by_side.rs](../crates/deep-diff-forge-projection/src/side_by_side.rs). Implementation trace: [crates/deep-diff-forge-projection/src/lib.rs](../crates/deep-diff-forge-projection/src/lib.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-projection--lib), [crates/deep-diff-forge-projection/src/width.rs](../crates/deep-diff-forge-projection/src/width.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-projection--width), [crates/deep-diff-forge-projection/src/side_by_side.rs](../crates/deep-diff-forge-projection/src/side_by_side.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-projection--side_by_side), [crates/deep-diff-forge-tui/src/diffview.rs](../crates/deep-diff-forge-tui/src/diffview.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-tui--diffview).
+Original source anchor: [crates/deep-diff-forge-projection/src/side_by_side.rs](../crates/deep-diff-forge-projection/src/side_by_side.rs). Implementation trace: [crates/deep-diff-forge-projection/src/lib.rs](../crates/deep-diff-forge-projection/src/lib.rs), [crates/deep-diff-forge-projection/src/width.rs](../crates/deep-diff-forge-projection/src/width.rs), [crates/deep-diff-forge-projection/src/side_by_side.rs](../crates/deep-diff-forge-projection/src/side_by_side.rs), [crates/deep-diff-forge-tui/src/diffview.rs](../crates/deep-diff-forge-tui/src/diffview.rs).
 
 **Original recommendation:** Use terminal display-width/grapheme-aware clipping and padding after display sanitization. Keep the same width policy across projections and TUI geometry.
 
@@ -566,7 +565,7 @@ Original source anchor: [crates/deep-diff-forge-projection/src/side_by_side.rs](
 
 Existing terminal-safety escaping is preserved before new width calculations.
 
-Original source anchor: [crates/deep-diff-forge-tui/src/paint.rs](../crates/deep-diff-forge-tui/src/paint.rs). Implementation trace: [crates/deep-diff-forge-projection/src/lib.rs](../crates/deep-diff-forge-projection/src/lib.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-projection--lib), [crates/deep-diff-forge-projection/src/width.rs](../crates/deep-diff-forge-projection/src/width.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-projection--width), [crates/deep-diff-forge-projection/src/side_by_side.rs](../crates/deep-diff-forge-projection/src/side_by_side.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-projection--side_by_side), [crates/deep-diff-forge-tui/src/diffview.rs](../crates/deep-diff-forge-tui/src/diffview.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-tui--diffview).
+Original source anchor: [crates/deep-diff-forge-tui/src/paint.rs](../crates/deep-diff-forge-tui/src/paint.rs). Implementation trace: [crates/deep-diff-forge-projection/src/lib.rs](../crates/deep-diff-forge-projection/src/lib.rs), [crates/deep-diff-forge-projection/src/width.rs](../crates/deep-diff-forge-projection/src/width.rs), [crates/deep-diff-forge-projection/src/side_by_side.rs](../crates/deep-diff-forge-projection/src/side_by_side.rs), [crates/deep-diff-forge-tui/src/diffview.rs](../crates/deep-diff-forge-tui/src/diffview.rs).
 
 **Original recommendation:** Retain this invariant when caching full-file highlights, adding peer adapters or virtualizing rows. Keep original bytes distinct from escaped display strings and test all output surfaces.
 
@@ -578,7 +577,7 @@ Original source anchor: [crates/deep-diff-forge-tui/src/paint.rs](../crates/deep
 
 Migrate TUI review state into a client of the shared review service; avoid duplicating semantic acquisition.
 
-Original source anchor: [crates/deep-diff-forge-tui/src/state.rs](../crates/deep-diff-forge-tui/src/state.rs). Delivery/design home: [vault architecture and experiments](obsidian://open?vault=deep-diff-forge.vault&file=Strategy%2FExperiments%20and%20Delivery%20Gates).
+Original source anchor: [crates/deep-diff-forge-tui/src/state.rs](../crates/deep-diff-forge-tui/src/state.rs).
 
 **Original recommendation:** Keep layout/scroll/theme local but obtain semantic review state, coverage, claims and actions from the shared service. Add a durable session interface and explicit background completion events.
 
@@ -590,7 +589,7 @@ Original source anchor: [crates/deep-diff-forge-tui/src/state.rs](../crates/deep
 
 Record explicit feedback from reviewer actions with revision-bound identity; do not infer acceptance from navigation.
 
-Original source anchor: [crates/deep-diff-forge-cli/src/main.rs](../crates/deep-diff-forge-cli/src/main.rs). Delivery/design home: [vault architecture and experiments](obsidian://open?vault=deep-diff-forge.vault&file=Strategy%2FExperiments%20and%20Delivery%20Gates).
+Original source anchor: [crates/deep-diff-forge-cli/src/main.rs](../crates/deep-diff-forge-cli/src/main.rs).
 
 **Original recommendation:** Emit revision/analyzer/config-bound observations from real decisions and verification outcomes. Keep learning advisory and fail-soft until held-out evaluation establishes benefit; distinguish manual/self-reported inputs.
 
@@ -602,7 +601,7 @@ Original source anchor: [crates/deep-diff-forge-cli/src/main.rs](../crates/deep-
 
 Assimilated into the delivery plan as an empirical gate. Implement a reproducible experiment, held-out corpus and falsification criteria before shipping a superiority or safety claim. See the original acceptance condition below.
 
-Original source anchor: [crates/deep-diff-forge-learning/src/promote.rs](../crates/deep-diff-forge-learning/src/promote.rs). Implementation trace: [crates/deep-diff-forge-learning/src/promote.rs](../crates/deep-diff-forge-learning/src/promote.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-learning--promote).
+Original source anchor: [crates/deep-diff-forge-learning/src/promote.rs](../crates/deep-diff-forge-learning/src/promote.rs). Implementation trace: [crates/deep-diff-forge-learning/src/promote.rs](../crates/deep-diff-forge-learning/src/promote.rs).
 
 **Original recommendation:** Keep the gate policy pure, but require verified evaluation references, exact baseline/candidate/config IDs and a promotion decision record before applying a default.
 
@@ -614,7 +613,7 @@ Original source anchor: [crates/deep-diff-forge-learning/src/promote.rs](../crat
 
 NaN and infinities in candidate metrics or policy thresholds hold promotion; negative tolerance policies are rejected.
 
-Original source anchor: [crates/deep-diff-forge-learning/src/promote.rs](../crates/deep-diff-forge-learning/src/promote.rs). Implementation trace: [crates/deep-diff-forge-learning/src/promote.rs](../crates/deep-diff-forge-learning/src/promote.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-learning--promote).
+Original source anchor: [crates/deep-diff-forge-learning/src/promote.rs](../crates/deep-diff-forge-learning/src/promote.rs). Implementation trace: [crates/deep-diff-forge-learning/src/promote.rs](../crates/deep-diff-forge-learning/src/promote.rs).
 
 **Original recommendation:** Validate candidate and policy numeric fields with is_finite and documented ranges before comparisons. Return explicit invalid-metric reasons rather than treating unknown measurements as within budget.
 
@@ -626,7 +625,7 @@ Original source anchor: [crates/deep-diff-forge-learning/src/promote.rs](../crat
 
 Assimilated into the delivery plan as an empirical gate. Implement a reproducible experiment, held-out corpus and falsification criteria before shipping a superiority or safety claim. See the original acceptance condition below.
 
-Original source anchor: [crates/deep-diff-forge-learning/src/annotation.rs](../crates/deep-diff-forge-learning/src/annotation.rs). Implementation trace: [crates/deep-diff-forge-learning/src/promote.rs](../crates/deep-diff-forge-learning/src/promote.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-learning--promote).
+Original source anchor: [crates/deep-diff-forge-learning/src/annotation.rs](../crates/deep-diff-forge-learning/src/annotation.rs). Implementation trace: [crates/deep-diff-forge-learning/src/promote.rs](../crates/deep-diff-forge-learning/src/promote.rs).
 
 **Original recommendation:** Separate preference, verified defects, human disposition and test support. Evaluate on held-out/time-split tasks and report uncertainty; keep reputation a display/advisory signal rather than approval authority.
 
@@ -638,7 +637,7 @@ Original source anchor: [crates/deep-diff-forge-learning/src/annotation.rs](../c
 
 Introduce safe multiwriter journal/storage semantics and bounded corruption recovery.
 
-Original source anchor: [crates/deep-diff-forge-learning/src/store.rs](../crates/deep-diff-forge-learning/src/store.rs). Delivery/design home: [vault architecture and experiments](obsidian://open?vault=deep-diff-forge.vault&file=Strategy%2FExperiments%20and%20Delivery%20Gates).
+Original source anchor: [crates/deep-diff-forge-learning/src/store.rs](../crates/deep-diff-forge-learning/src/store.rs).
 
 **Original recommendation:** When integrating concurrent writers, serialize admission/append or use a transactional journal; define atomic record, crash-tail and retention behavior. Preserve owner-private paths and existing input-token validation.
 
@@ -650,7 +649,7 @@ Original source anchor: [crates/deep-diff-forge-learning/src/store.rs](../crates
 
 Both CI and release explicitly install host cargo-deny for the fuzz lockfile audit.
 
-Original source anchor: [.github/workflows/ci.yml](../.github/workflows/ci.yml). Implementation trace: [.github/workflows/ci.yml](../.github/workflows/ci.yml) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2F.github--workflows--ci), [.github/workflows/release.yml](../.github/workflows/release.yml) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2F.github--workflows--release), [fuzz/fuzz_targets/agent_annotation.rs](../fuzz/fuzz_targets/agent_annotation.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Ffuzz--fuzz_targets--agent_annotation), [fuzz/fuzz_targets/patch_parser.rs](../fuzz/fuzz_targets/patch_parser.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Ffuzz--fuzz_targets--patch_parser), [scripts/security/privacy_probe.py](../scripts/security/privacy_probe.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--privacy_probe), [scripts/security/test_privacy_probe.py](../scripts/security/test_privacy_probe.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--test_privacy_probe), [scripts/security/daemon_soak.py](../scripts/security/daemon_soak.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--daemon_soak).
+Original source anchor: [.github/workflows/ci.yml](../.github/workflows/ci.yml). Implementation trace: [.github/workflows/ci.yml](../.github/workflows/ci.yml), [.github/workflows/release.yml](../.github/workflows/release.yml), [fuzz/fuzz_targets/agent_annotation.rs](../fuzz/fuzz_targets/agent_annotation.rs), [fuzz/fuzz_targets/patch_parser.rs](../fuzz/fuzz_targets/patch_parser.rs), [scripts/security/privacy_probe.py](../scripts/security/privacy_probe.py), [scripts/security/test_privacy_probe.py](../scripts/security/test_privacy_probe.py), [scripts/security/daemon_soak.py](../scripts/security/daemon_soak.py).
 
 **Original recommendation:** Run both lockfile checks through an action interface that supports them or explicitly install a pinned cargo-deny in the runner. Keep workspace and fuzz lockfiles covered.
 
@@ -662,7 +661,7 @@ Original source anchor: [.github/workflows/ci.yml](../.github/workflows/ci.yml).
 
 Connection acquisition uses an MSRV-compatible compare-exchange loop. Stable pedantic test assertions were refreshed without changing their conditions.
 
-Original source anchor: [crates/deep-diff-forge-daemon/src/serve.rs](../crates/deep-diff-forge-daemon/src/serve.rs). Implementation trace: [crates/deep-diff-forge-daemon/src/serve.rs](../crates/deep-diff-forge-daemon/src/serve.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-daemon--serve), [.github/workflows/ci.yml](../.github/workflows/ci.yml) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2F.github--workflows--ci), [.github/workflows/release.yml](../.github/workflows/release.yml) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2F.github--workflows--release), [fuzz/fuzz_targets/agent_annotation.rs](../fuzz/fuzz_targets/agent_annotation.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Ffuzz--fuzz_targets--agent_annotation), [fuzz/fuzz_targets/patch_parser.rs](../fuzz/fuzz_targets/patch_parser.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Ffuzz--fuzz_targets--patch_parser), [scripts/security/privacy_probe.py](../scripts/security/privacy_probe.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--privacy_probe), [scripts/security/test_privacy_probe.py](../scripts/security/test_privacy_probe.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--test_privacy_probe), [scripts/security/daemon_soak.py](../scripts/security/daemon_soak.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--daemon_soak).
+Original source anchor: [crates/deep-diff-forge-daemon/src/serve.rs](../crates/deep-diff-forge-daemon/src/serve.rs). Implementation trace: [crates/deep-diff-forge-daemon/src/serve.rs](../crates/deep-diff-forge-daemon/src/serve.rs), [.github/workflows/ci.yml](../.github/workflows/ci.yml), [.github/workflows/release.yml](../.github/workflows/release.yml), [fuzz/fuzz_targets/agent_annotation.rs](../fuzz/fuzz_targets/agent_annotation.rs), [fuzz/fuzz_targets/patch_parser.rs](../fuzz/fuzz_targets/patch_parser.rs), [scripts/security/privacy_probe.py](../scripts/security/privacy_probe.py), [scripts/security/test_privacy_probe.py](../scripts/security/test_privacy_probe.py), [scripts/security/daemon_soak.py](../scripts/security/daemon_soak.py).
 
 **Original recommendation:** Use the supported atomic update operation for the pinned compiler while preserving the connection-cap admission invariant and RAII decrement behavior. Declare/test the supported compiler range.
 
@@ -674,7 +673,7 @@ Original source anchor: [crates/deep-diff-forge-daemon/src/serve.rs](../crates/d
 
 Tagged release builds depend on the reusable CI workflow as well as supply-chain checks.
 
-Original source anchor: [.github/workflows/release.yml](../.github/workflows/release.yml). Implementation trace: [.github/workflows/ci.yml](../.github/workflows/ci.yml) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2F.github--workflows--ci), [.github/workflows/release.yml](../.github/workflows/release.yml) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2F.github--workflows--release), [fuzz/fuzz_targets/agent_annotation.rs](../fuzz/fuzz_targets/agent_annotation.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Ffuzz--fuzz_targets--agent_annotation), [fuzz/fuzz_targets/patch_parser.rs](../fuzz/fuzz_targets/patch_parser.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Ffuzz--fuzz_targets--patch_parser), [scripts/security/privacy_probe.py](../scripts/security/privacy_probe.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--privacy_probe), [scripts/security/test_privacy_probe.py](../scripts/security/test_privacy_probe.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--test_privacy_probe), [scripts/security/daemon_soak.py](../scripts/security/daemon_soak.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--daemon_soak).
+Original source anchor: [.github/workflows/release.yml](../.github/workflows/release.yml). Implementation trace: [.github/workflows/ci.yml](../.github/workflows/ci.yml), [.github/workflows/release.yml](../.github/workflows/release.yml), [fuzz/fuzz_targets/agent_annotation.rs](../fuzz/fuzz_targets/agent_annotation.rs), [fuzz/fuzz_targets/patch_parser.rs](../fuzz/fuzz_targets/patch_parser.rs), [scripts/security/privacy_probe.py](../scripts/security/privacy_probe.py), [scripts/security/test_privacy_probe.py](../scripts/security/test_privacy_probe.py), [scripts/security/daemon_soak.py](../scripts/security/daemon_soak.py).
 
 **Original recommendation:** Make an explicit reusable quality/conformance job on the tagged SHA a hard prerequisite of asset publication and crates.io upload. Preserve checksums, provenance attestations, tag/version matching and least privilege.
 
@@ -686,7 +685,7 @@ Original source anchor: [.github/workflows/release.yml](../.github/workflows/rel
 
 Annotation fuzz length checks count characters, matching the sanitizer contract.
 
-Original source anchor: [fuzz/fuzz_targets/agent_annotation.rs](../fuzz/fuzz_targets/agent_annotation.rs). Implementation trace: [.github/workflows/ci.yml](../.github/workflows/ci.yml) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2F.github--workflows--ci), [.github/workflows/release.yml](../.github/workflows/release.yml) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2F.github--workflows--release), [fuzz/fuzz_targets/agent_annotation.rs](../fuzz/fuzz_targets/agent_annotation.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Ffuzz--fuzz_targets--agent_annotation), [fuzz/fuzz_targets/patch_parser.rs](../fuzz/fuzz_targets/patch_parser.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Ffuzz--fuzz_targets--patch_parser), [scripts/security/privacy_probe.py](../scripts/security/privacy_probe.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--privacy_probe), [scripts/security/test_privacy_probe.py](../scripts/security/test_privacy_probe.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--test_privacy_probe), [scripts/security/daemon_soak.py](../scripts/security/daemon_soak.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--daemon_soak).
+Original source anchor: [fuzz/fuzz_targets/agent_annotation.rs](../fuzz/fuzz_targets/agent_annotation.rs). Implementation trace: [.github/workflows/ci.yml](../.github/workflows/ci.yml), [.github/workflows/release.yml](../.github/workflows/release.yml), [fuzz/fuzz_targets/agent_annotation.rs](../fuzz/fuzz_targets/agent_annotation.rs), [fuzz/fuzz_targets/patch_parser.rs](../fuzz/fuzz_targets/patch_parser.rs), [scripts/security/privacy_probe.py](../scripts/security/privacy_probe.py), [scripts/security/test_privacy_probe.py](../scripts/security/test_privacy_probe.py), [scripts/security/daemon_soak.py](../scripts/security/daemon_soak.py).
 
 **Original recommendation:** Align the property with the documented character bound, or deliberately change the contract to a byte budget with valid UTF-8 truncation. Independently bound wire/storage bytes where needed.
 
@@ -698,7 +697,7 @@ Original source anchor: [fuzz/fuzz_targets/agent_annotation.rs](../fuzz/fuzz_tar
 
 Reserved-source fuzzing exercises add_untrusted before checking classification.
 
-Original source anchor: [fuzz/fuzz_targets/agent_annotation.rs](../fuzz/fuzz_targets/agent_annotation.rs). Implementation trace: [.github/workflows/ci.yml](../.github/workflows/ci.yml) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2F.github--workflows--ci), [.github/workflows/release.yml](../.github/workflows/release.yml) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2F.github--workflows--release), [fuzz/fuzz_targets/agent_annotation.rs](../fuzz/fuzz_targets/agent_annotation.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Ffuzz--fuzz_targets--agent_annotation), [fuzz/fuzz_targets/patch_parser.rs](../fuzz/fuzz_targets/patch_parser.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Ffuzz--fuzz_targets--patch_parser), [scripts/security/privacy_probe.py](../scripts/security/privacy_probe.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--privacy_probe), [scripts/security/test_privacy_probe.py](../scripts/security/test_privacy_probe.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--test_privacy_probe), [scripts/security/daemon_soak.py](../scripts/security/daemon_soak.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--daemon_soak).
+Original source anchor: [fuzz/fuzz_targets/agent_annotation.rs](../fuzz/fuzz_targets/agent_annotation.rs). Implementation trace: [.github/workflows/ci.yml](../.github/workflows/ci.yml), [.github/workflows/release.yml](../.github/workflows/release.yml), [fuzz/fuzz_targets/agent_annotation.rs](../fuzz/fuzz_targets/agent_annotation.rs), [fuzz/fuzz_targets/patch_parser.rs](../fuzz/fuzz_targets/patch_parser.rs), [scripts/security/privacy_probe.py](../scripts/security/privacy_probe.py), [scripts/security/test_privacy_probe.py](../scripts/security/test_privacy_probe.py), [scripts/security/daemon_soak.py](../scripts/security/daemon_soak.py).
 
 **Original recommendation:** Choose the property explicitly: test source_of according to its contract, and separately fuzz the real untrusted ingestion API to prove external source claims cannot escalate.
 
@@ -710,7 +709,7 @@ Original source anchor: [fuzz/fuzz_targets/agent_annotation.rs](../fuzz/fuzz_tar
 
 The parser fuzz harness asserts successful reparse and canonical-render idempotence. Application equivalence is independently checked by Git, not inferred from normalization.
 
-Original source anchor: [fuzz/fuzz_targets/patch_parser.rs](../fuzz/fuzz_targets/patch_parser.rs). Implementation trace: [crates/deep-diff-forge-core/src/lib.rs](../crates/deep-diff-forge-core/src/lib.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-core--lib), [crates/deep-diff-forge-patch/src/lib.rs](../crates/deep-diff-forge-patch/src/lib.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--lib), [crates/deep-diff-forge-patch/src/parser.rs](../crates/deep-diff-forge-patch/src/parser.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--parser), [crates/deep-diff-forge-patch/src/render.rs](../crates/deep-diff-forge-patch/src/render.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--render), [crates/deep-diff-forge-patch/src/paths.rs](../crates/deep-diff-forge-patch/src/paths.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--paths), [crates/deep-diff-forge-patch/tests/git_oracle.rs](../crates/deep-diff-forge-patch/tests/git_oracle.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--git_oracle), [crates/deep-diff-forge-patch/tests/round_trip.rs](../crates/deep-diff-forge-patch/tests/round_trip.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--round_trip), [.github/workflows/ci.yml](../.github/workflows/ci.yml) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2F.github--workflows--ci), [.github/workflows/release.yml](../.github/workflows/release.yml) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2F.github--workflows--release), [fuzz/fuzz_targets/agent_annotation.rs](../fuzz/fuzz_targets/agent_annotation.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Ffuzz--fuzz_targets--agent_annotation), [fuzz/fuzz_targets/patch_parser.rs](../fuzz/fuzz_targets/patch_parser.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Ffuzz--fuzz_targets--patch_parser), [scripts/security/privacy_probe.py](../scripts/security/privacy_probe.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--privacy_probe), [scripts/security/test_privacy_probe.py](../scripts/security/test_privacy_probe.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--test_privacy_probe), [scripts/security/daemon_soak.py](../scripts/security/daemon_soak.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--daemon_soak).
+Original source anchor: [fuzz/fuzz_targets/patch_parser.rs](../fuzz/fuzz_targets/patch_parser.rs). Implementation trace: [crates/deep-diff-forge-core/src/lib.rs](../crates/deep-diff-forge-core/src/lib.rs), [crates/deep-diff-forge-patch/src/lib.rs](../crates/deep-diff-forge-patch/src/lib.rs), [crates/deep-diff-forge-patch/src/parser.rs](../crates/deep-diff-forge-patch/src/parser.rs), [crates/deep-diff-forge-patch/src/render.rs](../crates/deep-diff-forge-patch/src/render.rs), [crates/deep-diff-forge-patch/src/paths.rs](../crates/deep-diff-forge-patch/src/paths.rs), [crates/deep-diff-forge-patch/tests/git_oracle.rs](../crates/deep-diff-forge-patch/tests/git_oracle.rs), [crates/deep-diff-forge-patch/tests/round_trip.rs](../crates/deep-diff-forge-patch/tests/round_trip.rs), [.github/workflows/ci.yml](../.github/workflows/ci.yml), [.github/workflows/release.yml](../.github/workflows/release.yml), [fuzz/fuzz_targets/agent_annotation.rs](../fuzz/fuzz_targets/agent_annotation.rs), [fuzz/fuzz_targets/patch_parser.rs](../fuzz/fuzz_targets/patch_parser.rs), [scripts/security/privacy_probe.py](../scripts/security/privacy_probe.py), [scripts/security/test_privacy_probe.py](../scripts/security/test_privacy_probe.py), [scripts/security/daemon_soak.py](../scripts/security/daemon_soak.py).
 
 **Original recommendation:** Define separate supported-model and Git-application properties with independent oracles, retaining explicit unsupported/partial outcomes. Turn discovered failures into deterministic fixtures.
 
@@ -722,7 +721,7 @@ Original source anchor: [fuzz/fuzz_targets/patch_parser.rs](../fuzz/fuzz_targets
 
 Assimilated into the delivery plan as an empirical gate. Implement a reproducible experiment, held-out corpus and falsification criteria before shipping a superiority or safety claim. See the original acceptance condition below.
 
-Original source anchor: [.github/workflows/ci.yml](../.github/workflows/ci.yml). Implementation trace: [.github/workflows/ci.yml](../.github/workflows/ci.yml) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2F.github--workflows--ci), [.github/workflows/release.yml](../.github/workflows/release.yml) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2F.github--workflows--release), [fuzz/fuzz_targets/agent_annotation.rs](../fuzz/fuzz_targets/agent_annotation.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Ffuzz--fuzz_targets--agent_annotation), [fuzz/fuzz_targets/patch_parser.rs](../fuzz/fuzz_targets/patch_parser.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Ffuzz--fuzz_targets--patch_parser), [scripts/security/privacy_probe.py](../scripts/security/privacy_probe.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--privacy_probe), [scripts/security/test_privacy_probe.py](../scripts/security/test_privacy_probe.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--test_privacy_probe), [scripts/security/daemon_soak.py](../scripts/security/daemon_soak.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--daemon_soak).
+Original source anchor: [.github/workflows/ci.yml](../.github/workflows/ci.yml). Implementation trace: [.github/workflows/ci.yml](../.github/workflows/ci.yml), [.github/workflows/release.yml](../.github/workflows/release.yml), [fuzz/fuzz_targets/agent_annotation.rs](../fuzz/fuzz_targets/agent_annotation.rs), [fuzz/fuzz_targets/patch_parser.rs](../fuzz/fuzz_targets/patch_parser.rs), [scripts/security/privacy_probe.py](../scripts/security/privacy_probe.py), [scripts/security/test_privacy_probe.py](../scripts/security/test_privacy_probe.py), [scripts/security/daemon_soak.py](../scripts/security/daemon_soak.py).
 
 **Original recommendation:** Add deterministic regression seeds and bounded scheduled/on-demand fuzz/mutation runs with toolchain, duration, seed/corpus, command and result receipts. Keep expensive campaigns separately scoped.
 
@@ -734,7 +733,7 @@ Original source anchor: [.github/workflows/ci.yml](../.github/workflows/ci.yml).
 
 The checked-in Git oracle independently applies reconstructions and compares exact candidate bytes for EOF variants, CRLF, mixed endings, quoted paths and binary content.
 
-Original source anchor: [crates/deep-diff-forge-patch/tests/round_trip.rs](../crates/deep-diff-forge-patch/tests/round_trip.rs). Implementation trace: [crates/deep-diff-forge-core/src/lib.rs](../crates/deep-diff-forge-core/src/lib.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-core--lib), [crates/deep-diff-forge-patch/src/lib.rs](../crates/deep-diff-forge-patch/src/lib.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--lib), [crates/deep-diff-forge-patch/src/parser.rs](../crates/deep-diff-forge-patch/src/parser.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--parser), [crates/deep-diff-forge-patch/src/render.rs](../crates/deep-diff-forge-patch/src/render.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--render), [crates/deep-diff-forge-patch/src/paths.rs](../crates/deep-diff-forge-patch/src/paths.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--paths), [crates/deep-diff-forge-patch/tests/git_oracle.rs](../crates/deep-diff-forge-patch/tests/git_oracle.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--git_oracle), [crates/deep-diff-forge-patch/tests/round_trip.rs](../crates/deep-diff-forge-patch/tests/round_trip.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--round_trip), [.github/workflows/ci.yml](../.github/workflows/ci.yml) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2F.github--workflows--ci), [.github/workflows/release.yml](../.github/workflows/release.yml) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2F.github--workflows--release), [fuzz/fuzz_targets/agent_annotation.rs](../fuzz/fuzz_targets/agent_annotation.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Ffuzz--fuzz_targets--agent_annotation), [fuzz/fuzz_targets/patch_parser.rs](../fuzz/fuzz_targets/patch_parser.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Ffuzz--fuzz_targets--patch_parser), [scripts/security/privacy_probe.py](../scripts/security/privacy_probe.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--privacy_probe), [scripts/security/test_privacy_probe.py](../scripts/security/test_privacy_probe.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--test_privacy_probe), [scripts/security/daemon_soak.py](../scripts/security/daemon_soak.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--daemon_soak).
+Original source anchor: [crates/deep-diff-forge-patch/tests/round_trip.rs](../crates/deep-diff-forge-patch/tests/round_trip.rs). Implementation trace: [crates/deep-diff-forge-core/src/lib.rs](../crates/deep-diff-forge-core/src/lib.rs), [crates/deep-diff-forge-patch/src/lib.rs](../crates/deep-diff-forge-patch/src/lib.rs), [crates/deep-diff-forge-patch/src/parser.rs](../crates/deep-diff-forge-patch/src/parser.rs), [crates/deep-diff-forge-patch/src/render.rs](../crates/deep-diff-forge-patch/src/render.rs), [crates/deep-diff-forge-patch/src/paths.rs](../crates/deep-diff-forge-patch/src/paths.rs), [crates/deep-diff-forge-patch/tests/git_oracle.rs](../crates/deep-diff-forge-patch/tests/git_oracle.rs), [crates/deep-diff-forge-patch/tests/round_trip.rs](../crates/deep-diff-forge-patch/tests/round_trip.rs), [.github/workflows/ci.yml](../.github/workflows/ci.yml), [.github/workflows/release.yml](../.github/workflows/release.yml), [fuzz/fuzz_targets/agent_annotation.rs](../fuzz/fuzz_targets/agent_annotation.rs), [fuzz/fuzz_targets/patch_parser.rs](../fuzz/fuzz_targets/patch_parser.rs), [scripts/security/privacy_probe.py](../scripts/security/privacy_probe.py), [scripts/security/test_privacy_probe.py](../scripts/security/test_privacy_probe.py), [scripts/security/daemon_soak.py](../scripts/security/daemon_soak.py).
 
 **Original recommendation:** Add differential tests that capture a disposable base/candidate, parse/render supported patches, apply both, and compare resulting bytes/modes/tree. Include renamed/copied/symlink/submodule/combined/encoding cases as supported or explicitly unsupported.
 
@@ -746,7 +745,7 @@ Original source anchor: [crates/deep-diff-forge-patch/tests/round_trip.rs](../cr
 
 Replace aspirational printed contracts with capability reports tied to actual executable checks.
 
-Original source anchor: [crates/deep-diff-forge-cli/src/main.rs](../crates/deep-diff-forge-cli/src/main.rs). Delivery/design home: [vault architecture and experiments](obsidian://open?vault=deep-diff-forge.vault&file=Strategy%2FExperiments%20and%20Delivery%20Gates).
+Original source anchor: [crates/deep-diff-forge-cli/src/main.rs](../crates/deep-diff-forge-cli/src/main.rs).
 
 **Original recommendation:** Keep help/spec output clearly descriptive; add executable conformance probes that drive real public paths with negative, stale, partial and failure cases. Gate claimed capabilities on those receipts.
 
@@ -758,7 +757,7 @@ Original source anchor: [crates/deep-diff-forge-cli/src/main.rs](../crates/deep-
 
 Separate declared maturity from fresh acceptance evidence and make missing stages visible.
 
-Original source anchor: [crates/deep-diff-forge-cli/src/main.rs](../crates/deep-diff-forge-cli/src/main.rs). Delivery/design home: [vault architecture and experiments](obsidian://open?vault=deep-diff-forge.vault&file=Strategy%2FExperiments%20and%20Delivery%20Gates).
+Original source anchor: [crates/deep-diff-forge-cli/src/main.rs](../crates/deep-diff-forge-cli/src/main.rs).
 
 **Original recommendation:** Publish a capability matrix that distinguishes modeled, implemented component, connected public path, verified gate and operational limitation, with commit-bound evidence. Avoid presenting stage labels as proof of all end-to-end guarantees.
 
@@ -770,7 +769,7 @@ Original source anchor: [crates/deep-diff-forge-cli/src/main.rs](../crates/deep-
 
 Assimilated into the delivery plan as an empirical gate. Implement a reproducible experiment, held-out corpus and falsification criteria before shipping a superiority or safety claim. See the original acceptance condition below.
 
-Original source anchor: [README.md](../README.md). Delivery/design home: [vault architecture and experiments](obsidian://open?vault=deep-diff-forge.vault&file=Strategy%2FExperiments%20and%20Delivery%20Gates).
+Original source anchor: [README.md](../README.md).
 
 **Original recommendation:** Replace blanket crosses/runtime assertions with versioned, scoped comparisons and primary source links. Separate syntax highlighting, moved-line decoration, AST comparison, review semantics and verified behavioral evidence.
 
@@ -782,7 +781,7 @@ Original source anchor: [README.md](../README.md). Delivery/design home: [vault 
 
 Build budgeted task context packs from validated slices with omission manifests and source identities.
 
-Original source anchor: [docs/PIONEER_FEATURE_SPECS.md](../docs/PIONEER_FEATURE_SPECS.md). Delivery/design home: [vault architecture and experiments](obsidian://open?vault=deep-diff-forge.vault&file=Strategy%2FExperiments%20and%20Delivery%20Gates).
+Original source anchor: [docs/PIONEER_FEATURE_SPECS.md](../docs/PIONEER_FEATURE_SPECS.md).
 
 **Original recommendation:** Create context packs with exact revision IDs, source/evidence references, assembly recipe, token budget and explicit omissions. Keep the complete change inventory accessible.
 
@@ -794,7 +793,7 @@ Original source anchor: [docs/PIONEER_FEATURE_SPECS.md](../docs/PIONEER_FEATURE_
 
 Model disagreement as explicit claims plus verification requests and result artifacts; do not use vote count as proof.
 
-Original source anchor: [docs/VISION.md](../docs/VISION.md). Delivery/design home: [vault architecture and experiments](obsidian://open?vault=deep-diff-forge.vault&file=Strategy%2FExperiments%20and%20Delivery%20Gates).
+Original source anchor: [docs/VISION.md](../docs/VISION.md).
 
 **Original recommendation:** Represent scoped incompatible claims; request a feature-matrix build, regression test, differential run or contract check through an external controlled runner. Record supported/contradicted/inconclusive outcomes.
 
@@ -806,7 +805,7 @@ Original source anchor: [docs/VISION.md](../docs/VISION.md). Delivery/design hom
 
 EvidenceRegistry distinguishes missing/linked/supported/contradicted/stale and checks revision on lookup. It is local in-memory infrastructure; persistent dependency invalidation and full UI integration remain.
 
-Original source anchor: [docs/PERFORMANCE_AND_NOVELTY.md](../docs/PERFORMANCE_AND_NOVELTY.md). Implementation trace: [crates/deep-diff-forge-agent/src/lib.rs](../crates/deep-diff-forge-agent/src/lib.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-agent--lib), [crates/deep-diff-forge-agent/src/store.rs](../crates/deep-diff-forge-agent/src/store.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-agent--store), [crates/deep-diff-forge-agent/src/evidence.rs](../crates/deep-diff-forge-agent/src/evidence.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-agent--evidence), [crates/deep-diff-forge-agent/tests/flow.rs](../crates/deep-diff-forge-agent/tests/flow.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-agent--tests--flow), [crates/deep-diff-forge-tui/src/notes.rs](../crates/deep-diff-forge-tui/src/notes.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-tui--notes).
+Original source anchor: [docs/PERFORMANCE_AND_NOVELTY.md](../docs/PERFORMANCE_AND_NOVELTY.md). Implementation trace: [crates/deep-diff-forge-agent/src/lib.rs](../crates/deep-diff-forge-agent/src/lib.rs), [crates/deep-diff-forge-agent/src/store.rs](../crates/deep-diff-forge-agent/src/store.rs), [crates/deep-diff-forge-agent/src/evidence.rs](../crates/deep-diff-forge-agent/src/evidence.rs), [crates/deep-diff-forge-agent/tests/flow.rs](../crates/deep-diff-forge-agent/tests/flow.rs), [crates/deep-diff-forge-tui/src/notes.rs](../crates/deep-diff-forge-tui/src/notes.rs).
 
 **Original recommendation:** Track evidence-to-input/recipe relationships, invalidate dependent claims/packs/decisions when inputs change, and conservatively invalidate where a sound input closure cannot be established.
 
@@ -818,7 +817,7 @@ Original source anchor: [docs/PERFORMANCE_AND_NOVELTY.md](../docs/PERFORMANCE_AN
 
 Assimilated into the delivery plan as an empirical gate. Implement a reproducible experiment, held-out corpus and falsification criteria before shipping a superiority or safety claim. See the original acceptance condition below.
 
-Original source anchor: [docs/ROADMAP.md](../docs/ROADMAP.md). Delivery/design home: [vault architecture and experiments](obsidian://open?vault=deep-diff-forge.vault&file=Strategy%2FExperiments%20and%20Delivery%20Gates).
+Original source anchor: [docs/ROADMAP.md](../docs/ROADMAP.md).
 
 **Original recommendation:** After the single-candidate verified slice, add common change/contract maps for alternative candidates and evaluate a combined candidate as a new snapshot with new verification obligations.
 
@@ -834,7 +833,7 @@ Assimilated into the delivery plan as an empirical gate. Implement a reproducibl
 
 Measured: deterministic CLI tests with fake providers and a fake tuicr, and one real tuicr 0.27.0 round trip in an isolated XDG store (opt-in `DDF_TUICR_IT=1`) that displayed the imported notes (`x.rs:2-3`, `x.rs:4`, review-level), was a no-op on re-run, and rejected a mismatched working tree. Not measured: a Hunk adapter, old-side or deleted-file anchors, renamed paths, exports into a session while a live TUI concurrently edits it (accepted by design: tuicr locks CLI writes and the TUI merges external edits; the adapter re-reads after each add and refuses on divergence), tuicr versions other than 0.27.0, and any held-out evaluation of whether imported findings help human reviewers. The acceptance condition below is therefore met only for tuicr local sessions, not as an evaluated adapter strategy.
 
-Original source anchor: [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md). Delivery/design home: [vault architecture and experiments](obsidian://open?vault=deep-diff-forge.vault&file=Strategy%2FExperiments%20and%20Delivery%20Gates).
+Original source anchor: [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md).
 
 **Original recommendation:** Prototype a narrow DDF-to-Hunk or tuicr adapter that verifies matching revision/source identity, maps exact side/ranges, labels provenance and rejects stale/unmappable findings. Keep publication/disposition authority external.
 
@@ -846,7 +845,7 @@ Original source anchor: [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md). Deliver
 
 Deliver in gated increments: fidelity/trust → shared Rust workflow → durable evidence → peer adapters → measured experiments.
 
-Original source anchor: [docs/ROADMAP.md](../docs/ROADMAP.md). Delivery/design home: [vault architecture and experiments](obsidian://open?vault=deep-diff-forge.vault&file=Strategy%2FExperiments%20and%20Delivery%20Gates).
+Original source anchor: [docs/ROADMAP.md](../docs/ROADMAP.md).
 
 **Original recommendation:** Sequence: trustworthy boundaries -> shared service -> one collaborative verification loop -> impact/context evaluation -> measured caching/learning. First slice: captured base/candidate, supported exact patch, joined Rust analysis, validated claim, controlled test evidence, explicit disposition and stale-result rejection.
 
@@ -858,7 +857,7 @@ Original source anchor: [docs/ROADMAP.md](../docs/ROADMAP.md). Delivery/design h
 
 Assimilated into the delivery plan as an empirical gate. Implement a reproducible experiment, held-out corpus and falsification criteria before shipping a superiority or safety claim. See the original acceptance condition below.
 
-Original source anchor: [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md). Delivery/design home: [vault architecture and experiments](obsidian://open?vault=deep-diff-forge.vault&file=Strategy%2FExperiments%20and%20Delivery%20Gates).
+Original source anchor: [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md).
 
 **Original recommendation:** Keep original corpus bytes and provenance; link each current capability claim to pinned code and executable evidence, and distinguish proposal/history/current observation. The vault already preserves the located corpus and both repository snapshots.
 
@@ -870,7 +869,7 @@ Original source anchor: [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md). Deliver
 
 Fresh integration tests/lints/docs/fuzz checks are recorded separately from the original 991-test baseline. Short campaigns do not establish long-term robustness or cross-platform behavior.
 
-Implementation trace: [.github/workflows/ci.yml](../.github/workflows/ci.yml) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2F.github--workflows--ci), [.github/workflows/release.yml](../.github/workflows/release.yml) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2F.github--workflows--release), [fuzz/fuzz_targets/agent_annotation.rs](../fuzz/fuzz_targets/agent_annotation.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Ffuzz--fuzz_targets--agent_annotation), [fuzz/fuzz_targets/patch_parser.rs](../fuzz/fuzz_targets/patch_parser.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Ffuzz--fuzz_targets--patch_parser), [scripts/security/privacy_probe.py](../scripts/security/privacy_probe.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--privacy_probe), [scripts/security/test_privacy_probe.py](../scripts/security/test_privacy_probe.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--test_privacy_probe), [scripts/security/daemon_soak.py](../scripts/security/daemon_soak.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--daemon_soak).
+Implementation trace: [.github/workflows/ci.yml](../.github/workflows/ci.yml), [.github/workflows/release.yml](../.github/workflows/release.yml), [fuzz/fuzz_targets/agent_annotation.rs](../fuzz/fuzz_targets/agent_annotation.rs), [fuzz/fuzz_targets/patch_parser.rs](../fuzz/fuzz_targets/patch_parser.rs), [scripts/security/privacy_probe.py](../scripts/security/privacy_probe.py), [scripts/security/test_privacy_probe.py](../scripts/security/test_privacy_probe.py), [scripts/security/daemon_soak.py](../scripts/security/daemon_soak.py).
 
 **Original recommendation:** Use these receipts to prioritize R40/R42/R43 rather than treating an installed dependency or compiling harness as a green product gate. Preserve the full logs and input hashes. Fixed-seed execution is not a coverage fuzz campaign.
 
@@ -882,7 +881,7 @@ Implementation trace: [.github/workflows/ci.yml](../.github/workflows/ci.yml) �
 
 The privacy probe fails on subprocess failure, malformed JSON and invalid response shape/schema; four regression tests exercise failure and success routes.
 
-Original source anchor: [scripts/security/privacy_probe.py](../scripts/security/privacy_probe.py). Implementation trace: [.github/workflows/ci.yml](../.github/workflows/ci.yml) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2F.github--workflows--ci), [.github/workflows/release.yml](../.github/workflows/release.yml) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2F.github--workflows--release), [fuzz/fuzz_targets/agent_annotation.rs](../fuzz/fuzz_targets/agent_annotation.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Ffuzz--fuzz_targets--agent_annotation), [fuzz/fuzz_targets/patch_parser.rs](../fuzz/fuzz_targets/patch_parser.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Ffuzz--fuzz_targets--patch_parser), [scripts/security/privacy_probe.py](../scripts/security/privacy_probe.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--privacy_probe), [scripts/security/test_privacy_probe.py](../scripts/security/test_privacy_probe.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--test_privacy_probe), [scripts/security/daemon_soak.py](../scripts/security/daemon_soak.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--daemon_soak).
+Original source anchor: [scripts/security/privacy_probe.py](../scripts/security/privacy_probe.py). Implementation trace: [.github/workflows/ci.yml](../.github/workflows/ci.yml), [.github/workflows/release.yml](../.github/workflows/release.yml), [fuzz/fuzz_targets/agent_annotation.rs](../fuzz/fuzz_targets/agent_annotation.rs), [fuzz/fuzz_targets/patch_parser.rs](../fuzz/fuzz_targets/patch_parser.rs), [scripts/security/privacy_probe.py](../scripts/security/privacy_probe.py), [scripts/security/test_privacy_probe.py](../scripts/security/test_privacy_probe.py), [scripts/security/daemon_soak.py](../scripts/security/daemon_soak.py).
 
 **Original recommendation:** Make every required command/schema/serialization failure fail or explicitly mark the privacy gate inconclusive. Exercise the actual receipt serialization/storage boundary, not only the sample dictionary constructed by the probe.
 
@@ -894,7 +893,7 @@ Original source anchor: [scripts/security/privacy_probe.py](../scripts/security/
 
 Rust 1.88.0 passed cargo check --workspace --all-targets --locked against the current dependency lockfile. CI now has the same declared-MSRV check; atomic admission uses a compatible compare-exchange loop.
 
-Original source anchor: [Cargo.toml](../Cargo.toml). Implementation trace: [crates/deep-diff-forge-daemon/src/serve.rs](../crates/deep-diff-forge-daemon/src/serve.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-daemon--serve), [.github/workflows/ci.yml](../.github/workflows/ci.yml) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2F.github--workflows--ci), [.github/workflows/release.yml](../.github/workflows/release.yml) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2F.github--workflows--release), [fuzz/fuzz_targets/agent_annotation.rs](../fuzz/fuzz_targets/agent_annotation.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Ffuzz--fuzz_targets--agent_annotation), [fuzz/fuzz_targets/patch_parser.rs](../fuzz/fuzz_targets/patch_parser.rs) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Ffuzz--fuzz_targets--patch_parser), [scripts/security/privacy_probe.py](../scripts/security/privacy_probe.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--privacy_probe), [scripts/security/test_privacy_probe.py](../scripts/security/test_privacy_probe.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--test_privacy_probe), [scripts/security/daemon_soak.py](../scripts/security/daemon_soak.py) ↔ [vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--daemon_soak).
+Original source anchor: [Cargo.toml](../Cargo.toml). Implementation trace: [crates/deep-diff-forge-daemon/src/serve.rs](../crates/deep-diff-forge-daemon/src/serve.rs), [.github/workflows/ci.yml](../.github/workflows/ci.yml), [.github/workflows/release.yml](../.github/workflows/release.yml), [fuzz/fuzz_targets/agent_annotation.rs](../fuzz/fuzz_targets/agent_annotation.rs), [fuzz/fuzz_targets/patch_parser.rs](../fuzz/fuzz_targets/patch_parser.rs), [scripts/security/privacy_probe.py](../scripts/security/privacy_probe.py), [scripts/security/test_privacy_probe.py](../scripts/security/test_privacy_probe.py), [scripts/security/daemon_soak.py](../scripts/security/daemon_soak.py).
 
 **Original recommendation:** Choose an MSRV-compatible compare_exchange loop preserving ordering/admission semantics, or make an explicit documented MSRV decision. Test both the minimum supported compiler and the current strict-lint compiler in CI.
 
@@ -917,27 +916,27 @@ Current verified status counts: Implemented: 19, Preserved: 4, Partial foundatio
 
 These links connect original reviewed modules to their delivery/design notes. Runtime code in these modules is unchanged except where separately listed.
 
-- [crates/deep-diff-forge-graph/src/risk.rs](../crates/deep-diff-forge-graph/src/risk.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-graph--src--risk)
-- [crates/deep-diff-forge-agent/src/anchor.rs](../crates/deep-diff-forge-agent/src/anchor.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-agent--src--anchor)
-- [crates/deep-diff-forge-pipeline/src/jsonl.rs](../crates/deep-diff-forge-pipeline/src/jsonl.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-pipeline--src--jsonl)
-- [crates/deep-diff-forge-patch/src/json.rs](../crates/deep-diff-forge-patch/src/json.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-patch--src--json)
-- [crates/deep-diff-forge-cluster/src/cluster.rs](../crates/deep-diff-forge-cluster/src/cluster.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-cluster--src--cluster)
-- [crates/deep-diff-forge-cluster/src/scheduler.rs](../crates/deep-diff-forge-cluster/src/scheduler.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-cluster--src--scheduler)
-- [crates/deep-diff-forge-daemon/src/handler.rs](../crates/deep-diff-forge-daemon/src/handler.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-daemon--src--handler)
-- [crates/deep-diff-forge-daemon/src/security.rs](../crates/deep-diff-forge-daemon/src/security.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-daemon--src--security)
-- [crates/deep-diff-forge-tui/src/paint.rs](../crates/deep-diff-forge-tui/src/paint.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-tui--src--paint)
-- [crates/deep-diff-forge-tui/src/state.rs](../crates/deep-diff-forge-tui/src/state.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-tui--src--state)
-- [crates/deep-diff-forge-learning/src/annotation.rs](../crates/deep-diff-forge-learning/src/annotation.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-learning--src--annotation)
-- [crates/deep-diff-forge-learning/src/store.rs](../crates/deep-diff-forge-learning/src/store.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-learning--src--store)
-- [README.md](../README.md) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2FREADME)
-- [docs/PIONEER_FEATURE_SPECS.md](../docs/PIONEER_FEATURE_SPECS.md) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdocs--PIONEER_FEATURE_SPECS)
-- [docs/VISION.md](../docs/VISION.md) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdocs--VISION)
-- [docs/PERFORMANCE_AND_NOVELTY.md](../docs/PERFORMANCE_AND_NOVELTY.md) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdocs--PERFORMANCE_AND_NOVELTY)
-- [docs/ROADMAP.md](../docs/ROADMAP.md) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdocs--ROADMAP)
-- [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdocs--ARCHITECTURE)
-- [Cargo.toml](../Cargo.toml) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2FCargo.toml)
+- [crates/deep-diff-forge-graph/src/risk.rs](../crates/deep-diff-forge-graph/src/risk.rs)
+- [crates/deep-diff-forge-agent/src/anchor.rs](../crates/deep-diff-forge-agent/src/anchor.rs)
+- [crates/deep-diff-forge-pipeline/src/jsonl.rs](../crates/deep-diff-forge-pipeline/src/jsonl.rs)
+- [crates/deep-diff-forge-patch/src/json.rs](../crates/deep-diff-forge-patch/src/json.rs)
+- [crates/deep-diff-forge-cluster/src/cluster.rs](../crates/deep-diff-forge-cluster/src/cluster.rs)
+- [crates/deep-diff-forge-cluster/src/scheduler.rs](../crates/deep-diff-forge-cluster/src/scheduler.rs)
+- [crates/deep-diff-forge-daemon/src/handler.rs](../crates/deep-diff-forge-daemon/src/handler.rs)
+- [crates/deep-diff-forge-daemon/src/security.rs](../crates/deep-diff-forge-daemon/src/security.rs)
+- [crates/deep-diff-forge-tui/src/paint.rs](../crates/deep-diff-forge-tui/src/paint.rs)
+- [crates/deep-diff-forge-tui/src/state.rs](../crates/deep-diff-forge-tui/src/state.rs)
+- [crates/deep-diff-forge-learning/src/annotation.rs](../crates/deep-diff-forge-learning/src/annotation.rs)
+- [crates/deep-diff-forge-learning/src/store.rs](../crates/deep-diff-forge-learning/src/store.rs)
+- [README.md](../README.md)
+- [docs/PIONEER_FEATURE_SPECS.md](../docs/PIONEER_FEATURE_SPECS.md)
+- [docs/VISION.md](../docs/VISION.md)
+- [docs/PERFORMANCE_AND_NOVELTY.md](../docs/PERFORMANCE_AND_NOVELTY.md)
+- [docs/ROADMAP.md](../docs/ROADMAP.md)
+- [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md)
+- [Cargo.toml](../Cargo.toml)
 
-Additional coverage projection route: [crates/deep-diff-forge-patch/src/json.rs](../crates/deep-diff-forge-patch/src/json.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--json). The nested semantic fallback summary is derived from actual enriched parse statuses.
+Additional coverage projection route: [crates/deep-diff-forge-patch/src/json.rs](../crates/deep-diff-forge-patch/src/json.rs). The nested semantic fallback summary is derived from actual enriched parse statuses.
 
 ## Verified local increment
 

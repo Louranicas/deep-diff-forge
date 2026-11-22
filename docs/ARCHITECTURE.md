@@ -198,7 +198,7 @@ released there.
 
 Some files open with `// DDF integration`, `// Design/status` and `// Module vault note` lines that
 link to a design section and to the maintainer's local Obsidian vault (65 of 120 Rust files on
-2026-10-27; all 79 links resolved). The `obsidian://` links open only in the owner's local
+2026-10-27; all 79 links resolved; the vault links were replaced by repository pointers on 2026-11-22). They opened only in the owner's local
 vault, not for other readers. They are optional and not enforced: CI cannot see the vault, so
 a scan could check only that a header is present, which would push headers onto files with no note
 to link. Add one when a vault note exists for the file; never add a link to a note that does not.
@@ -297,9 +297,9 @@ Detailed diagrams and API maps (most are target design; each says what exists to
 
 ## Review integration route
 
-[Implementation status and delivery gates](RECOMMENDATION_INTEGRATION.md#remaining-module-routes) ↔ [Module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdocs--ARCHITECTURE) (owner's local vault). This route records planned and evaluation-dependent work without claiming it is implemented.
+[Implementation status and delivery gates](RECOMMENDATION_INTEGRATION.md#remaining-module-routes). This route records planned and evaluation-dependent work without claiming it is implemented.
 
 
 ## Captured multi-provider review controller
 
-`deep-diff-forge-review` depends inward on core vocabulary and the canonical changed-source digest. It admits shared-service analysis artifacts and emits review/verification artifacts through the CLI. Existing daemon and TUI routes are not yet migrated. [Full implemented workflow, interfaces and limits](REVIEW_COUNCIL.md) ↔ [Vault](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FReview%20Council) (owner's local vault).
+`deep-diff-forge-review` depends inward on core vocabulary and the canonical changed-source digest. It admits shared-service analysis artifacts and emits review/verification artifacts through the CLI. Existing daemon and TUI routes are not yet migrated. [Full implemented workflow, interfaces and limits](REVIEW_COUNCIL.md).
