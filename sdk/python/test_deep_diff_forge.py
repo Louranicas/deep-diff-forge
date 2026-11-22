@@ -6,6 +6,7 @@ import json
 import os
 import pathlib
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -384,6 +385,74 @@ class Socket(unittest.TestCase):
                     self.assertEqual(accepted.recv(1), b"", "nothing was sent to that daemon")
 
 
+    def test_an_early_refusal_over_a_socket_is_read_not_lost(self):
+        # G-SDK-1.4. The daemon takes 16 bytes of a 4 MiB request, refuses it and closes with the
+        # rest unread, so the send breaks (a broken pipe or a reset). Before, the refusal was lost
+        # and the call raised "could not be reached".
+        refusal = b'{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"read budget full"}}\n'
+
+        def refuse(connection):
+            connection.recv(16)
+            connection.sendall(refusal)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "d.sock"
+            with _serving(path, refuse):
+                with self.assertRaises(ddf.RpcError) as refused:
+                    ddf.SocketClient(path, timeout=10).review_patch("y" * (4 << 20))
+            self.assertEqual(refused.exception.code, -32000)
+
+    def test_the_socket_deadline_is_overall(self):
+        # A daemon that sends one byte every 0.4 s and never a newline. Before, each read had the
+        # whole timeout again, so the call lasted until the daemon stopped (4.8 s for 12 bytes).
+        def trickle(connection):
+            connection.recv(1 << 16)
+            for _ in range(12):
+                try:
+                    connection.sendall(b" ")
+                except OSError:
+                    return
+                time.sleep(0.4)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "d.sock"
+            with _serving(path, trickle):
+                started = time.monotonic()
+                with self.assertRaisesRegex(ddf.TransportError, "no answer from the daemon at .* within 1 s"):
+                    ddf.SocketClient(path, timeout=1).call("daemon.health")
+                self.assertLess(time.monotonic() - started, 3, "the deadline covers the whole call")
+
+    @unittest.skipUnless(hasattr(socket, "SO_PEERCRED"), "SO_PEERCRED is Linux's")
+    def test_peer_uid_reads_an_unsigned_uid(self):
+        # G-SDK-1.5. uid_t is unsigned: a uid of 2^31 + 5 was read as -2147483643 with "3i".
+        class Credentials:
+            def getsockopt(self, level, option, size):
+                return struct.pack("3I", 1234, 2**31 + 5, 0)[:size]
+
+        self.assertEqual(ddf._peer_uid(Credentials()), 2**31 + 5)
+
+    def test_an_answer_line_at_the_cap_is_read_and_one_byte_over_is_refused(self):
+        # One cap rule: an answer line is at most MAX_REQUEST_BYTES bytes, its newline counted.
+        # Before, the socket client read up to one byte more. The lowered cap is not a multiple of
+        # a 64 KiB read, so the newline arrives past it in one read.
+        for extra in (0, 1):
+            with self.subTest(over=extra), _lowered_cap(100_000), tempfile.TemporaryDirectory() as directory:
+                path = pathlib.Path(directory) / "d.sock"
+                line = _capped_line(extra)
+
+                def answer(connection, _line=line):
+                    connection.recv(1 << 16)
+                    connection.sendall(_line)
+
+                with _serving(path, answer):
+                    client = ddf.SocketClient(path, timeout=10)
+                    if extra:
+                        with self.assertRaisesRegex(ddf.TransportError, "the answer exceeds the daemon's maximum size"):
+                            client.call("daemon.health")
+                    else:
+                        self.assertEqual(client.call("daemon.health"), {})
+
+
 def _reap(client):
     """Kill a test's child by its pid if it still runs, so no test leaves a process behind."""
     if client._process.poll() is None:
@@ -408,6 +477,30 @@ def _capped_line(extra):
     """A valid answer to request 1 of exactly the (lowered) cap plus ``extra`` bytes, newline counted."""
     body = b'{"jsonrpc":"2.0","id":1,"result":{}'
     return body + b" " * (ddf.MAX_REQUEST_BYTES - len(body) - 2 + extra) + b"}\n"
+
+
+class _serving:
+    """A stand-in daemon on a Unix socket at ``path``: a thread that serves one connection with
+    ``handler`` and is joined when the block ends."""
+
+    def __init__(self, path, handler):
+        self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.listener.bind(str(path))
+        self.listener.listen(1)
+        self.handler = handler
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+
+    def _serve(self):
+        with self.listener:
+            connection, _ = self.listener.accept()
+            with connection:
+                self.handler(connection)
+
+    def __enter__(self):
+        self.thread.start()
+
+    def __exit__(self, *_):
+        self.thread.join(timeout=10)
 
 
 def _connected(path):
