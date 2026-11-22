@@ -3796,8 +3796,9 @@ impl Ask {
 /// "Least recently" is by the number of the stop each was last asked about at, which every
 /// ask writes down whether or not the attempt counts.
 ///
-/// What the property needs ([`OWED_ASKS_NEED`] is the one place the time is stated; README
-/// and the tests take it from there): a judge that can be run (with no judge or no policy
+/// What the property needs ([`OWED_ASKS_NEED`] is the one place the time is stated;
+/// `docs/reference/agent-hooks.md` and the tests take it from there): a judge that can be run
+/// (with no judge or no policy
 /// nothing is submitted for any commit, which is said); a state that can be kept (with
 /// none, every stop starts from what was last written, and says so); and
 /// [`OWED_ASKS_NEED`] of the judging left when the stop comes to its commits, after the
@@ -9978,8 +9979,8 @@ mod tests {
     /// which under five seconds was no time, and was written down as asked) to the tenth
     /// (HR10-L-3: a run that may take all that is left cannot be owed beside others; and
     /// HR10-L-2: a run on the stop's own tree is held back only what the tree after it can
-    /// need). What every owed ask needs is one number, [`OWED_ASKS_NEED`], and README says
-    /// the same.
+    /// need). What every owed ask needs is one number, [`OWED_ASKS_NEED`], and
+    /// `docs/reference/agent-hooks.md` says the same.
     #[test]
     fn a_run_of_the_judge_has_its_part_of_the_time_or_is_not_made() {
         let seconds = |ms: u64| Duration::from_millis(ms);
@@ -10060,7 +10061,7 @@ mod tests {
         );
         assert_eq!(tree(0, OWED_ASKS_NEED), None);
 
-        let readme = include_str!("../../../README.md");
+        let readme = include_str!("../../../docs/reference/agent-hooks.md");
         let stated = format!(
             "{} seconds of its judging left when it comes to its commits ({} for the first ask it owes and {} for each of the two after it)",
             OWED_ASKS_NEED.as_secs(),
@@ -10073,7 +10074,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(" ")
                 .contains(&stated),
-            "README does not state: {stated}"
+            "docs/reference/agent-hooks.md does not state: {stated}"
         );
     }
 

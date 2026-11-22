@@ -86,8 +86,9 @@ What the gates enforce, and what we ask in review:
   locally to see survivors before CI does.
 - **Fuzzed parsers.** A parser change must survive the fuzz targets in [`fuzz/`](fuzz/). CI fuzzes
   each target briefly; run longer locally (`cargo +nightly fuzz run patch_parser`).
-- **Docs move with code.** Several tests read the README (exit codes, caps, daemon methods). If
-  your change alters a documented contract, update the doc in the same pull request.
+- **Docs move with code.** Several tests read the reference documents in
+  [`docs/reference/`](docs/reference/) (exit codes, caps, daemon methods). If your change alters
+  a documented contract, update the doc in the same pull request.
 - **A new dependency is a reviewed decision.** `cargo deny` and `cargo audit` gate licences,
   sources and advisories, and the committed SBOM must be regenerated
   (`python3 scripts/security/generate_spdx_sbom.py`).

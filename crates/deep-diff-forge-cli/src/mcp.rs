@@ -1,6 +1,6 @@
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--mcp
 // DDF slice D: `deep-diff-forge mcp`, a read-only Model Context Protocol server over stdio.
-// Design/status: docs/ROADMAP.md#status-2026-10-26 and README "MCP server".
+// Design/status: docs/ROADMAP.md#status-2026-10-26 and docs/reference/mcp-sdk-daemon.md "MCP server".
 //! A dual-era MCP server (specification 2026-07-28, with the 2025-11-25 `initialize` handshake for
 //! legacy clients) whose tools are the daemon's own methods, so an MCP client gets exactly what the
 //! CLI and the daemon give: `review_patch` is `diff.compute`, `rank_patch` is `diff.rank`. Every
@@ -1150,9 +1150,9 @@ mod tests {
     }
 
     #[test]
-    fn the_readme_states_the_review_caps() {
+    fn the_mcp_reference_states_the_review_caps() {
         assert_eq!((REVIEW_FULL_CAP, SUMMARY_FILE_LIMIT), (256 * 1024, 1000));
-        let readme = include_str!("../../../README.md");
+        let readme = include_str!("../../../docs/reference/mcp-sdk-daemon.md");
         assert!(readme.contains("while it is at most 256 KiB"));
         assert!(readme.contains("per-file counts for up to 1,000 files"));
         assert!(
@@ -1161,12 +1161,12 @@ mod tests {
     }
 
     #[test]
-    fn the_readme_states_the_line_cap() {
+    fn the_mcp_reference_states_the_line_cap() {
         let mib = 1024 * 1024;
         let budget = deep_diff_forge_patch::DEFAULT_BYTE_BUDGET;
         assert_eq!((budget / mib, LINE_CAP - budget), (64, mib));
         assert!(
-            include_str!("../../../README.md")
+            include_str!("../../../docs/reference/mcp-sdk-daemon.md")
                 .contains("a request line is capped at the 64 MiB patch budget plus 1 MiB")
         );
     }

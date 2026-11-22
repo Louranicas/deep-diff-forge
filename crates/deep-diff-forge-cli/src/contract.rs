@@ -1,6 +1,7 @@
 // Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--contract
 // DDF slice A: the machine contract (`ddf.result.v1`, the exit-code registry, `schema`, `explain`,
-// `envelope`). Design/status: docs/ROADMAP.md#status-2026-10-26 and README "Machine contract".
+// `envelope`). Design/status: docs/ROADMAP.md#status-2026-10-26 and
+// docs/reference/output-and-exit-codes.md "Machine contract".
 //! The `ddf.result.v1` envelope over the exit-code registry (`deep_diff_forge_core::exit`).
 //!
 //! `envelope -- <command…>` runs this binary as a child with the given arguments and wraps what it
@@ -533,8 +534,8 @@ mod tests {
     }
 
     #[test]
-    fn the_readme_states_the_capture_caps() {
-        let readme = include_str!("../../../README.md");
+    fn the_machine_contract_reference_states_the_capture_caps() {
+        let readme = include_str!("../../../docs/reference/output-and-exit-codes.md");
         let stated = format!(
             "stdout is capped at {} MiB and stderr at {} MiB",
             STDOUT_CAP / (1024 * 1024),

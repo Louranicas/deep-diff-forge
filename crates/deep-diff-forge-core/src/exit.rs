@@ -3,7 +3,8 @@
 //!
 //! Two families share numbers with different meanings: `council` (the review-council subcommands)
 //! and `engine` (every other command). Every exit site uses these constants; the CLI's tests refuse
-//! a numeric exit literal and check the README tables against [`EXIT_CODES`].
+//! a numeric exit literal and check the exit-code tables of
+//! `docs/reference/output-and-exit-codes.md` against [`EXIT_CODES`].
 
 /// The command completed under its contract.
 pub const SUCCESS: i32 = 0;
@@ -113,7 +114,8 @@ const fn entry(
     }
 }
 
-/// Every documented exit code. README "Exit codes" rows begin with these meanings.
+/// Every documented exit code. The "Exit codes" rows of
+/// `docs/reference/output-and-exit-codes.md` begin with these meanings.
 pub const EXIT_CODES: &[ExitCode] = &[
     entry(
         "engine",

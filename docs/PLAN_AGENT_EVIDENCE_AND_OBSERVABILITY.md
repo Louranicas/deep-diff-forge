@@ -176,7 +176,7 @@ All three parts share one rule: **a number is a receipt.** Each has a schema, th
 - **The gate.** `cli/tests/eval.rs` runs the committed corpus and enforces floors: evidence precision of 1.0 on the negatives, recall of at least 0.95, ranking pair accuracy of 1.0 and findings accuracy of 1.0.
   - A change that lowers a metric fails CI.
   - A change that raises it updates the floor in the same PR, so the floors only ever ratchet up.
-  - *Delivered 2026-10-31:* a declared miss (`known_miss`, `known_false_positive`) counts as wrong in its metric instead of being left out, so the floors are the measured values (34 cases: ranking 12/15, precision 21/22, recall 21/28, findings 33/33) rather than 100%. An orphan file, a symlink, a repeated id, a missing origin, an unknown field or a ranking pair that is not two distinct paths refuses the manifest; `known_misses` keeps its `v0` meaning (evidence `known_miss` items, N11) and the new `declared` lists every kind. See the [README](../README.md#benchmarks-and-evaluation).
+  - *Delivered 2026-10-31:* a declared miss (`known_miss`, `known_false_positive`) counts as wrong in its metric instead of being left out, so the floors are the measured values (34 cases: ranking 12/15, precision 21/22, recall 21/28, findings 33/33) rather than 100%. An orphan file, a symlink, a repeated id, a missing origin, an unknown field or a ranking pair that is not two distinct paths refuses the manifest; `known_misses` keeps its `v0` meaning (evidence `known_miss` items, N11) and the new `declared` lists every kind. See the [evaluation reference](reference/evaluation.md#benchmarks-and-evaluation).
 - **The learning loop.** Eval receipts are the "benchmark receipts" the [learning loop](LEARNING_LOOP.md) lacks: `learn record` accepts a `deep-diff-forge.eval.v0` receipt as evidence (Phase 10).
 
 ---
@@ -257,7 +257,7 @@ Corrections by new note; 1.0 to 1.2 are kept as written.
 
 - **The corpus has 34 cases, not 11** (14 ranking, 17 evidence, 3 findings), and the floors are
   no longer 100%: declared misses now count as wrong, so the measured floors are ranking 12/15,
-  precision 21/22, recall 21/28 and findings 33/33 (`cli/tests/eval.rs`; CHANGELOG, 0.6.0).
+  precision 21/22, recall 21/28 and findings 33/33 (`cli/tests/eval.rs`; [release notes 0.6.0](release-notes/0.6.0.md)).
 - **`chain`, `cluster` and `loom` are withdrawn, not deferred** (2026-10-31): each is refused
   with exit 2 and names its replacement.
 - **Prometheus:** still no endpoint or listener; `daemon metrics --format prometheus` renders

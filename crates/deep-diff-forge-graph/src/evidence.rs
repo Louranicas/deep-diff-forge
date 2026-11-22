@@ -2271,7 +2271,7 @@ const RAW_STARTS: usize = 4;
 /// quotes are taken from the text as it stands, not from any reading of it: a reading from
 /// the wrong start can have the closing quote inside a comment or a character literal.
 ///
-/// Sides of real code have one record or two (measured: see the changelog). A side written
+/// Sides of real code have one record or two (measured: see docs/release-notes/0.9.0.md). A side written
 /// to have many (`"#`, then `"##`, then `"###`, …) is read for its first [`RAW_STARTS`]
 /// records and no further, so that its cost stays that many readings: a raw string that
 /// ends at a later record is a declared miss.
@@ -5882,7 +5882,7 @@ mod tests {
     /// Not closed, and stated: the hunks of a file that exists are read each on its own,
     /// whatever their numbers say. Each of these hides a spawn behind a comment that an
     /// earlier hunk opened, in a form plain `git apply` 2.56.0 puts together (its words are in
-    /// the changelog), and each is answered as its hunks are answered alone: no spawn, as in
+    /// docs/release-notes/0.9.0.md), and each is answered as its hunks are answered alone: no spawn, as in
     /// 0.8.3. Where positions Git would not write are refused is the parser, not here.
     #[test]
     fn the_hunks_of_a_file_that_exists_are_read_each_on_its_own() {
@@ -6801,7 +6801,7 @@ mod tests {
         /// How many patches the test writes. Each has 1 to 60 files.
         const PATCHES: usize = 240;
 
-        /// The budget and the longest line, as the CHANGELOG states them.
+        /// The budget and the longest line, as docs/release-notes/0.9.0.md states them.
         const BUDGET: usize = 256 * 1024;
         const LONGEST_LINE: usize = 512;
 
@@ -7118,7 +7118,7 @@ mod tests {
             stop: Option<(usize, bool)>,
         }
 
-        /// The rule as the CHANGELOG states it, written plainly from it: the files go in
+        /// The rule as docs/release-notes/0.9.0.md states it, written plainly from it: the files go in
         /// patch order and share one budget of 256 KiB of the new side, each line counted with
         /// its end. A file the patch creates in more than one hunk, in a language, has its
         /// hunks from the first up to the one that would take it past what the files before it
@@ -13040,8 +13040,8 @@ mod tests {
     ///
     /// It counts the lines of the code views a reading holds, not memory: what else a
     /// reading might hold for a text (a copy of a view, a cache) is not counted here, and the
-    /// memory figures of the README are measured, not held by this test (tenth independent
-    /// review, its weak tests).
+    /// memory figures of `docs/reference/risk-ranking.md` are measured, not held by this test
+    /// (tenth independent review, its weak tests).
     #[test]
     fn a_scan_holds_one_reading_of_one_text_at_a_time() {
         let longest = |file: &ReviewFile| {
