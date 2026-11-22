@@ -89,9 +89,10 @@ impl fmt::Display for TuicrImportError {
                 write!(f, "tuicr import refused (unsafe session): {reason}")
             }
             Self::Journal(reason) => write!(f, "tuicr import refused (journal): {reason}"),
+            // The remedy before the path: the command line cuts an error at 200 bytes.
             Self::Locked { lock } => write!(
                 f,
-                "tuicr import refused (locked): another running import holds {lock}"
+                "tuicr import refused (locked): another import of this run is running; run this one again when it has finished (it holds {lock})"
             ),
             Self::InterruptedExport { pending } => write!(
                 f,
@@ -1336,6 +1337,27 @@ fn reconcile(directory: &Path, journal: &Journal, execute: bool) -> Result<Vec<S
     Ok(repairs)
 }
 
+/// What a killed export left in session `session_id`'s ledger, removed when `execute`: an export
+/// takes no lock, so the temporary file of a running process is kept and named.
+fn ledger_temporaries(directory: &Path, session_id: &str, execute: bool) -> Result<Vec<String>> {
+    let ledger = (directory.join(LEDGER_DIR).join("tuicr")).join(crate::segment(session_id)?);
+    let mut repairs = Vec::new();
+    for (temporary, ended) in storage::temporaries(&ledger)? {
+        let shown = temporary.display();
+        if ended {
+            repairs.push(format!("remove the temporary file {shown}"));
+            if execute {
+                fs::remove_file(&temporary).map_err(storage::named(&temporary))?;
+            }
+        } else {
+            repairs.push(format!(
+                "keep the temporary file {shown}: a process with the number in its name is running"
+            ));
+        }
+    }
+    Ok(repairs)
+}
+
 /// Import human dispositions from the tuicr session file `session_path` into the run's decision journal.
 ///
 /// Without `options.execute` this is a dry run: it performs every check and reports the events it
@@ -1419,7 +1441,12 @@ pub fn import_tuicr(
     plan_files(&mut planner, &inputs)?;
     let lines = encode(journal.bytes, &planner.events)?;
     // After the checks above, so a session they refuse changes nothing (G-S313-2b).
-    let repairs = reconcile(&directory, &journal, options.execute)?;
+    let mut repairs = reconcile(&directory, &journal, options.execute)?;
+    repairs.extend(ledger_temporaries(
+        &directory,
+        &session.id,
+        options.execute,
+    )?);
     if options.execute && !planner.events.is_empty() {
         append(&directory, journal.bytes, &lines, &planner.events)?;
     }
@@ -2233,5 +2260,64 @@ mod tests {
             assert_eq!(cause, Some(nix::libc::EIO), "{step}: {failed:?}");
             r.import(ids, true).unwrap();
         }
+    }
+
+    /// S3.17a.e: a temporary file that a process which has ended left in the export ledger, a
+    /// job directory or the reports is removed (by the executing import, or by the readers of
+    /// jobs and reports); one with a running process's number is kept, and the import names it.
+    #[test]
+    fn temporaries_left_in_the_ledger_and_jobs_are_removed_or_reported() {
+        let r = Run::new();
+        let dir = fs::canonicalize(&r.dir).unwrap();
+        let ledger = dir
+            .join(LEDGER_DIR)
+            .join("tuicr/00000000-0000-4000-8000-000000000001");
+        let job = dir.join("jobs/review-x-independent");
+        fs::create_dir_all(&ledger).unwrap();
+        fs::create_dir_all(&job).unwrap();
+        // No process can have the largest id; this test's own process is running.
+        let plant = |dir: &Path, name: &str, pid: u32| {
+            let path = dir.join(format!("{}{name}.{pid}-0", storage::TEMPORARY_PREFIX));
+            fs::write(&path, "{").unwrap();
+            path
+        };
+        let left = [
+            plant(&ledger, "a.json", 2_147_483_647),
+            plant(&job, "execution.json", 2_147_483_647),
+            plant(&dir.join("reports"), "r-independent.json", 2_147_483_647),
+        ];
+        let running = plant(&ledger, "b.json", std::process::id());
+        let dry = r.import(&["h-1"], false).unwrap();
+        assert!(left[0].exists(), "a dry run removes nothing");
+        let done = r.import(&["h-1"], true).unwrap();
+        for import in [&dry, &done] {
+            let said = import.repairs.join("\n");
+            let remove = format!("remove the temporary file {}", left[0].display());
+            let keep = format!("keep the temporary file {}", running.display());
+            assert!(said.contains(&remove) && said.contains(&keep), "{said}");
+        }
+        assert!(running.exists());
+        let manifest = load_manifest(&dir).unwrap();
+        storage::reports(&dir, &manifest).unwrap();
+        storage::executions(&dir, &manifest).unwrap();
+        for path in &left {
+            assert!(
+                !path.exists(),
+                "a planted temporary stays: {}",
+                path.display()
+            );
+        }
+    }
+
+    /// The remedy of a held lock is inside the 200 bytes the command line shows of an error.
+    #[test]
+    fn a_held_lock_says_what_to_do_within_the_error_limit() {
+        let lock = format!("/{}/decisions.lock", "d".repeat(300));
+        let said = TuicrImportError::Locked { lock }.to_string();
+        let shown = deep_diff_forge_core::display_safe_bounded(&said, 200);
+        assert!(
+            shown.contains("run this one again when it has finished"),
+            "{shown}"
+        );
     }
 }
