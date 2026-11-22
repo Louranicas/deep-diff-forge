@@ -1049,7 +1049,10 @@ fn wide_encoding(patch: &[u8]) -> [bool; 2] {
             }
         }
     }
-    [0, 1].map(|side| marked[side] || (wide[side] > 0 && wide[side] >= narrow[side]))
+    let [old, new] =
+        [0, 1].map(|side| marked[side] || (wide[side] > 0 && wide[side] >= narrow[side]));
+    // A new side with no line to judge (a deletion) reads as the old side does.
+    [old, new || (old && wide[1] + narrow[1] == 0)]
 }
 
 /// Why Git called `change`'s file binary: [`DiffSuppression::Content`] when `git check-attr`

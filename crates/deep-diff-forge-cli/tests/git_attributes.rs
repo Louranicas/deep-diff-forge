@@ -625,6 +625,12 @@ fn a_source_rewritten_in_a_wide_encoding_is_labelled_encoding() {
             "encoding",
         ),
         (
+            "deleted, no mark",
+            Some(wide(spawn, b"", le)),
+            None,
+            "encoding",
+        ),
+        (
             "back to UTF-8",
             Some(wide(spawn, b"\xff\xfe", le)),
             Some(utf8.clone()),
