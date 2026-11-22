@@ -167,20 +167,31 @@ impl Staged {
         Ok(staged)
     }
     /// Put the file at its name, failing if the name exists, and sync the directory. On failure
-    /// the name is left as it was.
+    /// the name is left as it was: when the directory cannot be synced after the link, the name
+    /// is removed again (decided, S3.17a.d), so every caller can write it again; the content was
+    /// synced before the link, so a name a crash brings back holds all of it.
     pub(crate) fn commit(self) -> Result<()> {
-        fault("link")
-            .and_then(|()| fs::hard_link(&self.temporary, &self.path))
-            .map_err(named(&self.path))?;
+        let path = self.path.clone();
+        self.commit_io().map_err(named(&path))
+    }
+    /// [`Staged::commit`], with the I/O error as it came.
+    pub(crate) fn commit_io(self) -> std::io::Result<()> {
+        fault("link").and_then(|()| fs::hard_link(&self.temporary, &self.path))?;
         let _ = fs::remove_file(&self.temporary);
-        let synced = File::open(self.path.parent().unwrap_or(Path::new(".")))
-            .and_then(|d| d.sync_all())
-            .map_err(named(&self.path));
+        let synced = fault("dir-sync")
+            .and_then(|()| File::open(directory_of(&self.path)))
+            .and_then(|d| d.sync_all());
         if synced.is_err() {
             let _ = fs::remove_file(&self.path);
         }
         synced
     }
+}
+/// The directory `path` is in: the current one for a bare name, whose parent is the empty path.
+fn directory_of(path: &Path) -> &Path {
+    path.parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
 }
 impl Drop for Staged {
     fn drop(&mut self) {
@@ -925,6 +936,15 @@ pub(crate) fn executions(directory: &Path, manifest: &Manifest) -> Result<Vec<Ex
 mod tests {
     use super::*;
     use deep_diff_forge_testkit::Scratch;
+
+    /// G-S313-1a: the directory synced after a link is the one the name is in; for a bare name,
+    /// whose parent is the empty path (which opens nothing), the current one.
+    #[test]
+    fn a_bare_name_is_synced_in_its_own_directory() {
+        assert_eq!(directory_of(Path::new("a.json")), Path::new("."));
+        assert_eq!(directory_of(Path::new("run/a.json")), Path::new("run"));
+        assert_eq!(directory_of(Path::new("/run/a.json")), Path::new("/run"));
+    }
 
     /// Anchor C-03: the run id is an unkeyed digest of the manifest, so a manifest edited and
     /// resealed passes the seal. A mutation base without its sealed diff (or the reverse) must
