@@ -11,7 +11,7 @@
 
 **Current at 0.3.0** (checked against the code and the binary):
 
-- The council is a CLI subcommand of the main binary: `deep-diff-forge council <example|prepare|review|gate|status|import|export-tuicr|import-tuicr>` (`deep-diff-forge --help`). Its exit codes are their own family: 0 completed, 4 refused, 7 hold (`deep-diff-forge schema exit-codes`).
+- The council is a CLI subcommand of the main binary: `deep-diff-forge council <example|prepare|review|gate|status|import|export-tuicr|import-tuicr>` (`deep-diff-forge --help`). Its exit codes are their own family: 0 completed, 3 recorded but incomplete (`import-tuicr --execute` only), 4 refused, 7 hold (`deep-diff-forge schema exit-codes`).
 - The eight gates are `format`, `check`, `clippy`, `pedantic`, `tests`, `antipatterns`, `fuzz` and `mutation` (`crates/deep-diff-forge-review/src/model.rs`).
 - Gates run only in the rootless Podman sandbox described in [Gate sandbox](#gate-sandbox). CI builds the gate image and runs the 12-probe planted-breach suite on `ubuntu-26.04` (`.github/workflows/ci.yml`).
 
@@ -162,7 +162,7 @@ ddf-integration-20261025 council status /absolute/new-run-directory
 
 The output directory's parent must exist, and the new run must be outside the reviewed repository. A relative run directory is resolved once, against the controller's working directory, and used absolutely from then on, so the sealed snapshot and its mutation scope name the same files however the run is spelled. Existing runs/jobs/reports are never overwritten. `council import <run> <report.json>` admits external structured reports but explicitly labels manual import unverified; it cannot satisfy a missing measured provider invocation. The run's `manifest.json` and captured artifacts are reviewable before `--execute`. Preparation/status do not launch a hosted model. No execution occurs merely because a reviewer requested a check.
 
-Exit 0 means the requested operation completed under its contract; status exit 0 specifically means ready for human review. Exit 7 is HOLD/failed/inconclusive execution. Exit 4 is malformed input, stale admission, existing artifact or protocol/IO failure. No command implies acceptance, merge, release or deployment.
+Exit 0 means the requested operation completed under its contract; status exit 0 specifically means ready for human review. Exit 7 is HOLD/failed/inconclusive execution. Exit 4 is malformed input, stale admission, existing artifact or protocol/IO failure. Exit 3 is an I/O failure after `import-tuicr --execute` recorded its decisions (below). No command implies acceptance, merge, release or deployment.
 
 <a id="tuicr-export"></a>
 
@@ -204,7 +204,7 @@ ddf-integration-20261025 council import-tuicr /absolute/run-directory --session 
 ddf-integration-20261025 council import-tuicr /absolute/run-directory --session <session.json> --execute
 ```
 
-Exit 0 means the import completed. Exit 7 means the events include a conflict; they are still appended in `--execute` mode. Exit 4 is a refusal, and nothing is appended. Rules, each covered by [the journal tests](../crates/deep-diff-forge-cli/tests/council_tuicr.rs):
+Exit 0 means the import completed. Exit 7 means the events include a conflict; they are still appended in `--execute` mode. Exit 4 is a refusal, and nothing is appended. Exit 3 (`recorded_incomplete`) means the events were recorded but a later write failed (or the journal's own sync failed, so whether they are durable is unknown): the message names the events' sequence numbers and the file, and running the same import again completes it. Rules, each covered by [the journal tests](../crates/deep-diff-forge-cli/tests/council_tuicr.rs):
 
 - **Event schema** (`deep-diff-forge.decision.v1`, one JSON object per line):
   - Identity: `seq`, `prev`, `run_id`, `session_id`, `revision` (`diff_source`, `base_commit`, `new_side`), `comment_id`, and `content_sha256` of the comment text.
@@ -232,9 +232,16 @@ Exit 0 means the import completed. Exit 7 means the events include a conflict; t
 - **Chain and tamper evidence.**
   - `prev` chains every event to the one before it. The first event's `prev` is 64 zeros.
   - Each import that appends also writes a create-new checkpoint `<run>/decisions.checkpoints/<seq>.json` holding the head hash.
+  - The commit point is the synced append. Before it, the checkpoint for the new head is written and synced under a temporary name (`.ddf-tmp.` and a suffix); after it, the checkpoint is linked into place and the directory synced. A failure before the append is exit 4 and leaves the journal as it was; a failure after it is exit 3. A failed write of the journal itself is cut back to the verified length; if that cut cannot be made durable, the outcome is exit 3.
   - Before planning, the whole journal is verified: each line must be the event's own canonical serialization, `seq` must be consecutive, every `prev` and `hash` must recompute, and `run_id` must match. Every checkpoint must still name an event the journal holds.
   - An edited, reordered, partially written or truncated journal is refused. This includes a deleted journal whose checkpoints remain.
-  - Appends use `O_APPEND` after checking that the file length still equals the verified length, under a create-new `decisions.lock`.
+  - Appends use `O_APPEND` after checking that the file length still equals the verified length, under an advisory `flock` on `decisions.lock` held for the life of the executing import. A lock file whose process is gone does not block; the file is removed by its holder. A dry run takes no lock.
+- **Recovery.** Every executing import, under the lock and after the journal has verified, first reconciles. Each step is announced on standard error in one line (`note: tuicr import repair: …`); a dry run announces it as `would repair` and writes nothing.
+  - If the journal's head is beyond the newest checkpoint, the head's checkpoint is written, even when the import then plans no events. This also heals a run left so by 0.8.3 to 0.9.0 ([DDF-2026-004](advisories/DDF-2026-004.md)).
+  - A zero-length checkpoint file (what 0.8.3 to 0.9.0 leave when a checkpoint write fails) whose sequence the journal holds is replaced. A checkpoint with any other malformed content stays a refusal.
+  - A torn last record (bytes after the last newline) whose sequence no checkpoint names is cut off; its bytes are kept beside the journal in `decisions.torn-<seq>-<digest>` and never deleted. A torn record a checkpoint names stays a refusal: that is truncation of committed data.
+  - Temporary files left in `decisions.checkpoints/` by a killed import are removed. Readers that list a directory (checkpoints, the export ledger) skip a temporary name, so a leftover never refuses an import.
+  - Every run artefact written create-new (checkpoints, the export ledger, reports, `execution.json`, `qualification.json`) is written all or nothing: written and synced under a temporary name in the same directory, then linked to its name, which fails if the name exists. An I/O error names the file.
   - These are local consistency checks, not signatures. A same-uid process that rewrites the journal, its checkpoints and all hashes together is not detected.
 - **Stale revision refusal.** All refusals reject the whole import, and nothing is appended.
   - The session must pass the export's identity checks: version, no forge session, and the same repository.

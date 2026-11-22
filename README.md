@@ -1260,6 +1260,7 @@ The `council` subcommands use their own family ([review council](docs/REVIEW_COU
 | Council code | Meaning | Next |
 | --- | --- | --- |
 | 0 | The requested council operation completed under its contract; `status` exit 0 means ready for human review. | `proceed` |
+| 3 | I/O failure after the decision was recorded: the journal holds it; run the same import again to complete it. | `check_environment` |
 | 4 | Malformed input, stale admission, an existing artifact, or a protocol or I/O failure. | `change_input` |
 | 7 | HOLD: failed, missing or inconclusive evidence, or an import conflict. | `review_evidence` |
 

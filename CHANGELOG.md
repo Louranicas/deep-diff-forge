@@ -207,6 +207,21 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ### Changed
 
+- **New council exit code 3, `recorded_incomplete`** (`check_environment`, `may_be_transient`
+  true; plan of record S3.13, [DDF-2026-004](docs/advisories/DDF-2026-004.md)). A contract
+  addition: `council import-tuicr --execute` exits 3 when its decisions were recorded (the synced
+  append) but a later write failed, or the journal's own sync failed. The message names the
+  events and the file; the same import run again completes it. No existing code changes its
+  meaning; `schema exit-codes`, `explain`, MCP and the README list it.
+- **The decision journal's lock is an advisory `flock`** on `decisions.lock`, held for the life
+  of an executing import, as the hooks and the daemon take theirs. A lock file left by a dead
+  process, of any version, no longer blocks; two live imports still exclude each other. The
+  `Locked` message no longer tells the reader to remove the file.
+- `TuicrImportError` has a new variant `Incomplete { first, last, file, reason, durable }` (the
+  enum is `#[non_exhaustive]`); it is not a refusal.
+- Every executing import reconciles first and may repair, each step announced on standard error
+  (`note: tuicr import repair: …`; a dry run says `would repair` and writes nothing): see Fixed.
+
 - The evidence readings of 0.9.0 that join hunks without context (Git-must joins, number hints,
   hunks of one created file) are no longer reached from a parsed patch: the parser refuses a
   hunk with no context past line 1 and a hunk after one with no trailing context. They stay
@@ -227,6 +242,27 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   rendering is a shape Git writes. Before, they came after it.
 
 ### Fixed
+
+- **A fault during `council import-tuicr --execute` no longer blocks a run's journal for good,
+  reports a recorded decision as refused, or leaves a cut back undetected** (S3.13,
+  [DDF-2026-004](docs/advisories/DDF-2026-004.md); measured on 0.9.0 by fault injection from
+  outside the process).
+  - `write_new`, the writer of checkpoints, the export ledger, reports, `execution.json` and
+    `qualification.json`, is all or nothing: it writes and syncs a temporary file in the same
+    directory and links it to its name, which fails if the name exists. A failed write leaves no
+    file (before, an empty one every reader refused and create-new would not replace), and the
+    error names the file. Readers that list a directory skip a temporary name.
+  - The journal's commit point is the synced append. The new head's checkpoint is written and
+    synced under its temporary name first, so a failure before the append is exit 4 with nothing
+    appended (before, exit 4 with the decision appended); a failed append is cut back. After it,
+    exit 3.
+  - Every executing import writes the head's checkpoint when the head is beyond the newest one,
+    even when it plans no events (before, the retry never wrote it and a cut back went
+    undetected); this also heals runs left so by 0.8.3 to 0.9.0.
+  - Repairs under the lock: an empty checkpoint the journal holds is replaced; a torn last record
+    no checkpoint names is cut off and its bytes kept in `decisions.torn-<seq>-<digest>`;
+    leftover temporary checkpoint files are removed. A torn record a checkpoint names, and other
+    malformed checkpoints, stay refusals.
 
 - **A moved file's old path is squashed as Git squashes it** (independent review of S3a,
   S3A-L-1, low). `rename from d//x` or `copy from d//x` was reported as `old_path` `d//x`, while
