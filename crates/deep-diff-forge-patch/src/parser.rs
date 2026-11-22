@@ -1247,13 +1247,10 @@ impl Parser {
             // `+++` and `@@` are refused (`try_metadata`), and after a hunk the binary line is.
             // Git's `parse_binary` needs a `literal` or `delta` line first and refuses the patch
             // without one ("unrecognized binary patch"); an empty body was reviewed as a binary
-            // change (the oracle's mutants, after F1).
-            if file.in_binary_body
-                && !file
-                    .binary_body
-                    .first()
-                    .is_some_and(|l| l.starts_with("literal ") || l.starts_with("delta "))
-            {
+            // change (the oracle's mutants, after F1). It also refuses a hunk with no data line,
+            // with no empty line to end it, or with a base85 group above 0xffffffff, which
+            // 0.9.0 reviewed as a binary change (S3.6): [`binary_body_is_git_s`].
+            if file.in_binary_body && !binary_body_is_git_s(&file.binary_body) {
                 return Err(PatchParseError::UnsupportedFormat {
                     line_number: self.last_line,
                 });
@@ -2469,9 +2466,74 @@ fn is_binary_body_line(line: &str) -> bool {
     data.len() == count.div_ceil(4) * 5 && data.iter().all(|b| BASE85.contains(b))
 }
 
+/// Every base85 group of a body data line decodes to at most 0xffffffff, as Git's `decode_85`
+/// requires ("invalid base85 sequence"). 0.9.0 checked the alphabet and the length only.
+fn base85_groups_fit(line: &str) -> bool {
+    line.as_bytes()[1..].chunks(5).all(|group| {
+        group
+            .iter()
+            .try_fold(0_u64, |value, byte| {
+                let digit = BASE85.iter().position(|b| b == byte)?;
+                Some(value * 85 + u64::try_from(digit).ok()?)
+            })
+            .is_some_and(|value| u32::try_from(value).is_ok())
+    })
+}
+
+/// A `GIT binary patch` body as Git's `parse_binary` reads it (its lines already admitted by
+/// [`is_binary_body_line`]): a forward hunk and an optional reverse one, each a `literal N` or
+/// `delta N` line, at least one data line whose groups decode ([`base85_groups_fit`]) and the
+/// empty line that ends it. Git calls anything else in those hunks a corrupt binary patch; the
+/// lines after them it skips, and they stay admitted. Whether the data inflates is not checked:
+/// a stated limit (`SECURITY.md`).
+fn binary_body_is_git_s(body: &[String]) -> bool {
+    let header = |line: &str| line.starts_with("literal ") || line.starts_with("delta ");
+    let mut lines = body.iter().map(String::as_str).peekable();
+    for hunk in 0..2 {
+        if lines.next_if(|line| header(line)).is_none() {
+            return hunk == 1;
+        }
+        let mut data = 0_usize;
+        loop {
+            match lines.next() {
+                Some("") if data > 0 => break,
+                Some(line) if !line.is_empty() && !header(line) && base85_groups_fit(line) => {
+                    data += 1;
+                }
+                _ => return false,
+            }
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// S3.6: Git's `decode_85` refuses a base85 group above 0xffffffff ("invalid base85
+    /// sequence", then "corrupt binary patch"); 0.9.0 reviewed `D~~~~~` as a binary change.
+    /// `|NsC0` is 0xffffffff and `|NsC1` one more; every group of a line is checked.
+    #[test]
+    fn a_base85_group_over_u32_is_refused_as_git_refuses_it() {
+        let patch = |data: &str| {
+            format!(
+                "diff --git a/b.bin b/b.bin\nindex 1111111..2222222 100644\nGIT binary patch\nliteral 8\n{data}\n\n"
+            )
+        };
+        for data in ["D~~~~~", "D|NsC1", "H00000|NsC1", "H|NsC100000"] {
+            assert!(
+                matches!(
+                    parse(&patch(data)),
+                    Err(PatchParseError::UnsupportedFormat { .. })
+                ),
+                "a group above 0xffffffff was read: {data}"
+            );
+        }
+        for data in ["D|NsC0", "D00000", "H|NsC0|NsC0"] {
+            assert!(parse(&patch(data)).is_ok(), "{data}");
+        }
+    }
 
     fn one(input: &str) -> ReviewFile {
         let files = parse(input).expect("parse should succeed");

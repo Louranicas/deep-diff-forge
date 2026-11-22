@@ -633,6 +633,66 @@ fn row_binary_files() {
     s.refused(|e| matches!(e, PatchParseError::SectionWithoutPatch { .. }));
 }
 
+/// S3.6: a `GIT binary patch` body Git's `parse_binary` calls corrupt is refused: a hunk with no
+/// empty line to end it (at the end of the input, before the next section, or before the next
+/// `literal` line), a hunk with no data line, and a base85 group above 0xffffffff in either hunk.
+/// 0.9.0 read each as a binary change. What Git skips after the two hunks (a third hunk, more
+/// empty lines, a stray data line, even one that would not decode) is read, as Git reads it.
+/// Each body is checked against a real `git apply`. Deflate corruption is a stated limit
+/// (`a_deflate_corruption_is_a_stated_limit`).
+#[test]
+fn row_git_binary_patch_corrupt_bodies() {
+    let r = rig("git-binary-corrupt");
+    let empty = r.ids[3].clone();
+    let head = format!("diff --git a/e b/e\nindex {empty}..{empty} 100644\nGIT binary patch\n");
+    let hunk = "literal 0\nHcmV?d00001\n";
+    let next = "diff --git a/x b/x\nindex @OLD@..@NEW@ 100644\nBinary files a/x and b/x differ\n";
+    for body in [
+        hunk.to_owned(),
+        format!("{hunk}{next}"),
+        format!("{hunk}{hunk}\n"),
+        "literal 0\n\n".to_owned(),
+        format!("{hunk}\nliteral 0\n\n"),
+        "literal 0\nD~~~~~\n\n".to_owned(),
+        "literal 0\nD|NsC1\n\n".to_owned(),
+        format!("{hunk}\nliteral 0\nD~~~~~\n\n"),
+        format!("{hunk}\n{hunk}"),
+    ] {
+        let s = see(&r, &format!("{head}{body}"));
+        assert!(s.reading.is_none(), "Git reads {body:?}");
+        s.git_writes_nothing();
+        s.refused(|e| matches!(e, PatchParseError::UnsupportedFormat { .. }));
+    }
+    for body in [
+        format!("{hunk}\n"),
+        format!("{hunk}\n{hunk}\n"),
+        format!("{hunk}\n{hunk}\n{hunk}\n"),
+        format!("{hunk}\n\n{hunk}\n"),
+        format!("{hunk}\n\n"),
+        format!("{hunk}\nHcmV?d00001\n"),
+        format!("{hunk}\n\nliteral 0\nD~~~~~\n\n"),
+    ] {
+        let s = see(&r, &format!("{head}{body}"));
+        assert_eq!(s.git_tree()["e"], file("", false), "{body:?}");
+        assert_eq!(
+            s.status(),
+            ("e".into(), FileStatus::BinaryChanged),
+            "{body:?}"
+        );
+    }
+}
+
+/// S3.6.c: corruption inside the deflate stream is not detected (the patch crate depends on the
+/// core crate alone); `SECURITY.md` states it as a limit, and this test holds the sentence there.
+#[test]
+fn a_deflate_corruption_is_a_stated_limit() {
+    let security = include_str!("../../../SECURITY.md");
+    assert!(
+        security.contains("Deflate corruption is not detected: DDF does not\n  inflate the data"),
+        "SECURITY.md no longer states the deflate limit"
+    );
+}
+
 #[test]
 fn row_files_differ() {
     let r = rig("files-differ");
