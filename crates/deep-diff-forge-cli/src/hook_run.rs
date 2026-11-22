@@ -3641,13 +3641,17 @@ const SAID_KEPT_CHARS: usize = 100;
 /// of the hooks, HR6-M-2). Then the names were kept and what the judge says beside its rules
 /// was not: a commit held for a note, or failed by an expired waiver, kept no reason at all
 /// (seventh, HR7-L-6).
+///
+/// A `:` in a name is kept: the line is read up to its second `:` and the rest is the reason,
+/// so only `,`, `;` and `|` separate. A built-in rule of forge-warden, `builtin:<name>`, was
+/// named `builtin_<name>` at the later stops, a rule the judge does not have (S3.21.d).
 fn kept_reason(rules: &[hook::RuleOutcome], said: &[String], failed: bool) -> String {
     use std::fmt::Write as _;
     let plain = |text: &str, most: usize| -> String {
         text.chars()
             .take(most)
             .map(|c| {
-                if c.is_control() || ",;:|".contains(c) {
+                if c.is_control() || ",;|".contains(c) {
                     '_'
                 } else {
                     c
@@ -9579,6 +9583,56 @@ mod tests {
             kept_reason(&rules(1), &["a\tb\u{1b}c|d\n".to_owned()], true),
             "r0|a b c/d"
         );
+    }
+
+    /// S3.21.d: forge-warden names a built-in rule `builtin:<name>`. Its name is what a later
+    /// stop of the session says the commit failed or is held for, read back from the line
+    /// of the judged file: the `:` was kept as `_`, a rule the judge does not have.
+    #[test]
+    fn a_builtin_rule_keeps_its_name_at_a_later_stop() {
+        let rule = |id: &str, held: bool| hook::RuleOutcome {
+            id: id.to_owned(),
+            why: "w".to_owned(),
+            held,
+            violations: Vec::new(),
+        };
+        let id = "0123456789abcdef0123456789abcdef01234567";
+        let both = [
+            rule("builtin:no-secrets", false),
+            rule("builtin:quiet", true),
+        ];
+        for (line, failed) in [
+            (format!("{id}:f:{}", kept_reason(&both, &[], true)), true),
+            (
+                format!("{id}:h:{}", kept_reason(&both[1..], &[], false)),
+                false,
+            ),
+        ] {
+            assert!(is_judged_entry(&line), "{line}");
+            let kept = match answer(&line) {
+                Some((_, Answer::Fail(kept))) if failed => kept,
+                Some((_, Answer::Hold(kept))) if !failed => kept,
+                other => panic!("{line} read as {other:?}"),
+            };
+            let names: Vec<(String, bool)> = reason_kept(kept, !failed)
+                .0
+                .into_iter()
+                .map(|rule| (rule.id, rule.held))
+                .collect();
+            let expected: &[(&str, bool)] = if failed {
+                &[("builtin:no-secrets", false), ("builtin:quiet", true)]
+            } else {
+                &[("builtin:quiet", true)]
+            };
+            let expected: Vec<(String, bool)> = expected
+                .iter()
+                .map(|(name, held)| ((*name).to_owned(), *held))
+                .collect();
+            assert_eq!(
+                names, expected,
+                "the rule names a later stop reads back from the line {line}"
+            );
+        }
     }
 
     /// Mutation run on `07df120`: what says the things a stop does not judge had mutants no
