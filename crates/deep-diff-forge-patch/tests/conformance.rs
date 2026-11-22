@@ -1306,6 +1306,277 @@ fn git_written_presentations_git_apply_refuses_whole() {
     assert_eq!(files[0].status, FileStatus::BinaryChanged);
 }
 
+/// One measured value of a Git setting (`SECURITY.md`, "Git settings that change what
+/// `git apply` writes"): the key its row names, the `-c` pairs and options it gives
+/// `git apply`, the tree and the patch it is measured on, whether the index must hold the tree
+/// first (`--3way` applies to the index too), and whether that row says this value writes the
+/// reviewed tree or nothing.
+struct Setting {
+    key: &'static str,
+    config: &'static [&'static str],
+    flags: &'static [&'static str],
+    tree: fn() -> Tree,
+    patch: &'static str,
+    staged: bool,
+    keeps: bool,
+}
+
+impl Setting {
+    /// A value given as `-c` pairs.
+    const fn config(key: &'static str, config: &'static [&'static str], keeps: bool) -> Self {
+        Self {
+            key,
+            config,
+            flags: &[],
+            tree: before,
+            patch: EDIT_X,
+            staged: false,
+            keeps,
+        }
+    }
+}
+
+/// `before()` with `path` holding `entry`.
+fn with(path: &str, entry: support::Entry) -> Tree {
+    let mut tree = before();
+    tree.insert(path.to_owned(), entry);
+    tree
+}
+
+fn x_holds_dx() -> Tree {
+    with("x", regular(b"dx\n"))
+}
+
+fn sub_holds_x() -> Tree {
+    with("sub/x", regular(b"a\n"))
+}
+
+fn x_differs() -> Tree {
+    with("x", regular(b"z\n"))
+}
+
+fn x_executable() -> Tree {
+    with("x", file("a\n", true))
+}
+
+const EDIT_X: &str = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n";
+const TRAILING_SPACE: &str = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b \n";
+
+/// The values measured, under the keys of `SETTING_KEYS`.
+const SETTINGS: &[Setting] = &[
+    Setting {
+        patch: TRAILING_SPACE,
+        ..Setting::config("apply.whitespace", &["apply.whitespace=fix"], false)
+    },
+    Setting {
+        patch: TRAILING_SPACE,
+        ..Setting::config("apply.whitespace", &["apply.whitespace=strip"], false)
+    },
+    Setting {
+        patch: TRAILING_SPACE,
+        ..Setting::config("apply.whitespace", &["apply.whitespace=nowarn"], true)
+    },
+    Setting {
+        patch: TRAILING_SPACE,
+        ..Setting::config("apply.whitespace", &["apply.whitespace=error"], true)
+    },
+    Setting {
+        patch: TRAILING_SPACE,
+        ..Setting::config("apply.whitespace", &["apply.whitespace=error-all"], true)
+    },
+    Setting::config("core.autocrlf", &["core.autocrlf=true"], false),
+    Setting::config("core.autocrlf", &["core.autocrlf=input"], true),
+    Setting {
+        flags: &["-p2"],
+        tree: x_holds_dx,
+        patch: "diff --git a/d/x b/d/x\n--- a/d/x\n+++ b/d/x\n@@ -1 +1 @@\n-dx\n+dy\n",
+        ..Setting::config("`-p", &[], false)
+    },
+    Setting {
+        flags: &["--directory=sub"],
+        tree: sub_holds_x,
+        ..Setting::config("--directory", &[], false)
+    },
+    Setting {
+        flags: &["--3way"],
+        tree: x_differs,
+        patch: "diff --git a/x b/x\nindex @OLD@..@NEW@ 100644\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+stored\n",
+        staged: true,
+        ..Setting::config("--3way", &[], false)
+    },
+    Setting {
+        tree: x_executable,
+        ..Setting::config("core.fileMode", &["core.fileMode=false"], false)
+    },
+];
+
+/// The settings the table holds, one row each; the last is not measured here (it needs a file
+/// system that folds case).
+const SETTING_KEYS: [&str; 7] = [
+    "apply.whitespace",
+    "core.autocrlf",
+    "`-p",
+    "--directory",
+    "--3way",
+    "core.fileMode",
+    "case-insensitive",
+];
+
+/// The rows of `SECURITY.md`'s settings table: (setting cell, state cell).
+fn settings_rows() -> Vec<(String, String)> {
+    let security = include_str!("../../../SECURITY.md");
+    let (_, section) = security
+        .split_once("\n### Git settings that change what `git apply` writes\n")
+        .expect("SECURITY.md has no settings table");
+    let section = section.split("\n#").next().unwrap_or_default();
+    section
+        .lines()
+        .filter(|line| line.starts_with("| ") && !line.starts_with("| ---"))
+        .skip(1)
+        .map(|line| {
+            let cells: Vec<&str> = line.trim_matches('|').split(" | ").map(str::trim).collect();
+            assert!(cells.len() == 3, "a settings row has three cells: {line}");
+            (cells[0].to_owned(), cells[1].to_owned())
+        })
+        .collect()
+}
+
+/// The work tree of `repo` without `.git`, as `support` reads a tree of regular files.
+fn work_tree(repo: &Repo) -> Tree {
+    let mut tree = Tree::new();
+    let mut dirs = vec![repo.root()];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.strip_prefix(repo.root()).unwrap().to_string_lossy();
+            let meta = std::fs::symlink_metadata(&path).unwrap();
+            if name == ".git" {
+                continue;
+            }
+            if meta.is_dir() {
+                dirs.push(path.clone());
+                continue;
+            }
+            let mode = std::os::unix::fs::PermissionsExt::mode(&meta.permissions());
+            let entry = support::Entry {
+                executable: mode & 0o100 != 0,
+                symlink: meta.file_type().is_symlink(),
+                content: Some(std::fs::read(&path).unwrap()),
+            };
+            tree.insert(name.into_owned(), entry);
+        }
+    }
+    tree
+}
+
+/// A real `git apply` of `patch` on `tree` with `setting`'s configuration and options (none
+/// for Git's default): whether it applied, and the tree it left.
+fn applied(repo: &Repo, tree: &Tree, setting: Option<&Setting>, patch: &str) -> (bool, Tree) {
+    repo.reset(tree);
+    if setting.is_some_and(|s| s.staged) {
+        assert!(repo.git(&["add", "-A"]).status.success(), "git add -A");
+    }
+    let name = repo.root().join(".git/setting.patch");
+    std::fs::write(&name, patch).unwrap();
+    let mut args: Vec<&str> = Vec::new();
+    for pair in setting.map_or(&[][..], |s| s.config) {
+        args.extend(["-c", pair]);
+    }
+    args.push("apply");
+    args.extend(setting.map_or(&[][..], |s| s.flags));
+    args.push(name.to_str().unwrap());
+    let ok = repo.git(&args).status.success();
+    (ok, work_tree(repo))
+}
+
+/// `SECURITY.md`'s table of Git settings is held by real `git apply` runs (S3.7). Each value of
+/// `SETTINGS` is applied with Git's default and with the value, to a tree DDF's review fits: the
+/// default writes the reviewed tree or nothing (the promise of `CONFORMANCE.md`), and a value
+/// that leaves a tree other than the default's, and other than the tree before (a refusal writes
+/// nothing and keeps the promise), changes the write. Such a setting must have a row, and the
+/// row must be `declared`; a value its row says keeps the promise must not change the write; a
+/// `declared` row that says it is measured needs a measured value that changes the write, and a
+/// `tested` row needs measured values, none of which changes it. The table has one row for each
+/// of `SETTING_KEYS` and no other, each `tested` or `declared`, and every name its state cell
+/// gives in backticks is a `#[test]` of this file. Values outside `SETTINGS`, and patches or
+/// trees other than the one measured for a value, are not checked.
+#[test]
+fn a_setting_that_changes_the_write_is_declared() {
+    let rows = settings_rows();
+    let lines: Vec<&str> = include_str!("conformance.rs").lines().collect();
+    let tests: std::collections::BTreeSet<&str> = lines
+        .windows(2)
+        .filter(|pair| pair[0].trim() == "#[test]")
+        .filter_map(|pair| pair[1].trim().strip_prefix("fn ")?.split_once('('))
+        .map(|(name, _)| name)
+        .collect();
+    let row = |key: &str| rows.iter().find(|(setting, _)| setting.contains(key));
+    let mut rewriters = std::collections::BTreeSet::new();
+    for (n, setting) in SETTINGS.iter().enumerate() {
+        let repo = rig(&format!("setting-{n}"));
+        let patch = setting
+            .patch
+            .replace("@OLD@", &repo.ids[0])
+            .replace("@NEW@", &repo.ids[1]);
+        let tree = (setting.tree)();
+        let files = parse_decoded(&decode(patch.as_bytes()), ParseOptions::default())
+            .unwrap_or_else(|e| panic!("DDF refuses the case of {}: {e}", setting.key));
+        let (ok, default) = applied(&repo, &tree, None, &patch);
+        if ok {
+            let reviewed = reviewed_tree(&tree, &files, &repo.contents).unwrap();
+            assert!(agree(&default, &reviewed), "{patch:?}: {default:?}");
+        } else {
+            assert_eq!(default, tree, "Git refused {patch:?} and wrote part of it");
+        }
+        let (_, set) = applied(&repo, &tree, Some(setting), &patch);
+        let what = format!("{:?} {:?}", setting.config, setting.flags);
+        let changes = set != default && set != tree;
+        let Some((_, state)) = row(setting.key) else {
+            panic!(
+                "SECURITY.md has no row for {}; with {what} git apply writes {set:?} where the default writes {default:?}",
+                setting.key
+            );
+        };
+        if changes {
+            assert!(
+                state.starts_with("declared"),
+                "with {what} git apply writes {set:?} where the default writes {default:?}, but the row of {} says {state:?}",
+                setting.key
+            );
+            rewriters.insert(setting.key);
+        }
+        if setting.keeps {
+            assert!(
+                !changes,
+                "the row of {} says {what} keeps the promise, but git apply writes {set:?} where the default writes {default:?}",
+                setting.key
+            );
+        }
+    }
+    assert_eq!(rows.len(), SETTING_KEYS.len(), "{rows:?}");
+    for key in SETTING_KEYS {
+        let named = rows.iter().filter(|(setting, _)| setting.contains(key));
+        assert_eq!(named.count(), 1, "SECURITY.md has one row for {key}");
+        let (_, state) = row(key).unwrap();
+        if state.starts_with("tested") {
+            let measured = SETTINGS.iter().any(|s| s.key == key);
+            assert!(measured && !rewriters.contains(key), "{key}: {state}");
+        } else {
+            assert!(state.starts_with("declared"), "{key}: {state}");
+            assert!(
+                !state.contains("measured by") || rewriters.contains(key),
+                "the row of {key} says {state:?}, but no value measured here changes the write"
+            );
+        }
+        for name in state.split('`').skip(1).step_by(2) {
+            assert!(
+                tests.contains(name),
+                "the row of {key} names {name}, which is no test of conformance.rs"
+            );
+        }
+    }
+}
+
 /// The table and the tests are held to each other: every row of `CONFORMANCE.md` has a test
 /// named `row_<row>` here, and every such test names a row.
 #[test]
