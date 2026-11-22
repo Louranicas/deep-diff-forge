@@ -441,7 +441,8 @@ fn campaign(s: &Scratch, crash: &str) -> (Output, Vec<String>, String) {
 
 #[test]
 fn campaign_runs_every_listed_target_and_fails_on_one_crash() {
-    let list = run(Command::new("bash").args([&format!("{ROOT}/scripts/fuzz_target.sh"), "--list"]));
+    let list =
+        run(Command::new("bash").args([&format!("{ROOT}/scripts/fuzz_target.sh"), "--list"]));
     let targets: Vec<String> = String::from_utf8_lossy(&list.stdout)
         .lines()
         .map(str::to_owned)
@@ -455,9 +456,15 @@ fn campaign_runs_every_listed_target_and_fails_on_one_crash() {
         .iter()
         .map(|t| format!("{t} -max_total_time=1"))
         .collect();
-    assert_eq!(runs, each, "every listed target once, in order, for the time given");
+    assert_eq!(
+        runs, each,
+        "every listed target once, in order, for the time given"
+    );
     for t in &targets {
-        assert!(receipt.contains(&format!("run: {t} rc=0 ")), "{t}: {receipt}");
+        assert!(
+            receipt.contains(&format!("run: {t} rc=0 ")),
+            "{t}: {receipt}"
+        );
     }
     let commit = run(Command::new("git").args(["-C", ROOT, "rev-parse", "HEAD"]));
     for line in [
@@ -473,17 +480,26 @@ fn campaign_runs_every_listed_target_and_fails_on_one_crash() {
     let crash = &targets[targets.len() / 2];
     let s = scratch("campaign-red");
     let (out, runs, receipt) = campaign(&s, crash);
-    assert_eq!(out.status.code(), Some(77), "the crash is the campaign's status: {out:?}");
+    assert_eq!(
+        out.status.code(),
+        Some(77),
+        "the crash is the campaign's status: {out:?}"
+    );
     assert_eq!(runs, each[..=targets.len() / 2], "it stops at the crash");
     assert!(
         String::from_utf8_lossy(&out.stderr).contains(&format!("fuzz target {crash} failed")),
         "{out:?}"
     );
-    assert!(receipt.contains(&format!("result: RED at {crash} (rc 77)")), "{receipt}");
+    assert!(
+        receipt.contains(&format!("result: RED at {crash} (rc 77)")),
+        "{receipt}"
+    );
 
     let justfile = std::fs::read_to_string(format!("{ROOT}/justfile")).unwrap();
     assert!(
-        justfile.contains("[group(\"release\")]\nfuzz-campaign seconds=\"300\":\n    scripts/campaign_local.sh "),
+        justfile.contains(
+            "[group(\"release\")]\nfuzz-campaign seconds=\"300\":\n    scripts/campaign_local.sh "
+        ),
         "the campaign is a release recipe"
     );
 }
