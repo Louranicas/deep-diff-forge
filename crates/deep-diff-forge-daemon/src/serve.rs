@@ -257,8 +257,8 @@ impl BoundListener {
 /// service).
 pub const MAX_REQUEST_BYTES: usize = 80 * 1024 * 1024;
 
-/// Maximum bytes of one response line, newline excluded: the server never sends more (see
-/// [`bounded_response`]) and the client helper never accepts more.
+/// Maximum bytes of one response line, its newline included, as for a request: the server never
+/// sends more (see [`bounded_response`]) and the client helper never accepts more.
 const MAX_RESPONSE_BYTES: usize = MAX_REQUEST_BYTES;
 
 /// Maximum number of connection worker threads alive at once.
@@ -541,25 +541,28 @@ pub fn read_capped_line<R: BufRead>(
 }
 
 /// `response` as it is written ([`json_line_safe`] applied), or a `RESOURCE_EXHAUSTED` error for
-/// `id` when that is longer than `cap`; when that error is over the cap too, it drops the id if
-/// that makes it shorter (an id that alone would put it over).
+/// `id` when that and its newline are longer than `cap`; when that error is over the cap too, it
+/// drops the id if that makes it shorter (an id that alone would put it over). Before, the newline
+/// was not counted, so an answer of exactly `cap` bytes went out one byte over the cap every
+/// client holds.
 /// Before, the server sent any size and the client refused lines over the cap, so a large
 /// `diff.compute` succeeded on the server and failed at the client with no error a caller could
 /// act on. The size is measured after `json_line_safe`, which writes each line separator in six
 /// bytes rather than three: measured before it, a line could pass the check and be sent at twice
 /// the cap (bug hunt 2026-11-01).
 fn bounded_response(id: &Value, response: String, cap: usize) -> String {
+    // Below the cap, so that the line with its newline is at most the cap.
     let response = line_safe_owned(response);
-    if response.len() <= cap {
+    if response.len() < cap {
         return response;
     }
     let message = format!(
-        "the response is {} bytes, over the {cap}-byte line cap; request less (a smaller patch, or diff.plan)",
-        response.len()
+        "the response is {} bytes with its newline, over the {cap}-byte line cap; request less (a smaller patch, or diff.plan)",
+        response.len() + 1
     );
     let refusal = RpcError::new(RESOURCE_EXHAUSTED, message);
     let answer = line_safe_owned(error_response(id, &refusal));
-    if answer.len() <= cap {
+    if answer.len() < cap {
         return answer;
     }
     let anonymous = error_response(&Value::Null, &refusal);
@@ -2920,12 +2923,13 @@ mod tests {
     // Size caps, error-kind guards, and accept-loop error handling
     // -------------------------------------------------------------------------
 
-    /// A response at the cap is sent as it is; one byte over becomes an error for the same id.
+    /// A response at the cap with its newline is sent as it is; one byte over becomes an error
+    /// for the same id.
     #[test]
     fn the_server_never_sends_a_response_over_the_cap() {
         let id = Value::from(9);
         let response = success_response(&id, Value::from("x".repeat(100)));
-        let cap = response.len();
+        let cap = response.len() + 1;
         assert_eq!(bounded_response(&id, response.clone(), cap), response);
         let refused: Value =
             serde_json::from_str(&bounded_response(&id, response.clone(), cap - 1)).unwrap();
@@ -2946,8 +2950,8 @@ mod tests {
     fn the_cap_holds_after_line_separators_are_escaped() {
         let id = Value::from(9);
         let response = success_response(&id, Value::from("\u{2028}".repeat(100)));
-        let written = json_line_safe(&response).len();
-        assert_eq!(written, response.len() + 300);
+        let written = json_line_safe(&response).len() + 1;
+        assert_eq!(written, response.len() + 301);
         assert_eq!(
             bounded_response(&id, response.clone(), written),
             json_line_safe(&response)
@@ -2961,7 +2965,7 @@ mod tests {
         // An id of line separators larger than the cap: the refusal carries a null id instead.
         let huge = Value::from("\u{2028}".repeat(200));
         let answer = bounded_response(&huge, success_response(&huge, Value::Null), 400);
-        assert!(answer.len() <= 400, "{}", answer.len());
+        assert!(answer.len() < 400, "{}", answer.len());
         let refused: Value = serde_json::from_str(&answer).unwrap();
         assert_eq!(
             (&refused["id"], &refused["error"]["code"]),

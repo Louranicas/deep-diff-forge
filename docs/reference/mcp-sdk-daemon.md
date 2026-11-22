@@ -110,9 +110,7 @@ server on an owner-private Unix domain socket.
   `MAX_REQUEST_BYTES`) counting its newline. The daemon and `deep-diff-forge rpc` refuse a
   longer request line as soon as its first byte over the cap is read. The Rust client
   (`deep_diff_forge_daemon::request`, which the Rust SDK's `Client` wraps) and both Python clients
-  refuse to send a longer request and refuse a longer answer line. One exception remains: the
-  daemon's own answer bound does not count the newline, so an answer of exactly 80 MiB before
-  its newline is sent and the clients refuse it as one byte over.
+  refuse to send a longer request and refuse a longer answer line.
 - **No repository unless allowed.** `review.change` reads Git only in a repository whose
   canonical path and Git top level are both at or under a root named with
   `daemon start --allow-repo PATH` (also `rpc` and `mcp`). Without one it reads nothing.
