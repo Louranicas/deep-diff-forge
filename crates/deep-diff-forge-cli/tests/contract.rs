@@ -1226,3 +1226,94 @@ fn relative_links(line: &str) -> Vec<&str> {
     });
     found
 }
+
+/// No tracked file holds a link in the `obsidian` URI scheme (the scheme name followed by
+/// `://`), the scheme that opens the owner's private Obsidian vault, which no reader of the
+/// repository can follow (S3.17b.a, N72). Every file `git ls-files` lists is read as bytes from
+/// the working tree, so an edited tracked file is read as edited; an untracked file is not read,
+/// and a symbolic link is read as its target's name. Any line holding the scheme fails the test,
+/// named by file and line. The test says nothing about absolute paths of the owner's machine.
+/// Where the crate is not in its Git checkout (an unpacked or vendored crate: no `.git` beside
+/// `crates/deep-diff-forge-cli` two directories up), or no `git` program exists, there is no list
+/// of tracked files: the test says so on stderr and passes. In the checkout it fails unless
+/// `git ls-files` succeeds and lists this test's own file, so it cannot pass on an empty list.
+#[test]
+fn no_tracked_file_links_the_private_vault() {
+    // Assembled from two parts, so that this file does not hold what it forbids.
+    let scheme = ["obsid", "ian://"].concat();
+    let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
+    let own = "crates/deep-diff-forge-cli/tests/contract.rs";
+    if !root.join(".git").exists() || !root.join(own).is_file() {
+        eprintln!(
+            "{} is not this crate's Git checkout: no tracked files to read",
+            root.display()
+        );
+        return;
+    }
+    let listing = match Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["ls-files", "-z"])
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .stdin(Stdio::null())
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("no git program: no tracked files to read");
+            return;
+        }
+        Err(error) => panic!("git ls-files: {error}"),
+    };
+    assert!(
+        listing.status.success(),
+        "git ls-files: {}",
+        String::from_utf8_lossy(&listing.stderr)
+    );
+    let names: Vec<String> = listing
+        .stdout
+        .split(|&byte| byte == 0)
+        .filter(|name| !name.is_empty())
+        .map(|name| String::from_utf8_lossy(name).into_owned())
+        .collect();
+    assert!(
+        names.iter().any(|name| name == own),
+        "git ls-files lists {} files but not {own}",
+        names.len()
+    );
+    let mut found = Vec::new();
+    for name in &names {
+        let path = root.join(name);
+        let bytes = match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_symlink() => std::fs::read_link(&path)
+                .unwrap()
+                .into_os_string()
+                .into_encoded_bytes(),
+            Ok(meta) if meta.is_file() => std::fs::read(&path).unwrap(),
+            // Deleted in the working tree, or a submodule's directory.
+            _ => continue,
+        };
+        for (n, line) in bytes.split(|&byte| byte == b'\n').enumerate() {
+            if line
+                .windows(scheme.len())
+                .any(|window| window == scheme.as_bytes())
+            {
+                found.push(format!("{name}:{}", n + 1));
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "lines of tracked files that link the private vault ({scheme}): {}: {}{}",
+        found.len(),
+        found
+            .iter()
+            .take(40)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", "),
+        if found.len() > 40 { ", ..." } else { "" }
+    );
+}
