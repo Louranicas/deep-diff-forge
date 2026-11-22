@@ -42,14 +42,33 @@ git_ -C "$d/repo" add warden.toml && git_ -C "$d/repo" commit --quiet -m policy
 if stop s1 false "$fw" && expect allow "HOLD" UNJUDGED "could not be read" "does not read"; then pass "$id"
 else fail "$id" "$why"; fi
 
-id=fw-knows-every-label
-mkdir -p "$scratch/$id"
+# The labels `schema signals` lists that this forge-warden does not know (its lint of a policy
+# forbidding them all names them) are allowed; the contract is that an unknown label holds: a
+# change that raises one (stub_added, from todo!()) holds with the note unknown_signal under a
+# policy with no other reason to hold, where a clean change passes (when stub_added is known, both
+# pass).
+id=fw-unknown-labels-hold
+row "$id" '{}'
 { printf 'schema = "forge-warden.policy.v1"\n\n[[rule]]\nid = "every-label"\nwhy = "each label must be known"\n'
   printf 'kind = "forbid_signal"\nseverity = "hold"\nsignals = [%s]\n' "$("$ddf" schema signals |
     "$py" -P -E -c 'import json, sys; print(", ".join(json.dumps(s["label"]) for s in json.load(sys.stdin)["signals"]))')"
-} >"$scratch/$id/labels.toml"
-if "$fw" lint "$scratch/$id/labels.toml" >"$scratch/$id/lint.out" 2>&1; then pass "$id"
-else fail "$id" "$(head -c 400 "$scratch/$id/lint.out")"; fi
+} >"$d/labels.toml"
+"$fw" lint "$d/labels.toml" >"$d/lint.out" 2>&1
+unknown="$(grep -o 'unknown signal \\\?"[a-z_]*' "$d/lint.out" | grep -o '[a-z_]*$' | sort -u | tr '\n' ' ')"
+printf 'schema = "forge-warden.policy.v1"\n\n[[rule]]\nid = "no-secrets"\nwhy = "a committed credential is compromised"\nkind = "forbid_signal"\nseverity = "fail"\nsignals = ["secret_like"]\n\n[producer]\nsha256 = ["%s"]\n' "$(sum "$ddf")" >"$d/plain.toml"
+declare -A said_of
+for change in clean stub; do
+  [ "$change" = clean ] && body='fn c() {}' || body='fn c() { todo!() }'
+  printf 'fn a() {}\nfn b() {}\n%s\n' "$body" >"$d/repo/a.rs"
+  git_ -C "$d/repo" commit --quiet -am "$change"
+  (cd "$d" && env -i PATH="$PATH" TMPDIR="$d" bash "$maker" HEAD~1 HEAD "$d/repo" >"$d/$change.patch")
+  (cd "$d" && env -i PATH="$PATH" HOME="$d" "$fw" check --policy "$d/plain.toml" --patch "$d/$change.patch" \
+    --ranker "$ddf" --json >"$d/fw.out" 2>"$d/fw.err"; echo $? >"$d/fw.rc")
+  said_of[$change]="$(cat "$d/fw.rc") $(notes "$d")"
+done
+if [[ " $unknown" == *" stub_added "* ]]; then want="8 $fw_schema hold unknown_signal"; else want="0 $fw_schema pass"; fi
+if [ "${said_of[clean]}" = "0 $fw_schema pass" ] && [ "${said_of[stub]}" = "$want" ]; then pass "$id" "unknown here: ${unknown:-none}"
+else fail "$id" "clean: ${said_of[clean]}; stub: ${said_of[stub]} (wanted $want); unknown here: ${unknown:-none}"; fi
 
 id=fw-reads-the-rank
 mkdir -p "$scratch/$id"

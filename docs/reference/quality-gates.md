@@ -66,8 +66,8 @@ Across the tree:
   bytes of forge-warden's recorded `make_patch.sh`. A known-bad control row (a FAIL expected to
   pass the stop) must come out red. With `FW_BIN=<path>` the rows that need a real forge-warden run
   too: the binary is accepted by its SHA-256 in `scripts/contract-matrix/binaries.tsv`, never by
-  its version, and must judge a stop the hook reads, know every label `schema signals` lists,
-  read this build's rank document, and refuse an empty patch as ruled (no verdict and "the ranker
+  its version, and must judge a stop the hook reads, hold a change that raises a label of
+  `schema signals` it does not know (the row names those labels), read this build's rank document, and refuse an empty patch as ruled (no verdict and "the ranker
   exited 4" with this build as ranker; a holding verdict with the 0.9.0 ranker,
   `DDF_RANKER_090`). Without `FW_BIN` those rows are skipped by name; with `--require-real` they
   are red. The gate runs the stand-in rows always and the real ones when `FW_BIN` is set.

@@ -12,8 +12,8 @@
 #
 # Real rows (only with FW_BIN=<path to a forge-warden binary>): the binary is named by path and
 # accepted only if its SHA-256 is a `forge-warden` row of scripts/contract-matrix/binaries.tsv,
-# whose schema it must print; never by version. Rows: the stop hook reads its verdict; every
-# label `deep-diff-forge schema signals` lists is in its vocabulary; it reads this build's
+# whose schema it must print; never by version. Rows: the stop hook reads its verdict; a label of
+# `deep-diff-forge schema signals` it does not know holds (the unknown ones are named); it reads this build's
 # canonical rank document (with scorer_sha256) without a rank refusal; an empty patch through
 # its authority check with this build as ranker ("the ranker exited 4", no verdict) and with the
 # 0.9.0 ranker (DDF_RANKER_090=<path>, a `ranker-0.9.0` row of binaries.tsv: a holding verdict).
@@ -101,7 +101,7 @@ judged() { if stop s1 false && expect "$@"; then pass "$id"; else fail "$id" "$w
 . "$here/contract-matrix/stand_in_rows.sh"
 
 # --- real rows ---
-real=(fw-recorded fw-judges-the-stop fw-knows-every-label fw-reads-the-rank
+real=(fw-recorded fw-judges-the-stop fw-unknown-labels-hold fw-reads-the-rank
   fw-empty-patch-this-ranker fw-empty-patch-ranker-0.9.0)
 # recorded <role> <path>: the schema binaries.tsv records for the binary's SHA-256 in <role>.
 recorded() { awk -F'\t' -v r="$1" -v s="$(sum "$2")" '$1 == r && $2 == s { print $3; exit }' "$here/contract-matrix/binaries.tsv"; }
