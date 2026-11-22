@@ -10973,4 +10973,23 @@ mod tests {
         drop(made);
         assert!(!mine.exists());
     }
+
+    /// Mutation run on the 0.9.0 code (S3.34.b), `trees_from`: a state's member `trees` with
+    /// [`BLOCKED_CAP`] trees is read, and one with more is not (`>=` and `==` for `>` moved
+    /// the bound by one).
+    #[test]
+    fn a_state_reads_as_many_trees_as_its_bound_and_no_more() {
+        let trees = |count: usize| -> Value {
+            Value::Object(
+                (0..count)
+                    .map(|n| (format!("{n:016x}"), Value::from("/r")))
+                    .collect(),
+            )
+        };
+        assert_eq!(
+            trees_from(&trees(BLOCKED_CAP)).map(|read| read.len()),
+            Some(BLOCKED_CAP)
+        );
+        assert_eq!(trees_from(&trees(BLOCKED_CAP + 1)), None);
+    }
 }
