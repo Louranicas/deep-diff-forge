@@ -143,3 +143,10 @@ path = "fuzz_targets/verdict_reader.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "journal_recover"
+path = "fuzz_targets/journal_recover.rs"
+test = false
+doc = false
+bench = false

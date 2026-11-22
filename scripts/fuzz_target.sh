@@ -61,7 +61,11 @@ if [ -z "$root" ]; then
 fi
 mkdir -p -- "$root"
 corpus="$(mktemp -d "$root/ddf-$target-corpus.XXXXXX")"
-trap 'rm -rf "$corpus"' EXIT
+# A target that writes files (journal_recover) does so in a private scratch directory beside the
+# corpus, never in it (libFuzzer reads the corpus recursively); it is removed afterwards too.
+scratch="$(mktemp -d "$root/ddf-$target-scratch.XXXXXX")"
+export DDF_FUZZ_SCRATCH="$scratch"
+trap 'rm -rf "$corpus" "$scratch"' EXIT
 case "$target" in
   patch_parser | review_json)
     # Every committed patch, the fuzz regressions and Git oracle findings included. One `cp` per
@@ -72,6 +76,15 @@ case "$target" in
   council_report)
     cp review-policy/fuzz-seeds/council_report.json "$corpus/seed.json"
     max_len=4096
+    ;;
+  journal_recover)
+    # Damages to the journal of the run the target prepares (see its source): none, a record
+    # torn after a cut, an emptied checkpoint, a temporary file and a stray line.
+    printf '\000\377\377' >"$corpus/whole"
+    printf '\002\000\100{"schema":"deep-diff-forge.decision.v1"' >"$corpus/torn"
+    printf '\001\377\377' >"$corpus/empty-checkpoint"
+    printf '\004\377\377{}\n' >"$corpus/temporary-and-line"
+    max_len=65536
     ;;
   verdict_reader)
     # forge-warden's own verdict documents: v2 (its 0.2.0) and v3 (its main branch).
