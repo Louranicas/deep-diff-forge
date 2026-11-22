@@ -355,6 +355,14 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   run on the artefact.
 
 
+- **Fuzzing** (S3.9, S3.32). Three targets for readers of hostile bytes this release added or
+  changed: `verdict_reader`, `journal_recover` and `git_raw_stream` (18 targets in all; each ran
+  five minutes clean). `scripts/campaign_local.sh` (`just fuzz-campaign`) runs every target for a
+  fixed time, stops red at the first crash and writes a receipt; it is a release step.
+  `scripts/fuzz_target.sh` refuses to run without `DDF_FUZZ_CORPUS_ROOT` (or CI's `RUNNER_TEMP`)
+  instead of falling back to `/tmp`.
+
+
 ### Fixed
 
 - **A text file Git was told to show as binary is read as text** (S3.20,

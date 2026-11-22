@@ -1012,6 +1012,26 @@ CI verifies the committed SBOM against a fresh dependency-graph regeneration.
 The release workflow repeats the supply-chain gate, regenerates the release
 SBOM, and attests it before irreversible publication.
 
+### Readers of hostile bytes and their fuzz targets
+
+Eighteen fuzz targets cover the readers of bytes a patch, a peer or a judge controls; release
+0.10.0 added three for readers it added or changed: `verdict_reader` (forge-warden verdict
+documents v2 and v3 as the stop hook judges them), `journal_recover` (the decision journal's
+reading and torn-record repair) and `git_raw_stream` (Git's `--raw -z --patch` stream). Two
+readers have no target of their own, on purpose:
+
+- The tuicr session reader (`review tuicr import`, `open_session` in
+  `crates/deep-diff-forge-review/src/tuicr.rs`): the session is a file the reviewer's own tuicr
+  writes on the reviewer's machine and is read only from a path the reviewer names, so it is the
+  reviewer's input, not a patch's; the file names a reviewed repository can put in it are refused
+  when they leave the repository, the file is read through a 32 MiB cap, and the target
+  `journal_recover` runs the whole import, session reading included, on a fixed session.
+- The learning store reader (`load_receipts` in `crates/deep-diff-forge-learning/src/store.rs`):
+  it reads only receipts this program appended to its own state directory (a regular file of
+  mode 0600, refused when it is a link), not bytes from a patch or a peer; whoever can write that
+  file already runs as the user, and the reader still caps the file at 64 MiB, a record at 1 MiB
+  and the count at 100,000, and refuses a corrupt line instead of skipping it.
+
 ## Residual risks and non-goals
 
 Known limits, first listed at 0.3.0 (production-readiness review, 2026-10-28); each closed item
