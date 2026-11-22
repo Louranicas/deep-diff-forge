@@ -266,16 +266,16 @@ fn a_daemon_at_its_connection_limit_is_not_reported_absent() {
     let control: Vec<_> = (0..2)
         .map(|_| std::os::unix::net::UnixStream::connect(&sock).unwrap())
         .collect();
-    for sub in ["health", "stop"] {
-        let (code, stdout, stderr) = run(&["daemon", sub, "--socket", path]);
-        assert_eq!((code, stdout.as_str()), (6, ""), "{sub}: {stderr}");
-        assert!(
-            stderr.contains("no answer from the daemon at")
-                && stderr.contains("(it may be at its connection limit; retry)"),
-            "{sub}: {stderr}"
-        );
-        assert!(!stderr.contains("no daemon at"), "{sub}: {stderr}");
-    }
+    // Since S3.8.a only `daemon stop` is answered beyond every slot (serve.rs
+    // ten_idle_connections_do_not_delay_a_stop_past_one_second); health is closed unanswered.
+    let (code, stdout, stderr) = run(&["daemon", "health", "--socket", path]);
+    assert_eq!((code, stdout.as_str()), (6, ""), "health: {stderr}");
+    assert!(
+        stderr.contains("no answer from the daemon at")
+            && stderr.contains("(it may be at its connection limit; retry)"),
+        "health: {stderr}"
+    );
+    assert!(!stderr.contains("no daemon at"), "health: {stderr}");
     assert!(daemon.0.try_wait().unwrap().is_none(), "the daemon stopped");
     drop(control);
     // The data slots are still held: `daemon stop` gets in on a control slot.
