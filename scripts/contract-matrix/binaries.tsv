@@ -1,0 +1,4 @@
+# Binaries scripts/contract_matrix.sh accepts, keyed by SHA-256 (never by version: forge-warden
+# 0.2.1 is stamped on builds that write verdict v2 and v3). Tab-separated: role, sha256, schema, what.
+# A forge-warden row is added when a build is recorded with its receipt (S3.33.d).
+ranker-0.9.0	83158afed4915dc2539543dd6cbb6108841f0951c668bfeefc1fc8ef717793cd	deep-diff-forge.rank.v0	deep-diff-forge v0.9.0, the released binary (tag v0.9.0, commit 7fb73f13)
