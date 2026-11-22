@@ -11475,3 +11475,71 @@ fn no_agent_facing_text_offers_an_unseen_substitute() {
         .collect();
     assert!(faults.is_empty(), "{faults:#?}");
 }
+
+/// S3.17a.i: a signal that reads no line a ranking points at (hidden text, an executable bit,
+/// a symbolic link) is named once for its file after a tool call, and not again. The advice
+/// read the rows of evidence only, so it never named these.
+#[test]
+fn advice_names_a_signal_that_has_no_line() {
+    let scratch = Scratch::new("hook-advice-no-line");
+    let root = repository(&scratch);
+    std::fs::write(root.join("run.sh"), "echo hi\n").unwrap();
+    git(&root, &["add", "run.sh"]);
+    git(&root, &["commit", "--quiet", "-m", "script"]);
+    let event = input("PostToolUse", &root, "s1", false);
+    // the right-to-left override is assembled here, never written into this source
+    let hidden = format!(
+        "fn z() {{ let s = \"{}\"; }}\n",
+        char::from_u32(0x202E).unwrap()
+    );
+    std::fs::write(root.join("bidi.rs"), hidden).unwrap();
+    std::fs::set_permissions(
+        root.join("run.sh"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink("a.rs", root.join("link")).unwrap();
+    let (code, stdout, stderr) = hook("post-tool", &[], &event);
+    assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
+    let advice = advice_of(&stdout);
+    for (label, path) in [
+        ("hazardous_text", "bidi.rs"),
+        ("executable_bit", "run.sh"),
+        ("symlink_change", "link"),
+    ] {
+        let item = format!("- {label} in \"{path}\" (the file, read as ");
+        assert_eq!(advice.matches(&item).count(), 1, "{item}: {advice}");
+    }
+    assert!(
+        agent_facing_faults(&advice).is_empty(),
+        "{:?}",
+        agent_facing_faults(&advice)
+    );
+    // said once: the next tool call has nothing new to say
+    assert_eq!(hook("post-tool", &[], &event).1, "");
+}
+
+/// S3.17a.i: when the file's released items fill every row a ranking lists (32), a signal
+/// found further on keeps no row; the advice names it for the file. It named rows only, so
+/// `unsafe_added` after 33 process spawns was never told.
+#[test]
+fn advice_names_a_signal_the_row_cap_left_without_a_row() {
+    use std::fmt::Write as _;
+    let scratch = Scratch::new("hook-advice-row-cap");
+    let root = repository(&scratch);
+    let event = input("PostToolUse", &root, "s1", false);
+    let mut text = String::from("fn f(q: *const u8) {\n");
+    for n in 0..33 {
+        let _ = writeln!(text, "    let c{n} = std::process::Command::new(\"true\");");
+    }
+    text.push_str("    let p = unsafe { *q };\n}\n");
+    std::fs::write(root.join("spawns.rs"), text).unwrap();
+    let (code, stdout, stderr) = hook("post-tool", &[], &event);
+    assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
+    let advice = advice_of(&stdout);
+    assert!(
+        advice.contains("- unsafe_added in \"spawns.rs\" (the file, read as "),
+        "the signal the cap left without a row is not told: {advice}"
+    );
+    assert!(!advice.contains("- unsafe_added at "), "{advice}");
+}

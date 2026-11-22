@@ -1660,8 +1660,13 @@ fn subject(work: &Work, deadline: Deadline) -> Subject {
     }
 }
 
-/// Every piece of evidence in `patch`, files in ranking order, each with the key that names it.
+/// Every piece of evidence in `patch`, files in ranking order, each with the key that names it;
+/// before each file's rows, one finding of the file as a whole for each signal that has no row of
+/// evidence: `hazardous_text`, `executable_bit`, `symlink_change` and `diff_suppressed`, which
+/// read no line a ranking points at, and a code signal the cap on a file's rows left without one
+/// (`evidence_truncated`). The advice read the rows only, so it never named these (S3.17a.i).
 fn findings(patch: &[u8]) -> Result<Vec<Finding>, String> {
+    use deep_diff_forge_graph::RiskSignal;
     let review = SealedReview::new(
         patch,
         InputGuards {
@@ -1677,6 +1682,27 @@ fn findings(patch: &[u8]) -> Result<Vec<Finding>, String> {
         let Some(file) = files.iter().find(|f| f.path == ranked.path) else {
             continue;
         };
+        // first, so that the cap on what one advice lists does not cut them after the rows
+        for signal in &ranked.signals {
+            let unrowed = match signal {
+                RiskSignal::HazardousText
+                | RiskSignal::ExecutableBit
+                | RiskSignal::SymlinkChange
+                | RiskSignal::DiffSuppressed => true,
+                RiskSignal::Code(code) => !ranked.evidence.iter().any(|e| e.signal == *code),
+                _ => false,
+            };
+            if unrowed {
+                out.push(Finding {
+                    label: signal.label().to_owned(),
+                    path: ranked.path.clone(),
+                    side: String::new(),
+                    line: 0,
+                    basis: deep_diff_forge_graph::facts(*signal).basis().join(" or "),
+                    key: hook::finding_key(&ranked.path, signal.label(), ""),
+                });
+            }
+        }
         for evidence in &ranked.evidence {
             let line = file
                 .patch_twin

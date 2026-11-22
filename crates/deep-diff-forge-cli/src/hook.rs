@@ -109,6 +109,7 @@ pub(crate) fn parse_input(event: Event, text: &str) -> Result<Input, String> {
 pub(crate) struct Finding {
     pub(crate) label: String,
     pub(crate) path: String,
+    /// Empty for a signal of the file as a whole, which has no row of evidence (`line` is 0).
     pub(crate) side: String,
     pub(crate) line: u32,
     pub(crate) basis: String,
@@ -241,15 +242,26 @@ pub(crate) fn advice(fresh: &[&Finding], range: &str) -> Option<Advice> {
     );
     let mut listed = 0;
     for finding in fresh.iter().take(MAX_FINDINGS) {
-        let item = format!(
-            "- {} at {} line {} ({} side, read as {}). {}\n",
-            finding.label,
-            shown_path(&finding.path),
-            finding.line,
-            finding.side,
-            finding.basis,
-            remedy_line(&finding.label)
-        );
+        // no side: a signal of the file with no row of evidence (S3.17a.i)
+        let item = if finding.side.is_empty() {
+            format!(
+                "- {} in {} (the file, read as {}). {}\n",
+                finding.label,
+                shown_path(&finding.path),
+                finding.basis,
+                remedy_line(&finding.label)
+            )
+        } else {
+            format!(
+                "- {} at {} line {} ({} side, read as {}). {}\n",
+                finding.label,
+                shown_path(&finding.path),
+                finding.line,
+                finding.side,
+                finding.basis,
+                remedy_line(&finding.label)
+            )
+        };
         if text.len() + item.len() > MESSAGE_CAP - 400 {
             break;
         }
