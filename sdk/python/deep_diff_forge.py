@@ -102,7 +102,11 @@ class _Client:
         return self.call("diff.compute", patch=patch, require_files=require_files, require_hunks=require_hunks)
 
     def rank_patch(self, patch, require_files=False, require_hunks=False):
-        """The sealed ``deep-diff-forge.rank.v0`` document for ``patch``: its files by review risk."""
+        """The sealed ``deep-diff-forge.rank.v0`` document for ``patch``: its files by review risk.
+
+        Its ``canonical_json`` member is the document's exact bytes, what ``deep-diff-forge
+        --stdin-patch --rank --json`` prints (newline included): seal or compare those, not a
+        re-serialisation of the dict."""
         return self.call("diff.rank", patch=patch, require_files=require_files, require_hunks=require_hunks)
 
     def verify_findings(self, patch, findings, require_files=False, require_hunks=False):

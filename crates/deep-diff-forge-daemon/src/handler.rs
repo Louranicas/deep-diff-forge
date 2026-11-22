@@ -560,7 +560,7 @@ pub const METHODS: &[MethodSpec] = &[
     method(
         "diff.rank",
         "patch: string, require_files?: boolean, require_hunks?: boolean",
-        "the deep-diff-forge.rank.v0 document `deep-diff-forge --stdin-patch --rank --json` prints for the same patch",
+        "the deep-diff-forge.rank.v0 document `deep-diff-forge --stdin-patch --rank --json` prints for the same patch, with canonical_json: its exact bytes",
         1,
         Work::Request,
     ),
@@ -1112,17 +1112,19 @@ fn str_param(params: &Value, key: &str) -> Result<String, RpcError> {
 /// prints for the same patch, sealed like it. `diff.plan` returns only the bare ranking, which
 /// cannot say which bytes it ranked; MCP's `rank_patch` answered with that unsealed array. The
 /// value is the one renderer's bytes parsed ([`deep_diff_forge_graph::RankDocument`]), so it
-/// cannot differ from what the CLI prints.
+/// cannot differ from what the CLI prints; the additive member `canonical_json` holds those exact
+/// bytes, newline included, for a client that seals or compares bytes (S3.15).
 fn rank_document(review: &deep_diff_forge_patch::SealedReview) -> Value {
     let ranked = rank(review.files());
     let seal = review.seal();
-    parsed(
-        &deep_diff_forge_graph::RankDocument {
-            seal,
-            ranked: &ranked,
-        }
-        .to_json(),
-    )
+    let bytes = deep_diff_forge_graph::RankDocument {
+        seal,
+        ranked: &ranked,
+    }
+    .to_json();
+    let mut document = parsed(&bytes);
+    document["canonical_json"] = Value::String(bytes);
+    document
 }
 
 /// The bare ranking of `diff.plan` and `session.snapshot`: the document's entries, parsed.

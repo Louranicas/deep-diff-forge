@@ -103,7 +103,30 @@ fn rank_bytes_are_one_document_on_every_surface() {
             ranked: &ranked,
         }
         .to_json();
-        let surfaces = [("the one renderer", rendered)];
+        let canonical = |answer: &serde_json::Value| answer.as_str().unwrap_or_default().to_owned();
+        let request =
+            serde_json::json!({"id": 1, "method": "diff.rank", "params": {"patch": patch}});
+        let rpc: serde_json::Value =
+            serde_json::from_str(&run(&["rpc"], &format!("{request}\n"))).unwrap();
+        let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"#;
+        let call = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "rank_patch", "arguments": {"patch": patch}}});
+        let mcp = run(&["mcp"], &format!("{init}\n{call}\n"));
+        let mcp: serde_json::Value = serde_json::from_str(mcp.lines().nth(1).unwrap()).unwrap();
+        let surfaces = [
+            ("the one renderer", rendered),
+            (
+                "the daemon's diff.rank canonical_json",
+                canonical(&daemon("diff.rank", patch, false, false).unwrap()["canonical_json"]),
+            ),
+            (
+                "rpc's diff.rank canonical_json",
+                canonical(&rpc["result"]["canonical_json"]),
+            ),
+            (
+                "MCP rank_patch's text",
+                canonical(&mcp["result"]["content"][0]["text"]),
+            ),
+        ];
         for (surface, bytes) in surfaces {
             assert!(
                 bytes == stdout,
@@ -112,7 +135,26 @@ fn rank_bytes_are_one_document_on_every_surface() {
             compared += 1;
         }
     }
-    assert!(compared >= 5, "{compared}");
+    assert!(compared >= 20, "{compared}");
+}
+
+fn run(args: &[&str], stdin: &str) -> String {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stdin.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "{args:?}");
+    String::from_utf8(out.stdout).unwrap()
 }
 
 /// A list cut short is the same list on both surfaces, and it is the one that keeps what
