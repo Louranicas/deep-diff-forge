@@ -5666,8 +5666,8 @@ fn a_stops_message_is_bounded_and_what_blocks_keeps_its_rule() {
     crowded_stop(&scratch, &root);
 }
 
-/// The second half of [`a_stops_message_is_bounded_and_what_blocks_keeps_its_rule`]: forty
-/// commits that fail at one stop, the session's own the newest (as few as show all three
+/// The second half of [`a_stops_message_is_bounded_and_what_blocks_keeps_its_rule`]:
+/// forty-five commits that fail at one stop, the session's own the newest (as few as show all three
 /// forms: a stop judges what its forty-five seconds allow, and on a loaded host sixty were
 /// not all judged in them). With them, since the sixth independent review of the hooks
 /// (HR6-L-4, "weak tests"): commits the judge holds, commits with no verdict, and things
@@ -5680,7 +5680,9 @@ fn crowded_stop(scratch: &Scratch, root: &Path) {
         .collect();
     std::fs::write(root.join("h.rs"), "// HOLDME\n").unwrap();
     let held = commit_all(root, "for a person");
-    for n in 0..39 {
+    // forty until the remedy under a rule lost its substitute (S3.17a.f): all forty then fit
+    // with their rules or their names, and none was counted
+    for n in 0..44 {
         secret(root, &format!("pulled{n:02}.rs"));
         commit_all(root, "a key from elsewhere");
     }
@@ -5698,7 +5700,7 @@ fn crowded_stop(scratch: &Scratch, root: &Path) {
         .unwrap_or_else(|| panic!("the session's own commit is not named: {reason}"));
     assert!(named < 1_000, "{named}: {reason}");
     // with their rules while there is room, then twenty with the names of their rules, then
-    // a count: every one of the forty is in one of the three
+    // a count: every one of the forty-five is in one of the three
     let with_rules = reason.matches(": FAIL\n- rule no-secrets: ").count();
     assert_eq!(
         reason.matches(": FAIL (no-secrets)\n").count(),
@@ -5711,7 +5713,7 @@ fn crowded_stop(scratch: &Scratch, root: &Path) {
         .and_then(|(_, count)| count.parse().ok())
         .unwrap_or_else(|| panic!("the rest are not counted: {reason}"));
     assert!(with_rules >= 8 && counted > 0, "{with_rules} {counted}");
-    assert_eq!(with_rules + 20 + counted, 40, "{reason}");
+    assert_eq!(with_rules + 20 + counted, 45, "{reason}");
     // what the judge holds, with the name of its rule; the commits with no verdict; and
     // what is beside the verdict: each is in the same message, whole
     assert!(
@@ -5733,7 +5735,7 @@ fn crowded_stop(scratch: &Scratch, root: &Path) {
     // afterwards they stand, as a count, beside the other lines of every stop
     let later = allowed(&stop_from(root, "many", &script)).to_owned();
     assert!(
-        later.contains("40 earlier failures stand: ")
+        later.contains("45 earlier failures stand: ")
             && later.contains(&format!(
                 "1 held by the judge, for a person: Commit {held} (no-secrets).\n"
             ))
