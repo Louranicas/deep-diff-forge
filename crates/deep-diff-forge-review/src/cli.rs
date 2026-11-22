@@ -197,7 +197,8 @@ fn export_tuicr(args: &[String]) -> Result<(String, i32)> {
     )
 }
 /// Parse `import-tuicr <run-dir> --session <path> [--execute]`; dry run by default. Exit 7 when the
-/// planned or appended events include a conflict.
+/// planned or appended events include a conflict; exit 3 when they were recorded but a later
+/// write failed.
 fn import_tuicr(args: &[String]) -> Result<(String, i32)> {
     let usage = || {
         ReviewFailure(
@@ -217,7 +218,17 @@ fn import_tuicr(args: &[String]) -> Result<(String, i32)> {
         }
     }
     let session = session.ok_or_else(usage)?;
-    let result = crate::import_tuicr(Path::new(run), Path::new(session), options)?;
+    let result = match crate::import_tuicr(Path::new(run), Path::new(session), options) {
+        // Not a refusal: the decision is recorded and the same import completes it.
+        Err(incomplete @ crate::TuicrImportError::Incomplete { .. }) => {
+            eprintln!(
+                "error: {}",
+                deep_diff_forge_core::display_safe_bounded(&incomplete.to_string(), 1024)
+            );
+            return Ok((String::new(), exit::COUNCIL_RECORDED_INCOMPLETE));
+        }
+        other => other?,
+    };
     // Names its own schema (`deep-diff-forge.tuicr-import.v1`).
     output(&result, result.conflicts == 0)
 }

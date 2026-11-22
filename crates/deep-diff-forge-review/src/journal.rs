@@ -6,7 +6,8 @@
 //!
 //! The journal is append-only and hash-chained: each event names the hash of the one before it, and
 //! create-new checkpoints record the head after every import, so a rewritten or truncated journal
-//! is refused on the next import. Nothing here writes to tuicr. Session content is untrusted data:
+//! is refused on the next import. A fault after the commit point, the synced append, is healed by
+//! the next executing import ([`reconcile`]). Nothing here writes to tuicr. Session content is untrusted data:
 //! it is size-capped, its ids and paths are validated, and a disposition is recorded only while the
 //! session still shows the revision and bytes the run sealed; otherwise the whole import is refused.
 use crate::storage::{self, INVENTORY_FILE, SNAPSHOT_DIR};
@@ -34,7 +35,8 @@ const JOURNAL_CAP: u64 = 64 * 1024 * 1024;
 const ENTRY_CAP: usize = 100_000;
 const TAG_CAP: usize = 256;
 
-/// Typed refusal of a tuicr import. Every variant is a refusal to append.
+/// Typed failure of a tuicr import. Every variant but [`TuicrImportError::Incomplete`] is a refusal
+/// to append.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum TuicrImportError {
@@ -54,6 +56,15 @@ pub enum TuicrImportError {
     Locked { lock: String },
     /// An export intent marker has no completion record, so DDF authorship is unknown.
     InterruptedExport { pending: String },
+    /// An I/O failure after the commit point: events `first` to `last` are in the journal (unless
+    /// `durable` is false: its sync failed), and `file` was not written. Run the import again.
+    Incomplete {
+        first: u64,
+        last: u64,
+        file: String,
+        reason: String,
+        durable: bool,
+    },
 }
 impl fmt::Display for TuicrImportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -79,11 +90,26 @@ impl fmt::Display for TuicrImportError {
             Self::Journal(reason) => write!(f, "tuicr import refused (journal): {reason}"),
             Self::Locked { lock } => write!(
                 f,
-                "tuicr import refused (locked): {lock} exists; another import is running or was interrupted; inspect the journal, then remove the lock"
+                "tuicr import refused (locked): another running import holds {lock}"
             ),
             Self::InterruptedExport { pending } => write!(
                 f,
                 "tuicr import refused (interrupted export): {pending} has no completion record; finish or inspect the export first"
+            ),
+            Self::Incomplete {
+                first,
+                last,
+                file,
+                reason,
+                durable,
+            } => write!(
+                f,
+                "tuicr import recorded, incomplete: events {first} to {last} {}; {file} could not be written ({reason}); run the same import again to complete it",
+                if *durable {
+                    "are in the journal"
+                } else {
+                    "were appended, but whether they are durable is unknown"
+                }
             ),
         }
     }
@@ -585,13 +611,20 @@ struct FileState {
     /// tuicr content hash of the first journaled positive mark; later positive marks must match it.
     pinned: Option<u64>,
 }
-/// A verified journal and the state it replays to.
+/// A verified journal, the state it replays to, and what [`reconcile`] may repair.
 #[derive(Default)]
 struct Journal {
+    /// Length of the verified lines (the file without `torn`).
     bytes: u64,
     events: Vec<DecisionEvent>,
     comments: BTreeMap<(String, String), CommentState>,
     files: BTreeMap<(String, String), FileState>,
+    /// A torn last record no checkpoint names; empty checkpoints of held events (as 0.8.3 to
+    /// 0.9.0 leave them); leftover temporary checkpoint files; the newest checkpointed sequence.
+    torn: Vec<u8>,
+    empty: Vec<u64>,
+    temporary: Vec<PathBuf>,
+    checkpointed: Option<u64>,
 }
 fn genesis() -> String {
     "0".repeat(64)
@@ -648,6 +681,17 @@ struct Checkpoint {
     seq: u64,
     hash: String,
 }
+fn checkpoint_path(directory: &Path, seq: u64) -> PathBuf {
+    directory
+        .join(CHECKPOINT_DIR)
+        .join(format!("{seq:020}.json"))
+}
+fn checkpoint_bytes(event: &DecisionEvent) -> Result<Vec<u8>> {
+    Ok(serde_json::to_vec_pretty(&Checkpoint {
+        seq: event.seq,
+        hash: event.hash.clone(),
+    })?)
+}
 /// Read and verify the whole journal: exact canonical lines, consecutive `seq`, `prev` chain,
 /// recomputed hashes, this run's id, and every create-new checkpoint still present at its sequence.
 fn load_journal(directory: &Path, run_id: &str) -> Result<Journal> {
@@ -656,12 +700,11 @@ fn load_journal(directory: &Path, run_id: &str) -> Result<Journal> {
     let mut journal = Journal::default();
     if path.exists() {
         // The reader's cap is the journal's own refusal, not the run's or the session's.
-        let bytes = storage::read_bytes(&path, JOURNAL_CAP).map_err(|e| corrupt(e.0))?;
-        journal.bytes = bytes.len() as u64;
+        let mut bytes = storage::read_bytes(&path, JOURNAL_CAP).map_err(|e| corrupt(e.0))?;
+        let lines = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+        journal.torn = bytes.split_off(lines);
+        journal.bytes = lines as u64;
         let text = String::from_utf8(bytes).map_err(|_| corrupt("not UTF-8".into()))?;
-        if !text.is_empty() && !text.ends_with('\n') {
-            return Err(corrupt("the last line is incomplete (truncated)".into()));
-        }
         let mut prev = genesis();
         for (seq, line) in (0u64..).zip(text.lines()) {
             let event: DecisionEvent = serde_json::from_str(line)
@@ -690,20 +733,48 @@ fn load_journal(directory: &Path, run_id: &str) -> Result<Journal> {
             }
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().into_owned();
-            let c: Checkpoint = storage::read_json(&entry.path(), 4096)
-                .map_err(|e| corrupt(format!("checkpoint {name}: {e}")))?;
+            if storage::is_temporary(&name) {
+                journal.temporary.push(entry.path());
+                continue;
+            }
+            // A zero-length file named for an event the journal holds: what 0.8.3 to 0.9.0 leave
+            // when a checkpoint write fails. Any other malformed content stays a refusal.
+            let empty = name
+                .strip_suffix(".json")
+                .filter(|seq| seq.len() == 20 && seq.bytes().all(|b| b.is_ascii_digit()))
+                .and_then(|seq| journal.events.get(seq.parse::<usize>().ok()?))
+                .filter(|_| {
+                    fs::symlink_metadata(entry.path()).is_ok_and(|m| m.is_file() && m.len() == 0)
+                });
+            let c = if let Some(event) = empty {
+                journal.empty.push(event.seq);
+                Checkpoint {
+                    seq: event.seq,
+                    hash: event.hash.clone(),
+                }
+            } else {
+                storage::read_json(&entry.path(), 4096)
+                    .map_err(|e| corrupt(format!("checkpoint {name}: {e}")))?
+            };
             if name != format!("{:020}.json", c.seq) {
                 return Err(corrupt(format!("checkpoint {name} is misnamed")));
             }
             let at = usize::try_from(c.seq)
                 .ok()
                 .and_then(|i| journal.events.get(i));
+            if at.is_none() && !journal.torn.is_empty() {
+                return Err(corrupt(format!(
+                    "the last line is incomplete (truncated), and checkpoint {} names an event at or after it",
+                    c.seq
+                )));
+            }
             if at.is_none_or(|e| e.hash != c.hash) {
                 return Err(corrupt(format!(
                     "checkpoint {} names an event the journal no longer holds (truncated or rewritten)",
                     c.seq
                 )));
             }
+            journal.checkpointed = journal.checkpointed.max(Some(c.seq));
         }
     }
     Ok(journal)
@@ -1059,23 +1130,51 @@ fn plan_files(p: &mut Planner<'_>, x: &Inputs<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Holds `<run>/decisions.lock` (create-new) for the duration of an executing import.
-struct Lock(PathBuf);
+/// An advisory `flock` on `<run>/decisions.lock` for the life of an executing import, taken as the
+/// hooks take theirs: a dead process holds nothing, so its lock file does not block. The file is
+/// removed while locked, so a lock is good only on the inode still at the path.
+struct Lock {
+    _held: nix::fcntl::Flock<fs::File>,
+    path: PathBuf,
+}
 impl Lock {
     fn acquire(directory: &Path) -> Result<Self> {
+        use nix::fcntl::{Flock, FlockArg};
+        use std::os::unix::fs::MetadataExt as _;
         let path = directory.join(LOCK_FILE);
-        match storage::write_new(&path, std::process::id().to_string().as_bytes()) {
-            Ok(()) => Ok(Self(path)),
-            Err(_) if path.exists() => Err(TuicrImportError::Locked {
-                lock: path.display().to_string(),
-            }),
-            Err(e) => Err(e.into()),
+        let locked = || TuicrImportError::Locked {
+            lock: path.display().to_string(),
+        };
+        for _ in 0..8 {
+            let file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o600)
+                .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
+                .open(&path)
+                .map_err(storage::named(&path))?;
+            let held = match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
+                Ok(held) => held,
+                Err((_, nix::errno::Errno::EWOULDBLOCK)) => return Err(locked()),
+                Err((_, errno)) => {
+                    return Err(storage::named(&path)(std::io::Error::from(errno)).into());
+                }
+            };
+            let same = match (held.metadata(), fs::symlink_metadata(&path)) {
+                (Ok(a), Ok(b)) => a.ino() == b.ino() && a.dev() == b.dev(),
+                _ => false,
+            };
+            if same {
+                return Ok(Self { _held: held, path });
+            }
         }
+        Err(locked())
     }
 }
 impl Drop for Lock {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
+        let _ = fs::remove_file(&self.path);
     }
 }
 /// The journal lines for `events`, refused when appending them to the verified journal of
@@ -1097,42 +1196,135 @@ fn encode(verified_len: u64, events: &[DecisionEvent]) -> Result<Vec<u8>> {
     }
     Ok(lines)
 }
-/// Append the [`encode`]d `lines` of `events` to the verified journal of `verified_len` bytes, then
-/// record a checkpoint.
+/// Append the [`encode`]d `lines` of `events` to the verified journal of `verified_len` bytes and
+/// checkpoint the new head. The commit point is the synced append; what can fail first does (the
+/// checkpoint, synced under a temporary name), leaving the journal as it was. A failure after it
+/// is [`TuicrImportError::Incomplete`].
 fn append(
     directory: &Path,
     verified_len: u64,
     lines: &[u8],
     events: &[DecisionEvent],
 ) -> Result<()> {
+    let (Some(first), Some(last)) = (events.first(), events.last()) else {
+        return Ok(());
+    };
+    let refused =
+        |e: ReviewFailure| TuicrImportError::Journal(format!("{e}; nothing was appended"));
+    let checkpoint = checkpoint_path(directory, last.seq);
+    let staged = stage_checkpoint(directory, last).map_err(refused)?;
     let path = directory.join(JOURNAL_FILE);
     let mut file = OpenOptions::new()
         .append(true)
         .create(true)
         .mode(0o600)
-        .open(&path)?;
+        .open(&path)
+        .map_err(|e| refused(storage::named(&path)(e)))?;
     if file.metadata()?.len() != verified_len {
         return Err(TuicrImportError::Journal(
             "the journal changed while this import was planned".into(),
         ));
     }
-    file.write_all(lines)?;
-    file.sync_all()?;
-    fs::File::open(directory)?.sync_all()?;
-    let Some(last) = events.last() else {
-        return Ok(());
+    let incomplete = |file: &Path, reason: String, durable: bool| TuicrImportError::Incomplete {
+        first: first.seq,
+        last: last.seq,
+        file: file.display().to_string(),
+        reason,
+        durable,
     };
+    if let Err(e) = storage::fault("journal-write").and_then(|()| file.write_all(lines)) {
+        // Nothing is recorded once a part written is cut off again, durably.
+        return match file.set_len(verified_len).and_then(|()| file.sync_all()) {
+            Ok(()) => Err(refused(storage::named(&path)(e))),
+            Err(_) => Err(incomplete(&path, e.to_string(), false)),
+        };
+    }
+    storage::fault("journal-sync")
+        .and_then(|()| file.sync_all())
+        .and_then(|()| fs::File::open(directory)?.sync_all())
+        .map_err(|e| incomplete(&path, e.to_string(), false))?;
+    staged
+        .commit()
+        .map_err(|e| incomplete(&checkpoint, e.0, true))
+}
+/// `event`'s checkpoint, written and synced under a temporary name.
+fn stage_checkpoint(
+    directory: &Path,
+    event: &DecisionEvent,
+) -> std::result::Result<storage::Staged, ReviewFailure> {
     let checkpoints = directory.join(CHECKPOINT_DIR);
     if !checkpoints.exists() {
         storage::make_dir(&checkpoints)?;
     }
-    storage::write_json(
-        &checkpoints.join(format!("{:020}.json", last.seq)),
-        &Checkpoint {
-            seq: last.seq,
-            hash: last.hash.clone(),
-        },
-    )?;
+    storage::Staged::new(
+        &checkpoint_path(directory, event.seq),
+        &checkpoint_bytes(event)?,
+    )
+}
+/// Under the lock, after the journal verified, before planning: cut a torn last record no
+/// checkpoint names (keeping its bytes beside the journal), replace empty checkpoints, checkpoint
+/// a head beyond the newest checkpoint and remove temporary files. Each is announced on standard
+/// error in one line; a dry run only announces.
+fn reconcile(directory: &Path, journal: &Journal, execute: bool) -> Result<()> {
+    let announce = |what: String| {
+        let verb = if execute { "repair" } else { "would repair" };
+        eprintln!(
+            "note: tuicr import {verb}: {}",
+            deep_diff_forge_core::display_safe(&what)
+        );
+    };
+    let path = directory.join(JOURNAL_FILE);
+    if !journal.torn.is_empty() {
+        let digest = sha256_hex(&journal.torn);
+        let kept = path.with_extension(format!(
+            "torn-{:020}-{}",
+            journal.events.len(),
+            &digest[..16]
+        ));
+        announce(format!(
+            "cut the torn last record off {}, kept in {}",
+            path.display(),
+            kept.display()
+        ));
+        if execute {
+            if !kept.exists() {
+                storage::write_new(&kept, &journal.torn)?;
+            }
+            OpenOptions::new()
+                .write(true)
+                .custom_flags(nix::libc::O_NOFOLLOW)
+                .open(&path)
+                .and_then(|file| file.set_len(journal.bytes).and_then(|()| file.sync_all()))
+                .map_err(storage::named(&path))?;
+        }
+    }
+    let empty = journal
+        .events
+        .iter()
+        .filter(|e| journal.empty.contains(&e.seq));
+    let head = journal
+        .events
+        .last()
+        .filter(|head| journal.checkpointed.is_none_or(|seq| seq < head.seq));
+    for (event, what) in empty
+        .map(|e| (e, "replace the empty"))
+        .chain(head.map(|e| (e, "write the missing")))
+    {
+        let checkpoint = checkpoint_path(directory, event.seq);
+        announce(format!("{what} checkpoint {}", checkpoint.display()));
+        if execute {
+            if journal.empty.contains(&event.seq) {
+                fs::remove_file(&checkpoint).map_err(storage::named(&checkpoint))?;
+            }
+            stage_checkpoint(directory, event)?.commit()?;
+        }
+    }
+    for temporary in &journal.temporary {
+        announce(format!("remove the temporary file {}", temporary.display()));
+        if execute {
+            fs::remove_file(temporary).map_err(storage::named(temporary))?;
+        }
+    }
     Ok(())
 }
 
@@ -1183,6 +1375,7 @@ pub fn import_tuicr(
         None
     };
     let journal = load_journal(&directory, &manifest.run_id)?;
+    reconcile(&directory, &journal, options.execute)?;
     let binding = Binding {
         directory: &directory,
         manifest: &manifest,

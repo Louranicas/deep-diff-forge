@@ -26,6 +26,8 @@ pub const SIGNAL_BASE: i32 = 128;
 
 /// Council: the requested operation completed under its contract.
 pub const COUNCIL_COMPLETED: i32 = 0;
+/// Council: an I/O failure after the decision was recorded (`import-tuicr --execute`).
+pub const COUNCIL_RECORDED_INCOMPLETE: i32 = 3;
 /// Council: malformed input, stale admission, an existing artifact, or a protocol or I/O failure.
 pub const COUNCIL_REFUSED: i32 = 4;
 /// Council: HOLD (failed, missing or inconclusive evidence, or an import conflict).
@@ -168,6 +170,13 @@ pub const EXIT_CODES: &[ExitCode] = &[
         "completed",
         "The requested council operation completed under its contract; `status` exit 0 means ready for human review.",
         NextAction::Proceed,
+    ),
+    entry(
+        "council",
+        COUNCIL_RECORDED_INCOMPLETE,
+        "recorded_incomplete",
+        "I/O failure after the decision was recorded: the journal holds it; run the same import again to complete it.",
+        NextAction::CheckEnvironment,
     ),
     entry(
         "council",
