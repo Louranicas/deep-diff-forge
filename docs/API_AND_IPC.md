@@ -513,6 +513,11 @@ Additive members, so the schema names stay `v0`. They are present only when foun
     of a file the patch creates is reported like any other and carries this member.
   - Items are ordered by hunk, then line, then signal. `evidence_truncated: true` follows when more
     than 32 were found; the score counts all of them. Each signal also appears in `signals`.
+  - `diff_suppressed: "attribute"` or `"content"` follows (since 0.10.0, Git input only) when
+    Git gave the file's change as binary and the acquisition read it again as text: a `diff`
+    attribute unset or naming a driver for the path, or Git's own content check (a NUL byte).
+    The file then carries the signal `diff_suppressed` (+5). The member is absent otherwise; the
+    same member marks the change in `git-acquisition.v0`.
   - At the bound the list is not simply the first 32 in that order (since release 0.8.4, which
     reads Rust a second way and reads the hunks of a file the patch creates as one text, up to
     a bound for the whole patch: its created files share 256 KiB of new side in patch order,
