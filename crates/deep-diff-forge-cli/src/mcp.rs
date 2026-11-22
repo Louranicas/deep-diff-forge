@@ -1064,7 +1064,8 @@ mod tests {
         };
         let full = rank_tool_with(arguments(), usize::MAX);
         let plan = full["structuredContent"].clone();
-        let size = plan.to_string().len();
+        // The cap counts the canonical bytes, the text copy (S3.15.c).
+        let size = full["content"][0]["text"].as_str().unwrap().len();
         assert_eq!(plan["schema"], "deep-diff-forge.rank.v0");
         assert_eq!(plan["ranked"].as_array().map(Vec::len), Some(200));
         assert_eq!(rank_tool_with(arguments(), size)["structuredContent"], plan);

@@ -174,7 +174,9 @@ fn a_list_cut_short_is_the_same_list_from_the_cli_and_the_daemon() {
     assert_eq!(code, exit::SUCCESS, "{stderr}");
     let document: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(
-        daemon("diff.rank", &patch, false, false).ok(),
+        daemon("diff.rank", &patch, false, false)
+            .ok()
+            .map(value_form),
         Some(document.clone())
     );
     let file = &document["ranked"][0];
@@ -202,6 +204,15 @@ fn a_list_cut_short_is_the_same_list_from_the_cli_and_the_daemon() {
     );
 }
 
+/// A daemon answer's value form: `diff.rank` adds the document's bytes as `canonical_json`
+/// (S3.15; `rank_bytes_are_one_document_on_every_surface` compares them).
+fn value_form(mut answer: serde_json::Value) -> serde_json::Value {
+    if let Some(members) = answer.as_object_mut() {
+        members.remove("canonical_json");
+    }
+    answer
+}
+
 fn parity(method: &str, mode: &[&str]) {
     let guards: [(&[&str], bool, bool); 4] = [
         (&[], false, false),
@@ -217,7 +228,11 @@ fn parity(method: &str, mode: &[&str]) {
             match code {
                 exit::SUCCESS => {
                     let document: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-                    assert_eq!(rpc.as_ref().ok(), Some(&document), "{patch:?} {flags:?}");
+                    assert_eq!(
+                        rpc.ok().map(value_form),
+                        Some(document),
+                        "{patch:?} {flags:?}"
+                    );
                     seen[0] += 1;
                 }
                 exit::INPUT_CONTRACT_REFUSED => {
