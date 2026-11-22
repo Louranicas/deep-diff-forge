@@ -281,6 +281,9 @@ const CONTROL_REQUEST_BYTES: usize = 4096;
 /// How long a control connection waits for its request: short, so a client that sends nothing
 /// gives its control slot back soon.
 const CONTROL_READ_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a connection that comes when every data and control slot is held has to send
+/// `daemon.shutdown`, the one request answered then: short, since the accept loop itself waits.
+const FULL_READ_TIMEOUT: Duration = Duration::from_millis(250);
 /// How long a stop waits for the answers in progress: a client's own read deadline, after which
 /// nobody is reading them.
 const DRAIN_WAIT: Duration = Duration::from_secs(30);
@@ -827,6 +830,18 @@ pub fn handle_connection(stream: UnixStream, engine: &Engine) -> std::io::Result
 ///
 /// Returns any underlying stream I/O error.
 pub fn handle_control_connection(stream: UnixStream, engine: &Engine) -> std::io::Result<()> {
+    serve_one_request(stream, engine, CONTROL_READ_TIMEOUT, &CONTROL_METHODS)
+}
+
+/// Read one request line within `timeout` and answer it if it calls one of `methods`. Any other
+/// is refused busy on a control slot (all of [`CONTROL_METHODS`]) and closed unanswered beyond
+/// every slot (`daemon.shutdown` alone).
+fn serve_one_request(
+    stream: UnixStream,
+    engine: &Engine,
+    timeout: Duration,
+    methods: &[&str],
+) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = stream;
     let mut buf = Vec::new();
@@ -836,7 +851,7 @@ pub fn handle_control_connection(stream: UnixStream, engine: &Engine) -> std::io
         &mut reader,
         &mut buf,
         CONTROL_REQUEST_BYTES,
-        CONTROL_READ_TIMEOUT,
+        timeout,
         &mut || answer = Some(engine.answering().start()),
         // At most 4 KiB, and it must get in when the data connections fill the read budget.
         &mut |_| true,
@@ -849,11 +864,11 @@ pub fn handle_control_connection(stream: UnixStream, engine: &Engine) -> std::io
         .filter(|_| buf.len() <= CONTROL_REQUEST_BYTES)
         .map(str::trim)
         .filter(|line| {
-            parse_request(line)
-                .is_ok_and(|request| CONTROL_METHODS.contains(&request.method.as_str()))
+            parse_request(line).is_ok_and(|request| methods.contains(&request.method.as_str()))
         });
     let response = match control {
         Some(line) => process_line(line, engine),
+        None if methods.len() < CONTROL_METHODS.len() => return Ok(()),
         None => refusal(
             engine,
             RESOURCE_EXHAUSTED,
@@ -1239,9 +1254,10 @@ fn admit(
         (Arc::clone(control_connections), true)
     } else {
         engine.metrics().refused_at_limit();
-        // Dropping the accepted stream applies backpressure without
-        // allocating another stack or worker thread.
-        drop(stream);
+        // Backpressure without another stack or worker thread: the accept loop itself answers
+        // a `daemon.shutdown` sent at once and closes anything else. Before, the connection was
+        // closed at once, and idle clients on every slot kept `daemon stop` out (S3.8.a).
+        let _ = serve_one_request(stream, engine, FULL_READ_TIMEOUT, &["daemon.shutdown"]);
         return;
     };
     engine.metrics().accepted();
@@ -2295,6 +2311,33 @@ mod tests {
         assert!(stop.contains("\"stopping\":true"), "{stop}");
 
         assert!(joined(server).is_ok(), "the daemon did not stop");
+        assert!(!sock.exists(), "the socket was left behind");
+        drop(idle);
+    }
+
+    /// S3.8.a: ten idle clients hold every data and control slot, and `daemon.shutdown` is still
+    /// answered and the daemon gone within a second. Before, the connection was closed
+    /// unanswered, and a stop got in only once a control slot's client timed out (5 s).
+    #[test]
+    fn ten_idle_connections_do_not_delay_a_stop_past_one_second() {
+        let (_scratch, sock) = scratch_socket_with_parent("full-stop", 0o700);
+        let server_loc = SocketLocation::at(sock.clone());
+        let server = thread::spawn(move || run_server(&server_loc));
+        wait_for_socket(&sock);
+        // Accepted in order, so they hold every slot before the stop is accepted.
+        let idle: Vec<UnixStream> = (0..MAX_CONNECTIONS + CONTROL_CONNECTIONS)
+            .map(|_| UnixStream::connect(&sock).expect("idle connection"))
+            .collect();
+        let started = crate::metrics::now();
+        let stop = request(
+            &SocketLocation::at(sock.clone()),
+            r#"{"id":1,"method":"daemon.shutdown"}"#,
+        );
+        let stop = stop.expect("the stop is answered with every slot held");
+        assert!(stop.contains("\"stopping\":true"), "{stop}");
+        assert!(joined(server).is_ok(), "the daemon did not stop");
+        let took = started.elapsed();
+        assert!(took < Duration::from_secs(1), "the stop took {took:?}");
         assert!(!sock.exists(), "the socket was left behind");
         drop(idle);
     }
