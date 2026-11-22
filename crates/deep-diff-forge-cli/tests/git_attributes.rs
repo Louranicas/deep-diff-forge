@@ -671,3 +671,82 @@ fn a_source_rewritten_in_a_wide_encoding_is_labelled_encoding() {
         }
     }
 }
+
+/// S3.27.g (the owner's decision: the review goes on and the file is loud). A binary by
+/// content whose text form passes the 64 MiB budget (33 MiB of NUL bytes, one changed: a tiny
+/// binary section, a 66 MiB text one) cannot be read again. S3.27.d refused the whole review
+/// for it (exit 4); 0.9.0 read it as a silent binary change. Now it keeps its binary section and
+/// carries `diff_suppressed` with cause `unread`, and the files after it in Git's order are
+/// still read again with what is left of the budget: a `-diff` source after it is read as text
+/// and labelled `attribute`; a small real image stays a binary change with no label. The
+/// command line has no option that lowers the budget, so the file is built at full size.
+#[test]
+fn a_binary_too_large_to_read_again_is_labelled_unread() {
+    let large = |changed: bool| {
+        let mut bytes = vec![0_u8; 33 << 20];
+        if changed {
+            bytes[1 << 20] = 7;
+        }
+        bytes
+    };
+    for mode in MODES {
+        let scratch = Scratch::new(&format!("cli-attr-unread-{}", mode.len()));
+        let r = Repo(std::fs::canonicalize(scratch.path()).unwrap(), scratch);
+        let root = &r.0;
+        git(root, &["init", "-q"]);
+        std::fs::create_dir_all(root.join(".git/info")).unwrap();
+        std::fs::write(root.join(".git/info/attributes"), b"*.rs -diff\n").unwrap();
+        let write = |after: bool| {
+            std::fs::write(root.join("a.bin"), large(after)).unwrap();
+            std::fs::write(root.join("b.rs"), source(false, after)).unwrap();
+            std::fs::write(root.join("c.png"), image(if after { 7 } else { 3 })).unwrap();
+        };
+        write(false);
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-q", "-m", "base"]);
+        write(true);
+        match mode {
+            "--git-range" => {
+                git(root, &["add", "-A"]);
+                git(root, &["commit", "-q", "-m", "change"]);
+            }
+            "--git-staged" => git(root, &["add", "-A"]),
+            _ => {}
+        }
+        let out = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+            .envs(ISOLATE)
+            .args(selection(mode))
+            .arg("--repo")
+            .arg(root)
+            .args(["--rank", "--json"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{mode}: the review was refused: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let entry = |path: &str| {
+            doc["ranked"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["path"] == path)
+                .cloned()
+                .unwrap_or_else(|| panic!("{path} not ranked: {doc}"))
+        };
+        let (a, b, c) = (entry("a.bin"), entry("b.rs"), entry("c.png"));
+        assert_eq!(a["status"], "binary_changed", "{mode}: {a}");
+        assert!(signals(&a).contains(&"binary_change"), "{mode}: {a}");
+        assert_eq!(
+            a["diff_suppressed"], "unread",
+            "{mode}: the binary that could not be read again is silent: {a}"
+        );
+        assert_eq!(b["diff_suppressed"], "attribute", "{mode}: {b}");
+        assert!(signals(&b).contains(&"process_spawn"), "{mode}: {b}");
+        assert_eq!(signals(&c), ["binary_change"], "{mode}: {c}");
+        assert!(c.get("diff_suppressed").is_none(), "{mode}: {c}");
+    }
+}

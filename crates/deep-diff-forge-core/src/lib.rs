@@ -248,6 +248,9 @@ pub enum DiffSuppression {
     /// No `diff` attribute applies and the file is UTF-16 or UTF-32 (a byte order mark, or one
     /// NUL in every pair): Git's content check called it binary for the NULs of its encoding.
     Encoding,
+    /// No attribute label covers the file and DDF could not read it again within its limits:
+    /// the second reading or `git check-attr` was cut off by the byte budget or the time limit.
+    Unread,
 }
 
 impl DiffSuppression {
@@ -258,6 +261,7 @@ impl DiffSuppression {
             Self::Attribute => "attribute",
             Self::Content => "content",
             Self::Encoding => "encoding",
+            Self::Unread => "unread",
         }
     }
 }
