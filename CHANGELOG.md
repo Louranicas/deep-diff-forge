@@ -399,6 +399,16 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   protocol: 80 MiB counting the newline, in both directions (one stated exception: the server's
   answer bound still measures without the newline).
 
+- **`secret_like` finds GitLab tokens and fine-grained GitHub tokens** (S3.24,
+  [DDF-2026-007](docs/advisories/DDF-2026-007.md)): `glpat-` and its routable form, `gldt-`,
+  `glrt-` and `glcbt-` with 20 bytes or more, `glptt-` with 40, `gloas-` with 64, and
+  `github_pat_` with 82. Releases 0.5.0 to 0.9.0 missed them. The eleven earlier prefixes are
+  unchanged (a test holds "released implies now"), and the token is never copied into evidence.
+  Measured before release: no line of 2,086 real history patches gains the label; a repository
+  whose forge-warden policy forbids `secret_like` fails, from 0.10.0, a commit that adds a line
+  with one of the seven forms. The eval corpus gains the case `evidence/secret-forge-tokens`
+  (59 cases: precision 186 of 211, recall 186 of 264).
+
 ## [0.9.0] - 2026-11-18
 
 **Feature release with fixes for released versions.** 0.9.0 adds five integrity signals for a
