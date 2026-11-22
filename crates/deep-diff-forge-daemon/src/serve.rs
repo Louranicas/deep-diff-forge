@@ -345,9 +345,11 @@ fn write_line_within(
 #[must_use]
 struct Written(());
 
-/// Write all of `bytes` to the non-blocking `writer` by `deadline`.
-fn write_all_by(
-    writer: &mut UnixStream,
+/// Write all of `bytes` to the non-blocking `writer` by `deadline`. As std's `write_all`, a write
+/// a signal interrupted is retried and one that takes no bytes is `WriteZero`; before, the first
+/// failed the response and the second spun to the deadline (G-DAEMON-1b).
+fn write_all_by<W: std::io::Write + std::os::fd::AsFd>(
+    writer: &mut W,
     mut bytes: &[u8],
     deadline: Instant,
 ) -> std::io::Result<Written> {
@@ -355,10 +357,12 @@ fn write_all_by(
     while let [_, ..] = bytes {
         let left = time_left(deadline)?;
         match writer.write(bytes) {
+            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
             Ok(n) => bytes = &bytes[n..],
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 wait_writable(writer, left)?;
             }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(e) => return Err(e),
         }
     }
@@ -379,7 +383,7 @@ fn time_left(deadline: Instant) -> std::io::Result<Duration> {
 
 /// Wait until `writer` has buffer space, or `left` has passed. A wait that ends early (a signal,
 /// or space that another wake-up took) is fine: the caller checks the deadline before writing.
-fn wait_writable(writer: &UnixStream, left: Duration) -> std::io::Result<()> {
+fn wait_writable(writer: &impl std::os::fd::AsFd, left: Duration) -> std::io::Result<()> {
     use rustix::event::{PollFd, PollFlags, Timespec, poll};
     let timeout = Timespec::try_from(left).map_err(std::io::Error::other)?;
     let mut fds = [PollFd::new(writer, PollFlags::OUT)];
@@ -599,9 +603,20 @@ fn settle_write_timeout(armed: std::io::Result<()>) -> std::io::Result<()> {
     }
 }
 
+/// A stream whose reads take a deadline: the daemon's socket, or a test's reader.
+trait ReadDeadline: std::io::Read {
+    fn set_read_deadline(&self, timeout: Duration) -> std::io::Result<()>;
+}
+
+impl ReadDeadline for UnixStream {
+    fn set_read_deadline(&self, timeout: Duration) -> std::io::Result<()> {
+        self.set_read_timeout(Some(timeout))
+    }
+}
+
 /// Read one bounded line from a socket under an absolute deadline.
 fn read_capped_line_deadline(
-    reader: &mut BufReader<UnixStream>,
+    reader: &mut BufReader<impl ReadDeadline>,
     buf: &mut Vec<u8>,
     cap: usize,
     timeout: Duration,
@@ -616,7 +631,7 @@ fn read_capped_line_deadline(
     reason = "the socket read deadline: bounds a slow client in wall-clock time"
 )]
 fn read_capped_line_deadline_noting(
-    reader: &mut BufReader<UnixStream>,
+    reader: &mut BufReader<impl ReadDeadline>,
     buf: &mut Vec<u8>,
     cap: usize,
     timeout: Duration,
@@ -633,10 +648,13 @@ fn read_capped_line_deadline_noting(
             .ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::TimedOut, "line read deadline exceeded")
             })?;
-        settle_read_timeout(reader.get_ref().set_read_timeout(Some(remaining)))?;
+        settle_read_timeout(reader.get_ref().set_read_deadline(remaining))?;
 
         let available = match reader.fill_buf() {
             Ok(available) => available,
+            // A read a signal interrupted (EINTR, as a SIGTERM's can be) is tried again under
+            // the same deadline; before, it ended the request (G-DAEMON-1a).
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(err)
                 if matches!(
                     err.kind(),
@@ -789,11 +807,9 @@ pub fn handle_connection(stream: UnixStream, engine: &Engine) -> std::io::Result
         // written, so a client that reads slowly holds only its own slot, not the budget every
         // other request needs to be read.
         drop(held);
-        let Sent(()) = write_line_within(
-            &mut writer,
-            &json_line_safe(&response),
-            engine.write_limit(),
-        )?;
+        // `process_line` answers with `json_line_safe` applied (`bounded_response`), so the
+        // answer is not scanned again (G-DAEMON-1c).
+        let Sent(()) = write_line_within(&mut writer, &response, engine.write_limit())?;
         drop(answer);
         if !engine.is_running() {
             break;
@@ -3412,5 +3428,72 @@ mod tests {
         let status = status.expect("run_server kept looping on a persistent accept error");
         assert!(status.success(), "child test failed: {status}");
         assert!(ran, "the child half never ran");
+    }
+
+    /// G-DAEMON-1a: a read a signal interrupts (EINTR) is tried again; before, the line reader
+    /// returned the error and the request failed.
+    #[test]
+    fn the_line_reader_retries_an_interrupted_read() {
+        struct Interrupting(bool, &'static [u8]);
+        impl std::io::Read for Interrupting {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if std::mem::take(&mut self.0) {
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                let n = self.1.len().min(buf.len());
+                buf[..n].copy_from_slice(&self.1[..n]);
+                self.1 = &self.1[n..];
+                Ok(n)
+            }
+        }
+        impl ReadDeadline for Interrupting {
+            fn set_read_deadline(&self, _: Duration) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let line = b"{\"id\":1,\"method\":\"daemon.health\"}\n";
+        let mut reader = BufReader::new(Interrupting(true, line));
+        let mut buf = Vec::new();
+        let read = read_capped_line_deadline(&mut reader, &mut buf, 4096, Duration::from_secs(5));
+        assert_eq!(read.map_err(|err| err.kind()), Ok(line.len()));
+        assert_eq!(buf, line);
+    }
+
+    /// G-DAEMON-1b: a write that takes no bytes ends the response as `WriteZero` at once; before,
+    /// the loop wrote nothing until its deadline. An interrupted write is tried again.
+    #[test]
+    fn write_all_by_treats_zero_as_write_zero() {
+        /// A writer that gives the scripted answers, then takes no bytes.
+        struct Scripted(
+            UnixStream,
+            std::collections::VecDeque<std::io::Result<usize>>,
+        );
+        impl std::io::Write for Scripted {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                self.1.pop_front().unwrap_or(Ok(0))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl std::os::fd::AsFd for Scripted {
+            fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+                self.0.as_fd()
+            }
+        }
+        let (socket, _peer) = UnixStream::pair().expect("socketpair");
+        let deadline = crate::metrics::now() + Duration::from_secs(2);
+        let interrupted: [std::io::Result<usize>; 2] =
+            [Err(std::io::ErrorKind::Interrupted.into()), Ok(3)];
+        let mut retried = Scripted(socket.try_clone().unwrap(), interrupted.into());
+        let written = write_all_by(&mut retried, b"abc", deadline);
+        assert!(written.is_ok(), "{:?}", written.err());
+        let one: [std::io::Result<usize>; 1] = [Ok(1)];
+        let mut zero = Scripted(socket, one.into());
+        let written = write_all_by(&mut zero, b"abc", deadline);
+        assert_eq!(
+            written.err().map(|err| err.kind()),
+            Some(std::io::ErrorKind::WriteZero)
+        );
     }
 }
