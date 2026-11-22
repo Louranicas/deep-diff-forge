@@ -106,7 +106,7 @@ another), `mode_changed` (only the mode changed, such as the executable bit), `b
 | Code | Meaning | Next |
 | --- | --- | --- |
 | 0 | Success. | `proceed` |
-| 2 | CLI usage / argument error; among them a daemon socket path of 108 bytes or more (`daemon path`, `daemon start`, since 0.10.0). | `fix_invocation` |
+| 2 | CLI usage / argument error. | `fix_invocation` |
 | 3 | I/O or encoding failure: reading input (stdin, a file, Git, the learning store), non-UTF-8 input, or writing output. | `check_environment` |
 | 4 | Invalid input: a patch or analysis input that fails to parse or validate, `--stdin-patch` input in which Git finds no patch (`no_patch_in_input`), input over the byte budget, an invalid receipt, a named path that is not a regular file, or a refused Git acquisition or file pair. | `change_input` |
 | 6 | Daemon / interactive-terminal failure. | `check_environment` |
@@ -119,7 +119,8 @@ A reader that closes stdout ends a command with exit 0 (`… | head`), except wh
 `--require-*` refusal is pending: each is decided before the output is written and exits 7
 with its reason on stderr even when the reader has gone (since 0.10.0;
 [DDF-2026-010](../advisories/DDF-2026-010.md)). A diagnostic that cannot be written
-(`2>/dev/full`) leaves the exit code as it is; before 0.10.0 it exited 101.
+(`2>/dev/full`) leaves the exit code as it is; before 0.10.0 it exited 101. A daemon socket path of
+108 bytes or more is a usage error (exit 2) of `daemon path` and `daemon start` since 0.10.0.
 
 The `council` subcommands use their own family ([review council](../REVIEW_COUNCIL.md)):
 
