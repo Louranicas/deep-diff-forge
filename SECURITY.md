@@ -1002,7 +1002,10 @@ says when it closed:
   bounds every Git call of an acquisition: 120 s for the CLI's Git selections and
   30 s for `review.change`. A Git still running at the deadline is killed, and the
   acquisition fails with `TimedOut` (CLI exit 3). Before, `child.wait()` waited
-  forever on a stalled filesystem or hook.
+  forever on a stalled filesystem or hook. Git's output readers are joined against the
+  acquisition's deadline, so a helper Git leaves running cannot hold the review past the
+  limit; the helper itself is not killed by the acquisition (process groups are the general
+  runner's).
 - **Hidden text is flagged, not filtered.** Lines and paths carrying bidi controls, invisible
   or control characters, and paths that traverse or name `.git`, get `hazards` in `review.v0`
   and the views, and the `hazardous_text` risk signal. The patch text itself is never rewritten.
