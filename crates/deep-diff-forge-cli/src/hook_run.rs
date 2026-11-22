@@ -2164,7 +2164,9 @@ fn judge_words(stderr: &[u8]) -> Option<String> {
 
 /// Run the judge once: its exit code, its verdict document and what it said on its error
 /// stream, when it gave any of them. It gets the time the hook has left, at most
-/// [`JUDGE_TIME`].
+/// [`JUDGE_TIME`]. The judge runs in a process group of its own (`core::process::run_bounded`);
+/// its group is killed when it exits or is stopped, so nothing it leaves in the group can
+/// stretch the stop.
 #[expect(
     clippy::disallowed_methods,
     reason = "the judge door: the stop hook starts forge-warden, under a deadline and output caps"
