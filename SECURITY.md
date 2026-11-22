@@ -11,10 +11,10 @@ for.
 - 0.9.0 adds five integrity signals and the agent hooks, and fixes two defects of 0.8.4 and
   earlier ([DDF-2026-003](docs/advisories/DDF-2026-003.md)): a process spawn cut across two
   sections of one path that Git applies in order was not found, and one long JavaScript word or
-  run of secret prefixes cost ranking time quadratic in its length. 0.9.0 is a release once the
-  signed tag `v0.9.0` exists; until then `v0.8.4` is the latest. It has no GitHub release: once
-  tagged it is published as a signed tag on GitLab, Gitea and Forgejo; binaries built locally
-  for Linux x86_64. A forge-warden that does not know the five new signals reads each as an
+  run of secret prefixes cost ranking time quadratic in its length. 0.9.0 was released as the
+  signed tag `v0.9.0` (2026-11-18), published on GitLab, Gitea and Forgejo with a binary built
+  locally for Linux x86_64; GitHub mirrors its release page (since 2026-11-22), and its crates
+  are on crates.io (since 2026-11-23). A forge-warden that does not know the five new signals reads each as an
   unknown signal and holds.
 - 0.8.4 (the signed tag `v0.8.4`, 2026-11-17; published on GitLab, Gitea and Forgejo on
   2026-11-18), the release before 0.9.0, is a security release: v0.8.3 and earlier can review a patch otherwise than `git apply`
@@ -22,9 +22,10 @@ for.
   its object store) and for one path in several sections (Git applies them as a set): G1 and G2
   of the v0.8.3 rescore. They also hide Rust code after a nested block comment, a character
   literal with a long escape, or a comment an earlier hunk of a created file opened from the
-  Rust rules. It has no GitHub release: it is published on GitLab
+  Rust rules. It is published on GitLab
   (`https://gitlab.com/lukeomahoney/deep-diff-forge`), with mirrors on Gitea and Forgejo, as the
-  signed tag and a Linux x86_64 binary built on the owner's machine
+  signed tag and a Linux x86_64 binary built on the owner's machine; GitHub mirrors its release
+  page since 2026-11-22
   ([local release](docs/RELEASE_AND_PUBLICATION.md#local-release-from-084)). Advisories:
   [DDF-2026-001](docs/advisories/DDF-2026-001.md) (G1, G2) and
   [DDF-2026-002](docs/advisories/DDF-2026-002.md) (the Rust code view).
@@ -50,8 +51,9 @@ for.
   Every shipped binary is run in the release smoke test, the x86_64 macOS one under
   Rosetta 2. From 0.8.4 a release ships only `x86_64-unknown-linux-gnu`, built and smoke-tested on the owner's
   machine (Fedora 44 toolbox) by `scripts/release_local.sh`; the other three targets are not
-  built for 0.8.4 or 0.9.0. Not claimed: musl, Windows, other architectures, crates.io packages,
-  or a daemon shared between users on one host
+  built for this release. From 0.9.0 the crates are also published on crates.io, as source that
+  whoever installs them builds. Not claimed: musl,
+  Windows, other architectures, or a daemon shared between users on one host
   ([supported platforms](README.md#supported-platforms)).
 - Known limits are listed under [Residual risks](#residual-risks-and-non-goals).
 
@@ -891,10 +893,13 @@ bounded form.** What it holds to:
   GitLab, Gitea and Forgejo. There is no build-provenance attestation and no CI run on the
   release commit; `scripts/ci_local.sh` passes on it instead. Only `x86_64-unknown-linux-gnu`
   is built ([local release](docs/RELEASE_AND_PUBLICATION.md#local-release-from-084)).
-- crates.io publication is on hold by owner decision until the codebase is
-  production-hardened. The `publish` job runs only on a tag and only when the
-  repository variable `DDF_CRATES_IO` is `open`; a configured
-  `CARGO_REGISTRY_TOKEN` alone does not lift the hold. It runs in the `release`
+- crates.io: the owner lifted the hold, and 0.9.0's fourteen crates were published on
+  2026-11-23 from the tag's commit on the owner's machine (`cargo publish --workspace --exclude
+  deep-diff-forge-testkit --locked`, after a dry run, with the token `cargo login` stored there);
+  the twelve names published at 0.2.0 keep that version as yanked. From 0.10.0 publishing is a
+  step of the local release. `release.yml`'s `publish` job is not used for it. That job runs
+  only on a tag and only when the repository variable `DDF_CRATES_IO` is `open`; a configured
+  `CARGO_REGISTRY_TOKEN` alone does not open it. It runs in the `release`
   environment, which only `v*` tags can deploy to, and an open gate without a
   token fails the job instead of passing without publishing. It would publish
   with that token; crates.io trusted publishing remains an account-level
@@ -903,9 +908,7 @@ bounded form.** What it holds to:
   waits for the owner's approval, and its deployment policy admits only `v*`
   tags (measured with `gh api .../environments`). Only the `publish` job uses
   that environment; the build, attestation and GitHub Release upload do not
-  wait for it. No crates.io release is recorded in
-  [`EVIDENCE.md`](EVIDENCE.md) (not re-checked against crates.io in this
-  refresh).
+  wait for it.
 - **Secret scanning (owner decision, 2026-11-01).** GitHub secret scanning is on
   with push protection and the provider patterns. Non-provider patterns and
   validity checks are not available for this user-owned repository: the API

@@ -189,30 +189,31 @@ refuses each whole.
 
 ## Install
 
-**Prebuilt binaries** for Linux (x86_64 and, since v0.6.0, arm64) and macOS (Apple silicon and
-Intel) are on the [releases page](https://github.com/Louranicas/deep-diff-forge/releases)
-([supported platforms](#supported-platforms)). The commands below fetch v0.8.3,
-the latest GitHub release (0.8.4 and 0.9.0 have none).
-Each archive has a `.sha256` file, and the release carries an SPDX SBOM:
+**Prebuilt binaries.** From 0.8.4 a release ships one binary, for Linux x86_64, built and
+tested on the owner's machine; Linux arm64 and macOS are not built for this release, and v0.8.3
+is the last release with binaries for them ([supported platforms](#supported-platforms)).
+GitLab is the place of release: **0.9.0** (the signed tag `v0.9.0`, 2026-11-18) and **0.8.4**
+(`v0.8.4`, 2026-11-17) are on its [releases page](https://gitlab.com/lukeomahoney/deep-diff-forge/-/releases)
+with the archive and its `.sha256`, the SBOM, the build receipt, `SHA256SUMS` and the owner's
+signature of it, `SHA256SUMS.sig`. GitHub's [releases page](https://github.com/Louranicas/deep-diff-forge/releases)
+mirrors the same files (since 2026-11-22):
 
 ```bash
-curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.8.3/deep-diff-forge-v0.8.3-x86_64-unknown-linux-gnu.tar.gz
-curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.8.3/deep-diff-forge-v0.8.3-x86_64-unknown-linux-gnu.tar.gz.sha256
-sha256sum -c deep-diff-forge-v0.8.3-x86_64-unknown-linux-gnu.tar.gz.sha256
+curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.9.0/deep-diff-forge-v0.9.0-x86_64-unknown-linux-gnu.tar.gz
+curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.9.0/deep-diff-forge-v0.9.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+sha256sum -c deep-diff-forge-v0.9.0-x86_64-unknown-linux-gnu.tar.gz.sha256
 ```
 
-**0.8.4** (the signed tag `v0.8.4`, 2026-11-17) and **0.9.0** (the signed tag `v0.9.0`,
-2026-11-18) are published on GitLab, <https://gitlab.com/lukeomahoney/deep-diff-forge>:
-the tag and a Linux x86_64 archive (`deep-diff-forge-v0.9.0-x86_64-unknown-linux-gnu.tar.gz`
-for 0.9.0) with its `.sha256`, the SBOM, the build receipt, `SHA256SUMS` and the owner's
-signature of it, `SHA256SUMS.sig`. There is no arm64 Linux or macOS binary of either. Check the
-downloaded files from a clone with
+Check all the downloaded files from a clone with
 `scripts/release_local.sh verify v0.9.0 <dir> .github/release_allowed_signers`: the tag's signature, every checksum and
 its signature, and a rebuild that must give the same binary
 ([local release](docs/RELEASE_AND_PUBLICATION.md#local-release-from-084)).
 
-**From source** (`main` on GitLab: 0.9.0, everything in this README; GitHub's `main` stays at
-0.8.3). This needs Rust **1.88+** (edition 2024):
+**From crates.io** (0.9.0, published 2026-11-23): `cargo install deep-diff-forge-cli --locked`
+builds the same CLI from the fourteen published crates.
+
+**From source** (`main` on GitLab, mirrored to GitHub: everything in this README). This needs
+Rust **1.88+** (edition 2024):
 
 ```bash
 git clone https://gitlab.com/lukeomahoney/deep-diff-forge.git
@@ -228,15 +229,16 @@ These four release targets are the whole platform scope. Up to v0.8.3 each was b
 `release.yml` and its binary run (`--version` and a review) before it shipped. From 0.8.4 a
 release is not built by `release.yml`: only `x86_64-unknown-linux-gnu` is built, on the owner's
 machine in the `fedora-toolbox-44` toolbox with `scripts/release_local.sh`, which runs the same
-smoke and glibc check; the other three targets are not built for 0.8.4 or 0.9.0, and v0.8.3's
-binaries for them remain on the GitHub releases page.
+smoke and glibc check, and each such build has a receipt
+([runs on record](docs/reference/supported-platforms.md#runs-on-record)). The other three
+targets are not built for this release; v0.8.3's binaries for them remain on its GitHub release.
 
-| Target | 0.8.4 and 0.9.0 | Built and run on (to v0.8.3) | Needs | Tests on every pull request (to v0.8.3) |
+| Target | This release (from 0.8.4) | Built and run on (to v0.8.3) | Needs | Tests on every pull request (to v0.8.3) |
 | --- | --- | --- | --- | --- |
-| `x86_64-unknown-linux-gnu` | built locally (Fedora 44 toolbox, Rust 1.99.1, LLD); the whole local gate (`scripts/ci_local.sh`) | `ubuntu-24.04` | glibc 2.34 or newer | the whole suite (`deploy gate-feature`, required) |
-| `aarch64-unknown-linux-gnu` | not built | `ubuntu-22.04-arm`, natively | glibc 2.34 or newer | the whole suite (`Linux arm64 tests`, not required; gates releases) |
-| `aarch64-apple-darwin` | not built | `macos-26` (arm64) | macOS 11 or newer | the whole suite (`macOS tests`, required); the launchd agent (`macOS launchd agent`, not required; skipped in releases) |
-| `x86_64-apple-darwin` | not built | cross-built on `macos-26`, run under Rosetta 2 | macOS 10.12 or newer | none (the release smoke only) |
+| `x86_64-unknown-linux-gnu` | built and tested (Fedora 44 toolbox, Rust 1.99.1, LLD): the release smoke and the whole local gate (`scripts/ci_local.sh`); [receipts](docs/reference/supported-platforms.md#runs-on-record) | `ubuntu-24.04` | glibc 2.34 or newer | the whole suite (`deploy gate-feature`, required) |
+| `aarch64-unknown-linux-gnu` | not built for this release | `ubuntu-22.04-arm`, natively | glibc 2.34 or newer | the whole suite (`Linux arm64 tests`, not required; gates releases) |
+| `aarch64-apple-darwin` | not built for this release | `macos-26` (arm64) | macOS 11 or newer | the whole suite (`macOS tests`, required); the launchd agent (`macOS launchd agent`, not required; skipped in releases) |
+| `x86_64-apple-darwin` | not built for this release | cross-built on `macos-26`, run under Rosetta 2 | macOS 10.12 or newer | none (the release smoke only) |
 
 The glibc floor and how it is held, the loader warning on glibc 2.34 to 2.38, source builds and
 the macOS minimums are measured in [supported platforms: measurements](docs/reference/supported-platforms.md).
@@ -335,11 +337,11 @@ moved from this page. The release archive ships this README alone: read them in 
 
 ## Project status
 
-- **Released:** 0.9.0 (2026-11-18), a signed tag on GitLab, Gitea and Forgejo; from 0.8.4 a
+- **Released:** 0.9.0 (2026-11-18), a signed tag on GitLab, Gitea and Forgejo, with release
+  pages on GitLab and, mirrored, on GitHub, and on crates.io since 2026-11-23; from 0.8.4 a
   release is built only for `x86_64-unknown-linux-gnu` ([supported platforms](#supported-platforms)).
 - **Readiness:** 0.9.0 is not production-ready yet (verdict of 2026-11-18); neither 0.8.4 nor 0.9.0 has had an independent rescore.
-- **Not claimed:** crates.io publication (on hold), and multi-user or shared-host daemon
-  deployment; the known limits are in the [0.9.0 notes](docs/release-notes/0.9.0.md#status-at-release).
+- **Not claimed:** multi-user or shared-host daemon deployment; the known limits are in the [0.9.0 notes](docs/release-notes/0.9.0.md#status-at-release).
 - **History:** the notes of every release, and the dated history of this section, are in [`docs/release-notes/`](docs/release-notes/README.md).
 - **Known issues:** issues found after a release are listed on its [release page](https://gitlab.com/lukeomahoney/deep-diff-forge/-/releases).
 

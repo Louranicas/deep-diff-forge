@@ -6,15 +6,15 @@ This document defines how Deep-Diff-Forge moves from commit to public artifact.
 
 - **0.9.0** adds five integrity signals and the agent hooks, and fixes a process spawn cut
   across two sections of one path and two costs quadratic in the length of a line, in 0.8.4
-  and earlier ([DDF-2026-003](advisories/DDF-2026-003.md)). It is a release once the signed tag
-  `v0.9.0` exists; pushing that tag is the owner's decision. It is not built by `release.yml`
-  and has no GitHub release: once tagged it is published as a signed tag on GitLab, Gitea and
-  Forgejo; binaries built locally for Linux x86_64.
+  and earlier ([DDF-2026-003](advisories/DDF-2026-003.md)). It was released as the signed tag
+  `v0.9.0` (2026-11-18), published on GitLab, Gitea and Forgejo with a binary built locally for
+  Linux x86_64; it is not built by `release.yml`. Its release page is mirrored on GitHub (since
+  2026-11-22, from the GitLab files), and its fourteen crates are on crates.io (2026-11-23).
 - **0.8.4 was released** as the signed tag `v0.8.4` (2026-11-17), the last tag before 0.9.0, and
   published on GitLab, Gitea and Forgejo on 2026-11-18 (`SHA256SUMS` signed by the owner; the
   local verify passed): a security release for v0.8.3's review of `Files … differ` lines and of
   one path in several sections (rescore of v0.8.3, G1 and G2), with the fix for Rust code the
-  code view hid. It has no GitHub release.
+  code view hid. Its release page is mirrored on GitHub since 2026-11-22.
 - **0.8.3 was released** as the signed tag `v0.8.3` (2026-11-11 UTC), the last tag before 0.8.4: a security release for v0.8.2's review of bare `diff --git` lines
   and of modes (rescore of v0.8.2, GHSA-rq5r-p3g9-phff), with three dependency updates, one of
   which the supply chain gate needs (rustix 1.1.6, RUSTSEC-2026-0486). Its assets and tag
@@ -24,10 +24,16 @@ This document defines how Deep-Diff-Forge moves from commit to public artifact.
   the v0.8.2 tag; GHSA-gp5v-m67f-gmgp, published 2026-11-10). Immutable Releases is on (since
   2026-11-05), so its assets and tag cannot change. Pushing any later `v*` tag is the owner's decision.
 - Published GitHub releases: `v0.1.0` (2026-06-22), `v0.2.0` (2026-06-24) and
-  `v0.3.0` (2026-10-29), `v0.4.0` (2026-10-30), `v0.5.0` (2026-10-31), `v0.6.0` (2026-11-02), `v0.7.0` (2026-11-03), `v0.8.0` (2026-11-07), `v0.8.1` (2026-11-08), `v0.8.2` (2026-11-10) and `v0.8.3` (2026-11-11 UTC). `0.2.1` was never tagged.
-- crates.io is on hold by owner decision until the codebase is
-  production-hardened. `release.yml` publishes only when the repository
-  variable `DDF_CRATES_IO` is `open`.
+  `v0.3.0` (2026-10-29), `v0.4.0` (2026-10-30), `v0.5.0` (2026-10-31), `v0.6.0` (2026-11-02), `v0.7.0` (2026-11-03), `v0.8.0` (2026-11-07), `v0.8.1` (2026-11-08), `v0.8.2` (2026-11-10) and `v0.8.3` (2026-11-11 UTC). `0.2.1` was never tagged. `v0.8.4` and
+  `v0.9.0` have GitHub release pages since 2026-11-22: mirrors of the GitLab release, with the
+  same six files, not built by `release.yml`.
+- **crates.io:** 0.9.0 was published on 2026-11-23 (owner's decision, lifting the hold): the
+  fourteen crates other than `deep-diff-forge-testkit` (test-only), with `cargo publish
+  --workspace --exclude deep-diff-forge-testkit --locked` from the tag's commit after a dry run;
+  the twelve names published at 0.2.0 keep that version as yanked. From 0.10.0 on, publishing the
+  crates is a step of the release ([Local release](#local-release-from-084), **Publish**).
+  `release.yml`'s `publish` job, which runs only when the repository variable `DDF_CRATES_IO` is
+  `open`, is not used.
 - **Owner decision 2026-11-01:** the GitHub `release` environment requires the
   owner's approval (required reviewer) and deploys only from `v*` tags (measured
   with `gh api .../environments`). Only the crates.io `publish` job runs in it,
@@ -45,9 +51,9 @@ This document defines how Deep-Diff-Forge moves from commit to public artifact.
 | Channel | Purpose | Today |
 | --- | --- | --- |
 | `main` | Current development branch. | 0.9.0 (from 0.8.4 merged without GitHub); up to 0.8.3 it was reached only through pull requests (branch ruleset). |
-| GitHub Releases | Primary binary release and project visibility. | `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`, `v0.8.0`, `v0.8.1`, `v0.8.2`, `v0.8.3`. |
-| GitLab mirror | Secondary remote and redundancy; from 0.8.4 the repository of record. | Up to 0.8.3 pushed to match GitHub; 0.8.4's signed tag and release files are published here ([local release](#local-release-from-084)). |
-| crates.io | Rust library and CLI distribution. | On hold (`DDF_CRATES_IO`). |
+| GitHub Releases | Up to v0.8.3 the primary binary release; from 0.8.4 a mirror of the GitLab release. | `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`, `v0.8.0`, `v0.8.1`, `v0.8.2`, `v0.8.3` built by `release.yml`; `v0.8.4` and `v0.9.0` mirrored (2026-11-22). |
+| GitLab | Up to 0.8.3 a mirror; from 0.8.4 the repository of record and the place of release and contribution (merge requests). | Up to 0.8.3 pushed to match GitHub; from 0.8.4 every signed tag and its release files are published here ([local release](#local-release-from-084)). |
+| crates.io | Rust library and CLI distribution. | 0.9.0, fourteen crates (2026-11-23); from 0.10.0 a step of every release. |
 | cargo-binstall | Fast binary installation. | Not configured (no binstall metadata in any `Cargo.toml`). |
 | package managers | Later, after CLI stabilizes. | None. |
 
@@ -126,7 +132,7 @@ and before signing. It then runs `just gate-release`, creates a signed annotated
 (see [Signed Tags](#signed-tags)), and pushes it to those three remotes only, never `origin`
 (GitHub). Up to 0.8.3 the recipe pushed to `origin` and `gitlab`, and the tag push started
 `release.yml`; from 0.8.4 the tag starts nothing, and the release is built and checked as in
-[Local release](#local-release-from-084). crates.io stays on hold.
+[Local release](#local-release-from-084), which also publishes the crates.
 
 What the recipe does not check (reviews of 0.8.4, VR84C-M-1 and VR84C-M-2):
 
@@ -231,7 +237,11 @@ the local repository. Its self-test is `scripts/test_release_local.sh` (`just re
 - **Publish.** The signed tag goes to GitLab (`https://gitlab.com/lukeomahoney/deep-diff-forge`),
   Gitea and Forgejo through `just release-tag`; the archive and the other files of `<outdir>`,
   with `SHA256SUMS.sig`, are attached to the tag's release on GitLab. These are the owner's
-  steps.
+  steps. GitLab is the place of release; GitHub gets the tag (with `release.yml` disabled for
+  the push, since a tag there starts it) and a release page with the same files, as a mirror.
+  From 0.10.0 the crates are published from the tag's commit, a dry run first, then
+  `cargo publish --workspace --exclude deep-diff-forge-testkit --locked` (permanent: a published
+  version can be yanked, never replaced).
 - **Verify.** From a clone that has the tag and `gitlab/main` (fetch them first; the tool uses no
   remote):
 
@@ -256,7 +266,8 @@ the local repository. Its self-test is `scripts/test_release_local.sh` (`just re
 - **Targets.** Only `x86_64-unknown-linux-gnu` is built: the build machine has no
   `aarch64-unknown-linux-gnu` Rust target or cross linker, and there is no macOS runner. The
   `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin` and `aarch64-apple-darwin` binaries of
-  v0.8.3 remain on its GitHub release; none is built for 0.8.4.
+  v0.8.3 remain on its GitHub release; none is built for this release. Each build has a receipt
+  ([runs on record](reference/supported-platforms.md#runs-on-record)).
 - **Reproducibility.** The binary does not depend on the checkout path: the two builds of every
   `build` run are made at two different paths and must be equal (measured; see
   [EVIDENCE.md](../EVIDENCE.md)). The binary holds the registry source path under `CARGO_HOME`,
