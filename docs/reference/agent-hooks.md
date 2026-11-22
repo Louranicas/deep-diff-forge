@@ -28,7 +28,7 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
 | Event | Command | What the agent gets |
 | --- | --- | --- |
 | `SessionStart` | `agent hook session-start` | What the hooks do, the commit the session's changes are measured from, and whether a stop can be judged here: the chain is checked the way `agent doctor --gate` checks it, and a link that is missing is named instead of a promise. |
-| `PostToolUse`, after every tool | `agent hook post-tool` | **Advice, never a block.** The evidence that is new in the working tree since the session began (commits pulled or made by others in that time are in that range too): label, path, line, how the line was read (the rung of the ranking that found it: `lexical` for one line, `hunk` for tokens read across the lines of a hunk), and the change that answers the signal. A signal of a file that has no row of evidence (`hazardous_text`, `executable_bit`, `symlink_change`, `diff_suppressed`, and a code signal the ranking's 32 rows left out) is said for the file. A finding is said once per session, also when the line moves. When advice cannot be given (a file name that is not UTF-8, a sparse checkout, Git refusing the repository), the user and the model are told once that it is off and why. |
+| `PostToolUse`, after every tool | `agent hook post-tool` | **Advice, never a block.** The evidence that is new in the working tree since the session began (commits pulled or made by others in that time are in that range too): label, path, line, how the line was read (the rung of the ranking that found it: `lexical` for one line, `hunk` for tokens read across the lines of a hunk), and the change that answers the signal. A signal of a file that has no row of evidence (`hazardous_text`, `executable_bit`, `symlink_change`, and a code signal the ranking's 32 rows left out) is said for the file. A finding is said once per session, also when the line moves. When advice cannot be given (a file name that is not UTF-8, a sparse checkout, Git refusing the repository), the user and the model are told once that it is off and why. |
 | `Stop` | `agent hook stop` | A verdict on your uncommitted and staged changes, and on each commit made since the session began that your branches, tags, stash, `HEAD` or their history name: each commit once, by its own change. **Only a fail holds the stop**: a commit's at the stop that first judges it, an uncommitted change's once while it is there. The message has the rules that failed and what answers them. A hold is reported for a person. With no judge, no policy, or no ranker the policy admits, the result is **UNJUDGED**, said plainly, and never a pass. |
 
 - **One project and one base for a session.** The session's first hook fixes three things:
@@ -205,7 +205,10 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   `--submodule=short`, `--ignore-submodules=none`, the borrowed store's commit-graph and
   multi-pack index not read): a test runs a recorded copy of its `scripts/make_patch.sh`
   and holds the bytes equal. The index lines are full from 0.10.0, so the `patch_sha256` a
-  verdict seals differs from 0.9.0's for the same change. A file that the repository's index lists
+  verdict seals differs from 0.9.0's for the same change. The judge makes its patch with no
+  attributes, so a file a repository hides from `git diff` is read as text there and finds
+  the same evidence as `--git-working-tree`; only the Git selection raises
+  `diff_suppressed`. A file that the repository's index lists
   is staged whatever an ignore rule says: one added with `git add -f` is in the next commit,
   so it is in the patch. Staging reads no configuration: not the repository's, not the
   user's, not the system's, and no attributes file of the user, so no filter any of them
