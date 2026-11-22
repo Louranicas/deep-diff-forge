@@ -1110,59 +1110,29 @@ fn str_param(params: &Value, key: &str) -> Result<String, RpcError> {
 
 /// `diff.rank`: the `deep-diff-forge.rank.v0` document the CLI's `--stdin-patch --rank --json`
 /// prints for the same patch, sealed like it. `diff.plan` returns only the bare ranking, which
-/// cannot say which bytes it ranked; MCP's `rank_patch` answered with that unsealed array.
+/// cannot say which bytes it ranked; MCP's `rank_patch` answered with that unsealed array. The
+/// value is the one renderer's bytes parsed ([`deep_diff_forge_graph::RankDocument`]), so it
+/// cannot differ from what the CLI prints.
 fn rank_document(review: &deep_diff_forge_patch::SealedReview) -> Value {
+    let ranked = rank(review.files());
     let seal = review.seal();
-    json!({
-        "schema": "deep-diff-forge.rank.v0",
-        "input_sha256": seal.input_sha256,
-        "tool": {"name": deep_diff_forge_core::InputSeal::TOOL_NAME, "version": seal.tool_version},
-        "ranked": ranked_json(&rank(review.files())),
-    })
+    parsed(
+        &deep_diff_forge_graph::RankDocument {
+            seal,
+            ranked: &ranked,
+        }
+        .to_json(),
+    )
 }
 
+/// The bare ranking of `diff.plan` and `session.snapshot`: the document's entries, parsed.
 fn ranked_json(ranked: &[RankedFile]) -> Value {
-    Value::Array(
-        ranked
-            .iter()
-            .map(|rf| {
-                let mut entry = json!({
-                    "path": rf.path,
-                    "status": rf.status.label(),
-                    "score": rf.score,
-                    "signals": rf.signals.iter().map(|s| s.label()).collect::<Vec<_>>(),
-                });
-                // Present only when found, as `hazards` is: most files carry none.
-                if !rf.evidence.is_empty() {
-                    entry["evidence"] = rf
-                        .evidence
-                        .iter()
-                        .map(|e| {
-                            let mut item = json!({
-                                "signal": e.signal.label(),
-                                "address": e.address,
-                                "side": e.side.label(),
-                                "line": e.line,
-                                "basis": e.basis.label(),
-                            });
-                            // Present only when true, as `evidence_truncated` is.
-                            if e.test_likely {
-                                item["test_likely"] = json!(true);
-                            }
-                            item
-                        })
-                        .collect();
-                }
-                if rf.evidence_truncated {
-                    entry["evidence_truncated"] = json!(true);
-                }
-                if let Some(cause) = rf.diff_suppressed {
-                    entry["diff_suppressed"] = json!(cause.label());
-                }
-                entry
-            })
-            .collect(),
-    )
+    parsed(&deep_diff_forge_graph::ranked_array_json(ranked))
+}
+
+/// The value of JSON the one renderer wrote (it always parses; `null` if it ever did not).
+fn parsed(rendered: &str) -> Value {
+    serde_json::from_str(rendered).unwrap_or(Value::Null)
 }
 
 #[cfg(test)]

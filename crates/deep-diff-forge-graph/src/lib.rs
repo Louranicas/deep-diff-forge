@@ -37,6 +37,92 @@ pub use vocabulary::{
     SignalKind, facts, remedy, signal_named, vocabulary,
 };
 
+/// The `deep-diff-forge.rank.v0` document, rendered by one function for every surface (S3.15):
+/// [`RankDocument::to_json`] is the bytes `--stdin-patch --rank --json` prints, newline included,
+/// and the daemon's `diff.rank` (so `rpc` and MCP's `rank_patch`) carries the same bytes, its
+/// value form being those bytes parsed.
+#[derive(Debug, Clone, Copy)]
+pub struct RankDocument<'a> {
+    /// The seal over the exact input bytes the ranking was computed from.
+    pub seal: &'a deep_diff_forge_core::InputSeal,
+    /// The files in review-risk order ([`rank`]).
+    pub ranked: &'a [RankedFile],
+}
+
+impl RankDocument<'_> {
+    /// The canonical bytes: schema first, two-space indent, one ranked entry a line.
+    #[must_use]
+    pub fn to_json(&self) -> String {
+        use deep_diff_forge_core::{InputSeal, json_escape};
+        let entries: Vec<String> = self.ranked.iter().map(|rf| entry_json(rf, true)).collect();
+        let body = if entries.is_empty() {
+            String::new()
+        } else {
+            format!("\n    {}\n  ", entries.join(",\n    "))
+        };
+        format!(
+            "{{\n  \"schema\": \"deep-diff-forge.rank.v0\",\n  \"input_sha256\": {},\n  \"tool\": {{\"name\": {}, \"version\": {}}},\n  \"ranked\": [{body}]\n}}\n",
+            json_escape(&self.seal.input_sha256),
+            json_escape(InputSeal::TOOL_NAME),
+            json_escape(&self.seal.tool_version),
+        )
+    }
+}
+
+/// The ranked entries as one JSON array (`diff.plan`, `session.snapshot`): the document's entries.
+#[must_use]
+pub fn ranked_array_json(ranked: &[RankedFile]) -> String {
+    let entries: Vec<String> = ranked.iter().map(|rf| entry_json(rf, true)).collect();
+    format!("[{}]", entries.join(", "))
+}
+
+/// One ranked entry as `rank.v0` writes it; `full` false leaves out the optional members
+/// (`evidence`, `evidence_truncated`, `diff_suppressed`), as `cluster.v0`'s list has none.
+#[must_use]
+pub fn entry_json(rf: &RankedFile, full: bool) -> String {
+    use deep_diff_forge_core::json_escape;
+    use std::fmt::Write as _;
+    let signals: Vec<String> = rf.signals.iter().map(|s| json_escape(s.label())).collect();
+    let mut out = format!(
+        "{{\"path\": {}, \"status\": {}, \"score\": {}, \"signals\": [{}]",
+        json_escape(&rf.path),
+        json_escape(rf.status.label()),
+        rf.score,
+        signals.join(", ")
+    );
+    // Each optional member is present only when found or true, as `hazards` is.
+    if full && !rf.evidence.is_empty() {
+        let items: Vec<String> = rf
+            .evidence
+            .iter()
+            .map(|e| {
+                format!(
+                    "{{\"signal\": {}, \"address\": {}, \"side\": {}, \"line\": {}, \"basis\": {}{}}}",
+                    json_escape(e.signal.label()),
+                    json_escape(&e.address),
+                    json_escape(e.side.label()),
+                    e.line,
+                    json_escape(e.basis.label()),
+                    if e.test_likely {
+                        ", \"test_likely\": true"
+                    } else {
+                        ""
+                    }
+                )
+            })
+            .collect();
+        let _ = write!(out, ", \"evidence\": [{}]", items.join(", "));
+    }
+    if full && rf.evidence_truncated {
+        out.push_str(", \"evidence_truncated\": true");
+    }
+    if let (true, Some(cause)) = (full, rf.diff_suppressed) {
+        let _ = write!(out, ", \"diff_suppressed\": {}", json_escape(cause.label()));
+    }
+    out.push('}');
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

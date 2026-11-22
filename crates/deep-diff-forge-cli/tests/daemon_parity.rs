@@ -1,7 +1,7 @@
 //! Slice B: the daemon's `diff.compute` answers as `deep-diff-forge --stdin-patch --json` does for
 //! the same bytes, and `diff.rank` as `--stdin-patch --rank --json` does: the same document as a
-//! JSON value (seal included; key order is not part of the contract), the same refusal text, and
-//! the same parse-failure text, with the registry's codes on both surfaces.
+//! JSON value (seal included), the same refusal text, and the same parse-failure text, with the
+//! registry's codes on both surfaces. Since S3.15 the rank document is also the same bytes.
 #![expect(
     clippy::disallowed_methods,
     reason = "integration test: drives real processes, the environment and wall-clock time"
@@ -74,6 +74,45 @@ fn diff_compute_matches_the_cli_document_refusals_and_failures() {
 #[test]
 fn diff_rank_matches_the_cli_rank_document_refusals_and_failures() {
     parity("diff.rank", &["--rank"]);
+}
+
+/// S3.15: the rank document has one byte form, the command line's (what forge-warden seals), and
+/// every surface carries those bytes: a surface that pretty-prints, compacts or reorders on its
+/// own is named here.
+#[test]
+fn rank_bytes_are_one_document_on_every_surface() {
+    let mut compared = 0;
+    for patch in FIXTURES {
+        let (code, stdout, stderr) = cli(patch, &["--rank"], &[]);
+        if code != exit::SUCCESS {
+            assert_eq!(code, exit::INVALID_INPUT, "{patch:?}: {stderr}");
+            continue;
+        }
+        let review = deep_diff_forge_patch::SealedReview::new(
+            patch.as_bytes(),
+            deep_diff_forge_patch::InputGuards {
+                files: false,
+                hunks: false,
+            },
+            env!("CARGO_PKG_VERSION"),
+        )
+        .unwrap();
+        let ranked = deep_diff_forge_graph::rank(review.files());
+        let rendered = deep_diff_forge_graph::RankDocument {
+            seal: review.seal(),
+            ranked: &ranked,
+        }
+        .to_json();
+        let surfaces = [("the one renderer", rendered)];
+        for (surface, bytes) in surfaces {
+            assert!(
+                bytes == stdout,
+                "{surface} differs from the command line's bytes for {patch:?}:\n{bytes}\n{stdout}"
+            );
+            compared += 1;
+        }
+    }
+    assert!(compared >= 5, "{compared}");
 }
 
 /// A list cut short is the same list on both surfaces, and it is the one that keeps what
