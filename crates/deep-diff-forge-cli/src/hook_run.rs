@@ -1499,8 +1499,9 @@ fn record(place: &Place, deadline: Deadline) -> Result<(Project, Option<Vec<Stri
         // recorded, and the next hook of the session tries again, as its first.
         Err(error) => {
             return Err(format!(
-                "the commits that are there as the session begins could not be listed, so its own could not be told from them: {} (`deep-diff-forge agent doctor --gate` checks this as the link `commits`; when it is ready, start a new session)",
-                git_words(&error)
+                "the commits that are there as the session begins could not be listed, so its own could not be told from them: {} (`{} agent doctor --gate` checks this as the link `commits`; when it is ready, start a new session)",
+                git_words(&error),
+                hook::this_binary()
             ));
         }
     };
@@ -1698,7 +1699,9 @@ fn findings(patch: &[u8]) -> Result<Vec<Finding>, String> {
                 path: ranked.path.clone(),
                 side: evidence.side.label().to_owned(),
                 line: evidence.line,
-                basis: deep_diff_forge_graph::EVIDENCE_BASIS.to_owned(),
+                // the rung that found the item, as the ranking gives it: an item read across
+                // the lines of a hunk was said to be "read as lexical" (S3.17a.f)
+                basis: evidence.basis.label().to_owned(),
                 key: hook::finding_key(&ranked.path, evidence.signal.label(), line),
             });
         }
@@ -5939,7 +5942,7 @@ fn notes_of(state: &mut State, mut beside: Vec<Note>, room: usize) -> Vec<String
             0,
             Note {
                 name: "what was committed before this session's first hook".to_owned(),
-                text: hook::FIRST_STOP.to_owned(),
+                text: hook::first_stop(),
                 standing: 0,
             },
         );
@@ -6393,13 +6396,17 @@ fn companion(
     let this = std::env::current_exe().and_then(std::fs::canonicalize).ok();
     let this = this.as_deref().and_then(Path::to_str);
     let mut close: Option<String> = None;
+    let not_printed = format!(
+        "is not the command `{} agent setup --client claude --hooks` prints",
+        hook::this_binary()
+    );
     for file in settings_files(&place.top) {
         let Some(settings) = settings(&file) else {
             continue;
         };
         for hook in event_hooks(&settings, event) {
             let why = match hook::hook_command(&hook.command, word) {
-                None => "is not the command `agent setup --hooks` prints",
+                None => not_printed.as_str(),
                 Some(read) if this != Some(read.program.as_str()) => {
                     "does not run this program by its own absolute path"
                 }
@@ -6417,7 +6424,8 @@ fn companion(
     }
     Err(close.unwrap_or_else(|| {
         format!(
-            "no Claude Code settings file registers a {event} hook of this program: {READ_HERE} (agent setup --client claude --hooks prints the block)"
+            "no Claude Code settings file registers a {event} hook of this program: {READ_HERE} (`{} agent setup --client claude --hooks` prints the block)",
+            hook::this_binary()
         )
     }))
 }
@@ -6465,10 +6473,10 @@ fn not_this_chain(
     args: &[String],
 ) -> Option<String> {
     let Some(read) = hook::stop_command(command) else {
-        return Some(
-            "is not the command `agent setup --hooks` prints (one program, `agent hook stop --client claude`, then only --judge, --policy and --ranker-dir)"
-                .to_owned(),
-        );
+        return Some(format!(
+            "is not the command `{} agent setup --client claude --hooks` prints (this program by its absolute path with the event stop and --client claude, then only --judge, --policy and --ranker-dir)",
+            hook::this_binary()
+        ));
     };
     // The word itself, not what it leads to: a shell runs `A=ddf agent …` as the program
     // `agent` with a variable set, and a link that leads to this binary today can lead
@@ -6531,7 +6539,8 @@ fn registered(
     }
     Err(close.unwrap_or_else(|| {
         format!(
-            "no Claude Code settings file registers a stop hook: {READ_HERE} (agent setup --client claude --hooks prints the block)"
+            "no Claude Code settings file registers a stop hook: {READ_HERE} (`{} agent setup --client claude --hooks` prints the block)",
+            hook::this_binary()
         )
     }))
 }
@@ -7505,7 +7514,7 @@ mod tests {
             }),
             ..State::default()
         };
-        assert_eq!(notes_of(&mut late, Vec::new(), ROOM), [hook::FIRST_STOP]);
+        assert_eq!(notes_of(&mut late, Vec::new(), ROOM), [hook::first_stop()]);
         for _ in 2..=3 {
             assert_eq!(
                 notes_of(&mut late, Vec::new(), ROOM),

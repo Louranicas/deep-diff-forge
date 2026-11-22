@@ -11293,3 +11293,183 @@ fn doctor_gate_names_the_verdict_schema_the_judge_writes() {
         "{said}"
     );
 }
+
+// ---- S3.17a part 2 and S3.25.a (0.10.0, lane H): the hooks say only what is true ----
+
+/// The text of every string member of a hook's output, or the output itself when it is not a
+/// JSON document (a session start prints plain text).
+fn texts_of(stdout: &str) -> Vec<String> {
+    fn walk(value: &Value, out: &mut Vec<String>) {
+        match value {
+            Value::String(text) => out.push(text.clone()),
+            Value::Array(items) => items.iter().for_each(|item| walk(item, out)),
+            Value::Object(members) => members.values().for_each(|member| walk(member, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    match serde_json::from_str::<Value>(stdout) {
+        Ok(document) => walk(&document, &mut out),
+        Err(_) => out.push(stdout.to_owned()),
+    }
+    out
+}
+
+/// The advice a `PostToolUse` hook gave the model; panics when it gave none.
+fn advice_of(stdout: &str) -> String {
+    let out: Value = serde_json::from_str(stdout).unwrap_or_else(|e| panic!("{e}: {stdout:?}"));
+    out["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no advice: {stdout}"))
+        .to_owned()
+}
+
+/// What N47 forbids in text a judged agent reads: a substitute that does not count (any of the
+/// vocabulary's, whether a label raises it or not: corrections 2, point B.1), a pointer to the
+/// people's `explain signal`, and a command of this program by its bare name rather than by
+/// its absolute path.
+fn agent_facing_faults(text: &str) -> Vec<String> {
+    let mut faults = Vec::new();
+    for facts in deep_diff_forge_graph::vocabulary() {
+        for not in deep_diff_forge_graph::remedy(facts.signal).not_accepted {
+            if text.contains(not.substitute) {
+                faults.push(format!(
+                    "a substitute of {}: {:?}",
+                    facts.label(),
+                    not.substitute
+                ));
+            }
+        }
+    }
+    if text.contains("Not accepted") {
+        faults.push("a \"Not accepted\" sentence".to_owned());
+    }
+    if text.contains("explain signal") {
+        faults.push("a pointer to `explain signal`".to_owned());
+    }
+    let by_path = format!("{} ", this_binary().display());
+    for command in ["agent doctor", "agent setup", "explain signal"] {
+        for (at, _) in text.match_indices(command) {
+            if !text[..at].ends_with(&by_path) {
+                faults.push(format!(
+                    "the command {command:?} by a bare name: {:?}",
+                    &text[text[..at]
+                        .char_indices()
+                        .rev()
+                        .nth(30)
+                        .map_or(0, |(i, _)| i)..at + command.len()]
+                ));
+            }
+        }
+    }
+    faults
+}
+
+/// S3.17a.f: "read as" names the rung that found the item, as the ranking gives it. Every item
+/// was said to be "read as lexical", also one read across the lines of a hunk.
+#[test]
+fn advice_says_the_basis_the_ranking_gives() {
+    let scratch = Scratch::new("hook-advice-basis");
+    let root = repository(&scratch);
+    let event = input("PostToolUse", &root, "s1", false);
+    std::fs::write(
+        root.join("a.rs"),
+        "fn a() {}\nfn b() { let _c = std::process::\n    Command::new(\"x\"); }\n",
+    )
+    .unwrap();
+    let (code, stdout, stderr) = hook("post-tool", &[], &event);
+    assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
+    let advice = advice_of(&stdout);
+    assert!(
+        advice.contains("- process_spawn at \"a.rs\" line 2 (new side, read as hunk). Accepted: "),
+        "the hunk item is not said as read across the hunk: {advice}"
+    );
+}
+
+/// S3.17a.f: every command the hooks name is this program by its own absolute path: a bare
+/// `deep-diff-forge` runs whatever `PATH` finds when it is typed. The session start names
+/// `agent doctor --gate`, and the first stop of a session no start recorded names `agent
+/// setup`.
+#[test]
+fn advice_names_the_binary_by_its_path() {
+    let scratch = Scratch::new("hook-advice-binary");
+    let root = repository(&scratch);
+    let by_path = format!("`{} agent", this_binary().display());
+    // no judge: the chain is not ready, and the start says which command checks it
+    let started = start(&root, "s1");
+    assert!(
+        started.contains(&format!("{by_path} doctor --gate` checks every link")),
+        "{started}"
+    );
+    // a stop that is its session's first hook names the command that prints the settings
+    let (script, _, _) = judge(&scratch, &verdict("pass", "r", "check_suppressed", "a.rs"));
+    let stopped = stop_from(&root, "s2", &script);
+    let said = texts_of(&stopped.to_string()).join("\n");
+    assert!(
+        said.contains(&format!(
+            "{by_path} setup --client claude --hooks` prints the settings"
+        )),
+        "{said}"
+    );
+    for text in [started, said] {
+        assert!(
+            !text.contains("`deep-diff-forge "),
+            "a bare command: {text}"
+        );
+    }
+}
+
+/// S3.17a.f as corrections 2, point B.1 amends it (gap N-01, N47): what a judged agent reads
+/// (the advice after a tool call, the session start, the reason a stop is held, what a stop
+/// adds) names the accepted repair only, never a substitute that does not count, never the
+/// people's `explain signal`, and no command by a bare name.
+#[test]
+fn no_agent_facing_text_offers_an_unseen_substitute() {
+    let scratch = Scratch::new("hook-agent-facing-text");
+    let root = repository(&scratch);
+    let mut said: Vec<(String, String)> = Vec::new();
+    let mut keep = |what: &str, stdout: &str| {
+        for text in texts_of(stdout) {
+            said.push((what.to_owned(), text));
+        }
+    };
+    // the start of a session, with no judge and then with one that fails everything
+    keep("session start (no judge)", &start(&root, "s1"));
+    let (script, _, _) = failing_judge(&scratch);
+    let judge_arg = ["--judge", script.to_str().unwrap()];
+    let (_, stdout, _) = hook(
+        "session-start",
+        &judge_arg,
+        &input("SessionStart", &root, "s2", false),
+    );
+    keep("session start (a judge)", &stdout);
+    // advice on a change with many labels, each with substitutes in the vocabulary
+    std::fs::write(
+        root.join("a.rs"),
+        "fn a() {}\n#[allow(dead_code)]\nfn b() { unsafe { c() }; d().unwrap(); }\n#[test]\n#[ignore]\nfn t() { assert!(true); }\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("big.rs"), "// x\n".repeat(600)).unwrap();
+    let (_, stdout, _) = hook("post-tool", &[], &input("PostToolUse", &root, "s2", false));
+    let advice = advice_of(&stdout);
+    for label in ["check_suppressed", "unsafe_added", "panic_path_added"] {
+        assert!(advice.contains(label), "{label}: {advice}");
+    }
+    keep("advice", &stdout);
+    // a stop held for a failing rule, and the first stop of a session no start recorded
+    keep("stop (held)", &stop_from(&root, "s2", &script).to_string());
+    keep(
+        "stop (first hook)",
+        &stop_from(&root, "s3", &script).to_string(),
+    );
+    assert!(said.len() >= 5, "{said:?}");
+    let faults: Vec<String> = said
+        .iter()
+        .flat_map(|(what, text)| {
+            agent_facing_faults(text)
+                .into_iter()
+                .map(move |fault| format!("{what}: {fault}"))
+        })
+        .collect();
+    assert!(faults.is_empty(), "{faults:#?}");
+}
