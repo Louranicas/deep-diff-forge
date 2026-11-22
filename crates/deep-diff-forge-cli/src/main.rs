@@ -1,6 +1,18 @@
 // DDF integration: R02, R09, R19, R21. Validate that a patch transforms the captured base into the captured candidate before attaching semantics; export explicit coverage and snapshot scope.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#shared-service
 // Module index: docs/RECOMMENDATION_INTEGRATION.md#shared-service
+
+/// `eprintln!` for this crate: a diagnostic that cannot be written is dropped, so the exit code
+/// chosen after it still reaches the caller. std's `eprintln!` panics when stderr cannot be
+/// written (`2>/dev/full`), and that panic exited 101 whatever the error was (S3.17a.g). Declared
+/// before every module, so it stands in for std's in the whole binary crate.
+macro_rules! eprintln {
+    ($($arg:tt)*) => {{
+        use ::std::io::Write as _;
+        let _ = ::std::writeln!(::std::io::stderr(), $($arg)*);
+    }};
+}
+
 mod analysis;
 mod args;
 mod bench;

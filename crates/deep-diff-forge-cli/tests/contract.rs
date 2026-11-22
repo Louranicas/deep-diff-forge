@@ -1323,3 +1323,42 @@ fn no_tracked_file_links_the_private_vault() {
         if found.len() > 40 { ", ..." } else { "" }
     );
 }
+
+/// Run the binary with `stdin` written to it and the given stdout and stderr; its exit code.
+fn exit_with(args: &[&str], stdin: &[u8], stdout: Stdio, stderr: Stdio) -> i32 {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(stdout)
+        .stderr(stderr)
+        .spawn()
+        .unwrap();
+    // A command that exits before reading all of stdin closes the pipe first; not a failure.
+    let _ = child.stdin.take().unwrap().write_all(stdin);
+    child.wait().unwrap().code().unwrap_or(-1)
+}
+
+/// S3.17a.g: a diagnostic that cannot be written does not change the exit code. std's
+/// `eprintln!` panicked on a failed stderr write, and the panic exited 101: `no-such-command
+/// 2>/dev/full` exited 101, not 2.
+#[test]
+fn an_unwritable_error_stream_keeps_the_exit_code() {
+    let full = || std::fs::OpenOptions::new().write(true).open("/dev/full");
+    if full().is_err() {
+        return; // no /dev/full on this platform (Linux has it; the gate runs on Linux)
+    }
+    let over_budget = vec![b'x'; deep_diff_forge_patch::DEFAULT_BYTE_BUDGET + 1];
+    for (args, stdin, code) in [
+        (&["no-such-command"][..], &b""[..], 2),
+        // an option refused in another module of the binary (`args.rs`)
+        (&["--stdin-patch", "--no-such-option"][..], &b""[..], 2),
+        (&["--stdin-patch"][..], &over_budget[..], 4),
+    ] {
+        let stderr = Stdio::from(full().unwrap());
+        assert_eq!(
+            exit_with(args, stdin, Stdio::null(), stderr),
+            code,
+            "{args:?} with stderr at /dev/full"
+        );
+    }
+}
