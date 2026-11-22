@@ -2,7 +2,7 @@
 
 This document defines how Deep-Diff-Forge moves from commit to public artifact.
 
-## Status 2026-11-18 (0.9.0 prepared)
+## Status of 0.9.0 and the releases before it
 
 - **0.9.0** adds five integrity signals and the agent hooks, and fixes a process spawn cut
   across two sections of one path and two costs quadratic in the length of a line, in 0.8.4

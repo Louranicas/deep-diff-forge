@@ -494,6 +494,22 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   (`change_input`), not 3, in every Git selection and in a file pair. A Git helper that
   outlives Git can no longer stretch the acquisition past its limit (S3.17a.b).
 
+- **A gate flag failed open when its output was closed** (S3.17a.g2,
+  [DDF-2026-010](docs/advisories/DDF-2026-010.md)). `findings verify --require-findings` and
+  `--require-all` exited 0 with nothing on stderr when the reader of standard output had gone
+  (`… | head`, a wrapper that closes the pipe); measured on 0.8.3, 0.8.4 and 0.9.0. Every
+  `--require-*` refusal is now decided before the output is written and exits 7 with its reason.
+  A diagnostic that cannot be written (`2>/dev/full`) no longer turns the exit code into 101
+  (S3.17a.g).
+
+- **The daemon** (S3.8). `daemon stop` answers within a second when idle clients hold every data
+  and control slot (it gave "no answer", exit 6, until a slot freed). The line reader retries an
+  interrupted read; the writer retries an interrupted write and ends a write of no bytes; two
+  `unreachable!()` in the views are gone. `daemon path` and `daemon start` refuse a socket path
+  of 108 bytes or more with exit 2. The answer bound counts the newline, so no answer exceeds
+  the 80 MiB line cap that every client holds. The status lines of `SECURITY.md` and the release
+  document say what they describe and no longer go stale at a tag, held by a test.
+
 ## [0.9.0] - 2026-11-18
 
 **Feature release with fixes for released versions.** 0.9.0 adds five integrity signals for a

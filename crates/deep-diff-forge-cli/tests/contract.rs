@@ -1461,6 +1461,7 @@ fn status_lines_hold_after_the_tag() {
     let mut found = Vec::new();
     for doc in [
         "SECURITY.md",
+        "docs/RELEASE_AND_PUBLICATION.md",
         "README.md",
         "CONTRIBUTING.md",
         "docs/OPERATIONS_AND_DAEMON.md",
