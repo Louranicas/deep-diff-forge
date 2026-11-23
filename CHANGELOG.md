@@ -237,7 +237,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   hunk with no context past line 1 and a hunk after one with no trailing context. They stay
   tested on hunks built without the parser. Series whose hunks carry context are read as before;
   of 6,110 corpus patches 0.9.0 read, 698 are refused and none read changed; the evaluation
-  moved 18 such sections to `fixtures/eval-refused-by-parser/` (precision 170/195, recall 170/247).
+  moved 18 such sections to `fixtures/eval-refused-by-parser/` (precision 170/195, recall 170/247
+  at that step; the tree's figures are the later ones of this section and of
+  `docs/reference/evaluation.md`).
 - `PatchParseError` has three new variants (the enum is `#[non_exhaustive]`):
   `HeaderNotWrittenByGit { line_number, header, reason }`,
   `HunkPlacedElsewhere { line_number, reason }` and `GitCannotWrite { line_number, reason }`.
@@ -473,8 +475,7 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   and reads `SO_PEERCRED` user ids at or above 2^31 correctly. Rust client
   (`deep_diff_forge_daemon::request`, the SDK's `Client`): reads the daemon's answer when the
   write breaks with a connection reset. The reference states one line cap for the daemon
-  protocol: 80 MiB counting the newline, in both directions (one stated exception: the server's
-  answer bound still measures without the newline).
+  protocol: 80 MiB counting the newline, in both directions.
 
 - **`secret_like` finds GitLab tokens and fine-grained GitHub tokens** (S3.24,
   [DDF-2026-007](docs/advisories/DDF-2026-007.md)): `glpat-` and its routable form, `gldt-`,
@@ -500,16 +501,24 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   silent and no longer fails the review: the file stays a binary change and is labelled by its
   attribute, else with the new cause `unread` (S3.27.g); paths are read again in Git's order
   within what is left of the budget, so one large file does not keep later files unread, and
-  once the limit has run out every binary change left is `unread`. A changed file whose name is
-  not UTF-8 exits 4
-  (`change_input`), not 3, in every Git selection and in a file pair. A Git helper that
-  outlives Git can no longer stretch the acquisition past its limit (S3.17a.b).
+  once the limit has run out every binary change left is `unread`. A file whose text reading
+  had to be dropped because the whole patch with the readings did not parse (more than 1,000,000
+  lines) is not silent either: it stays a binary change and keeps its cause, or carries `unread`;
+  labels are monotonic across every fallback (A0100-M1 = F1, found by both reviewers of the
+  0.10.0 tree). A changed file whose name is not UTF-8 exits 4 (`change_input`), not 3, in every
+  Git selection and in the daemon's `review.change`; a file pair given such a name as an argument
+  exits 3 (an argument error), as before. A byte order mark is seen when the change shows line 1:
+  wide text outside Latin-1 that is edited elsewhere is not labelled (a stated limit). A Git
+  helper that outlives Git can no longer stretch the acquisition past its limit (S3.17a.b).
 
 - **A gate flag failed open when its output was closed** (S3.17a.g2,
   [DDF-2026-010](docs/advisories/DDF-2026-010.md)). `findings verify --require-findings` and
   `--require-all` exited 0 with nothing on stderr when the reader of standard output had gone
   (`… | head`, a wrapper that closes the pipe); measured on 0.8.3, 0.8.4 and 0.9.0. Every
-  `--require-*` refusal is now decided before the output is written and exits 7 with its reason.
+  `--require-*` refusal is now decided before the output is written and exits 7 with its reason,
+  also when stdout cannot be written at all (a full disk gave exit 3; F3 of the tree review).
+  `agent doctor --gate` and `eval` still exit 0 when their reader has gone: a known issue of
+  0.10.0, closed in 0.11.0.
   A diagnostic that cannot be written (`2>/dev/full`) no longer turns the exit code into 101
   (S3.17a.g).
 
