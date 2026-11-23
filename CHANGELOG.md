@@ -195,6 +195,20 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - `agent doctor --gate` and `agent check` compare `--ranker-dir` with the registered stop's
   by the directory a stop lists. A relative path, a trailing `/` or a link to that directory
   is the same; they compared it as text (found by lane D1).
+- MCP tool `diagnose_patch` and `review_change` view `diagnostics`: one page of
+  `deep-diff-forge.diagnostics.v0` each, from the daemon's pager in process, with an output
+  schema. `max_bytes` (12,364 to 33,554,432, default 32,768) counts the whole answer as written,
+  both copies; the line escapes every hidden character, and a parse failure names where the
+  patch failed and none of its text (F5b).
+- Rust SDK: the typed model `Diagnostics` (its reader ignores members it does not know),
+  `diagnostics(&Review)` in process and `Client::diagnostics`, which pages a protocol-3 daemon,
+  rebuilds the bytes and checks them against `document_sha256`. Python SDK:
+  `diagnostics_patch`, the same. A daemon of protocol 2 is `ProtocolTooOld` and is never worked
+  around; pages that break the paging contract end the call with a named error
+  (`Error::Document`, `PagingError`). `Error` gains the two variants; it is `#[non_exhaustive]`
+  (F5b).
+- `deep_diff_forge_daemon::change_review`: `review.change`'s acquisition, public for a caller
+  that builds its own view of the change (F5b).
 
 ## [0.10.0] - 2026-11-23
 
