@@ -2052,10 +2052,15 @@ fn a_linked_working_tree_the_session_entered_is_judged_too() {
     let reason = blocked(&decision);
     assert!(!reason.contains("Uncommitted changes in "), "{reason}");
     // nothing was left behind, and the hooks' directory is the repository's, not the tree's
+    // (where the project's ledger and its salt are kept since 0.11.0: F11)
     assert!(root.join(".git/deep-diff-forge").is_dir());
     assert_eq!(
         std::fs::read_dir(root.join(".git/deep-diff-forge"))
             .unwrap()
+            .filter(|entry| {
+                let name = entry.as_ref().unwrap().file_name();
+                name != "ledger.jsonl" && name != "ledger.salt"
+            })
             .count(),
         0
     );
