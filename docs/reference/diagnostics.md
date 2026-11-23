@@ -1,8 +1,10 @@
 # Diagnostics
 
-`deep-diff-forge.diagnostics.v0` is planned for 0.11.0. This page is the contract that the
+`deep-diff-forge.diagnostics.v0` is new in 0.11.0. This page is the contract that the
 builder and every surface that prints it (`--diagnostics`, the daemon method `diff.diagnostics`,
-MCP `diagnose_patch`, the SDKs) are held to. Until they land, no command prints this schema.
+MCP `diagnose_patch`, the SDKs) are held to. `--diagnostics` prints it
+([On the command line](#on-the-command-line)); the daemon method, MCP and the SDKs are still to
+come, and until they land no other surface prints this schema.
 
 ## What a diagnostics document is
 
@@ -150,6 +152,33 @@ proves the engine raises. Substitutes that no label raises are listed for people
 pages and `SECURITY.md`. `explain signal <label> --audience agent` prints what an agent is shown.
 A `floor_only` reading has `audience: person`, no repairs and no substitutes; text for agents
 counts these readings and asks that the text carrying them be left in place.
+
+## On the command line
+
+`--diagnostics` is an output mode of `--stdin-patch`, the Git selections and `<old> <new>`. With
+`--json` it prints the document as the builder writes it; `schema diagnostics` prints its JSON
+Schema. The input is refused before any document exactly as `--rank` refuses it: a patch that
+does not parse, or, on stdin, input in which Git finds no patch, exits 4 (`--allow-empty` makes
+that an empty document); `--require-files` and `--require-hunks` exit 7. The command runs no
+judge, so `judge` is `{"state": "unknown", "ranker_sha256": null}`. On Git input a file Git gave
+as binary and read again as text carries `diff_suppressed@file` whatever the cause; the cause
+(`attribute`, `content`, `encoding` or `unread`) is in `rank.v0`, not here. The three inputs give
+one document for one change, except `input_sha256` and the keys, which hash the patch bytes
+each input makes, and, for `<old> <new>`, the paths, which are the two paths as given.
+
+Without `--json` it prints a text form for agents. First one line per diagnostic whose
+`audience` is `agent`, in document order, then for each file the count of its `floor_only`
+readings and each file in `cut`, then each named id with its sentence, and the counts:
+
+    "src/b.rs":2: unsafe_added@line (security, new side); repairs: unsafe_added:a1, unsafe_added:a2
+    "src/a.rs": unsafe_added@file (security); repairs: unsafe_added:a1, unsafe_added:a2
+    "src/app.rs": 1 readings kept for compatibility with 0.8.3 are for a person; leave the text that carries them
+    "src/a.rs": 32 places listed; the rest were cut at 32
+    unsafe_added:a1: <the sentence of the repair>
+    counts: files 3, diagnostics 35, agent 34, person 1, cut_files 1
+
+The path is quoted, with `\`, `"`, control, bidi and invisible characters escaped; it is the only
+text of the change the text form prints. `judge_sees` is not printed.
 
 ## Paging
 

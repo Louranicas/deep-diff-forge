@@ -22,6 +22,8 @@ pub const RESULT_SCHEMA: &str = "ddf.result.v1";
 pub const EXIT_CODES_SCHEMA: &str = "ddf.exit-codes.v1";
 /// The signal vocabulary's schema identifier.
 pub const SIGNALS_SCHEMA: &str = "deep-diff-forge.signals.v0";
+/// The diagnostics document's schema identifier (`docs/reference/diagnostics.md`).
+pub const DIAGNOSTICS_SCHEMA: &str = "deep-diff-forge.diagnostics.v0";
 /// The schema identifier of one signal's explanation.
 pub const SIGNAL_EXPLAIN_SCHEMA: &str = "deep-diff-forge.signal-explain.v0";
 /// The usage line of `explain`.
@@ -242,8 +244,8 @@ fn substitutes(remedy: &deep_diff_forge_graph::Remedy, agent: bool) -> Vec<(Valu
         .collect()
 }
 
-/// `schema [result|exit-codes|signals]`: the JSON Schema of the envelope, the exit-code registry,
-/// or the signal vocabulary.
+/// `schema [result|exit-codes|signals|diagnostics]`: the JSON Schema of the envelope, the exit-code
+/// registry, the signal vocabulary, or the JSON Schema of `deep-diff-forge.diagnostics.v0`.
 pub fn schema(args: &[String]) -> Result<String, String> {
     let value = match args.first().map(String::as_str) {
         None | Some("result") => result_schema(),
@@ -257,9 +259,10 @@ pub fn schema(args: &[String]) -> Result<String, String> {
             "tool": tool(),
             "signals": deep_diff_forge_graph::vocabulary().iter().map(signal_json).collect::<Vec<_>>(),
         }),
+        Some("diagnostics") => diagnostics_schema(),
         Some(other) => {
             return Err(format!(
-                "unknown schema: {other} (result|exit-codes|signals)"
+                "unknown schema: {other} (result|exit-codes|signals|diagnostics)"
             ));
         }
     };
@@ -300,6 +303,88 @@ fn result_schema() -> Value {
             "truncated": {"type": "array", "items": {"enum": ["stdout", "stderr"]}},
         },
     })
+}
+
+/// The JSON Schema of `deep-diff-forge.diagnostics.v0`: members only added, so objects stay open;
+/// the codes and labels are the vocabulary's (`code_of`), the pinned table of the reference page.
+fn diagnostics_schema() -> Value {
+    let vocabulary = deep_diff_forge_graph::vocabulary();
+    let codes: Vec<String> = vocabulary
+        .iter()
+        .flat_map(|f| [true, false].map(|line| deep_diff_forge_graph::code_of(f.signal, line)))
+        .flatten()
+        .collect();
+    let labels: Vec<&str> = vocabulary
+        .iter()
+        .map(deep_diff_forge_graph::SignalFacts::label)
+        .collect();
+    let (count, hex) = (
+        json!({"type": "integer", "minimum": 0}),
+        json!({"type": "string", "pattern": "^[0-9a-f]{64}$"}),
+    );
+    let ids = json!({"type": "array", "items": {"type": "string"}});
+    let object = |required: &[&str], properties: Value| json!({"type": "object", "required": required, "properties": properties});
+    let diagnostic = object(
+        &[
+            "key",
+            "code",
+            "label",
+            "class",
+            "path",
+            "anchor",
+            "side",
+            "line",
+            "occurrence",
+            "reading",
+            "audience",
+            "repairs",
+            "not_accepted",
+        ],
+        json!({
+            "key": hex, "code": {"enum": codes}, "label": {"enum": labels},
+            "class": {"enum": ["security", "integrity", "shape"]}, "path": {"type": "string"},
+            "anchor": {"enum": ["line", "file"]}, "side": {"enum": ["new", "old", null]},
+            "line": {"type": ["integer", "null"]}, "occurrence": count,
+            "reading": {"enum": ["current", "floor_only"]}, "audience": {"enum": ["agent", "person"]},
+            "repairs": ids, "not_accepted": ids,
+            "test_likely": {"type": "boolean"}, "judge_sees": {"type": "boolean"},
+        }),
+    );
+    let mut schema = object(
+        &[
+            "schema",
+            "input_sha256",
+            "tool",
+            "judge",
+            "counts",
+            "cut",
+            "diagnostics",
+            "texts",
+        ],
+        json!({
+            "schema": {"const": DIAGNOSTICS_SCHEMA}, "input_sha256": hex,
+            "tool": object(&["name", "version", "scorer_sha256"], json!({"scorer_sha256": hex})),
+            "judge": object(&["state", "ranker_sha256"], json!({
+                "state": {"enum": ["unknown", "same", "different", "none_admitted"]},
+                "ranker_sha256": {"type": ["string", "null"]},
+            })),
+            "counts": object(&["files", "diagnostics", "agent", "person", "cut_files"], json!({
+                "files": count, "diagnostics": count, "agent": count, "person": count, "cut_files": count,
+            })),
+            "cut": {"type": "array", "items": object(&["path", "rows_kept"], json!({"path": {"type": "string"}, "rows_kept": count}))},
+            "diagnostics": {"type": "array", "items": diagnostic},
+            "texts": {"type": "object", "additionalProperties": {"type": "string"}},
+        }),
+    );
+    schema["$schema"] = json!("https://json-schema.org/draft/2020-12/schema");
+    schema["$id"] = json!(format!(
+        "https://github.com/Louranicas/deep-diff-forge/schemas/{DIAGNOSTICS_SCHEMA}.json"
+    ));
+    schema["title"] = json!(DIAGNOSTICS_SCHEMA);
+    schema["description"] = json!(
+        "What `--diagnostics --json` prints: every label of the ranking of one input, at the evidence row that locates it or at its file (docs/reference/diagnostics.md). Members are only added, so readers ignore members they do not know."
+    );
+    schema
 }
 
 /// Read at most `cap` bytes and report whether more followed.

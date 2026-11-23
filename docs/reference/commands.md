@@ -8,12 +8,13 @@
 deep-diff-forge --stdin-patch [MODE] [--require-files] [--require-hunks] [--allow-empty]
 deep-diff-forge {--git-working-tree [--include-untracked] | --git-staged | --git-range A..B} [--repo PATH] [MODE | --acquisition-json]
 deep-diff-forge [--] <old> <new> [MODE] [--require-files] [--require-hunks]
-# MODE: --json | --jsonl | --rank [--fail-on LIST] | --cluster [--parallel N] | --layout inline|side-by-side
+# MODE: --json | --jsonl | --rank [--fail-on LIST] | --diagnostics [--fail-on LIST]
+#       | --cluster [--parallel N] | --layout inline|side-by-side
 #       | --outline | --hunks [--address A]... [--path P]...   (both: [--max-bytes N] [--cursor C])
 ```
 
 Choose one MODE: a second is refused with exit 2 before any input is read. `--json` also
-selects the JSON form of `--rank` and `--cluster` (and is accepted, redundantly, with
+selects the JSON form of `--rank`, `--diagnostics` and `--cluster` (and is accepted, redundantly, with
 `--outline` and `--hunks`, which always print JSON). An option that takes one value is
 refused when given twice; only `--address` and `--path` repeat.
 
@@ -23,11 +24,12 @@ refused when given twice; only `--address` and `--path` repeat.
 | `--json` | One `deep-diff-forge.review.v0` document: files, hunks, line anchors, summary, seal. |
 | `--jsonl` | One `{"event":"diff.file",…}` event per file, streamed. |
 | `--rank` | Files by review risk, highest first, with their signals. Add `--json` for `deep-diff-forge.rank.v0`. |
+| `--diagnostics` | Every label of the ranking at the evidence row that locates it or at its file: a text form for agents (each path quoted and escaped, the line, the code, the vocabulary ids and their sentences), or with `--json` `deep-diff-forge.diagnostics.v0` ([Diagnostics](diagnostics.md#on-the-command-line)). The ranking is the one `--rank` prints and the input is refused as `--rank` refuses it. |
 | `--cluster [--parallel serial\|auto\|N]` | The same ranking through bounded parallel lanes with a deterministic join and a receipt. Add `--json` for `deep-diff-forge.cluster.v0`. |
 | `--layout inline` / `--layout side-by-side` | Text projections with old and new line numbers, as wide as the file's largest. A `\` note row follows what a row cannot show: a non-UTF-8 line shown lossily, `\ No newline at end of file`, and a removed/added pair whose printed text looks the same (a tab against the spaces it advances to, a literal `\x1b` against a raw `ESC`, a trailing or no-break space, or in side-by-side a change past the column width). Inline prints tabs raw and judges them by 8-column tab stops; side-by-side shows a tab as four spaces. Letters that only look alike (Cyrillic `а` against Latin `a`) are not noted. |
 | `--require-files` | Refuse a patch with 0 files: exit 7, empty stdout, `refused: 0 files in input (--require-files)`. |
 | `--require-hunks` | Refuse a patch with 0 hunks or 0 changed lines (header-only, rename-only, context-only): exit 7, `refused: 0 hunks in input (--require-hunks)`. |
-| `--fail-on LIST` | With `--rank` only (any other mode: exit 2, `error: --fail-on needs --rank`), on `--stdin-patch`, the Git selections and `<old> <new>`. A gate on the ranking: `LIST` is comma-separated, no spaces, each token a class (`security`, `integrity`, `shape`) or a label `deep-diff-forge schema signals` lists; any other token, an empty one included, is exit 2 before the input is read. The ranking is printed as without the flag; then the command exits 7 when any file's `signals[]` holds a selected label (`refused: N files carry a label of LIST (--fail-on)`) or when any file's evidence list was cut at 32 rows, whatever the list (`refused: the evidence of N files was cut at 32 rows (--fail-on evidence_truncated)`), each reason line followed by the files it names, and exits 7 even when the reader closed stdout. It reads `signals[]`, not the evidence rows, so a label with no row (`hazardous_text`) or one whose rows were cut still refuses. On a patch read from stdin, a file given as binary is judged by its shape only; use `--git-*`, which reads Git's attributes and raises `diff_suppressed`, or add `binary_change` to `--fail-on`. |
+| `--fail-on LIST` | With `--rank` or `--diagnostics` only (any other mode: exit 2, `error: --fail-on needs --rank or --diagnostics`), on `--stdin-patch`, the Git selections and `<old> <new>`. A gate on the ranking, with one verdict under both modes: `LIST` is comma-separated, no spaces, each token a class (`security`, `integrity`, `shape`) or a label `deep-diff-forge schema signals` lists; any other token, an empty one included, is exit 2 before the input is read. The ranking or the diagnostics are printed as without the flag; then the command exits 7 when any file's `signals[]` holds a selected label (`refused: N files carry a label of LIST (--fail-on)`) or when any file's evidence list was cut at 32 rows, whatever the list (`refused: the evidence of N files was cut at 32 rows (--fail-on evidence_truncated)`), each reason line followed by the files it names, and exits 7 even when the reader closed stdout. It reads `signals[]`, not the evidence rows, so a label with no row (`hazardous_text`) or one whose rows were cut still refuses. On a patch read from stdin, a file given as binary is judged by its shape only; use `--git-*`, which reads Git's attributes and raises `diff_suppressed`, or add `binary_change` to `--fail-on`. |
 | `--allow-empty` | `--stdin-patch` only, Git's flag with Git's meaning: input in which Git finds no patch (zero bytes, whitespace, prose, a commit message alone) is an empty change, exit 0 with 0 files. Without it that input is refused as `git apply` refuses it: exit 4, empty stdout, stderr `error: no_patch_in_input: …`. The Git selections on a clean tree and a file pair of identical files still answer 0 files with exit 0. |
 | `--outline` | `deep-diff-forge.review-outline.v0`: files in review-risk order, each hunk's address, ranges, `@@` heading and counts, no line text. |
 | `--hunks [--address A]... [--path P]...` | `deep-diff-forge.review-hunks.v0`: the chosen hunks verbatim (all, by address or by path). A long hunk continues at a line (`complete: false`). |
@@ -158,7 +160,7 @@ text passes through a control-character sanitiser, so the only raw escapes are f
 
 ```bash
 deep-diff-forge envelope -- <command…>          # any command as one ddf.result.v1 object
-deep-diff-forge schema [result|exit-codes|signals]  # the envelope's JSON Schema, the registry, or the signal vocabulary
+deep-diff-forge schema [result|exit-codes|signals|diagnostics]  # the envelope's JSON Schema, the registry, the signal vocabulary, or the JSON Schema of diagnostics.v0
 deep-diff-forge explain {<code> [--family engine|council] | signal <label> [--audience agent|person]} [--json]
 deep-diff-forge mcp                             # read-only MCP server over stdio
 deep-diff-forge rpc                             # the daemon's JSON-RPC over stdio, no daemon

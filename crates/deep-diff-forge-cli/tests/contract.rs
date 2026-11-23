@@ -711,6 +711,7 @@ fn patch_option_rows<'a>(
         ),
         ("--jsonl", vec!["--stdin-patch", "--jsonl"]),
         ("--rank", vec!["--stdin-patch", "--rank"]),
+        ("--diagnostics", vec!["--stdin-patch", "--diagnostics"]),
         ("--cluster", vec!["--stdin-patch", "--cluster"]),
         (
             "--parallel",

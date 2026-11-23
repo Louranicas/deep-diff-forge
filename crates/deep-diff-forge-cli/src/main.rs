@@ -17,6 +17,7 @@ mod analysis;
 mod args;
 mod bench;
 mod contract;
+mod diagnostics_text;
 mod eval;
 mod fail_on;
 mod file_pair;
@@ -229,21 +230,22 @@ fn refuse_arguments_to_bare_commands(command: Option<&str>, extra: Option<&Strin
     }
 }
 
-/// `schema [result|exit-codes|signals]`: print a machine contract.
+/// `schema [result|exit-codes|signals|diagnostics]`: print a machine contract.
 fn schema_cmd(opts: &[String]) {
     args::admit_or_exit(
         opts,
         &SCHEMA,
-        "deep-diff-forge schema [result|exit-codes|signals]",
+        "deep-diff-forge schema [result|exit-codes|signals|diagnostics]",
     );
     contract_output(contract::schema(opts));
 }
 
 /// The output and guard options shared by `--stdin-patch` and the structured Git selections.
-const REVIEW_FLAGS: [&str; 8] = [
+const REVIEW_FLAGS: [&str; 9] = [
     "--json",
     "--jsonl",
     "--rank",
+    "--diagnostics",
     "--cluster",
     "--outline",
     "--hunks",
@@ -262,10 +264,11 @@ const REVIEW_VALUED: [&str; 7] = [
     "--fail-on",
 ];
 /// `--stdin-patch`'s flags: the shared ones and Git's `--allow-empty`, admitted nowhere else.
-const STDIN_PATCH_FLAGS: [&str; 9] = [
+const STDIN_PATCH_FLAGS: [&str; 10] = [
     "--json",
     "--jsonl",
     "--rank",
+    "--diagnostics",
     "--cluster",
     "--outline",
     "--hunks",
@@ -278,7 +281,7 @@ const STDIN_PATCH: args::Spec = args::Spec {
     valued: &REVIEW_VALUED,
     positionals: 0,
 };
-const STDIN_PATCH_USAGE: &str = "deep-diff-forge --stdin-patch [--json | --jsonl | --rank [--fail-on LIST] | --cluster [--parallel N] | --layout inline|side-by-side | --outline | --hunks [--address A]... [--path P]...] [--max-bytes N] [--cursor C] [--require-files] [--require-hunks] [--allow-empty]";
+const STDIN_PATCH_USAGE: &str = "deep-diff-forge --stdin-patch [--json | --jsonl | --rank [--fail-on LIST] | --diagnostics [--fail-on LIST] | --cluster [--parallel N] | --layout inline|side-by-side | --outline | --hunks [--address A]... [--path P]...] [--max-bytes N] [--cursor C] [--require-files] [--require-hunks] [--allow-empty]";
 const SCHEMA: args::Spec = args::Spec {
     flags: &[],
     valued: &[],
@@ -420,15 +423,22 @@ pub(crate) fn validate_review_options_or_exit(opts: &[String]) {
     // `--cluster` print JSON with it; `--outline` and `--hunks` always do) are modes too: before,
     // `--jsonl --rank` printed only JSONL and `--json --layout inline` only JSON, each with exit
     // 0, and `--jsonl --hunks --path nothing` skipped the path check (bug hunt 2026-11-01).
-    let json_is_a_format = ["--rank", "--cluster", "--outline", "--hunks"]
-        .iter()
-        .any(|mode| has(mode));
+    let json_is_a_format = [
+        "--rank",
+        "--diagnostics",
+        "--cluster",
+        "--outline",
+        "--hunks",
+    ]
+    .iter()
+    .any(|mode| has(mode));
     let modes: Vec<&str> = [
         "--acquisition-json",
         "--outline",
         "--hunks",
         "--cluster",
         "--rank",
+        "--diagnostics",
         "--jsonl",
         "--json",
         "--layout",
@@ -482,8 +492,8 @@ pub(crate) fn validate_review_options_or_exit(opts: &[String]) {
         let _ = parse_parallelism(opts);
     }
     if let Some(list) = flag_value(opts, "--fail-on") {
-        if !has("--rank") {
-            eprintln!("error: --fail-on needs --rank");
+        if !has("--rank") && !has("--diagnostics") {
+            eprintln!("error: --fail-on needs --rank or --diagnostics");
             std::process::exit(exit::USAGE);
         }
         let _ = fail_on::FailOn::parse_or_exit(&list);
@@ -528,16 +538,30 @@ fn emit_review(review: &deep_diff_forge_patch::SealedReview, opts: &[String]) {
         });
     } else if opts.iter().any(|a| a == "--cluster") {
         run_cluster(files, opts, seal);
-    } else if opts.iter().any(|a| a == "--rank") {
+    } else if let Some(mode) = ["--rank", "--diagnostics"]
+        .into_iter()
+        .find(|mode| opts.iter().any(|a| a == mode))
+    {
         let ranked = deep_diff_forge_graph::rank(files);
         // The gate's verdict is decided before the document, which it does not change (F7.i).
         if let Some(list) = flag_value(opts, "--fail-on") {
             fail_on::FailOn::parse_or_exit(&list).decide(&ranked);
         }
-        if opts.iter().any(|a| a == "--json") {
-            print_rank_json(&ranked, seal);
+        let json = opts.iter().any(|a| a == "--json");
+        if mode == "--rank" {
+            if json {
+                print_rank_json(&ranked, seal);
+            } else {
+                print_rank_human(&ranked);
+            }
         } else {
-            print_rank_human(&ranked);
+            // The builder's bytes, or a text form drawn from them (F5a): no second writer.
+            let document = deep_diff_forge_graph::diagnostics(seal, &ranked).to_json();
+            emit(&if json {
+                document
+            } else {
+                diagnostics_text::render(&document)
+            });
         }
         refusal::finish();
     } else if opts.iter().any(|a| a == "--json") {
@@ -2112,8 +2136,8 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "schema",
-        "deep-diff-forge schema [result|exit-codes|signals]",
-        "Print the envelope's JSON Schema, the exit-code registry, or the signal vocabulary.",
+        "deep-diff-forge schema [result|exit-codes|signals|diagnostics]",
+        "Print the envelope's JSON Schema, the exit-code registry, the signal vocabulary, or the JSON Schema of deep-diff-forge.diagnostics.v0.",
     ),
     (
         "explain",

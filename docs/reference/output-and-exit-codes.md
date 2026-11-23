@@ -11,6 +11,7 @@ empty.
 | `--stdin-patch --json`, `--git-* --json` | `deep-diff-forge.review.v0` |
 | `--stdin-patch --jsonl` | line events `{"event":"diff.file",…}` |
 | `--rank --json` · `--cluster --json` | `deep-diff-forge.rank.v0` · `deep-diff-forge.cluster.v0` |
+| `--diagnostics --json` (`--stdin-patch`, `--git-*`, `<old> <new>`) | `deep-diff-forge.diagnostics.v0` ([Diagnostics](diagnostics.md#diagnostics); `schema diagnostics` prints its JSON Schema) |
 | `--git-* --acquisition-json` | `deep-diff-forge.git-acquisition.v0` |
 | `--outline` · `--hunks`, `review.outline` · `review.hunks` · `review.change`, MCP `review_outline` · `review_hunks` · `review_change` | `deep-diff-forge.review-outline.v0` · `deep-diff-forge.review-hunks.v0` |
 | `semantic --json` · `structural --json` | `deep-diff-forge.semantic.v0` · `deep-diff-forge.structural.v0` |
@@ -167,8 +168,8 @@ refines exit 7's `change_input` for that class. `schema exit-codes` lists the cl
 | `require_all` | `--require-all` | `findings verify` | `document` | `review_evidence` | 0.5.0 | `refused: N of M findings were refused or over the limit (--require-all)` |
 | `eval_failed` | `eval` | `eval` | `document` | `review_evidence` | 0.5.0 | `refused: N cases failed (eval)` |
 | `chain_not_ready` | `agent doctor` | `agent doctor` | `document` | `check_environment` | 0.9.0 | `refused: N checks failed (agent doctor)` |
-| `fail_on_label` | `--fail-on` | `--rank` of `--stdin-patch`, `--git-*`, `<old> <new>` | `document` | `review_evidence` | 0.11.0 | `refused: N files carry a label of LIST (--fail-on)` |
-| `fail_on_truncated` | `--fail-on evidence_truncated` | `--rank` of `--stdin-patch`, `--git-*`, `<old> <new>` | `document` | `review_evidence` | 0.11.0 | `refused: the evidence of N files was cut at 32 rows (--fail-on evidence_truncated)` |
+| `fail_on_label` | `--fail-on` | `--rank` and `--diagnostics` of `--stdin-patch`, `--git-*`, `<old> <new>` | `document` | `review_evidence` | 0.11.0 | `refused: N files carry a label of LIST (--fail-on)` |
+| `fail_on_truncated` | `--fail-on evidence_truncated` | `--rank` and `--diagnostics` of `--stdin-patch`, `--git-*`, `<old> <new>` | `document` | `review_evidence` | 0.11.0 | `refused: the evidence of N files was cut at 32 rows (--fail-on evidence_truncated)` |
 Input refusals (stdout `empty`) end the command before anything is written. Verdict refusals
 (stdout `document`) print the judged document first, then the reason. `--require-hunks` refuses a
 patch with 0 hunks or 0 added and removed lines (header-only, rename-only, context-only).
@@ -185,6 +186,7 @@ token in it is a class or a label, checked before the input is read.
 deep-diff-forge envelope -- --stdin-patch --json < change.patch   # one ddf.result.v1 object
 deep-diff-forge schema result        # JSON Schema (2020-12) of the envelope
 deep-diff-forge schema exit-codes    # the registry: family, code, name, meaning, action
+deep-diff-forge schema diagnostics   # JSON Schema (2020-12) of deep-diff-forge.diagnostics.v0
 deep-diff-forge explain 7 --family council
 ```
 
