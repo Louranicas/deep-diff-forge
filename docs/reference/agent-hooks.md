@@ -1034,9 +1034,27 @@ Stated limits, which the judge on the pull request covers:
     system with none, or a build that takes none), a newer build that writes between those
     reads and this hook's writes is not seen, and its state or the lists beside it are
     replaced: the reads narrow that race and do not close it.
+  - Why v11, and what it means for two builds on one session. F12's lines in `blocked` (a
+    cause that holds once, kept by its name with the number of stops it held, under the tree's
+    tag `o` or under the change's own tag) mean nothing to 0.10.0, which read them as v10:
+    measured with the published 0.10.0 on a state this tree wrote, it read such a line of a
+    linked tree as "A failure there has blocked a stop of this session and stands", and it
+    forgot one under a change's tag at its next stop, so a hold for an unknown label came back
+    at every stop of the newer build that followed one of its own (four blocks in eight
+    stops, past the bound of three). So the schema is v11, and since then: the published
+    0.10.0 (and 0.9.0) refuses a session a 0.11.0 hook has written, at every hook, as UNJUDGED
+    ("cannot be read as a state (it is not a state of this version of the hooks) … (remove the
+    file to have the next hook record the session anew)"), which is not a pass, and keeps the
+    file byte for byte; following that released advice costs what is said above (the commits
+    the session made before are not judged). A 0.11.0 hook reads a session 0.10.0 wrote and
+    writes it as v11: a failure that blocked under 0.10.0 says FAIL STANDS and a commit it
+    judged is not judged again. A commit that 0.10.0 judged HOLD for a label the judge does
+    not know keeps that answer: it is not held once after the upgrade (its line in `.judged`
+    is a hold like any other).
   - The fixtures `crates/deep-diff-forge-cli/tests/fixtures/hook-state/<schema>-<release>/`
-    hold the three files the published 0.9.0 and 0.10.0 binaries wrote (each directory's
-    `ORIGIN` names the binary by its SHA-256), captured once by
+    hold the three files the published 0.9.0 and 0.10.0 binaries wrote, and the same files
+    written by a build of this tree in v11 (each directory's
+    `ORIGIN` names the binary by its SHA-256 and says whether it was published), captured once by
     `scripts/capture_hook_state.sh` and never edited; the test
     `every_schema_since_the_last_release_is_read` has the build under test read each.
 
