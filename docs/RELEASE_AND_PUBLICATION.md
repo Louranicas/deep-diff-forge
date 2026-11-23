@@ -125,6 +125,11 @@ rustup default. Run `scripts/diff_mutation.sh` from anywhere in the checkout: it
       `deep_diff_forge.__version__`; `cli/tests/python_sdk.rs` fails if they differ)
 - [ ] Docs updated
 - [ ] `CHANGELOG.md` updated
+- [ ] The release notes' commands run (from 0.11.0, part of the workspace tests):
+      `cli/tests/release_notes_commands.rs` runs every full command line quoted in backticks in
+      `docs/release-notes/<version>.md` of the tree's version and of the newest released one,
+      placeholders (`DIR`, `PATH`, `<…>`) with a stand-in, and fails naming the file and line of
+      any that is a usage error (exit 2). The 0.10.0 notes quoted a command 0.10.0 refused.
 
 Corpus regression snapshots and release receipts were part of the original
 checklist; neither has tooling yet.

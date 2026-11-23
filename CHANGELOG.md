@@ -137,6 +137,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   directory by absolute path; without `--hooks`, a judge that is no file or a directory that
   does not exist: exit 2). 0.10.0's release notes named `--ranker-dir` there, and 0.10.0 refused
   it. `agent --help` lists each form with its own options (D1).
+- A test runs every full command line quoted in the release notes of the tree's version and of
+  the newest release on the built binary, and fails naming the line of any usage error (D1).
 
 ## [0.10.0] - 2026-11-23
 
