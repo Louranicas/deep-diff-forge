@@ -210,13 +210,33 @@ fn unit(judged: &Judged) -> Value {
             })
             .collect()
     };
-    let (outcome, rules, notes, reason) = match judged {
-        Judged::Pass => ("pass", json!([]), 0, None),
-        Judged::Hold { rules: r, said } => ("hold", rules(r), said.len(), None),
-        Judged::Fail { rules: r, said } => ("fail", rules(r), said.len(), None),
-        Judged::Unjudged { reason } => ("unjudged", json!([]), 0, Some(reason.as_str())),
+    let (outcome, rules, said, reason) = match judged {
+        Judged::Pass => ("pass", json!([]), &[][..], None),
+        Judged::Hold { rules: r, said } => ("hold", rules(r), &said[..], None),
+        Judged::Fail { rules: r, said } => ("fail", rules(r), &said[..], None),
+        Judged::Unjudged { reason } => ("unjudged", json!([]), &[][..], Some(reason.as_str())),
     };
-    json!({"unit": "uncommitted", "outcome": outcome, "rules": rules, "judge_notes": notes, "reason": reason})
+    json!({"unit": "uncommitted", "outcome": outcome, "rules": rules, "judge_notes": said.len(),
+           "judge_note_codes": said.iter().map(|words| note_code(words)).collect::<Vec<_>>(), "reason": reason})
+}
+
+/// What kind of thing the judge named beside its rules, as a code and never in its words: the
+/// code of a note (`note <code> …`) when it is a plain identifier, `expired_waiver`, else `note`.
+fn note_code(words: &str) -> &str {
+    if words.starts_with("expired waiver ") {
+        return "expired_waiver";
+    }
+    words
+        .strip_prefix("note ")
+        .and_then(|rest| rest.split([' ', ':']).next())
+        .filter(|code| {
+            !code.is_empty()
+                && code.len() <= 64
+                && code
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+        })
+        .unwrap_or("note")
 }
 
 /// The text form, for an agent: each path quoted and escaped, no words of the judge.
@@ -259,6 +279,23 @@ fn text(doc: &Value) -> String {
                     ));
                 }
             }
+            let notes = unit["judge_notes"].as_u64().unwrap_or(0);
+            let codes: Vec<String> = unit["judge_note_codes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(word)
+                .collect();
+            if notes > 0 {
+                out.push(format!(
+                    "  the judge also named {notes} thing(s) that are not rules ({}); its words are not repeated: judge_note_codes in the --json form",
+                    codes.join(", ")
+                ));
+            } else if matches!(unit["outcome"].as_str(), Some("hold" | "fail"))
+                && unit["rules"].as_array().is_none_or(Vec::is_empty)
+            {
+                out.push("  the judge named no rule and nothing beside its rules".to_owned());
+            }
         }
     }
     out.push(format!("project: {}", path(&doc["project"])));
@@ -282,4 +319,36 @@ fn text(doc: &Value) -> String {
     }
     out.push(NOT_THE_STOP.to_owned());
     out.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A HOLD or a FAIL never stands without its reason: a hold for a note alone says how many
+    /// things the judge named beside its rules, by their codes, and never in the judge's words.
+    #[test]
+    fn a_hold_for_notes_alone_says_so_by_their_codes() {
+        let said = vec![
+            "note claims_unverified: the policy requires verified claims".to_owned(),
+            "expired waiver 0 for rule r: owner o, expired 2026-01-01".to_owned(),
+            "note Bad Code: words".to_owned(),
+        ];
+        let mut doc = json!({"units": [unit(&Judged::Hold { rules: vec![], said })],
+                             "unjudged": null, "stop": {"differences": []}});
+        let said = text(&doc);
+        assert!(
+            said.contains("the judge also named 3 thing(s) that are not rules (claims_unverified, expired_waiver, note)"),
+            "{said}"
+        );
+        assert!(!said.contains("requires verified"), "{said}");
+        doc["units"] = json!([unit(&Judged::Fail {
+            rules: vec![],
+            said: vec![]
+        })]);
+        assert!(
+            text(&doc).contains("the judge named no rule and nothing beside its rules"),
+            "{doc}"
+        );
+    }
 }

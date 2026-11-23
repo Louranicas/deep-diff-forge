@@ -6765,30 +6765,41 @@ pub(crate) fn check_uncommitted(
             ));
         }
     };
-    let scratch = Scratch::new(&place.own)?;
-    let work = scratch.sub("tree")?;
-    let judged = match change(&place.top, &head, "the commit HEAD names", &work, deadline) {
-        Err(reason) => Some(Judged::Unjudged { reason }),
-        Ok(Change { patch: None, .. }) => None,
-        Ok(Change {
-            patch: Some(patch), ..
-        }) => Some(if let Some(why) = no_judge {
-            Judged::Unjudged {
-                reason: why.to_owned(),
-            }
-        } else {
-            let writable = [place.top.as_path(), place.common.as_path()];
-            match Bench::new(&place.top, &base, &scratch, args, &writable, deadline) {
-                Ok(bench) => {
-                    bench
-                        .judge(&patch, "change.patch", After::Trees(Duration::ZERO))
-                        .0
+    // A check that cannot judge makes nothing: with no judge nothing is staged.
+    if let Some(why) = no_judge {
+        return Err(why.to_owned());
+    }
+    // The hooks' own directory is removed again when this check made it and left it empty.
+    let made_own = place.own.symlink_metadata().is_err();
+    let judged = (|| {
+        let scratch = Scratch::new(&place.own)?;
+        let work = scratch.sub("tree")?;
+        Ok(
+            match change(&place.top, &head, "the commit HEAD names", &work, deadline) {
+                Err(reason) => Some(Judged::Unjudged { reason }),
+                Ok(Change { patch: None, .. }) => None,
+                Ok(Change {
+                    patch: Some(patch), ..
+                }) => {
+                    let writable = [place.top.as_path(), place.common.as_path()];
+                    Some(
+                        match Bench::new(&place.top, &base, &scratch, args, &writable, deadline) {
+                            Ok(bench) => {
+                                bench
+                                    .judge(&patch, "change.patch", After::Trees(Duration::ZERO))
+                                    .0
+                            }
+                            Err(reason) => Judged::Unjudged { reason },
+                        },
+                    )
                 }
-                Err(reason) => Judged::Unjudged { reason },
-            }
-        }),
-    };
-    Ok((base, judged))
+            },
+        )
+    })();
+    if made_own {
+        let _ = std::fs::remove_dir(&place.own);
+    }
+    judged.map(|judged| (base, judged))
 }
 
 /// `agent doctor --gate`: every link a judged stop depends on, checked in order in the

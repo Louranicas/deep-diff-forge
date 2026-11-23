@@ -425,8 +425,15 @@ fn check_uses_the_session_base_and_the_installed_judge() {
 
     // No registered Stop hook and no --judge: nothing is looked up on PATH.
     std::fs::remove_file(home.join(".claude/settings.json")).unwrap();
+    // (since the second part: a check with no judge stages nothing and has no unit)
     let doc = check_json(&home, &root, &["--session", "s1"], Some(&bin));
-    assert_eq!(doc["units"][0]["outcome"], "unjudged", "{doc}");
+    assert_eq!(doc["units"], json!([]), "{doc}");
+    assert!(
+        doc["unjudged"]
+            .as_str()
+            .is_some_and(|why| why.starts_with("no judge")),
+        "{doc}"
+    );
 }
 
 /// F3.c: the session's state is read and never written: every file of the state directory,
@@ -619,4 +626,59 @@ fn released(stop: &mut Running, wait: &Path) -> String {
     let mut stdout = String::new();
     std::io::Read::read_to_string(child.stdout.as_mut().unwrap(), &mut stdout).unwrap();
     stdout
+}
+
+/// The index file's SHA-256 and `git status --porcelain=v2` of `root`, in that order: the index
+/// is read first, before `git status` can refresh it.
+fn index_and_status(root: &Path) -> (String, String) {
+    let index = deep_diff_forge_core::sha256_hex(&std::fs::read(root.join(".git/index")).unwrap());
+    (index, git(root, &["status", "--porcelain=v2"]))
+}
+
+/// Part 1's probe by the coordinator: a check with no judge left an empty `.git/deep-diff-forge/`.
+/// A check that cannot judge makes nothing; one that judges removes its scratch and the hooks'
+/// directory when it made it and left it empty; neither changes the index or the working tree.
+#[test]
+fn a_check_leaves_nothing_behind_and_changes_neither_index_nor_tree() {
+    let scratch = Scratch::new("agent-check-leaves-nothing");
+    let (home, root) = repository(&scratch);
+    let fast = scratch.join("judge");
+    judge(&fast, "fail", None);
+    silence_a_lint(&root);
+    std::fs::write(root.join("new.rs"), "fn n() {}\n").unwrap();
+    git(&root, &["add", "new.rs"]);
+    let _ = index_and_status(&root); // (a first `git status` may refresh the index)
+    let before = index_and_status(&root);
+    let own = root.join(".git/deep-diff-forge");
+
+    // no hook registered and no --judge: nothing is staged, nothing is made
+    let doc = check_json(&home, &root, &[], None);
+    assert_eq!(doc["units"], json!([]), "{doc}");
+    assert!(
+        doc["unjudged"]
+            .as_str()
+            .is_some_and(|why| why.starts_with("no judge")),
+        "{doc}"
+    );
+    assert!(
+        !own.exists(),
+        "a check that cannot judge made {}",
+        own.display()
+    );
+
+    // with a judge: judged, and its scratch and the directory it made are gone again
+    let doc = check_json(&home, &root, &["--judge", fast.to_str().unwrap()], None);
+    assert_eq!(doc["units"][0]["outcome"], "fail", "{doc}");
+    assert!(!own.exists(), "a check left {} behind", own.display());
+    assert_eq!(
+        index_and_status(&root),
+        before,
+        "a check changed the index or the working tree"
+    );
+
+    // a directory that was there stays, and holds no scratch of the check
+    std::fs::create_dir(&own).unwrap();
+    let _ = check_json(&home, &root, &["--judge", fast.to_str().unwrap()], None);
+    assert!(own.is_dir(), "a check removed a directory it did not make");
+    assert_eq!(std::fs::read_dir(&own).unwrap().count(), 0);
 }

@@ -439,9 +439,16 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   with: the policy at the base the session recorded, and the judge, the policy and the ranker
   directory of the registered Stop hook." Every other case is listed in `stop.differences` and said as "Not as the stop:
   …". Same inputs are not the same answer: a stop has its own time, and a failure that has
-  blocked once stands there. The check writes only its scratch directory under the hooks'
-  own directory in the repository, as a stop does. Exit 0 with the document, 2 for a usage
-  error; `--range` and `--require-pass` are refused as not in this build.
+  blocked once stands there. **What a check writes.** With no judge it stages nothing and
+  writes nothing (the answer is UNJUDGED with the reason). With a judge it writes one scratch
+  directory, `.git/deep-diff-forge/tmp-r<16 hex digits>` under the repository's Git common
+  directory, holding the scratch index and objects of the staged tree, the policy and the patch
+  it gives the judge, and removes it before it exits; it makes `.git/deep-diff-forge/` when that
+  is missing and removes it again when it made it and it is empty. Making its directory, it
+  removes what killed hooks left there, as every hook does. It changes neither the index nor the
+  working tree (`git status` and the index file are as they were), nor anything in the state
+  directory. Exit 0 with the document, 2 for a usage error; `--range` and `--require-pass` are
+  refused as not in this build.
 - **A hook never fails its client, and a failure is never silence.** A hook always exits 0;
   exit 2, which Claude Code reads from a stop hook as a block, is never used, also not for a
   command line the hook cannot read (a mistyped option says that the hook did not run, and
@@ -736,8 +743,11 @@ Stated limits, which the judge on the pull request covers:
 - "No repository here" is read from Git's own English message, with `LC_ALL=C` set for that
   call. A Git that words it otherwise is read as a failure, which is said, not as silence.
 - The scratch directory of a hook that was killed is removed only where the file system has
-  locks; a directory left by a build before 0.11.0 is removed where `/proc` says its process
-  is gone (Linux).
+  locks: on one without locks (some network and FUSE file systems) it is removed by no one and
+  stays, with its copy of the patch, until a person removes it. A directory left by a build
+  before 0.11.0 (`tmp-<pid>`) is removed where `/proc` says its process is gone (Linux). A
+  0.10.0 binary removes no `tmp-r…` directory a killed 0.11.0 hook left: in a repository whose
+  hooks are still 0.10.0 such a directory stays until a 0.11.0 hook or check runs there.
 - **A resumed conversation is a new session of the hooks** when its client gives it a new
   session id: its base is where `HEAD` is at its first hook, so what the earlier
   conversation committed is base, and a conversation that ended without a stop (a crash, a
