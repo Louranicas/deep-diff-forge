@@ -37,6 +37,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - Every accepted repair and substitute of the vocabulary has a fixed id (`<label>:a<k>`,
   `<label>:n<k>`), pinned in `fixtures/diagnostics/ids.v0.txt`; five agent sentences each stand
   on a witness patch the engine is tested on (F7.c1).
+- The graph crate builds `deep-diff-forge.diagnostics.v0` in process: one diagnostic per
+  evidence row and one per label that no row locates; keys hold no line text; each diagnostic is
+  a `current` or `floor_only` reading. No command prints it yet (F1.a1).
+- Library API: `Evidence::read_now` says whether a reading of this version finds an item, and
+  `RankedFile::floor_only` lists the code labels that only a reading kept for the floor finds
+  (F1.a1).
+- `tool.scorer_sha256` moves with no label, row or score change (F1.a1).
 
 ## [0.10.0] - 2026-11-23
 

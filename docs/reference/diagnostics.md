@@ -66,8 +66,10 @@ also as release 0.8.3 read them, and every file also as release 0.8.4 read it. A
 | the reading of release 0.8.4 | every language | `floor_only`, unless a current reader also finds it |
 
 In a file that is not Rust, the readers of 0.8.3 are the current ones (their rules have not
-changed), so what they find is `current`. A Rust `unsafe` in code is `current`; `#[allow(` named
-inside a Rust comment is found by the 0.8.3 reading only and is `floor_only`.
+changed), so what they find is `current`. A Rust `unsafe` in code is `current`, and so is
+`#[allow(` named inside a Rust comment, which the current readers match on the raw line; an
+`unsafe` inside a raw string over lines, which the scanner of release 0.8.3 took for code, is
+found by the 0.8.3 reading only and is `floor_only`.
 
 ## Codes
 
