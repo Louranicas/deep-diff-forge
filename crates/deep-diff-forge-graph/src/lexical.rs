@@ -1148,6 +1148,83 @@ pub fn scalar_reading(view: &str) -> Option<String> {
     (out != bytes).then(|| String::from_utf8(out).unwrap_or_default())
 }
 
+/// The strings of `line`, a line of a TOML file (Cargo's manifest and configuration), in order,
+/// each given to `each` with what it holds and whether it is a key's value (`=` and blanks only
+/// between them); the reading stops at the first for which `each` says `true`, and says whether
+/// one did. One pass over the bytes, nothing parsed: `#` outside a string ends the line (a
+/// comment); `"…"` is a basic string whose escapes are read (`\"`, `\\`, `\b`, `\t`, `\n`, `\f`,
+/// `\r`, `\e`, `\uXXXX`, `\UXXXXXXXX`: `"\u0061llow"` holds `allow`), `'…'` a literal string read
+/// as written, and the three-quote forms are read the same when they close on the line. A
+/// string that does not close on the line, or holds an escape TOML does not have, ends the
+/// reading: a string over lines is not read (F2b).
+pub fn toml_strings(line: &str, mut each: impl FnMut(&str, bool) -> bool) -> bool {
+    let bytes = line.as_bytes();
+    let (mut at, mut last, mut held) = (0, None, String::new());
+    while let Some(&byte) = bytes.get(at) {
+        match byte {
+            b'#' => return false,
+            b'"' | b'\'' => {
+                let triple =
+                    bytes[at..].iter().take(3).all(|b| *b == byte) && bytes.len() >= at + 3;
+                let quotes = if triple { 3 } else { 1 };
+                held.clear();
+                let Some(len) = toml_string(&line[at + quotes..], byte, quotes, &mut held) else {
+                    return false;
+                };
+                if each(&held, last == Some(b'=')) {
+                    return true;
+                }
+                (at, last) = (at + quotes + len, Some(byte));
+            }
+            b' ' | b'\t' => at += 1,
+            _ => (at, last) = (at + 1, Some(byte)),
+        }
+    }
+    false
+}
+
+/// The string whose opening quotes (`quotes` of `quote`) stand before `rest`, read into `held`:
+/// the bytes it takes to its closing quotes inclusive, or `None` (see [`toml_strings`]).
+fn toml_string(rest: &str, quote: u8, quotes: usize, held: &mut String) -> Option<usize> {
+    let bytes = rest.as_bytes();
+    let mut at = 0;
+    loop {
+        if bytes.get(at..at + quotes)?.iter().all(|b| *b == quote) {
+            return Some(at + quotes);
+        }
+        let c = rest[at..].chars().next()?;
+        if quote == b'"' && c == '\\' {
+            let (read, len) = match *bytes.get(at + 1)? {
+                b'"' => ('"', 2),
+                b'\\' => ('\\', 2),
+                b'b' => ('\u{8}', 2),
+                b't' => ('\t', 2),
+                b'n' => ('\n', 2),
+                b'f' => ('\u{c}', 2),
+                b'r' => ('\r', 2),
+                b'e' => ('\u{1b}', 2),
+                escape @ (b'u' | b'U') => {
+                    let digits = if escape == b'u' { 4 } else { 8 };
+                    let hex = rest.get(at + 2..at + 2 + digits)?;
+                    if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+                        return None;
+                    }
+                    (
+                        char::from_u32(u32::from_str_radix(hex, 16).ok()?)?,
+                        2 + digits,
+                    )
+                }
+                _ => return None,
+            };
+            held.push(read);
+            at += len;
+        } else {
+            held.push(c);
+            at += c.len_utf8();
+        }
+    }
+}
+
 /// Where one side of a Rust hunk starts: what [`rust_views`] is told about the lines above it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RustStart {
@@ -2472,6 +2549,38 @@ mod rust {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F2b: the strings of a TOML line, with their escapes read, a comment and a string that
+    /// does not close ending the reading.
+    #[test]
+    fn toml_strings_are_read_as_toml_reads_them() {
+        let read = |line: &str| {
+            let mut out: Vec<(String, bool)> = Vec::new();
+            toml_strings(line, |held, value| {
+                out.push((held.to_owned(), value));
+                false
+            });
+            out
+        };
+        let s = |text: &str, value: bool| (text.to_owned(), value);
+        assert_eq!(read(r#"a = "x\ty" # "no""#), [s("x\ty", true)]);
+        assert_eq!(read(r#"a = ['b', "c"]"#), [s("b", false), s("c", false)]);
+        assert_eq!(
+            read(r#"a = '''l\n''' b = """q""""#),
+            [s(r"l\n", true), s("q", true)]
+        );
+        assert_eq!(read(r#"a = "\U0001F600a""#), [s("\u{1F600}a", true)]);
+        assert_eq!(read(r#"a = "" b = 'c'"#), [s("", true), s("c", true)]);
+        for unread in [
+            r#"a = "\uD800""#,
+            r#"a = "open"#,
+            r#"a = "\x41" b = "c""#,
+            r#"a = """"#,
+        ] {
+            assert_eq!(read(unread), [], "{unread}");
+        }
+        assert!(toml_strings(r#"a = "x", "y""#, |held, _| held == "y"));
+    }
 
     fn view(language: Language, line: &str) -> String {
         code_view(language, line, &mut ScanState::default())

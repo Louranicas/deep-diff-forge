@@ -33,7 +33,7 @@
 use crate::lexical::{
     Carried, Language, Readings, RustStart, ScanState, carried_view, code_view, has_token,
     is_boundary_blocker, is_ident, rust_legacy_views, rust_shebang, rust_side, rust_white,
-    scalar_reading,
+    scalar_reading, toml_strings,
 };
 use crate::rust_tokens;
 use deep_diff_forge_core::{FileStatus, HunkId, PatchHunk, PatchLine, PatchLineKind, ReviewFile};
@@ -298,6 +298,9 @@ enum Scope {
     BuildScript,
     /// `package.json`.
     PackageJson,
+    /// Cargo's manifest (`Cargo.toml`) and its configuration (`.cargo/config.toml`,
+    /// `.cargo/config`), read as TOML ([`toml_strings`]).
+    CargoFile,
 }
 
 /// What a rule looks for.
@@ -316,6 +319,8 @@ enum Match {
     /// An error handler with nothing in it ([`empty_handler`]). It reads the line and the next
     /// line on the same side of the hunk, so what it finds has [`Basis::Hunk`].
     EmptyHandler,
+    /// A lint switched off in a Cargo file ([`lint_off`]).
+    LintOff,
     /// One of `heads` (a whole word, with no [`is_boundary_blocker`] before it) followed by one
     /// of `tails`, with any whitespace before the tail and between its bytes: `# [allow(` is
     /// `#` and `[allow(`.
@@ -334,6 +339,7 @@ impl Match {
             | Self::AnyCode
             | Self::Secret
             | Self::Imports(_)
+            | Self::LintOff
             | Self::Spaced { .. } => Basis::Lexical,
         }
     }
@@ -585,6 +591,13 @@ const RULES: &[Rule] = &[
         View::Raw,
         Scope::Languages(GO),
         Match::Tokens(&["//nolint", "// nolint", "#nosec"]),
+    ),
+    rule(
+        S::CheckSuppressed,
+        Side::New,
+        View::Raw,
+        Scope::CargoFile,
+        Match::LintOff,
     ),
     rule(
         S::TestRemoved,
@@ -1069,6 +1082,30 @@ struct FileKind {
     ci_workflow: bool,
     build_script: bool,
     package_json: bool,
+    cargo: Option<Cargo>,
+}
+
+/// Which of Cargo's files a file is ([`Scope::CargoFile`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Cargo {
+    /// `Cargo.toml`.
+    Manifest,
+    /// `.cargo/config.toml` or `.cargo/config`.
+    Config,
+}
+
+impl Cargo {
+    fn of(path: &str) -> Option<Self> {
+        let name = path.rsplit('/').next().unwrap_or(path);
+        if name == "Cargo.toml" {
+            return Some(Self::Manifest);
+        }
+        (matches!(name, "config.toml" | "config")
+            && path[..path.len() - name.len()]
+                .strip_suffix(".cargo/")
+                .is_some_and(|above| above.is_empty() || above.ends_with('/')))
+        .then_some(Self::Config)
+    }
 }
 
 impl FileKind {
@@ -1098,6 +1135,7 @@ impl FileKind {
             // signal they do not apply under a generated or vendored path. Token rules do.
             build_script: (name == "build.rs" || name == "setup.py") && !generated,
             package_json: name == "package.json" && !generated,
+            cargo: Cargo::of(path),
         }
     }
 
@@ -1179,6 +1217,7 @@ impl FileKind {
             // signal they do not apply under a generated or vendored path. Token rules do.
             build_script: (name == "build.rs" || name == "setup.py") && !generated,
             package_json: name == "package.json" && !generated,
+            cargo: Cargo::of(path),
         }
     }
 
@@ -1198,6 +1237,7 @@ impl FileKind {
             Scope::CiWorkflow => self.ci_workflow,
             Scope::BuildScript => self.build_script,
             Scope::PackageJson => self.package_json,
+            Scope::CargoFile => self.cargo.is_some(),
         }
     }
 }
@@ -1948,6 +1988,13 @@ fn texts_found(
     let hunks = &file.patch_twin.hunks;
     let language = kind.language;
     let legacy = kind.legacy_rules();
+    // The signals that release had a rule for in a file of this kind (it had none for Cargo's
+    // files, read since 0.11.0: F2b).
+    let had = |signal: EvidenceSignal| {
+        RELEASED_RULES
+            .iter()
+            .any(|r| r.signal == signal && kind.admits(r.scope))
+    };
     let mut found: Vec<Vec<Hit>> = vec![Vec::new(); hunks.len()];
     let mut read = |text: &[usize], top: bool| {
         let mut lines: Vec<&PatchLine> = Vec::new();
@@ -1971,7 +2018,10 @@ fn texts_found(
             while let Some(hit) = hits.next_if(|hit| hit.at < end) {
                 own.push(Hit {
                     at: hit.at - start,
-                    released: as_released && hit.from_code && hit.signal.in_release_0_8_3(),
+                    released: as_released
+                        && hit.from_code
+                        && hit.signal.in_release_0_8_3()
+                        && had(hit.signal),
                     ..hit
                 });
             }
@@ -2105,7 +2155,9 @@ fn legacy_hits(hunk: &PatchHunk, rules: &[&Rule], views: &Views) -> Vec<Hit> {
                 Match::AnyCode => !text.trim().is_empty(),
                 Match::Secret => looks_like_secret(text),
                 // The release had no other kind of rule for Rust.
-                Match::Imports(_) | Match::EmptyHandler | Match::Spaced { .. } => false,
+                Match::Imports(_) | Match::EmptyHandler | Match::Spaced { .. } | Match::LintOff => {
+                    false
+                }
             }
         };
         for signal in EvidenceSignal::ALL {
@@ -2644,6 +2696,7 @@ fn view_matches(
                     language.is_some_and(|l| empty_handler(l, text, next_on(side, at)))
                 }
                 Match::Spaced { heads, tails } => spaced(text, heads, tails),
+                Match::LintOff => lint_off(text),
             }
         };
         for signal in EvidenceSignal::ALL {
@@ -2725,6 +2778,31 @@ fn without_raw_prefixes(text: &str) -> Option<String> {
     }
     // Only two ASCII bytes were replaced by two ASCII bytes: still UTF-8.
     out.and_then(|bytes| String::from_utf8(bytes).ok())
+}
+
+/// Whether `line`, a line of a Cargo file, switches a lint off (F2b): a key whose value is the
+/// string `allow` (`dead_code = "allow"`, `'allow'`, the `level` of an inline table in a
+/// `[lints]` table), or a string of flags for the compiler (one that starts with `-`, as in
+/// `rustflags`) holding `-A` or `-A<lint>`, `--allow` or `--allow=<lint>`, `--cap-lints=allow`,
+/// or `--cap-lints` followed by `allow`, also in the next string of the line.
+fn lint_off(line: &str) -> bool {
+    let mut cap = false;
+    toml_strings(line, |held, value| {
+        if value && held == "allow" {
+            return true;
+        }
+        let flags = held.trim_start().starts_with('-');
+        held.split_ascii_whitespace().any(|arg| {
+            let off = (cap && arg == "allow")
+                || (flags
+                    && (arg.starts_with("-A")
+                        || arg == "--allow"
+                        || arg.starts_with("--allow=")
+                        || arg == "--cap-lints=allow"));
+            cap = flags && arg == "--cap-lints";
+            off
+        })
+    })
 }
 
 /// Whether `text` holds one of `heads`, whole and with no [`is_boundary_blocker`] byte before
@@ -3680,7 +3758,7 @@ impl Asking<'_> {
             Match::Secret => looks_like_secret(text),
             Match::Imports(modules) => imports_module(text, self.raw, modules),
             // Releases 0.8.3 and 0.8.4 had no rule of these kinds ([`RELEASED_RULES`]).
-            Match::EmptyHandler | Match::Spaced { .. } => false,
+            Match::EmptyHandler | Match::Spaced { .. } | Match::LintOff => false,
         }
     }
 
@@ -4005,6 +4083,7 @@ mod tests {
             Scope::CiWorkflow => ".github/workflows/ci.yml",
             Scope::BuildScript => "build.rs",
             Scope::PackageJson => "package.json",
+            Scope::CargoFile => "Cargo.toml",
         }
     }
 
@@ -5035,6 +5114,19 @@ mod tests {
                 .map(str::to_owned)
                 .to_vec(),
                 Match::AnyCode => Vec::new(),
+                Match::LintOff => [
+                    "x = \"allow\"",
+                    "x = 'allow'",
+                    "x = { level = \"allow\" }",
+                    "[\"-A\", \"x\"]",
+                    "\"-Awarnings\"",
+                    "\"--cap-lints\", \"allow\"",
+                    "\"\\u0061",
+                    "\"\"\"",
+                    "\'\'\'",
+                ]
+                .map(str::to_owned)
+                .to_vec(),
             };
             for path in &paths {
                 for trigger in &triggers {
@@ -13970,5 +14062,99 @@ mod tests {
                 "{line}"
             );
         }
+    }
+
+    /// Cargo's `[lints]` tables and the compiler flags of its configuration switch lints off
+    /// (F2b): a key whose value is the string `allow`, in every quoting TOML has, and `-A`,
+    /// `--allow`, `--cap-lints allow` in a string of flags, also on a line of an array over
+    /// lines. Not: another level, a comment, a key named `allow`, a string that does not close,
+    /// a near spelling, the same text in a file that is not Cargo's.
+    #[test]
+    fn a_lint_allowed_in_cargo_is_a_suppression_in_every_quoting() {
+        let on = |path: &str, line: &str| -> Vec<u32> {
+            file_evidence(&added(path, &[line]))
+                .iter()
+                .filter(|e| e.signal == S::CheckSuppressed)
+                .map(|e| e.line)
+                .collect()
+        };
+        for line in [
+            r#"dead_code = "allow""#,
+            "dead_code = 'allow'",
+            r#"dead_code = """allow""""#,
+            "dead_code = '''allow'''",
+            r#"dead_code = "allow""#,
+            r#"dead_code = "allow""#,
+            r#""dead_code" = "allow""#,
+            r#"lints.rust.dead_code = "allow""#,
+            r#"all = { level = "allow", priority = -1 }"#,
+            "all = {level='allow'}",
+            r#"dead_code = "allow" # until the next release"#,
+            r#"rustflags = ["-A", "dead_code"]"#,
+            r#"rustflags = ["-Awarnings"]"#,
+            r#"rustflags = "-C opt-level=2 -A warnings""#,
+            r#"rustflags = ["--allow=unused"]"#,
+            r#"rustflags = ["--allow", "unused"]"#,
+            r#"rustflags = ["--cap-lints=allow"]"#,
+            r#"rustflags = ["--cap-lints", "allow"]"#,
+            "rustflags = ['--cap-lints allow']",
+            r#"    "-Awarnings","#,
+        ] {
+            for path in [
+                "Cargo.toml",
+                "crates/x/Cargo.toml",
+                ".cargo/config.toml",
+                "ws/.cargo/config",
+            ] {
+                assert_eq!(on(path, line), [2], "{line} in {path}");
+            }
+        }
+        for line in [
+            r#"dead_code = "warn""#,
+            r#"dead_code = { level = "deny" }"#,
+            r#"# dead_code = "allow""#,
+            r#"x = "deny" # "allow""#,
+            "allow = true",
+            r#"allow = ["x"]"#,
+            r#"description = "use -A to allow""#,
+            r#"rustflags = ["-D", "warnings"]"#,
+            r#"rustflags = ["--cap-lints=warn"]"#,
+            r#"rustflags = ["--cap-lints", "warn"]"#,
+            r#"dead_code = """"#,
+            r#"dead_code = "allow"#,
+            r#"dead_code = "\q" b = "allow""#,
+            r#"dead_code = "allowed""#,
+            r#"dead_code = "Allow""#,
+        ] {
+            assert_eq!(on("Cargo.toml", line), [], "{line}");
+        }
+        for path in [
+            "pyproject.toml",
+            "config.toml",
+            "x/config.toml",
+            ".cargo/other.toml",
+            "Cargo.lock",
+            "src/x.rs",
+        ] {
+            assert_eq!(on(path, r#"dead_code = "allow""#), [], "{path}");
+        }
+    }
+
+    /// A TOML literal string `'allow'` and a basic one `"allow"` read the same (F2b).
+    #[test]
+    fn a_toml_literal_allow_and_a_basic_allow_read_the_same() {
+        let read = |line: &str| -> Vec<_> {
+            file_evidence(&added("Cargo.toml", &[line]))
+                .iter()
+                .map(|e| (e.signal, e.basis, e.line, e.released, e.read_now))
+                .collect()
+        };
+        let basic = read(r#"unsafe_code = "allow""#);
+        // no release before 0.11.0 read Cargo's files: the item is current and not released
+        assert_eq!(
+            basic,
+            [(S::CheckSuppressed, Basis::Lexical, 2, false, true)]
+        );
+        assert_eq!(read("unsafe_code = 'allow'"), basic);
     }
 }
