@@ -521,8 +521,9 @@ Additive members, so the schema names stay `v0`. They are present only when foun
     attribute unset or naming a driver for the path (also when the text cannot be read back),
     Git's own content check (a NUL byte), or a UTF-16 or UTF-32 file (labelled, not decoded);
     `"unread"` when no attribute label covers it and its second reading was cut off by the byte
-    budget or the time limit, or was read and then dropped because the whole patch with it did
-    not parse (the file stays a binary change).
+    budget or the time limit, failed, or came back as valid UTF-8 and was not used for any reason
+    (the file stays a binary change); only a second reading that succeeded and is not UTF-8
+    leaves a binary change unlabelled.
     The file then carries the signal `diff_suppressed` (+5). The member is absent otherwise; the
     same member marks the change in `git-acquisition.v0`.
   - At the bound the list is not simply the first 32 in that order (since release 0.8.4, which

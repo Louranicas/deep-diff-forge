@@ -873,10 +873,13 @@ pub fn acquire(
 /// within the budget less every other section as it stands; one that does not fit is `unread`
 /// and the next is tried. Once the limit has run out, every binary change left is `unread`.
 ///
-/// Labels are monotonic across every fallback (A0100-M1): no path leaves here binary and
-/// unlabelled unless its text reading itself said it is not text (or Git failed it). When the
-/// whole patch with the text readings does not parse (the line budget, say), the binary sections
-/// stand; one whose text was read keeps its known cause, else it is `unread`.
+/// Labels are monotonic across every fallback (A0100-M1, N1): a binary section leaves here
+/// unlabelled only when no attribute covers it, Git's second reading of it succeeded, and that
+/// reading is not valid UTF-8 and shows no wide encoding: positive evidence that it is not text.
+/// Every other outcome that does not end in a used text section keeps the known cause or is
+/// `unread`: a reading Git failed or cut, and a valid UTF-8 reading not used for any reason (the
+/// parser refused it alone, it is not one change, it still says binary, or the whole patch with
+/// the text readings did not parse).
 fn read_binary_again(
     runner: &Runner<'_>,
     first: &StructuredDiff,
@@ -894,9 +897,9 @@ fn read_binary_again(
         let (cause, out) =
             if let Some(Ok(cause)) = (!out_of_time).then(|| suppression(runner, &change)) {
                 match second_reading(runner, &read, &change, selection) {
-                    Ok(out) => (cause, out),
-                    Err(cut) => {
-                        out_of_time = matches!(cut, GitAcquireError::TimedOut { .. });
+                    Ok(Some(out)) => (cause, Some(out)),
+                    no => {
+                        out_of_time = matches!(no, Err(GitAcquireError::TimedOut { .. }));
                         match cause {
                             DiffSuppression::Content => unread,
                             told => (told, None),
@@ -907,6 +910,7 @@ fn read_binary_again(
                 out_of_time = true;
                 unread
             };
+        let utf8 = matches!(&out, Some(out) if std::str::from_utf8(out).is_ok());
         let again = out.and_then(|out| {
             let mut again = StructuredDiff::default();
             again.append_stream(&out, change.origin).ok()?;
@@ -924,8 +928,8 @@ fn read_binary_again(
             _ => cause,
         };
         let told = cause != DiffSuppression::Content;
-        if told || text.is_some() {
-            let fallback = if told { cause } else { DiffSuppression::Unread };
+        let fallback = if told { cause } else { DiffSuppression::Unread };
+        if told || text.is_some() || utf8 {
             mark(&mut labelled, at, fallback);
         }
         match text {
@@ -937,7 +941,7 @@ fn read_binary_again(
                 read.replace_section(at, text, &bytes);
                 replaced = true;
             }
-            None if told => mark(&mut read, at, cause),
+            None if told || utf8 => mark(&mut read, at, fallback),
             None => {}
         }
     }
