@@ -1779,6 +1779,7 @@ fn action_texts_reachable_from_exit_7_are_pinned() {
             ("fail_on_truncated", "review_evidence"),
             ("require_pass_no_unit", "review_evidence"),
             ("require_pass_not_pass", "review_evidence"),
+            ("branch_unverified", "review_evidence"),
         ]
     );
     for (class, action) in &actions {
@@ -2109,7 +2110,7 @@ fn refusal_driver(
         ),
         // a change and a judge that gives no verdict (`false`): one unit, not a pass
         "require_pass_not_pass" => {
-            let repo = a_repository_with_a_change(scratch);
+            let repo = a_repository_with_a_change(scratch, "require-pass");
             (
                 owned(&["agent", "check", "--require-pass", "--judge", "/bin/false"]),
                 String::new(),
@@ -2117,13 +2118,40 @@ fn refusal_driver(
                 "refused: 1 of 1 units did not pass (--require-pass not_pass)".into(),
             )
         }
+        // F11.b: a commit no stop recorded is not verified by the ledger
+        "branch_unverified" => {
+            let repo = a_repository_with_a_change(scratch, "verify-branch");
+            let ok = Command::new("git")
+                .current_dir(&repo)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .args([
+                    "-c",
+                    "user.name=ddf",
+                    "-c",
+                    "user.email=ddf@example.invalid",
+                ])
+                .args(["commit", "--quiet", "--allow-empty", "-m", "unrecorded"])
+                .output()
+                .unwrap();
+            assert!(ok.status.success());
+            (
+                owned(&["agent", "verify-branch", "HEAD~1..HEAD"]),
+                String::new(),
+                repo,
+                "refused: 1 of 1 commits are not verified by the ledger (verify-branch)".into(),
+            )
+        }
         other => panic!("no driver for the refusal class {other}: add one"),
     }
 }
 
 /// A repository with a committed policy and an untracked file: one unit for `agent check`.
-fn a_repository_with_a_change(scratch: &deep_diff_forge_testkit::Scratch) -> std::path::PathBuf {
-    let repo = scratch.join("require-pass");
+fn a_repository_with_a_change(
+    scratch: &deep_diff_forge_testkit::Scratch,
+    name: &str,
+) -> std::path::PathBuf {
+    let repo = scratch.join(name);
     std::fs::create_dir_all(&repo).unwrap();
     let git = |args: &[&str]| {
         let ok = Command::new("git")

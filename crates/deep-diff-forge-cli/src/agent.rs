@@ -13,17 +13,19 @@ const SETUP_USAGE: &str =
     "deep-diff-forge agent setup --client claude|codex [--allow-repo PATH]... [--hooks] [--json]";
 const DOCTOR_USAGE: &str = "deep-diff-forge agent doctor [--gate [--judge PATH] [--policy NAME] [--ranker-dir DIR]] [--json]";
 
-/// `agent setup`, `agent doctor`, `agent check` or `agent hook`.
+/// `agent setup`, `agent doctor`, `agent check`, `agent verify-branch` or `agent hook`.
 pub(crate) fn run(args: &[String]) {
     match args.first().map(String::as_str) {
         Some("setup") => setup(&args[1..]),
         Some("doctor") => doctor(&args[1..]),
         Some("check") => crate::agent_check::run(&args[1..]),
+        Some("verify-branch") => crate::ledger::verify_branch(&args[1..]),
         Some("hook") => crate::hook_run::run(&args[1..]),
         _ => {
             eprintln!("usage: {SETUP_USAGE}");
             eprintln!("       {DOCTOR_USAGE}");
             eprintln!("       {}", crate::agent_check::CHECK_USAGE);
+            eprintln!("       {}", crate::ledger::VERIFY_USAGE);
             eprintln!("       {}", crate::hook_run::USAGE);
             std::process::exit(exit::USAGE);
         }

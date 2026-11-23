@@ -534,6 +534,31 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   the repository's Git directory with the permissions of whoever works there, the agent
   included, so a record is evidence that a stop decided so, not proof, and a missing or edited
   ledger proves nothing.
+- **`agent verify-branch BASE..HEAD [--json]` verifies a branch against the ledger** (0.11.0).
+  It lists the commits of the range as a stop lists a session's commits (every commit `HEAD`
+  leads to that `BASE` does not, the oldest first) and reads the ledger, and only the ledger:
+  no judge runs. A commit is verified when a stop record passed it and none failed or held it
+  (a commit a stop left unjudged and a later stop passed is verified), or when a clearance
+  record names it: a line `{"v":1,"kind":"clearance","unit":"commit:<id>"}` that a person
+  appends, which is a convention and not a verdict. Each commit is said with its `outcome`
+  (`pass`, `fail`, `fail_stands`, `hold`, `unjudged` or `no_record`), `cleared`, `verified`, how
+  many stop records name it, and `agent_checks` of the first stop that gave it a verdict (the
+  checks with `--session` before it: a lower bound). `--json` prints
+  `deep-diff-forge.agent-verify-branch.v0` (`range`, `ledger`, `commits`, `verified`,
+  `unverified`: why the range or the ledger could not be read, and `cannot_know`). Exit 0 when
+  every commit is verified (an empty range has none to refuse); exit 7 after the document when
+  one is not, `refused: N of M commits are not verified by the ledger (verify-branch)`, or when
+  the range or the ledger cannot be read, `refused: the range or the ledger could not be read
+  (verify-branch)` (class `branch_unverified`); a reader that has gone still gets exit 7. A
+  ledger with a line that is not a record of this build, a record of a newer build, a last
+  line that is not whole, more than 64 MiB, or anything but a regular file at its name is
+  refused whole: a damaged record never reads as a missing one. Nothing is written to the
+  ledger; the list of commits Git is given is written in a scratch directory under
+  `.git/deep-diff-forge/` and removed. **What it cannot know**, said in the document and the
+  text: a commit made outside a session with the hooks, or in a clone, has no record; the ledger
+  is the agent's to write and delete like the rest of `.git`, so its absence proves nothing and
+  a record is evidence that a stop decided so, not proof that the commit passes. Where the
+  agent can write, it is advice; the boundary is the pull request's judge.
 - **A hook never fails its client, and a failure is never silence.** A hook always exits 0;
   exit 2, which Claude Code reads from a stop hook as a block, is never used, also not for a
   command line the hook cannot read (a mistyped option says that the hook did not run, and

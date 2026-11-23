@@ -11907,3 +11907,126 @@ fn a_ledger_that_cannot_be_written_changes_no_decision() {
         "a ledger was made in a directory that cannot be written"
     );
 }
+
+/// `agent verify-branch RANGE --json` in `root`: its exit code, its document and its stderr.
+fn verify_branch(root: &Path, range: &str) -> (i32, Value, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .current_dir(root)
+        .envs(ISOLATE)
+        .env("HOME", home())
+        .args(["agent", "verify-branch", range, "--json"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let doc = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)));
+    (
+        out.status.code().unwrap(),
+        doc,
+        String::from_utf8(out.stderr).unwrap(),
+    )
+}
+
+/// The outcome `agent verify-branch` gives each commit of its range, oldest first.
+fn verified(doc: &Value) -> Vec<(String, bool)> {
+    doc["commits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            (
+                c["outcome"].as_str().unwrap().to_owned(),
+                c["cleared"] == true,
+            )
+        })
+        .collect()
+}
+
+/// F11.b: `agent verify-branch BASE..HEAD` reads the project's ledger and refuses (exit 7,
+/// `branch_unverified`, after its document) every commit of the range that no stop passed: one
+/// a stop left unjudged, one that failed, one no stop recorded. A commit unjudged at one stop
+/// and passed at a later one is verified; a clearance record (a convention) clears a commit; a
+/// ledger with a record of a newer build is refused whole and left as it is.
+#[test]
+fn verify_branch_refuses_an_unjudged_unit() {
+    let scratch = Scratch::new("agent-hook-verify-branch");
+    let root = repository(&scratch);
+    let base = git(&root, &["rev-parse", "HEAD"]).trim().to_owned();
+    let (judge, _, exit_file) = failing_judge(&scratch);
+    let range = format!("{base}..HEAD");
+    let refused = |code: i32, stderr: &str, n: usize, m: usize| {
+        assert_eq!(code, 7, "{stderr}");
+        let line =
+            format!("refused: {n} of {m} commits are not verified by the ledger (verify-branch)");
+        assert!(stderr.lines().any(|l| l == line), "{stderr}");
+    };
+
+    // a commit a stop could not judge (no judge): unjudged, refused
+    start(&root, "u");
+    std::fs::write(root.join("c1.rs"), "fn c1() {}\n").unwrap();
+    git(&root, &["add", "c1.rs"]);
+    git(&root, &["commit", "--quiet", "-m", "c1"]);
+    let _ = stop_from(&root, "u", &scratch.join("no-such-judge"));
+    let (code, doc, stderr) = verify_branch(&root, &range);
+    refused(code, &stderr, 1, 1);
+    assert_eq!(verified(&doc), [("unjudged".to_owned(), false)], "{doc}");
+    assert_eq!(doc["verified"], false);
+    assert!(
+        doc["cannot_know"]
+            .as_str()
+            .unwrap()
+            .contains("proves nothing"),
+        "{doc}"
+    );
+
+    // the next stop judges it and it passes: verified
+    std::fs::write(&exit_file, "0").unwrap();
+    let _ = stop_from(&root, "u", &judge);
+    let (code, doc, stderr) = verify_branch(&root, &range);
+    assert_eq!((code, stderr.as_str()), (0, ""), "{doc}");
+    assert_eq!(verified(&doc), [("pass".to_owned(), false)], "{doc}");
+
+    // a commit that fails, and one no stop recorded
+    std::fs::write(&exit_file, "7").unwrap();
+    start(&root, "f");
+    silence_a_lint(&root);
+    git(&root, &["commit", "--quiet", "-am", "c2"]);
+    let _ = stop_from(&root, "f", &judge);
+    git(&root, &["commit", "--quiet", "--allow-empty", "-m", "c3"]);
+    let (code, doc, stderr) = verify_branch(&root, &range);
+    refused(code, &stderr, 2, 3);
+    let outcomes = verified(&doc);
+    assert_eq!(outcomes[0].0, "pass", "{doc}");
+    assert_eq!(outcomes[1].0, "fail", "{doc}");
+    assert_eq!(outcomes[2].0, "no_record", "{doc}");
+
+    // a clearance record, written by a person, clears both
+    let file = root.join(".git/deep-diff-forge/ledger.jsonl");
+    let mut text = std::fs::read_to_string(&file).unwrap();
+    for c in ["HEAD~1", "HEAD"] {
+        let id = git(&root, &["rev-parse", c]).trim().to_owned();
+        text.push_str("{\"v\":1,\"kind\":\"clearance\",\"unit\":\"commit:");
+        text.push_str(&id);
+        text.push_str("\"}\n");
+    }
+    std::fs::write(&file, &text).unwrap();
+    let (code, doc, stderr) = verify_branch(&root, &range);
+    assert_eq!((code, stderr.as_str()), (0, ""), "{doc}");
+    let cleared: Vec<bool> = verified(&doc).into_iter().map(|(_, c)| c).collect();
+    assert_eq!(cleared, [false, true, true], "{doc}");
+
+    // a record of a newer build: refused whole, and the file is as it was
+    text.push_str("{\"v\":2,\"kind\":\"stop\"}\n");
+    std::fs::write(&file, &text).unwrap();
+    let (code, doc, stderr) = verify_branch(&root, &range);
+    assert_eq!(code, 7, "{stderr}");
+    assert!(
+        stderr.contains("refused: the range or the ledger could not be read (verify-branch)"),
+        "{stderr}"
+    );
+    assert!(
+        doc["unverified"].as_str().unwrap().contains("newer build"),
+        "{doc}"
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+}

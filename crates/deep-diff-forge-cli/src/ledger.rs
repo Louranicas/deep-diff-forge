@@ -8,6 +8,7 @@
 //! write everything else of the repository. What the ledger gives is a record that outlives the
 //! session's state, and that `agent verify-branch` reads where the agent cannot write it.
 
+use crate::emit;
 use serde_json::{Value, json};
 use std::fmt::Write as _;
 use std::io::{Read as _, Seek as _, Write as _};
@@ -311,4 +312,201 @@ fn salt(own: &Path) -> Result<String, String> {
         }
         Err(e) => Err(format!("its salt could not be written: {e}")),
     }
+}
+
+/// `agent verify-branch`'s usage.
+pub(crate) const VERIFY_USAGE: &str = "deep-diff-forge agent verify-branch BASE..HEAD [--json]";
+/// The most of the ledger `agent verify-branch` reads; a larger one is refused.
+const WHOLE: u64 = 64 << 20;
+/// What `agent verify-branch` cannot know, in its document and its text.
+const CANNOT_KNOW: &str = "The ledger is a file in the repository's Git directory, written with the permissions of whoever works there, the agent included: a record is evidence that a stop decided so, not proof that the commit passes, and a ledger that is missing or was edited proves nothing. A commit made outside a session with the hooks, or in a clone, has no record here; the pull request's judge is the boundary.";
+
+/// `agent verify-branch BASE..HEAD [--json]`: every commit of the range, as a stop lists a
+/// session's commits, must have a stop record of the project's ledger that passed it, or a
+/// clearance record; else exit 7 (`branch_unverified`) after the document. Reads the ledger only.
+pub(crate) fn verify_branch(args: &[String]) {
+    let positionals = crate::args::admit_or_exit(
+        args,
+        &crate::args::Spec {
+            flags: &["--json"],
+            valued: &[],
+            positionals: 1,
+        },
+        VERIFY_USAGE,
+    );
+    let Some(range) = positionals.first().copied() else {
+        eprintln!("error: the range BASE..HEAD is missing");
+        eprintln!("usage: {VERIFY_USAGE}");
+        std::process::exit(deep_diff_forge_core::exit::USAGE);
+    };
+    let mut doc = json!({
+        "schema": "deep-diff-forge.agent-verify-branch.v0",
+        "tool": {"name": "deep-diff-forge", "version": env!("CARGO_PKG_VERSION")},
+        "range": range, "ledger": null, "commits": [], "verified": false, "unverified": null,
+        "cannot_know": CANNOT_KNOW,
+    });
+    let class = deep_diff_forge_core::exit::refusal("branch_unverified");
+    let read = std::env::current_dir()
+        .map_err(|e| format!("the current directory cannot be read: {e}"))
+        .and_then(|dir| crate::hook_run::branch_commits(&dir, range))
+        .and_then(|(own, commits)| {
+            doc["ledger"] = json!(own.join(FILE).to_string_lossy());
+            Ok((whole(&own)?, commits))
+        });
+    match read {
+        Err(why) => {
+            doc["unverified"] = json!(why);
+            let text = "the range or the ledger could not be read".to_owned();
+            crate::refusal::pending(&[(class, text)]);
+        }
+        Ok((records, commits)) => {
+            let verdicts: Vec<Value> = commits.iter().map(|id| verdict(&records, id)).collect();
+            let not = verdicts.iter().filter(|v| v["verified"] != true).count();
+            doc["commits"] = json!(verdicts);
+            doc["verified"] = json!(not == 0);
+            if not > 0 {
+                let text = format!(
+                    "{not} of {} commits are not verified by the ledger",
+                    commits.len()
+                );
+                crate::refusal::pending(&[(class, text)]);
+            }
+        }
+    }
+    if args.iter().any(|a| a == "--json") {
+        crate::emit_pretty_json(&doc);
+    } else {
+        emitln!("{}", verify_text(&doc));
+    }
+    crate::refusal::finish();
+}
+
+/// What the ledger says of the commit `id`: `cleared` by a clearance record (a convention), else
+/// the worst outcome a stop recorded (`fail`, `fail_stands`, `hold`), else `pass` when a stop
+/// passed it, else `unjudged`, else `no_record`. Only `pass` and a clearance verify it. With it,
+/// the runs of `agent check --session` recorded before the first stop that gave it a verdict.
+fn verdict(records: &[Value], id: &str) -> Value {
+    let unit = format!("commit:{id}");
+    let mine = records.iter().filter(|r| r["unit"] == unit.as_str());
+    let stops = mine.clone().filter(|r| r["kind"] == "stop");
+    let has = |outcome: &str| stops.clone().any(|r| r["outcome"] == outcome);
+    let outcome = ["fail", "fail_stands", "hold", "pass", "unjudged"]
+        .into_iter()
+        .find(|outcome| has(outcome))
+        .unwrap_or("no_record");
+    let cleared = mine.clone().any(|r| r["kind"] == "clearance");
+    let checks = stops
+        .clone()
+        .find(|r| r["outcome"] != "unjudged")
+        .map_or(Value::Null, |r| r["agent_checks"].clone());
+    json!({
+        "commit": id, "outcome": outcome, "cleared": cleared,
+        "verified": cleared || outcome == "pass", "records": stops.count(),
+        "agent_checks": checks,
+    })
+}
+
+/// The text form of `agent verify-branch`.
+fn verify_text(doc: &Value) -> String {
+    let mut out = Vec::new();
+    for commit in doc["commits"].as_array().into_iter().flatten() {
+        let id: String = commit["commit"]
+            .as_str()
+            .unwrap_or_default()
+            .chars()
+            .take(12)
+            .collect();
+        let mut line = format!("{id} {}", commit["outcome"].as_str().unwrap_or_default());
+        if commit["cleared"] == true {
+            line.push_str(", cleared by a clearance record (a convention, not a verdict)");
+        }
+        if let Some(runs) = commit["agent_checks"]["runs"].as_u64() {
+            let _ = write!(
+                line,
+                "; checked {runs} times with agent check --session before its stop, {} failed",
+                commit["agent_checks"]["failed"]
+            );
+        }
+        out.push(line);
+    }
+    if let Some(why) = doc["unverified"].as_str() {
+        out.push(format!(
+            "UNVERIFIED: {}",
+            deep_diff_forge_core::display_safe(why)
+        ));
+    } else {
+        let all = doc["commits"].as_array().map_or(0, Vec::len);
+        let verified = (doc["commits"].as_array().into_iter().flatten())
+            .filter(|c| c["verified"] == true)
+            .count();
+        out.push(format!(
+            "{verified} of {all} commits are verified by the ledger."
+        ));
+    }
+    out.push(CANNOT_KNOW.to_owned());
+    out.join("\n")
+}
+
+/// Every record of the ledger in `own`, for `agent verify-branch`; none when there is no ledger.
+/// A line that is not a record of this build, a record of a newer build, a last line that is not
+/// whole, a ledger over [`WHOLE`] or anything but a regular file at its name: refused whole, so
+/// a damaged record never reads as a missing one.
+fn whole(own: &Path) -> Result<Vec<Value>, String> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let path = own.join(FILE);
+    let shown = crate::hook::shown_path(&path.to_string_lossy());
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
+        .open(&path)
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("the ledger {shown} could not be opened: {e}")),
+    };
+    match file.metadata() {
+        Ok(found) if found.is_file() && found.len() <= WHOLE => {}
+        Ok(found) if found.is_file() => {
+            return Err(format!("the ledger {shown} is larger than {WHOLE} bytes"));
+        }
+        _ => return Err(format!("the ledger {shown} is not a regular file")),
+    }
+    let mut text = String::new();
+    file.take(WHOLE)
+        .read_to_string(&mut text)
+        .map_err(|e| format!("the ledger {shown} could not be read: {e}"))?;
+    if !text.is_empty() && !text.ends_with('\n') {
+        return Err(format!("the last line of the ledger {shown} is not whole"));
+    }
+    let mut records = Vec::new();
+    for (at, line) in text
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !line.is_empty())
+    {
+        let damaged = || {
+            format!(
+                "line {} of the ledger {shown} is not a record of this build",
+                at + 1
+            )
+        };
+        let record = record(line).ok_or_else(damaged)?;
+        match record["v"].as_u64() {
+            Some(VERSION) => {}
+            Some(newer) if newer > VERSION => {
+                return Err(format!(
+                    "the ledger {shown} holds records of a newer build (v{newer}; this one reads v{VERSION})"
+                ));
+            }
+            _ => return Err(damaged()),
+        }
+        if !matches!(
+            record["kind"].as_str(),
+            Some("stop" | "check" | "clearance")
+        ) {
+            return Err(damaged());
+        }
+        records.push(record);
+    }
+    Ok(records)
 }

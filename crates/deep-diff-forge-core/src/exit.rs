@@ -328,6 +328,14 @@ pub const REFUSALS: &[Refusal] = &[
         action: NextAction::ReviewEvidence,
         since: "0.11.0",
     },
+    Refusal {
+        class: "branch_unverified",
+        tag: "verify-branch",
+        commands: "`agent verify-branch`",
+        stdout: Stdout::Document,
+        action: NextAction::ReviewEvidence,
+        since: "0.11.0",
+    },
 ];
 
 /// The registered reason class named `class`.

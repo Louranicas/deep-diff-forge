@@ -7252,6 +7252,34 @@ fn range_line(
     Ok(line)
 }
 
+/// The commits of `range` (`A..B`) in the repository around `dir`, the oldest first, as a stop
+/// lists a session's commits: every commit `B` leads to that `A` does not. With them the hooks'
+/// own directory, where the project's ledger is (`agent verify-branch`, F11.b). The list Git is
+/// given is written in a scratch directory that is removed again, with the hooks' directory when
+/// this made it.
+pub(crate) fn branch_commits(dir: &Path, range: &str) -> Result<(PathBuf, Vec<String>), String> {
+    let deadline = Deadline::after(GATE_LIMIT);
+    let place = place_of(dir, deadline)?;
+    let deadline = deadline.with_project(&place);
+    let shown = deep_diff_forge_core::display_safe(range);
+    let (from, to) = range
+        .split_once("..")
+        .filter(|(a, b)| !a.is_empty() && !b.is_empty() && !b.starts_with('.'))
+        .ok_or_else(|| format!("the range {shown} is not A..B"))?;
+    let (from, to) = (
+        commit_of(&place, deadline, from)?,
+        commit_of(&place, deadline, to)?,
+    );
+    let made_own = place.own.symlink_metadata().is_err();
+    let ends = (std::slice::from_ref(&to), std::slice::from_ref(&from));
+    let commits = Scratch::new(&place.own)
+        .and_then(|scratch| listed(&place, deadline, &scratch, ends, "branch.list"));
+    if made_own {
+        let _ = std::fs::remove_dir(&place.own);
+    }
+    Ok((place.own, commits?.into_iter().map(|(id, _)| id).collect()))
+}
+
 /// `agent doctor --gate`: every link a judged stop depends on, checked in order in the
 /// repository at `cwd`, each with what was found. A link that cannot be checked because an
 /// earlier one is missing is reported as not ready, never as fine.
