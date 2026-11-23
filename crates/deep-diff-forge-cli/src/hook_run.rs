@@ -7278,7 +7278,7 @@ fn not_this_chain(
 /// is taken from the hook's own directory when the stop runs, which is not known here: it is
 /// the same only by its text. One that cannot be resolved (it does not exist) is the same
 /// only by its text, as before.
-fn same_ranker_dir(registered: Option<&str>, given: Option<&str>) -> bool {
+pub(crate) fn same_ranker_dir(registered: Option<&str>, given: Option<&str>) -> bool {
     match (registered, given) {
         (None, None) => true,
         (Some(registered), Some(given)) => {

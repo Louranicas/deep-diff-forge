@@ -1195,6 +1195,102 @@ fn doctor_gate_compares_the_ranker_directory_as_the_stop_opens_it() {
     }
 }
 
+/// `agent check`, `agent doctor --gate` and the stop agree on which ranker directory is the
+/// registered stop's. The stop lists the directory its `--ranker-dir` resolves to from its own
+/// directory, following links: here the stand-in judge admits only the ranker in that
+/// directory, so a stop given a relative path, a trailing `/` or a link to it offers that
+/// ranker and its judge answers (HOLD), and one given a directory that does not exist offers
+/// none and is UNJUDGED (exit 4). The gate is ready for exactly the first four, and the check
+/// says that the option is not the registered Stop hook's for exactly the last.
+#[test]
+fn check_doctor_and_the_stop_agree_on_the_ranker_directory() {
+    let (scratch, root, home, holding, _log, _exit_file) = gate_fixture("ranker-dir-agree");
+    let rankers = scratch.join("rankers");
+    std::fs::create_dir(&rankers).unwrap();
+    std::fs::write(rankers.join("ddf-0.8.4"), "stand-in ranker\n").unwrap();
+    std::os::unix::fs::symlink(&rankers, scratch.join("rankers-link")).unwrap();
+    let resolved = std::fs::canonicalize(&rankers).unwrap();
+    let judge = scratch.join("admits-the-directory-ranker");
+    write_program(
+        &judge,
+        &format!(
+            "#!/bin/sh\ncase \"$*\" in *ddf-0.8.4*) exec '{}' \"$@\";; *) exit 4;; esac\n",
+            holding.display()
+        ),
+    );
+    std::fs::create_dir(root.join(".claude")).unwrap();
+    std::fs::write(
+        root.join(".claude/settings.local.json"),
+        settings_with(&format!(
+            "{} --ranker-dir '{}'",
+            stop_command(&judge),
+            resolved.display()
+        )),
+    )
+    .unwrap();
+    start(&root, "s");
+    silence_a_lint(&root);
+    let judge = judge.to_str().unwrap();
+    for (given, same) in [
+        ("../rankers", true),
+        ("../rankers/", true),
+        ("../rankers-link", true),
+        ("../not-there", false),
+    ] {
+        // the stop, run from the project's directory as the client runs it
+        let (code, stdout, _) = hook_in(
+            "stop",
+            &["--judge", judge, "--ranker-dir", given],
+            &input("Stop", &root, "s", false),
+            |command| {
+                command.current_dir(&root);
+            },
+        );
+        assert_eq!(code, 0);
+        let said = system_message(&stdout);
+        if same {
+            assert!(
+                said.starts_with("deep-diff-forge: HOLD. "),
+                "stop {given}: {said}"
+            );
+        } else {
+            assert!(
+                said.contains("the judge refused the policy, the ranking or the ranker (exit 4)"),
+                "stop {given}: {said}"
+            );
+        }
+        // the gate
+        let (code, doc, _) = doctor_gate(&root, &home, &["--judge", judge, "--ranker-dir", given]);
+        let registered = detail(&doc, "hooks_registered");
+        assert_eq!(code == 0, same, "doctor {given}: {registered}");
+        assert_eq!(
+            registered.contains("offers other rankers"),
+            !same,
+            "doctor {given}: {registered}"
+        );
+        // the check
+        let out = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+            .current_dir(&root)
+            .envs(ISOLATE)
+            .env("HOME", &home)
+            .args(["agent", "check", "--json", "--ranker-dir", given])
+            .output()
+            .unwrap();
+        let doc: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+            panic!(
+                "check {given}: {e}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            )
+        });
+        let differs = doc["stop"]["differences"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|line| line == "--ranker-dir is not the registered Stop hook's");
+        assert_eq!(differs, !same, "check {given}: {doc}");
+    }
+}
+
 /// Each link of the chain is broken on its own: the gate names it, exits 7, and reports what
 /// depends on a missing link as not checked, never as fine.
 #[test]
