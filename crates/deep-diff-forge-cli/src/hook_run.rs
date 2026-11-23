@@ -10943,8 +10943,7 @@ mod tests {
         let gone = own.join("tmp-4999999");
         std::fs::create_dir_all(gone.join("work/objects")).unwrap();
         std::fs::write(gone.join("change.patch"), "patch").unwrap();
-        // this test's own process is alive; so is process 1
-        let mine = own.join(format!("tmp-{}", std::process::id()));
+        // process 1 is alive
         let init = own.join("tmp-1");
         std::fs::create_dir(&init).unwrap();
         // not scratch directories of a hook
@@ -10958,7 +10957,12 @@ mod tests {
         }
 
         let made = Scratch::new(&own).unwrap();
-        assert_eq!(made.0, mine);
+        // a new directory of its own under `own`, named `tmp-…` (the rest of the name is the
+        // build's: a process id before 0.11.0, drawn at random since, F3.a)
+        let mine = made.0.clone();
+        assert_eq!(mine.parent(), Some(own.as_path()));
+        assert!(mine.file_name().unwrap().to_str().unwrap().starts_with("tmp-"));
+        assert!(mine != init && mine != gone);
         assert!(
             !gone.exists(),
             "the directory of a process that is gone stays"
