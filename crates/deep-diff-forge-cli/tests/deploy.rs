@@ -66,18 +66,28 @@ fn release_json_declares_schema_and_version() {
     assert!(stdout.contains(&format!("\"version\": \"{}\"", env!("CARGO_PKG_VERSION"))));
 }
 
+/// From 0.10.0 every target is published: GitLab, Gitea and Forgejo; GitHub as a mirror of the
+/// source and the release page; crates.io from the tag (0.8.4 and 0.9.0 declared the two GitHub
+/// targets skipped and crates.io blocked).
 #[test]
-fn release_json_reports_crates_io_blocked() {
+fn release_json_reports_every_target_published() {
     let (code, stdout, _) = run(&["deploy", "release", "--json"]);
     assert_eq!(code, 0);
-    assert!(stdout.contains("crates.io"));
-    assert!(stdout.contains("\"state\": \"blocked\""));
-    assert!(stdout.contains("\"pending\": [\"crates.io\"]"));
-    // From 0.8.4 nothing goes to GitHub: those targets are skipped, not pending.
-    assert!(stdout.contains("{\"name\": \"github\", \"state\": \"skipped\"}"));
-    assert!(stdout.contains("{\"name\": \"github-release\", \"state\": \"skipped\"}"));
-    assert!(stdout.contains("{\"name\": \"forgejo\", \"state\": \"published\"}"));
-    assert!(stdout.contains("\"fully_published\": false"));
+    for name in [
+        "github",
+        "gitlab",
+        "gitea",
+        "forgejo",
+        "github-release",
+        "crates.io",
+    ] {
+        let target = format!("{{\"name\": \"{name}\", \"state\": \"published\"}}");
+        assert!(stdout.contains(&target), "{target} in {stdout}");
+    }
+    assert!(!stdout.contains("\"blocked\""), "{stdout}");
+    assert!(!stdout.contains("\"skipped\""), "{stdout}");
+    assert!(stdout.contains("\"pending\": []"), "{stdout}");
+    assert!(stdout.contains("\"fully_published\": true"), "{stdout}");
 }
 
 #[test]
@@ -87,7 +97,8 @@ fn release_human_lists_targets_and_pending() {
     assert!(stdout.contains("github"));
     assert!(stdout.contains("gitlab"));
     assert!(stdout.contains("crates.io"));
-    assert!(stdout.contains("pending: crates.io"));
+    assert!(stdout.contains("fully published"));
+    assert!(!stdout.contains("pending:"));
     assert!(stdout.contains("gitea"));
 }
 

@@ -37,8 +37,10 @@ Across the tree:
   with the same smoke, glibc check, SBOM and checksums, and `SHA256SUMS` signed by the owner; it
   has no build-provenance attestation ([local release](../RELEASE_AND_PUBLICATION.md#local-release-from-084)). GitHub release tags
   are immutable (a tag ruleset), and CodeQL analyses the code and workflows. The crates.io job
-  (on hold) runs in the `release` environment, which deploys only from `v*` tags and, since
-  2026-11-01, waits for the owner's approval.
+  of `release.yml` runs in the `release` environment, which deploys only from `v*` tags and,
+  since 2026-11-01, waits for the owner's approval; it is not used: 0.9.0's crates were
+  published from the owner's machine on 2026-11-23, and from 0.10.0 publishing is a step of the
+  release.
 - **Secret scanning.** GitHub secret scanning with push protection and provider patterns is on.
   Non-provider patterns and validity checks are not available for this user-owned repository, so
   gitleaks (the `secret scan` check and the versioned pre-push hook) is the compensating control

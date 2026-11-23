@@ -185,9 +185,11 @@ relative one is ignored for `$HOME/.local/state`). An invalid receipt exits 4.
 `analyze` checks that a patch turns the captured base directory into the candidate before it
 attaches semantics.
 
-`deploy release` is a declared snapshot. From 0.8.4 the source is published on GitLab, Gitea
-and Forgejo, nothing goes to GitHub (`github` and `github-release` are `skipped`), the release
-is the owner's signed tag and a local release, and crates.io is on hold.
+`deploy release` is a declared snapshot. From 0.10.0 every target is `published`: the owner's
+signed tag and a local release on GitLab (the place of release), Gitea and Forgejo; GitHub as a
+mirror of the source (`github`) and of the release page (`github-release`); the crates on
+crates.io from the tag. 0.8.4 and 0.9.0 declared `github` and `github-release` `skipped` and
+crates.io `blocked`.
 
 DDF reads a patch as a plain `git apply` reads it in Git's default configuration; the
 settings that change what Git writes are in

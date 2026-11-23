@@ -18,17 +18,19 @@ The framework is designed for:
 > L9 in `deploy status`. Planned, unowned: `deploy gate`, `ingest`, the cache, the `DDF_*`
 > variables, release receipts and the missing fixture groups. Withdrawn 2026-10-31: the `chain`,
 > `cluster` and `loom` commands and the loom loop below. On hold: crates.io publication, which
-> also needs the owner's approval in the `release` environment since 2026-11-01.
+> also needs the owner's approval in the `release` environment since 2026-11-01 (lifted
+> 2026-11-23: 0.9.0's crates were published on 2026-11-23, and from 0.10.0 publishing is a step of the release, from the owner's machine and not by `release.yml`).
 
 ## Status 2026-10-28 (0.3.0), rechecked 2026-11-01
 
-- Workspace version 0.9.0, a release once the signed tag `v0.9.0` exists (no GitHub release; published as a signed tag on GitLab, Gitea and Forgejo; binaries built locally for Linux x86_64); the tag before it is `v0.8.4` (2026-11-17). 14 crates under `crates/`
+- Workspace version 0.10.0, released as the signed tag `v0.10.0` (published on GitLab, Gitea and Forgejo; binaries built locally for Linux x86_64; GitHub mirrors the release page); the tag before it is `v0.9.0` (2026-11-18). 14 crates under `crates/`
   (core, patch, projection, pipeline, syntax, graph, agent, tui, cluster,
   learning, daemon, review, sdk, cli); edition 2024, MSRV 1.88, toolchain
   1.99.1. Internal edges: [`crate-edges.txt`](crate-edges.txt).
-- Published GitHub releases: `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`, `v0.8.0`, `v0.8.1`, `v0.8.2` and `v0.8.3`. crates.io is on hold by owner
-  decision; `release.yml` publishes only when the repository variable
-  `DDF_CRATES_IO` is `open`, never because a token exists.
+- Published GitHub releases: `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`, `v0.8.0`, `v0.8.1`, `v0.8.2` and `v0.8.3`, built by `release.yml`; from `v0.8.4` the GitHub release pages
+  mirror the GitLab release. crates.io: 0.9.0's crates were published on 2026-11-23, and from 0.10.0 publishing is a step of the release; `release.yml`'s publish job, which runs only
+  when the repository variable `DDF_CRATES_IO` is `open`, never because a token exists, is not
+  used.
 - `deploy status` reports maturity L9 (Learning). Its gate list is declared, not
   run; the gates themselves run in CI and in `just ci`.
 - The gates that exist are `.github/workflows/ci.yml` (ten jobs; thirteen checks on a pull
@@ -146,11 +148,11 @@ The codebase is at L9 (learning): every engine layer L0-L8 is implemented plus
 the L9 local-only learning loop. `v0.1.0` and `v0.2.0` were tagged and released
 to GitHub (binary + checksums via `release.yml`) and both git remotes. `0.2.1`
 was never tagged; 0.8.3 is tagged `v0.8.3` (2026-11-11 UTC), and 0.8.4 `v0.8.4` (2026-11-17),
-the tag before 0.9.0; 0.9.0 is a release once `v0.9.0` exists. crates.io is on hold by owner
-decision: the `publish` job runs only when the repository variable
-`DDF_CRATES_IO` is `open`, and a configured `CARGO_REGISTRY_TOKEN` does not lift
-the hold (corrected 2026-10-28; the earlier text said a token alone would
-publish).
+the tag before 0.9.0; 0.9.0 is `v0.9.0` (2026-11-18) and 0.10.0 `v0.10.0`. crates.io was on
+hold by owner decision until 2026-11-23: 0.9.0's crates were published on 2026-11-23, and from 0.10.0 publishing is a step of the release. The `publish` job of
+`release.yml` runs only when the repository variable `DDF_CRATES_IO` is `open`, and a
+configured `CARGO_REGISTRY_TOKEN` does not open it (corrected 2026-10-28; the earlier text
+said a token alone would publish); it is not used.
 
 Current gaps and recommendations are tracked in
 [Deployment Gap Analysis](DEPLOYMENT_GAP_ANALYSIS.md).

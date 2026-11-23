@@ -97,7 +97,7 @@ kept as history. Since the L3 update:
 Still open:
 
 - **Packaging gap (§7)** and crates.io: publication is on hold until the
-  codebase is production-ready.
+  codebase is production-ready. (Lifted 2026-11-23: 0.9.0's crates were published on 2026-11-23, and from 0.10.0 publishing is a step of the release.)
 - **Machine consumer gap** — the CLI contract, daemon parity, SDK and MCP
   slices A–D ([roadmap](ROADMAP.md#status-2026-10-26)) were planned when this was
   written; all four are implemented and merged (corrected 2026-10-27).
@@ -126,7 +126,7 @@ Still open:
   x86_64 and aarch64 macOS) passed. crates.io has v0.2.0 of
   `deep-diff-forge-core`, `-cli` and `-tui`; `-sdk` and `-review` were never
   published. crates.io stays on hold by owner decision until the codebase is
-  production-hardened. The hold is a condition in `release.yml`: the publish
+  production-hardened (lifted 2026-11-23: 0.9.0's crates were published on 2026-11-23, and from 0.10.0 publishing is a step of the release). The hold is a condition in `release.yml`: the publish
   job runs only when the repository variable `DDF_CRATES_IO` is `open`, so a
   configured token alone publishes nothing. A `workflow_dispatch` run is a dry
   run: gates, builds, a binary smoke test and checksum verification, with

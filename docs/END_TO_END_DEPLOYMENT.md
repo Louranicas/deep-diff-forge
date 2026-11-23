@@ -27,9 +27,10 @@ The gate sequence below is the design. What runs today:
   (34 cases since 0.6.0, 35 with `evidence/rust-code-view-20261114` since 0.8.4); fuzz seeds live in `fuzz/seeds/`.
 - Gate 8 has no tooling; nothing writes `reports/releases/`.
 - 0.8.4 is tagged `v0.8.4` (2026-11-17), the release before 0.9.0, and 0.8.3 `v0.8.3`
-  (2026-11-11 UTC); 0.9.0 is a release once `v0.9.0` exists (neither 0.8.4 nor 0.9.0 has a
-  GitHub release). Published releases: `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`, `v0.8.0`, `v0.8.1`, `v0.8.2`, `v0.8.3`. crates.io
-  is on hold (`DDF_CRATES_IO`).
+  (2026-11-11 UTC); 0.9.0 is `v0.9.0` (2026-11-18) and 0.10.0 `v0.10.0`, each published on
+  GitLab, Gitea and Forgejo, with a GitHub release page that mirrors the GitLab release (0.8.4
+  and 0.9.0 since 2026-11-22). Releases built by `release.yml`: `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`, `v0.8.0`, `v0.8.1`, `v0.8.2`, `v0.8.3`. crates.io:
+  0.9.0's crates were published on 2026-11-23, and from 0.10.0 publishing is a step of the release.
 - The local remote-tracking refs (last fetch, 2026-10-28) show GitLab `main` at
   `2f03f40`, the same commit as GitHub `main`; the 2026-10-26 instruction not to
   push GitLab `main` below is superseded.
@@ -189,7 +190,7 @@ Release forms, with their state on 2026-10-28:
 
 - GitHub Release assets: built by `release.yml` on a tag
 - GitLab Release assets: not produced
-- crates.io publish: on hold (`DDF_CRATES_IO`)
+- crates.io publish: on hold (`DDF_CRATES_IO`); lifted 2026-11-23: 0.9.0's crates were published on 2026-11-23, and from 0.10.0 publishing is a step of the release
 - cargo-binstall metadata: not configured
 - Linux tarballs (`x86_64-unknown-linux-gnu`; `aarch64-unknown-linux-gnu` since
   v0.6.0, on `ubuntu-22.04-arm`): built by `release.yml`, glibc 2.34 or newer
@@ -248,14 +249,15 @@ weekly campaign (`campaign.yml`) runs it for 600 s that way (measured 2026-10-30
 
 ### Gate 7: Publish
 
-Publishing order from 0.8.4 (GitLab is the repository of record; nothing goes to GitHub):
+Publishing order from 0.8.4 (GitLab is the repository of record; GitHub is a mirror, brought level after GitLab):
 
 1. Merge the release changes to GitLab `main`.
 2. In a dedicated, freshly cloned release worktree, run `just release-tag X.Y.Z`: it gates,
    signs the tag and pushes it to the `gitlab`, `gitea` and `forgejo` remotes.
 3. Build the release from the tag (`just release-local-build`), sign its `SHA256SUMS`, and
    attach the files to the tag's release on GitLab.
-4. Publish crates only after release artifacts pass smoke (on hold).
+4. Publish the crates to crates.io from the tag's commit, only after the release files pass
+   smoke (from 0.10.0 a step of every release; 0.9.0's crates were published on 2026-11-23).
 
 Up to 0.8.3 the order was: commit, tag, push to GitHub, push to GitLab, release assets made by
 `release.yml` at GitHub, crates; `main` changed only through a merged pull request on GitHub,
