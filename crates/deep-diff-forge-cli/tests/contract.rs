@@ -1383,7 +1383,7 @@ fn run_with_stdout_closed(args: &[&str], stdin: &[u8]) -> (Option<i32>, String) 
 }
 
 /// S3.17a.g2 (DDF-2026-010): every `--require-*` refusal exits 7 with its reason when the reader
-/// of stdout has gone. `findings verify --require-findings` and `--require-all` wrote the verdict
+/// of stdout has gone, or stdout cannot be written. `findings verify --require-findings` and `--require-all` wrote the verdict
 /// first and treated the broken pipe as a clean exit 0 with an empty stderr, so a gate that
 /// closed its reader early passed; `--require-files` and `--require-hunks` refuse before writing.
 #[test]
@@ -1438,6 +1438,29 @@ fn a_pending_refusal_survives_a_closed_stdout() {
             (Some(7), reason),
             "{args:?} with the reader of stdout gone"
         );
+        // F3 of the 0.10.0 tree review: a write error that is not a broken pipe (a full disk)
+        // gave exit 3, "write failed", and lost the refusal.
+        if let Ok(full) = std::fs::OpenOptions::new().write(true).open("/dev/full") {
+            let out = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+                .args(args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::from(full))
+                .stderr(Stdio::piped())
+                .spawn()
+                .and_then(|mut child| {
+                    let _ = child.stdin.take().unwrap().write_all(stdin.as_bytes());
+                    child.wait_with_output()
+                })
+                .unwrap();
+            assert_eq!(
+                (
+                    out.status.code(),
+                    String::from_utf8_lossy(&out.stderr).as_ref()
+                ),
+                (Some(7), reason),
+                "{args:?} with stdout at /dev/full"
+            );
+        }
     }
 }
 
