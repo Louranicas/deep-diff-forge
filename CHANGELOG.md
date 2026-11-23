@@ -70,6 +70,17 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - New repair id `diff_suppressed:a3` for a UTF-16 or UTF-32 file: store it as UTF-8, or say why
   it must be wide (F1.a3).
 - `tool.scorer_sha256` moves with no label, row or score change (F1.a3).
+- `agent check [--session ID | --base REV] [--judge PATH] [--policy NAME] [--ranker-dir DIR]
+  [--json]` judges the uncommitted change with the judge, policy and ranker directory of the
+  registered Stop hook (never one from PATH), by the policy at the base a session recorded
+  (`--session`, its state read only, never written) or at `--base`/HEAD; `--json` prints
+  `deep-diff-forge.agent-check.v0`. It names what it used, lists how that differs from a stop,
+  and says it is not the stop's answer (F3.b, F3.c).
+- A hook's scratch directory is owned by a lock (`flock`) and named `tmp-r` and 16 random hex
+  digits: a check or hook in another PID namespace no longer removes a live stop's scratch.
+  Directories named `tmp-<pid>` by earlier builds are removed as before (F3.a).
+- The partial file a hook state is written through is named at random, not by the process id
+  (F3.a).
 
 ## [0.10.0] - 2026-11-23
 
