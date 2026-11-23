@@ -61,6 +61,15 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   same input, the document printed as without the flag; the message is
   `error: --fail-on needs --rank or --diagnostics` (F5a).
 - `schema diagnostics` prints the JSON Schema of `deep-diff-forge.diagnostics.v0` (F5a).
+- A `--diagnostics` diagnostic of `hazardous_text` or `diff_suppressed` names its case in `cases`
+  (the kinds of hazard; the cause as in `rank.v0`) and lists only the repairs of that case: a
+  line with hidden characters is no longer told to fix a path, and a file hidden by an attribute
+  is no longer told to remove a NUL byte. `unread`, where the engine cannot tell the cause, lists
+  every repair. The text form prints `case:`; `schema diagnostics` and `explain signal` show the
+  cases (F1.a3).
+- New repair id `diff_suppressed:a3` for a UTF-16 or UTF-32 file: store it as UTF-8, or say why
+  it must be wide (F1.a3).
+- `tool.scorer_sha256` moves with no label, row or score change (F1.a3).
 
 ## [0.10.0] - 2026-11-23
 
