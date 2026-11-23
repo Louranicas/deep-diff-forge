@@ -55,3 +55,4 @@ error_swallowed:n1
 panic_path_added:a1
 panic_path_added:a2
 panic_path_added:n1
+diff_suppressed:a3

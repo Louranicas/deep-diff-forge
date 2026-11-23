@@ -1,8 +1,9 @@
 // Module index: docs/reference/diagnostics.md#on-the-command-line
 //! The text form of `--diagnostics` (F5a): compiler-style lines for an agent, drawn from the
 //! `deep-diff-forge.diagnostics.v0` bytes the builder wrote, never from the review. It prints each
-//! file's path, quoted and escaped, the line and its side, the code and its class, the vocabulary
-//! ids and their sentences, and counts: no other text of the change. A `floor_only` reading is
+//! file's path, quoted and escaped, the line and its side, the code and its class, its case where
+//! the document gives one, the vocabulary ids and their sentences, and counts: no other text of
+//! the change. A `floor_only` reading is
 //! counted per file, not listed, and `judge_sees` is never printed (diagnostics.md, "For agents
 //! and for people").
 
@@ -55,7 +56,7 @@ pub(crate) fn render(document: &str) -> String {
             (Some(line), Some(side)) => format!(":{line}: {code} ({class}, {side} side)"),
             _ => format!(": {code} ({class})"),
         };
-        let repairs = ids("repairs", &d["repairs"]);
+        let repairs = ids("case", &d["cases"]) + &ids("repairs", &d["repairs"]);
         let _ = writeln!(
             out,
             "{path}{at}{repairs}{}",

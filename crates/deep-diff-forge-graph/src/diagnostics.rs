@@ -26,6 +26,10 @@ pub struct Diagnostic {
     pub test_likely: bool,
     /// Whether the admitted ranker raises this label in this file; only with [`Judge::Different`].
     pub judge_sees: Option<bool>,
+    /// The case of a label whose repairs answer different cases (`cases`): for `hazardous_text`
+    /// the kinds of hazard, for `diff_suppressed` the cause, in the vocabulary's order; `None`
+    /// for every other label and when not known. The document lists only its repairs.
+    pub case: Option<Vec<&'static str>>,
 }
 
 /// The ranker the stop's policy admits, when the producer knows it (`judge` in the document).
@@ -76,7 +80,7 @@ pub fn diagnostics(seal: &InputSeal, ranked: &[RankedFile]) -> Diagnostics {
         let rows = file
             .evidence
             .iter()
-            .map(|e| (row(e), e.read_now, e.test_likely));
+            .map(|e| (row(e), e.read_now, e.test_likely, None));
         let room = MAX_EVIDENCE_PER_FILE.saturating_sub(file.evidence.len());
         let hazards = &file.hazard_lines[..file.hazard_lines.len().min(room)];
         if file.evidence_truncated
@@ -88,7 +92,11 @@ pub fn diagnostics(seal: &InputSeal, ranked: &[RankedFile]) -> Diagnostics {
         let kept = hazards.len();
         let hazards = hazards
             .iter()
-            .map(|&at| ((RiskSignal::HazardousText, Some(at)), true, false));
+            .zip(&file.hazard_line_kinds)
+            .map(|(&at, kinds)| {
+                let case = case_of(RiskSignal::HazardousText, kinds);
+                ((RiskSignal::HazardousText, Some(at)), true, false, case)
+            });
         let located = |s: &RiskSignal| {
             file.evidence.iter().any(|e| row(e).0 == *s)
                 || (*s == RiskSignal::HazardousText && kept > 0)
@@ -96,8 +104,8 @@ pub fn diagnostics(seal: &InputSeal, ranked: &[RankedFile]) -> Diagnostics {
         let floor =
             |s: RiskSignal| matches!(s, RiskSignal::Code(e) if file.floor_only.contains(&e));
         let unlocated = file.signals.iter().filter(|s| !located(s));
-        let unlocated = unlocated.map(|&s| ((s, None), !floor(s), false));
-        for ((signal, at), current, test_likely) in rows.chain(hazards).chain(unlocated) {
+        let unlocated = unlocated.map(|&s| ((s, None), !floor(s), false, file_case(file, s)));
+        for ((signal, at), current, test_likely, case) in rows.chain(hazards).chain(unlocated) {
             let seen = seen.entry((&file.path, signal.label(), at)).or_insert(0);
             let (occurrence, code) = (*seen, code_of(signal, at.is_some()).unwrap_or_default());
             *seen += 1;
@@ -111,6 +119,7 @@ pub fn diagnostics(seal: &InputSeal, ranked: &[RankedFile]) -> Diagnostics {
                 current,
                 test_likely,
                 judge_sees: None,
+                case,
             });
         }
     }
@@ -122,6 +131,24 @@ pub fn diagnostics(seal: &InputSeal, ranked: &[RankedFile]) -> Diagnostics {
         cut,
         diagnostics: out,
     }
+}
+
+/// The case of `signal` at its file: for `hazardous_text` every kind that raises it there, for
+/// `diff_suppressed` the cause.
+fn file_case(file: &RankedFile, signal: RiskSignal) -> Option<Vec<&'static str>> {
+    match signal {
+        RiskSignal::HazardousText => case_of(signal, &file.hazard_kinds),
+        RiskSignal::DiffSuppressed => file.diff_suppressed.map(|cause| vec![cause.label()]),
+        _ => None,
+    }
+}
+
+/// `kinds` in the order the vocabulary names the cases of `signal` (a value it does not name
+/// last); `None` when there is none.
+fn case_of(signal: RiskSignal, kinds: &[&'static str]) -> Option<Vec<&'static str>> {
+    let (names, mut case) = (remedy(signal).case_names(), kinds.to_vec());
+    case.sort_by_key(|v| names.iter().position(|n| n == v).unwrap_or(names.len()));
+    (!case.is_empty()).then_some(case)
 }
 
 /// SHA-256 of `ddf-diagnostic-v0`, input digest, path, label, anchor, side, line, occurrence,
@@ -163,7 +190,8 @@ fn block(items: &[String], open: char, close: char) -> String {
 
 impl Diagnostic {
     /// The diagnostic as the document writes it; the ids it names go into `texts` with their
-    /// agent-facing text. A `floor_only` reading is for a person and names none.
+    /// agent-facing text. A `floor_only` reading is for a person and names none; a known case
+    /// names only the repairs and substitutes that answer it.
     fn to_json(&self, texts: &mut BTreeMap<&'static str, &'static str>) -> String {
         let remedy = remedy(self.signal);
         let (accept, not, reading, audience): (&[&str], &[_], _, _) = if self.current {
@@ -175,15 +203,22 @@ impl Diagnostic {
             texts.insert(id, text);
             format!("\"{id}\"")
         };
+        let answers = |id: &str| remedy.answers(id, self.case.as_deref());
         let repairs: Vec<String> = accept
             .iter()
             .zip(remedy.accept)
+            .filter(|(id, _)| answers(id))
             .map(|(id, t)| name(id, t))
             .collect();
         let not: Vec<String> = not
             .iter()
+            .filter(|n| answers(n.id))
             .filter_map(|n| Some(name(n.id, n.agent?)))
             .collect();
+        let cases = self.case.as_ref().map_or_else(String::new, |case| {
+            let case: Vec<String> = case.iter().map(|c| format!("\"{c}\"")).collect();
+            format!(", \"cases\": [{}]", case.join(", "))
+        });
         let (label, class) = (self.signal.label(), facts(self.signal).class.label());
         let (anchor, side, line) = self
             .at
@@ -199,7 +234,7 @@ impl Diagnostic {
             let _ = write!(likely, ", \"judge_sees\": {sees}");
         }
         format!(
-            "{{\"key\": \"{}\", \"code\": \"{}\", \"label\": \"{label}\", \"class\": \"{class}\", \"path\": {}, \"anchor\": \"{anchor}\", \"side\": {side}, \"line\": {line}, \"occurrence\": {}, \"reading\": \"{reading}\", \"audience\": \"{audience}\", \"repairs\": [{}], \"not_accepted\": [{}]{likely}}}",
+            "{{\"key\": \"{}\", \"code\": \"{}\", \"label\": \"{label}\", \"class\": \"{class}\", \"path\": {}, \"anchor\": \"{anchor}\", \"side\": {side}, \"line\": {line}, \"occurrence\": {}, \"reading\": \"{reading}\", \"audience\": \"{audience}\"{cases}, \"repairs\": [{}], \"not_accepted\": [{}]{likely}}}",
             self.key,
             self.code,
             safe(&self.path),
@@ -733,6 +768,128 @@ mod tests {
                 written.ends_with(&format!(", \"judge_sees\": {sees}}},"))
                     || written.ends_with(&format!(", \"judge_sees\": {sees}}}")),
                 "{written}"
+            );
+        }
+    }
+
+    /// The written `cases` and `repairs` of each diagnostic of `doc` with `code`, in order.
+    fn repairs_of(doc: &Diagnostics, code: &str) -> Vec<(Option<Vec<&'static str>>, String)> {
+        let json = doc.to_json();
+        doc.diagnostics
+            .iter()
+            .filter(|d| d.code == code)
+            .map(|d| {
+                let written = json.lines().find(|l| l.contains(&d.key)).unwrap();
+                let at = written.find("\"repairs\": [").unwrap() + 12;
+                let repairs = written[at..].split(']').next().unwrap().replace('"', "");
+                let cases = written.find("\"cases\": [").map(|at| {
+                    let list = written[at + 10..].split(']').next().unwrap();
+                    assert_eq!(
+                        d.case.as_ref().map(|c| c
+                            .iter()
+                            .map(|v| format!("\"{v}\""))
+                            .collect::<Vec<_>>()
+                            .join(", ")),
+                        Some(list.to_owned()),
+                        "{written}"
+                    );
+                });
+                assert_eq!(cases.is_some(), d.case.is_some(), "{written}");
+                (d.case.clone(), repairs)
+            })
+            .collect()
+    }
+
+    /// F1.a3: a line with a bidi control is told to remove the characters, not to fix a path;
+    /// each kind of the line is its case, and the text names no other repair.
+    #[test]
+    fn a_hazardous_line_lists_only_the_character_repair() {
+        let doc = document(BIDI).1;
+        let want = (Some(vec!["bidi_control"]), "hazardous_text:a1".to_owned());
+        assert_eq!(repairs_of(&doc, "hazardous_text@line"), [want]);
+        let json = doc.to_json();
+        assert!(!json.contains("hazardous_text:a2"), "{json}");
+        let both =
+            "--- a/src/c.rs\n+++ b/src/c.rs\n@@ -1,1 +1,2 @@\n a\n+x\u{200B}\u{202E}\u{1b}\n";
+        let found = repairs_of(&document(both).1, "hazardous_text@line");
+        let kinds = vec!["bidi_control", "invisible", "control"];
+        assert_eq!(found, [(Some(kinds), "hazardous_text:a1".to_owned())]);
+    }
+
+    /// F1.a3: a path that traverses or names `.git` is told to use another path, not to remove
+    /// characters; a path with a bidi control is told to remove them; a file whose path and a
+    /// line both raise it carries both on the line, since its path has no diagnostic of its own.
+    #[test]
+    fn a_hazardous_path_lists_only_the_path_repair() {
+        let at = |path: &str, line: &str| {
+            let patch = format!("--- a/{path}\n+++ b/{path}\n@@ -1,1 +1,2 @@\n a\n+{line}\n");
+            document(&patch).1
+        };
+        let path = (Some(vec!["path_traversal"]), "hazardous_text:a2".to_owned());
+        assert_eq!(
+            repairs_of(&at("../x.rs", "b"), "hazardous_text@file"),
+            [path]
+        );
+        let git = (Some(vec!["git_internal"]), "hazardous_text:a2".to_owned());
+        assert_eq!(
+            repairs_of(&at(".git/hooks/x", "b"), "hazardous_text@file"),
+            [git]
+        );
+        let bidi = (Some(vec!["bidi_control"]), "hazardous_text:a1".to_owned());
+        assert_eq!(
+            repairs_of(&at("src/a\u{202E}b.rs", "b"), "hazardous_text@file"),
+            [bidi]
+        );
+        let doc = at(".git/x", "b\u{202E}");
+        let both = (
+            Some(vec!["bidi_control", "git_internal"]),
+            "hazardous_text:a1, hazardous_text:a2".to_owned(),
+        );
+        assert_eq!(repairs_of(&doc, "hazardous_text@line"), [both]);
+        assert_eq!(repairs_of(&doc, "hazardous_text@file"), []);
+        let renamed = "diff --git a/src/x\u{202E}.rs b/src/y.rs\nsimilarity index 100%\nrename from src/x\u{202E}.rs\nrename to src/y.rs\n";
+        let left = (Some(vec!["bidi_control"]), "hazardous_text:a1".to_owned());
+        assert_eq!(
+            repairs_of(&document(renamed).1, "hazardous_text@file"),
+            [left]
+        );
+    }
+
+    /// F1.a3: lines that found no place give the label at its file with every kind of the file:
+    /// of its lines, none cut, and of its path.
+    #[test]
+    fn an_unlocated_hazard_carries_every_kind_of_its_file() {
+        let mut patch = hazards_after_rows(33, 1);
+        patch.push_str("+let z = \"\u{200B}\";\n");
+        let patch = patch.replace("+1,34 @@", "+1,35 @@");
+        let found = repairs_of(&document(&patch).1, "hazardous_text@file");
+        let kinds = vec!["bidi_control", "invisible"];
+        assert_eq!(found, [(Some(kinds), "hazardous_text:a1".to_owned())]);
+    }
+
+    /// F1.a3: `diff_suppressed` carries its cause and lists the repair of that cause; `unread`,
+    /// where the engine cannot tell the cause, lists them all.
+    #[test]
+    fn each_cause_of_diff_suppressed_lists_its_repair() {
+        use deep_diff_forge_core::DiffSuppression as S;
+        let patch = "--- a/src/m.rs\n+++ b/src/m.rs\n@@ -1,1 +1,2 @@\n a\n+b\n";
+        for (cause, want) in [
+            (S::Attribute, "diff_suppressed:a1"),
+            (S::Content, "diff_suppressed:a2"),
+            (S::Encoding, "diff_suppressed:a3"),
+            (
+                S::Unread,
+                "diff_suppressed:a1, diff_suppressed:a2, diff_suppressed:a3",
+            ),
+        ] {
+            let mut files = parse(patch).unwrap();
+            files[0].patch_twin.diff_suppressed = Some(cause);
+            let doc = diagnostics(&InputSeal::of(patch.as_bytes(), "test"), &rank(&files));
+            let found = repairs_of(&doc, "diff_suppressed@file");
+            assert_eq!(
+                found,
+                [(Some(vec![cause.label()]), want.to_owned())],
+                "{cause:?}"
             );
         }
     }

@@ -37,6 +37,11 @@ pub struct RankedFile {
     /// More lines raise `hazardous_text` than the [`MAX_EVIDENCE_PER_FILE`] that
     /// `hazard_lines` holds.
     pub hazard_lines_cut: bool,
+    /// The kinds of hazard behind each of `hazard_lines`: its own and its paths'. With
+    /// `hazard_kinds`, every kind behind the label in the file, the `cases` of `diagnostics.v0`;
+    /// never printed in `rank.v0`.
+    pub hazard_line_kinds: Vec<Vec<&'static str>>,
+    pub hazard_kinds: Vec<&'static str>,
 }
 
 impl RankedFile {
@@ -66,11 +71,11 @@ impl RankedFile {
         });
         let floor_only = floor_only.collect();
         let (evidence, evidence_truncated) = listed(assessment.evidence);
-        let (hazard_lines, hazard_lines_cut) =
+        let (hazard_lines, hazard_line_kinds, hazard_lines_cut, hazard_kinds) =
             if assessment.signals.contains(&RiskSignal::HazardousText) {
                 crate::risk::hazard_lines(file)
             } else {
-                (Vec::new(), false)
+                Default::default()
             };
         Self {
             path: file.path.clone(),
@@ -83,6 +88,8 @@ impl RankedFile {
             floor_only,
             hazard_lines,
             hazard_lines_cut,
+            hazard_line_kinds,
+            hazard_kinds,
         }
     }
 }

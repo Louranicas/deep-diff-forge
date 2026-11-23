@@ -709,3 +709,199 @@ fn the_text_form_lists_agent_diagnostics_and_counts_the_rest() {
     ];
     assert_eq!(text.lines().collect::<Vec<_>>(), want, "{text}");
 }
+
+/// The (code, cases, repairs) of every diagnostic of `doc`, in order; `cases` empty when absent.
+fn repairs(doc: &Value) -> Vec<(String, String, String)> {
+    let list = |value: &Value| {
+        let items = value.as_array().into_iter().flatten();
+        items
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let all = doc["diagnostics"].as_array().unwrap().iter();
+    all.map(|d| {
+        let code = format!(
+            "{} {}",
+            d["path"].as_str().unwrap(),
+            d["code"].as_str().unwrap()
+        );
+        (code, list(&d["cases"]), list(&d["repairs"]))
+    })
+    .collect()
+}
+
+fn triple(code: &str, cases: &str, repairs: &str) -> (String, String, String) {
+    (code.to_owned(), cases.to_owned(), repairs.to_owned())
+}
+
+/// F1.a3, the coordinator's first reproduction: a line with a bidi control, beside an `unsafe`
+/// and a token, is told to remove the characters and not to fix a path; a path that traverses
+/// is told to use another path and not to remove characters. The text form says the same.
+#[test]
+fn each_diagnostic_lists_the_repairs_of_its_case() {
+    let line = format!("let s = \"{}\u{202E}\";", token());
+    let mut patch = section("src/a.rs", &["unsafe { f() }".into(), line], &[]);
+    patch.push_str(&section("../x.rs", &["fn x() {}".into()], &[]));
+    let doc = document(patch.as_bytes());
+    let found = repairs(&doc);
+    assert!(
+        found.contains(&triple(
+            "src/a.rs hazardous_text@line",
+            "bidi_control",
+            "hazardous_text:a1"
+        )),
+        "{found:?}"
+    );
+    assert!(
+        found.contains(&triple(
+            "../x.rs hazardous_text@file",
+            "path_traversal",
+            "hazardous_text:a2"
+        )),
+        "{found:?}"
+    );
+    let unsafe_added = found
+        .iter()
+        .find(|(c, _, _)| c == "src/a.rs unsafe_added@line");
+    assert_eq!(
+        unsafe_added.map(|(_, cases, repairs)| (cases.as_str(), repairs.as_str())),
+        Some(("", "unsafe_added:a1, unsafe_added:a2")),
+        "a label without cases lists every repair and no case"
+    );
+    let (code, text, stderr) = run(&["--stdin-patch", "--diagnostics"], patch.as_bytes());
+    assert_eq!(code, Some(0), "{stderr}");
+    for want in [
+        "\"src/a.rs\":3: hazardous_text@line (security, new side); case: bidi_control; repairs: hazardous_text:a1\n",
+        "\"../x.rs\": hazardous_text@file (security); case: path_traversal; repairs: hazardous_text:a2\n",
+    ] {
+        assert!(text.contains(want), "{want} not in\n{text}");
+    }
+}
+
+/// F1.a3, the coordinator's second reproduction and every cause on Git input: a file hidden by a
+/// `-diff` attribute is told to remove the attribute, one hidden by a NUL byte to remove the byte,
+/// one in UTF-16 to store it as UTF-8; a copy Git answers as two changes (`unread`) and a file too
+/// large to read again (`unread`) list every repair, since the engine cannot tell the cause.
+#[test]
+fn each_cause_of_diff_suppressed_lists_its_own_repair() {
+    let all = "diff_suppressed:a1, diff_suppressed:a2, diff_suppressed:a3";
+    let nul = |more: &str| {
+        let mut text = b"echo s\n# \0\n".to_vec();
+        text.extend("x=1\n".repeat(40).as_bytes());
+        text.extend(more.as_bytes());
+        text
+    };
+    let utf16 = |text: &str| -> Vec<u8> {
+        let mut bytes = vec![0xff, 0xfe];
+        bytes.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+        bytes
+    };
+    let large = |changed: bool| {
+        let mut bytes = vec![0_u8; 33 << 20];
+        if changed {
+            bytes[1 << 20] = 7;
+        }
+        bytes
+    };
+    let staged = |doc: &Value| repairs(doc);
+    let ranged = |name: &str, base: &[(&str, &[u8])], change: &[(&str, &[u8])]| {
+        let scratch = Scratch::new(name);
+        repository(&scratch, base, change);
+        let (code, stdout, stderr) = range(scratch.path(), &["--diagnostics", "--json"]);
+        assert_eq!(code, Some(0), "{name}: {stderr}");
+        repairs(&serde_json::from_str(&stdout).unwrap())
+    };
+    let attribute = ranged(
+        "f1a3-attribute",
+        &[
+            (".gitattributes", b"*.rs -diff\n"),
+            ("src/m.rs", b"fn m() {}\n"),
+        ],
+        &[("src/m.rs", b"fn m() {}\nfn n() {}\n")],
+    );
+    let encoding = ranged(
+        "f1a3-encoding",
+        &[("run.ps1", &utf16("echo a\r\n"))],
+        &[("run.ps1", &utf16("echo a\r\necho b\r\n"))],
+    );
+    let unread = ranged(
+        "f1a3-unread",
+        &[("a.bin", &large(false))],
+        &[("a.bin", &large(true))],
+    );
+    let code = "diff_suppressed@file";
+    let of = |found: &[(String, String, String)], path: &str| {
+        let at = format!("{path} {code}");
+        found.iter().find(|(c, _, _)| *c == at).cloned()
+    };
+    assert_eq!(
+        of(&attribute, "src/m.rs"),
+        Some(triple(
+            "src/m.rs diff_suppressed@file",
+            "attribute",
+            "diff_suppressed:a1"
+        ))
+    );
+    assert_eq!(
+        of(&encoding, "run.ps1"),
+        Some(triple(
+            "run.ps1 diff_suppressed@file",
+            "encoding",
+            "diff_suppressed:a3"
+        ))
+    );
+    assert_eq!(
+        of(&unread, "a.bin"),
+        Some(triple("a.bin diff_suppressed@file", "unread", all))
+    );
+    let scratch = Scratch::new("f1a3-staged");
+    repository(&scratch, &[("src.sh", &nul(""))], &[("README", b"r\n")]);
+    git(scratch.path(), &["config", "diff.renames", "copies"]);
+    std::fs::write(scratch.join("src.sh"), nul("x\n")).unwrap();
+    std::fs::write(scratch.join("dst.sh"), nul("y=2\ny=3\n")).unwrap();
+    git(scratch.path(), &["add", "-A"]);
+    let root = scratch.path().to_str().unwrap();
+    let args = ["--git-staged", "--repo", root, "--diagnostics", "--json"];
+    let (status, stdout, stderr) = run(&args, b"");
+    assert_eq!(status, Some(0), "{stderr}");
+    let found = staged(&serde_json::from_str(&stdout).unwrap());
+    assert_eq!(
+        of(&found, "src.sh"),
+        Some(triple(
+            "src.sh diff_suppressed@file",
+            "content",
+            "diff_suppressed:a2"
+        )),
+        "{found:?}"
+    );
+    assert_eq!(
+        of(&found, "dst.sh"),
+        Some(triple("dst.sh diff_suppressed@file", "unread", all)),
+        "{found:?}"
+    );
+}
+
+/// F1.a3: `explain signal` names the cases each repair answers, beside it.
+#[test]
+fn explain_signal_shows_the_case_of_each_repair() {
+    let (code, stdout, stderr) = run(&["explain", "signal", "hazardous_text", "--json"], b"");
+    assert_eq!(code, Some(0), "{stderr}");
+    let v: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        v["cases"]["hazardous_text:a1"],
+        serde_json::json!(["bidi_control", "invisible", "control"])
+    );
+    assert_eq!(
+        v["cases"]["hazardous_text:a2"],
+        serde_json::json!(["path_traversal", "git_internal"])
+    );
+    let (_, stdout, _) = run(&["explain", "signal", "unsafe_added", "--json"], b"");
+    let v: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["cases"], serde_json::json!({}));
+    let (_, text, _) = run(&["explain", "signal", "diff_suppressed"], b"");
+    assert!(
+        text.contains("  - Store the file as UTF-8, or say why it must be UTF-16 or UTF-32. (cases: encoding, unread)\n"),
+        "{text}"
+    );
+}

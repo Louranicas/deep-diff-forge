@@ -126,7 +126,8 @@ fn signal_json(facts: &deep_diff_forge_graph::SignalFacts) -> Value {
 /// form (the default, `"audience": "person"`) lists every substitute; `--audience agent` prints
 /// what an agent is shown (F7.c1, contract design 3.4): the same repairs, and of the substitutes
 /// only those with an `agent` sentence, in that sentence. The JSON names each entry's id beside it
-/// (`accept_ids` in the order of `accept`; `id` in each `not_accepted` entry; F1.a2).
+/// (`accept_ids` in the order of `accept`; `id` in each `not_accepted` entry; F1.a2), and for a
+/// label whose repairs answer different cases, the cases of each id shown (`cases`; F1.a3).
 fn explain_signal(args: &[String]) -> Result<String, String> {
     use std::fmt::Write as _;
     let (mut json, mut agent, mut label) = (false, false, None);
@@ -162,6 +163,15 @@ fn explain_signal(args: &[String]) -> Result<String, String> {
         value["why"] = json!(remedy.why);
         value["accept"] = json!(remedy.accept);
         value["accept_ids"] = json!(remedy.accept_ids);
+        let named =
+            |id: &&str| remedy.accept_ids.contains(id) || shown.iter().any(|(e, _)| e["id"] == *id);
+        value["cases"] = remedy
+            .cases
+            .iter()
+            .filter(|(id, _)| named(id))
+            .map(|(id, case)| ((*id).to_owned(), json!(case)))
+            .collect::<serde_json::Map<_, _>>()
+            .into();
         value["not_accepted"] = shown.into_iter().map(|(entry, _)| entry).collect();
         value["native_lints"] = remedy
             .native_lints
@@ -183,8 +193,11 @@ fn explain_signal(args: &[String]) -> Result<String, String> {
     );
     let _ = writeln!(text, "why: {}", remedy.why);
     let _ = writeln!(text, "accept:");
-    for line in remedy.accept {
-        let _ = writeln!(text, "  - {line}");
+    for (line, id) in remedy.accept.iter().zip(remedy.accept_ids) {
+        let _ = match remedy.cases.iter().find(|(i, _)| i == id) {
+            Some((_, case)) => writeln!(text, "  - {line} (cases: {})", case.join(", ")),
+            None => writeln!(text, "  - {line}"),
+        };
     }
     if !shown.is_empty() {
         let _ = writeln!(text, "not accepted:");
@@ -346,7 +359,7 @@ fn diagnostics_schema() -> Value {
             "anchor": {"enum": ["line", "file"]}, "side": {"enum": ["new", "old", null]},
             "line": {"type": ["integer", "null"]}, "occurrence": count,
             "reading": {"enum": ["current", "floor_only"]}, "audience": {"enum": ["agent", "person"]},
-            "repairs": ids, "not_accepted": ids,
+            "cases": ids, "repairs": ids, "not_accepted": ids,
             "test_likely": {"type": "boolean"}, "judge_sees": {"type": "boolean"},
         }),
     );

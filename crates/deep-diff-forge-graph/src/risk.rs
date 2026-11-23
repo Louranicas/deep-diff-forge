@@ -253,20 +253,55 @@ fn hazardous_line(line: &PatchLine) -> bool {
         && !deep_diff_forge_core::text_hazards(&line.text).is_empty()
 }
 
-/// Where `hazardous_text` stands in `file`'s lines: the side and number of the first
+/// Where and why `hazardous_text` stands in `file`'s lines: the side and number of the first
 /// [`MAX_EVIDENCE_PER_FILE`] changed lines [`hazard_weight`] counts, in the file's order
-/// (`diagnostics.v0`'s `hazardous_text@line`), and whether there are more. No text is kept.
-pub(crate) fn hazard_lines(file: &ReviewFile) -> (Vec<(Side, u32)>, bool) {
+/// (`diagnostics.v0`'s `hazardous_text@line`), each with its kinds of
+/// [`deep_diff_forge_core::text_hazards`] and the paths' kinds; whether there are more; and
+/// every kind that raises it, of every such line and of [`deep_diff_forge_core::path_hazards`]
+/// of the path and each path a rename or copy leaves. No text is kept.
+pub(crate) type Hazards = (
+    Vec<(Side, u32)>,
+    Vec<Vec<&'static str>>,
+    bool,
+    Vec<&'static str>,
+);
+
+pub(crate) fn hazard_lines(file: &ReviewFile) -> Hazards {
+    let join = |into: &mut Vec<&'static str>, kinds: Vec<&'static str>| {
+        for kind in kinds {
+            if !into.contains(&kind) {
+                into.push(kind);
+            }
+        }
+    };
+    let (mut path, mut every) = (Vec::new(), Vec::new());
+    let from = file.patch_twin.metadata.iter().filter_map(|m| {
+        m.strip_prefix("rename from ")
+            .or_else(|| m.strip_prefix("copy from "))
+    });
+    for name in from.chain([file.path.as_str()]) {
+        join(&mut path, deep_diff_forge_core::path_hazards(name));
+    }
     let lines = file.patch_twin.hunks.iter().flat_map(|h| &h.lines);
     let at = |line: &PatchLine| match line.kind {
         PatchLineKind::Removed => line.old_line.map(|n| (Side::Old, n)),
         _ => line.new_line.map(|n| (Side::New, n)),
     };
-    let found = lines.filter(|l| hazardous_line(l)).filter_map(at);
-    let mut found: Vec<_> = found.take(MAX_EVIDENCE_PER_FILE + 1).collect();
+    let (mut found, mut kinds) = (Vec::new(), Vec::new());
+    for line in lines.filter(|l| hazardous_line(l)) {
+        let mut of = deep_diff_forge_core::text_hazards(&line.text);
+        join(&mut every, of.clone());
+        if let Some(at) = at(line).filter(|_| found.len() <= MAX_EVIDENCE_PER_FILE) {
+            join(&mut of, path.clone());
+            found.push(at);
+            kinds.push(of);
+        }
+    }
     let more = found.len() > MAX_EVIDENCE_PER_FILE;
     found.truncate(MAX_EVIDENCE_PER_FILE);
-    (found, more)
+    kinds.truncate(MAX_EVIDENCE_PER_FILE);
+    join(&mut every, path);
+    (found, kinds, more, every)
 }
 
 /// +3 for a symlink and +2 for a file made executable, recording each signal (bug hunt

@@ -11,7 +11,9 @@ come, and until they land no other surface prints this schema.
 A diagnostics document locates every label that [risk ranking](risk-ranking.md#risk-ranking)
 raises on one input: one diagnostic per evidence row, and one per label that no row locates. It
 holds no text of the change except each file's path. It is built from the same sealed review as
-`deep-diff-forge.rank.v0`, so it says nothing the ranking does not.
+`deep-diff-forge.rank.v0`, so it raises no label the ranking does not; beyond the ranking it says
+only where `hazardous_text` stands and which kinds of hazard raise it (places and kinds, never
+text).
 
 ## The document
 
@@ -41,7 +43,8 @@ One diagnostic, members in this order:
 | `occurrence` | 0, or the count of earlier diagnostics with the same path, label, anchor, side and line (a patch can repeat a section of one path) |
 | `reading` | `current` when a current reading of this version finds it, or `floor_only` when only a reading kept for the floor finds it (see Readings) |
 | `audience` | `agent`, or `person` for a `floor_only` reading |
-| `repairs` | ids of the changes that answer the label |
+| `cases` | only on `hazardous_text` and `diff_suppressed`: the case the engine found, which decides the repairs (see Repairs by case) |
+| `repairs` | ids of the changes that answer the label, in its case where `cases` is given |
 | `not_accepted` | ids of substitutes that do not answer it and that this engine raises a label for |
 | `test_likely` | only on `panic_path_added@line`: the hunk shows the panic inside an item marked as a test |
 | `judge_sees` | only when `judge.state` is `different`: whether the admitted ranker raises this label in this file |
@@ -56,6 +59,28 @@ then `hazardous_text@line` diagnostics, one per changed line whose text carries 
 place only, never its text), then one `@file` diagnostic per remaining label in `signals[]`
 order. A file keeps at most 32 located diagnostics, rows first; a file over that is listed in
 `cut`. `hazardous_text` raised by a path alone, or whose lines found no place, is `@file`.
+
+## Repairs by case
+
+Two labels have repairs for different cases, and the engine knows the case when it raises them.
+A diagnostic of either carries `cases` and lists only the repairs (and substitutes) of its case;
+every other diagnostic lists all of its label's repairs.
+
+| Label | `cases` | Repairs |
+| --- | --- | --- |
+| `hazardous_text` | the kinds of hazard: `bidi_control`, `invisible`, `control` (characters, in a line or a path); `path_traversal`, `git_internal` (a path, or the path a rename or copy leaves) | characters: `hazardous_text:a1`; a path: `hazardous_text:a2` |
+| `diff_suppressed` | the cause, as `rank.v0` gives it: `attribute`, `content`, `encoding` or `unread` | `attribute`: `diff_suppressed:a1`; `content`: `diff_suppressed:a2`; `encoding`: `diff_suppressed:a3`; `unread`: all three |
+
+A `hazardous_text@line` holds the kinds of its line and, when the file's path also raises the
+label, the path's kinds too: while a line locates the label the path has no diagnostic of its own.
+A `hazardous_text@file` holds every kind of its file. `unread` means the engine could not tell why
+Git gave the file as binary: `git check-attr` or the second reading as text was cut off by the byte
+budget or the time limit, the second reading failed or could not be asked for the path, or its
+answer could not be used (a copy Git gives as two changes, a reading that still says binary or
+does not parse). In some of these ways an attribute is
+ruled out, but the engine does not keep which, so every repair is listed. Where the byte budget or
+the time limit cut the reading, a smaller change (fewer or smaller files at once) can be read; in
+the other ways it cannot, so that is not a repair.
 
 ## Readings
 
@@ -161,8 +186,8 @@ Schema. The input is refused before any document exactly as `--rank` refuses it:
 does not parse, or, on stdin, input in which Git finds no patch, exits 4 (`--allow-empty` makes
 that an empty document); `--require-files` and `--require-hunks` exit 7. The command runs no
 judge, so `judge` is `{"state": "unknown", "ranker_sha256": null}`. On Git input a file Git gave
-as binary and read again as text carries `diff_suppressed@file` whatever the cause; the cause
-(`attribute`, `content`, `encoding` or `unread`) is in `rank.v0`, not here. The three inputs give
+as binary carries `diff_suppressed@file` with its cause in `cases` (`attribute`, `content`,
+`encoding` or `unread`, as in `rank.v0`) and the repairs of that cause. The three inputs give
 one document for one change, except `input_sha256` and the keys, which hash the patch bytes
 each input makes, and, for `<old> <new>`, the paths, which are the two paths as given.
 
@@ -171,6 +196,7 @@ Without `--json` it prints a text form for agents. First one line per diagnostic
 readings and each file in `cut`, then each named id with its sentence, and the counts:
 
     "src/b.rs":2: unsafe_added@line (security, new side); repairs: unsafe_added:a1, unsafe_added:a2
+    "src/b.rs":3: hazardous_text@line (security, new side); case: bidi_control; repairs: hazardous_text:a1
     "src/a.rs": unsafe_added@file (security); repairs: unsafe_added:a1, unsafe_added:a2
     "src/app.rs": 1 readings kept for compatibility with 0.8.3 are for a person; leave the text that carries them
     "src/a.rs": 32 places listed; the rest were cut at 32
