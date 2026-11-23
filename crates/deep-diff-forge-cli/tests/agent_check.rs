@@ -10,6 +10,7 @@
 
 use deep_diff_forge_testkit::Scratch;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -105,6 +106,14 @@ fn check(home: &Path, cwd: &Path, args: &[&str], path: Option<&Path>) -> (i32, S
         command.env("PATH", format!("{}:/usr/bin:/bin", path.display()));
     }
     finish(command, "")
+}
+
+fn check_json(home: &Path, cwd: &Path, args: &[&str], path: Option<&Path>) -> Value {
+    let mut all = vec!["--json"];
+    all.extend_from_slice(args);
+    let (code, stdout, stderr) = check(home, cwd, &all, path);
+    assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
+    serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{e}: {stdout:?}"))
 }
 
 /// A repository with one commit: a source file and a strict policy (`# strict`). The home of
@@ -208,6 +217,58 @@ exit "$code"
     );
 }
 
+/// The user's Claude Code settings in `home`, registering the stop hook `agent setup --hooks`
+/// prints for this binary and `judge`.
+fn install(home: &Path, judge: &Path) {
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    let stop = format!(
+        "'{}' agent hook stop --client claude --judge '{}'",
+        this_binary().display(),
+        std::fs::canonicalize(judge).unwrap().display()
+    );
+    let settings = json!({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": stop}]}]}});
+    std::fs::write(home.join(".claude/settings.json"), settings.to_string()).unwrap();
+}
+
+/// Every file of the hooks' state directory: its name, then its bytes' SHA-256, size, mode,
+/// inode, and modification and change times to the nanosecond.
+fn state_listing(home: &Path) -> BTreeMap<String, String> {
+    use std::os::unix::fs::MetadataExt as _;
+    let dir = home.join(".local/state/deep-diff-forge/hooks");
+    let mut listing = BTreeMap::new();
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let entry = entry.unwrap();
+        let meta = entry.metadata().unwrap();
+        let bytes = std::fs::read(entry.path()).unwrap_or_default();
+        listing.insert(
+            entry.file_name().to_string_lossy().into_owned(),
+            format!(
+                "{} {} {:o} {} {}.{} {}.{}",
+                deep_diff_forge_core::sha256_hex(&bytes),
+                meta.len(),
+                meta.mode(),
+                meta.ino(),
+                meta.mtime(),
+                meta.mtime_nsec(),
+                meta.ctime(),
+                meta.ctime_nsec()
+            ),
+        );
+    }
+    let dir_meta = std::fs::metadata(&dir).unwrap();
+    listing.insert(
+        ".".to_owned(),
+        format!(
+            "{}.{} {}.{}",
+            dir_meta.mtime(),
+            dir_meta.mtime_nsec(),
+            dir_meta.ctime(),
+            dir_meta.ctime_nsec()
+        ),
+    );
+    listing
+}
+
 /// F3.b: the command's usage, the options this build refuses, and the schema of its
 /// document, which `docs/reference/output-and-exit-codes.md` names.
 #[test]
@@ -272,6 +333,143 @@ fn agent_check_says_its_usage_and_names_its_schema() {
         table.contains("`agent check --json`")
             && table.contains("`deep-diff-forge.agent-check.v0`"),
         "the schema row is missing"
+    );
+}
+
+/// F3.c: with `--session`, the policy is the one at the base the session recorded, and the
+/// judge is the one the registered Stop hook names, not one on `PATH`. A committed loosening
+/// of the policy and a passing judge on `PATH` leave the check where the stop is: FAIL.
+#[test]
+fn check_uses_the_session_base_and_the_installed_judge() {
+    let scratch = Scratch::new("agent-check-installed");
+    let (home, root) = repository(&scratch);
+    let installed = scratch.join("installed-judge");
+    judge(&installed, "policy", None);
+    install(&home, &installed);
+    // what PATH holds: a judge that passes everything
+    let bin = scratch.join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    judge(&bin.join("forge-warden"), "pass", None);
+    let (code, _, stderr) = hook(
+        &home,
+        "session-start",
+        &[],
+        &input("SessionStart", &root, "s1"),
+    );
+    assert_eq!((code, stderr.as_str()), (0, ""));
+    let base = git(&root, &["rev-parse", "HEAD"]).trim().to_owned();
+    std::fs::write(root.join("warden.toml"), "# loosened\n").unwrap();
+    git(&root, &["commit", "--quiet", "-am", "loosen the policy"]);
+    silence_a_lint(&root);
+
+    let (code, stdout, _) = hook(
+        &home,
+        "stop",
+        &["--judge", installed.to_str().unwrap()],
+        &input("Stop", &root, "s1"),
+    );
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("\"decision\":\"block\""),
+        "the stop did not block: {stdout}"
+    );
+
+    let doc = check_json(&home, &root, &["--session", "s1"], Some(&bin));
+    let outcome = &doc["units"][0]["outcome"];
+    assert_eq!(
+        outcome, "fail",
+        "check says {outcome} where the stop blocked: {doc}"
+    );
+    assert_eq!(doc["base"], json!({"commit": base, "from": "session"}));
+    assert_eq!(
+        doc["judge"]["program"],
+        std::fs::canonicalize(&installed).unwrap().to_str().unwrap()
+    );
+    assert_eq!(doc["stop"]["same_inputs"], true, "{doc}");
+    assert_eq!(doc["units"][0]["rules"][0]["id"], "no-silent-suppression");
+    let (_, text, _) = check(&home, &root, &["--session", "s1"], Some(&bin));
+    assert!(text.starts_with("The uncommitted change: FAIL\n"), "{text}");
+    assert!(
+        text.contains("Judged with what a stop of this session judges the uncommitted change with"),
+        "{text}"
+    );
+    assert!(text.contains("This is not the stop's answer"), "{text}");
+
+    // Without a session the base is HEAD, whose policy is the loosened one: the check says
+    // which base and judge it used and claims no equality.
+    let doc = check_json(&home, &root, &[], Some(&bin));
+    assert_eq!(doc["units"][0]["outcome"], "pass", "{doc}");
+    assert_eq!(doc["base"]["from"], "HEAD");
+    assert_eq!(doc["stop"]["same_inputs"], false);
+    let (_, text, _) = check(&home, &root, &[], Some(&bin));
+    assert!(!text.contains("Judged with what a stop"), "{text}");
+    assert!(text.contains("Not as the stop: no session"), "{text}");
+
+    // A judge named here that is not the Stop hook's is said, and the inputs are not the stop's.
+    let doc = check_json(
+        &home,
+        &root,
+        &[
+            "--session",
+            "s1",
+            "--judge",
+            bin.join("forge-warden").to_str().unwrap(),
+        ],
+        None,
+    );
+    assert_eq!(doc["stop"]["same_inputs"], false, "{doc}");
+    assert_eq!(
+        doc["stop"]["differences"][0],
+        "--judge is not the registered Stop hook's"
+    );
+
+    // No registered Stop hook and no --judge: nothing is looked up on PATH.
+    std::fs::remove_file(home.join(".claude/settings.json")).unwrap();
+    let doc = check_json(&home, &root, &["--session", "s1"], Some(&bin));
+    assert_eq!(doc["units"][0]["outcome"], "unjudged", "{doc}");
+}
+
+/// F3.c: the session's state is read and never written: every file of the state directory,
+/// and the directory itself, are byte for byte and time for time what they were.
+#[test]
+fn check_leaves_the_session_state_byte_identical() {
+    let scratch = Scratch::new("agent-check-read-only");
+    let (home, root) = repository(&scratch);
+    let installed = scratch.join("installed-judge");
+    judge(&installed, "fail", None);
+    install(&home, &installed);
+    let (code, _, _) = hook(
+        &home,
+        "session-start",
+        &[],
+        &input("SessionStart", &root, "s1"),
+    );
+    assert_eq!(code, 0);
+    silence_a_lint(&root);
+    let (_, stdout, _) = hook(
+        &home,
+        "stop",
+        &["--judge", installed.to_str().unwrap()],
+        &input("Stop", &root, "s1"),
+    );
+    assert!(stdout.contains("\"decision\":\"block\""), "{stdout}");
+    let before = state_listing(&home);
+    assert!(
+        before
+            .keys()
+            .any(|name| Path::new(name).extension().is_some_and(|e| e == "json")),
+        "{before:?}"
+    );
+    // (times are compared to the nanosecond: a write within the same tick still changes ctime)
+    std::thread::sleep(Duration::from_millis(20));
+    let doc = check_json(&home, &root, &["--session", "s1"], None);
+    assert_eq!(doc["units"][0]["outcome"], "fail", "{doc}");
+    let _ = check(&home, &root, &["--session", "s1"], None);
+    let _ = check(&home, &root, &["--session", "another"], None);
+    assert_eq!(
+        state_listing(&home),
+        before,
+        "agent check changed the session's state"
     );
 }
 

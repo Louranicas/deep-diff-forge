@@ -409,6 +409,39 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   it has and says "stops will be judged" only when every one of them is ready, or when the
   only ones that are not are `policy_protects_itself` and `claims_verified`, which it then
   names as weak.
+- **`agent check` judges the uncommitted change on demand, with a stop's judge and policy**
+  (0.11.0, first part). `deep-diff-forge agent check [--session ID | --base REV] [--judge
+  PATH] [--policy NAME] [--ranker-dir DIR] [--json]` stages the working tree around the
+  current directory against the commit its `HEAD` names, as a stop does, and asks the judge
+  once. The judge, the policy and the ranker directory are those of the first `Stop` hook in
+  the form `agent setup --hooks` prints, in the settings the gate reads (each can be replaced
+  with its option); the judge is never looked up on `PATH`: with no judge named the change is
+  UNJUDGED and says so. With `--session ID` (the id Claude Code gives the hooks) the policy is
+  read at the base that session recorded, from its state file, which is opened for reading
+  only: no lock is taken and nothing in the state directory is made or changed. Without a
+  session the policy is read at `--base REV`, else at `HEAD`, and the answer names that base.
+  `--json` prints `deep-diff-forge.agent-check.v0`: `project`, `session` (`state_file`,
+  `base_recorded_by`: `session_start` or `first_hook`), `base` (`commit`, `from`: `session`,
+  `--base` or `HEAD`), `judge` (`program`, `policy`, `ranker_dir`, `stop_hook`: the settings
+  file), `units` (none when the tree equals `HEAD`, else one, `uncommitted`, with its
+  `outcome` `pass`, `hold`, `fail` or `unjudged`, each rule by `id` with `held` and the
+  `signal`, `path` and number of `items` of each violation, the number of `judge_notes`, and
+  the `reason` of an UNJUDGED), `unjudged` (why nothing could be judged: no repository, a
+  session with no state or no base, a base that names no commit) and `stop`. Nothing of the
+  judge's own words is repeated: they can quote the patch. **What it says about a stop.**
+  `stop.whole_answer` is `false` and every answer ends with "This is not the stop's answer: a
+  stop also judges what is staged and each commit of the session, and blocks only for a
+  failure that has not blocked before; this build of agent check judges the uncommitted
+  change alone." `stop.same_inputs` is `true` only with a session whose base was read, a
+  registered `Stop` hook that runs this binary by its own path and names a judge, and no
+  option that replaces its judge, policy or ranker directory; the text form then says, of a
+  change it judged, "Judged with what a stop of this session judges the uncommitted change
+  with: the policy at the base the session recorded, and the judge, the policy and the ranker
+  directory of the registered Stop hook." Every other case is listed in `stop.differences` and said as "Not as the stop:
+  …". Same inputs are not the same answer: a stop has its own time, and a failure that has
+  blocked once stands there. The check writes only its scratch directory under the hooks'
+  own directory in the repository, as a stop does. Exit 0 with the document, 2 for a usage
+  error; `--range` and `--require-pass` are refused as not in this build.
 - **A hook never fails its client, and a failure is never silence.** A hook always exits 0;
   exit 2, which Claude Code reads from a stop hook as a block, is never used, also not for a
   command line the hook cannot read (a mistyped option says that the hook did not run, and

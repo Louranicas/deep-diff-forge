@@ -1,7 +1,8 @@
-//! `agent check` (F3, part 1): the judgement a stop gives the uncommitted change, on demand,
-//! with the judge named by `--judge` (never one from `PATH`). It judges the uncommitted change
-//! alone: what is staged and the session's commits are not judged in this build, so it never
-//! says it is the stop's answer.
+//! `agent check` (F3, part 1): the judgement a stop gives the uncommitted change, on demand.
+//! With `--session ID` it reads that session's state, read only, for the base the session
+//! recorded; the judge, the policy and the ranker directory come from the registered `Stop`
+//! hook, never from `PATH`. It judges the uncommitted change alone: what is staged and the
+//! session's commits are not judged in this build, so it never says it is the stop's answer.
 
 use crate::emit;
 use crate::hook::{self, Judged};
@@ -66,8 +67,8 @@ fn check(session: Option<&str>, base: Option<&str>, args: &[String]) -> Value {
         "stop": {"same_inputs": false, "differences": [], "whole_answer": false, "said": NOT_THE_STOP},
     });
     let mut differs: Vec<String> = Vec::new();
-    let found = if session.is_some() {
-        Err("reading a session is not in this build".to_owned())
+    let found = if let Some(id) = session {
+        from_session(id, &mut doc)
     } else {
         differs.push(
             "no session: the policy is read at the base named here, not at the base a session recorded"
@@ -101,6 +102,33 @@ fn check(session: Option<&str>, base: Option<&str>, args: &[String]) -> Value {
     }
 }
 
+/// The session's project, the base it recorded and where that base is from, read from the
+/// session's state without writing it ([`crate::hook_run::session_seen`]).
+fn from_session(
+    id: &str,
+    doc: &mut Value,
+) -> Result<(std::path::PathBuf, String, &'static str), String> {
+    let seen = crate::hook_run::session_seen(id)
+        .map_err(|why| format!("the session {}: {why}", display_safe(id)))?;
+    // (a base its first hook recorded is the stop's base all the same)
+    let recorded_by = if seen.by_start {
+        "session_start"
+    } else {
+        "first_hook"
+    };
+    doc["session"] =
+        json!({"state_file": seen.file.to_string_lossy(), "base_recorded_by": recorded_by});
+    let base = seen.base.map_err(str::to_owned)?;
+    let (top, id) = crate::hook_run::project_of(&seen.top)?;
+    if top != seen.top || id != seen.id {
+        return Err(format!(
+            "the repository at {} is not the one the session began in, so a stop of this session is UNJUDGED",
+            hook::shown_path(&seen.top.to_string_lossy())
+        ));
+    }
+    Ok((top, base, "session"))
+}
+
 fn unjudged(mut doc: Value, differs: &[String], why: &str) -> Value {
     doc["unjudged"] = json!(why);
     doc["stop"]["differences"] = json!(differs);
@@ -108,29 +136,63 @@ fn unjudged(mut doc: Value, differs: &[String], why: &str) -> Value {
 }
 
 /// The judge, the policy and the ranker directory the check runs with, as options for the
-/// bench: those given here. With them, why there is no judge to run (never one from `PATH`).
+/// bench: those of the registered `Stop` hook, each replaced by one given here. With them, why
+/// there is no judge to run (never one from `PATH`); every way they are not the stop's goes
+/// into `differs`.
 fn installed(
-    _top: &Path,
+    top: &Path,
     args: &[String],
-    _differs: &mut Vec<String>,
+    differs: &mut Vec<String>,
     doc: &mut Value,
 ) -> (Vec<String>, Option<String>) {
-    let mut bench = Vec::new();
-    for flag in ["--judge", "--policy", "--ranker-dir"] {
-        if let Some(value) = crate::flag_value(args, flag) {
-            bench.extend([flag.to_owned(), value]);
+    let found = crate::hook_run::installed_stop(top);
+    let stop = found
+        .as_ref()
+        .map(|(_, read)| read.clone())
+        .unwrap_or_default();
+    if found.is_none() {
+        differs.push("no settings file Claude Code reads for this project registers a Stop hook of deep-diff-forge".to_owned());
+    } else {
+        let this = std::env::current_exe().and_then(std::fs::canonicalize).ok();
+        if this.as_deref().and_then(Path::to_str) != Some(stop.program.as_str()) {
+            differs.push(format!("the registered Stop hook runs {}, not this binary: a stop offers that binary as its first ranker and reads the verdict by its rules", hook::shown_path(&stop.program)));
         }
     }
-    let judge = crate::flag_value(args, "--judge");
+    let mut bench = Vec::new();
+    let mut take = |flag: &str, hooked: Option<String>, default: Option<&str>| {
+        let given = crate::flag_value(args, flag);
+        if found.is_some()
+            && given.is_some()
+            && given.as_deref().or(default) != hooked.as_deref().or(default)
+        {
+            differs.push(format!("{flag} is not the registered Stop hook's"));
+        }
+        let value = given.or(hooked);
+        if let Some(value) = &value {
+            bench.extend([flag.to_owned(), value.clone()]);
+        }
+        value
+    };
+    let judge = take("--judge", stop.judge.clone(), None);
+    let policy = take("--policy", stop.policy.clone(), Some("warden.toml"));
+    let ranker_dir = take("--ranker-dir", stop.ranker_dir.clone(), None);
     doc["judge"] = json!({
         "program": judge,
-        "policy": crate::flag_value(args, "--policy").unwrap_or_else(|| "warden.toml".to_owned()),
-        "ranker_dir": crate::flag_value(args, "--ranker-dir"),
-        "stop_hook": null,
+        "policy": policy.as_deref().unwrap_or("warden.toml"),
+        "ranker_dir": ranker_dir,
+        "stop_hook": found.as_ref().map(|(file, _)| file.to_string_lossy()),
     });
-    let no_judge = judge
-        .is_none()
-        .then(|| "no judge: --judge was not given".to_owned());
+    let no_judge = match (&judge, &found) {
+        (Some(_), _) => None,
+        (None, Some(_)) => {
+            let why = "the registered Stop hook names no --judge, so a stop takes forge-warden from PATH, which agent check never does: name the judge with --judge PATH";
+            differs.push(why.to_owned());
+            Some(why.to_owned())
+        }
+        (None, None) => {
+            Some("no judge: no registered Stop hook names one and --judge was not given".to_owned())
+        }
+    };
     (bench, no_judge)
 }
 

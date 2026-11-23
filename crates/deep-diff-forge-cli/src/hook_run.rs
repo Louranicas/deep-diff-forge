@@ -6676,6 +6676,52 @@ fn settings_files(top: &Path) -> Vec<PathBuf> {
     files
 }
 
+/// A session's state as `agent check` reads it (F3.c).
+pub(crate) struct SessionSeen {
+    pub(crate) file: PathBuf,
+    /// The project's top level and which repository it is ([`identity`]).
+    pub(crate) top: PathBuf,
+    pub(crate) id: String,
+    /// The commit the session began from, or why there is none.
+    pub(crate) base: Result<String, &'static str>,
+    pub(crate) by_start: bool,
+}
+
+/// The state of `session`, read only: the file is opened for reading as every hook reads it
+/// ([`load_read`]); no lock is taken and nothing is made or written, the state directory
+/// included. `agent check` is no hook of the session and must leave its record as it is.
+pub(crate) fn session_seen(session: &str) -> Result<SessionSeen, String> {
+    let file = state_file(&sessions_dir()?, session);
+    let project = match load_read(&file) {
+        Ok(Some((state, _))) => state.project,
+        Ok(None) => return Err(format!("it has no state ({} is not there)", shown(&file))),
+        Err(why) => return Err(format!("its state {} cannot be read: {why}", shown(&file))),
+    };
+    let project = project.ok_or_else(|| "its state records no project yet".to_owned())?;
+    Ok(SessionSeen {
+        base: match project.base {
+            Base::Commit(id) => Ok(id),
+            Base::NoCommit => Err("the repository had no commit when the session began"),
+            Base::Orphan => Err("HEAD named no commit when the session began (an orphan branch)"),
+        },
+        top: PathBuf::from(project.top),
+        id: project.id,
+        by_start: project.by_start,
+        file,
+    })
+}
+
+/// The first `Stop` hook in the form `agent setup --hooks` prints, in the settings Claude
+/// Code reads for the project at `top`, with the file that registers it.
+pub(crate) fn installed_stop(top: &Path) -> Option<(PathBuf, hook::StopCommand)> {
+    settings_files(top).into_iter().find_map(|file| {
+        let read = stop_hooks(&settings(&file)?)
+            .iter()
+            .find_map(|stop| hook::stop_command(&stop.command))?;
+        Some((file, read))
+    })
+}
+
 /// The working tree around `dir`: its top level and which repository it is.
 pub(crate) fn project_of(dir: &Path) -> Result<(PathBuf, String), String> {
     place_of(dir, Deadline::after(GATE_LIMIT)).map(|place| (place.top, place.id))
