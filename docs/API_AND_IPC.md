@@ -137,7 +137,7 @@ deep-diff-forge agent {setup --client claude|codex [--allow-repo PATH]... [--hoo
 deep-diff-forge mcp [--allow-repo PATH]...
 deep-diff-forge rpc [--allow-repo PATH]...
 deep-diff-forge envelope -- <command> [args…]
-deep-diff-forge schema [result|exit-codes|signals]
+deep-diff-forge schema [result|exit-codes|signals|diagnostics]
 deep-diff-forge explain {<code> [--family engine|council] | signal <label> [--audience agent|person]} [--json]
 deep-diff-forge claude-code-contract
 deep-diff-forge chain-contract

@@ -19,8 +19,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - A stdout that cannot be written at all keeps a pending refusal for every class, through the
   one door (0.10.0 fixed it for `findings verify`;
   [DDF-2026-011](docs/advisories/DDF-2026-011.md)).
-- `docs/reference/diagnostics.md`: the contract of `deep-diff-forge.diagnostics.v0` (no command
-  prints it yet), with 42 pinned codes (F7.h1).
+- `docs/reference/diagnostics.md`: the contract of `deep-diff-forge.diagnostics.v0` (printed by
+  `--diagnostics`, F5a), with 42 pinned codes (F7.h1).
 - The tree's version is 0.11.0-dev (F7.h1).
 - `--rank --fail-on LIST` (on `--stdin-patch`, `--git-*` and `<old> <new>`) is a gate on the
   ranking. LIST holds classes (`security`, `integrity`, `shape`) and labels from
@@ -39,7 +39,7 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   on a witness patch the engine is tested on (F7.c1).
 - The graph crate builds `deep-diff-forge.diagnostics.v0` in process: one diagnostic per
   evidence row and one per label that no row locates; keys hold no line text; each diagnostic is
-  a `current` or `floor_only` reading. No command prints it yet (F1.a1).
+  a `current` or `floor_only` reading. It is printed by `--diagnostics` (F5a) (F1.a1).
 - Library API: `Evidence::read_now` says whether a reading of this version finds an item, and
   `RankedFile::floor_only` lists the code labels that only a reading kept for the floor finds
   (F1.a1).
@@ -52,6 +52,15 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - Library API: `RankedFile::hazard_lines`, `hazard_lines_cut`; `Judge` and `Diagnostics::judged`
   write `judge` and `judge_sees` (F1.a2).
 - `tool.scorer_sha256` moves with no label, row or score change (F1.a2).
+- `--diagnostics` (on `--stdin-patch`, `--git-*` and `<old> <new>`) prints
+  `deep-diff-forge.diagnostics.v0`: with `--json` the builder's document; otherwise a text form
+  for agents that prints only each path (quoted and escaped), the line, the code, the vocabulary
+  ids and their sentences, with floor-only readings counted. The input is refused as under
+  `--rank`; `judge` is `unknown` (F5a).
+- `--fail-on` is admitted with `--diagnostics`: the same verdict as `--rank --fail-on` on the
+  same input, the document printed as without the flag; the message is
+  `error: --fail-on needs --rank or --diagnostics` (F5a).
+- `schema diagnostics` prints the JSON Schema of `deep-diff-forge.diagnostics.v0` (F5a).
 
 ## [0.10.0] - 2026-11-23
 
