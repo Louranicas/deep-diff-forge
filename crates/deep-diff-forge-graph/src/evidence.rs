@@ -544,7 +544,8 @@ const RULES: &[Rule] = &[
     rule(
         S::CheckSuppressed,
         Side::New,
-        View::Raw,
+        // the code: `#[allow(` in a comment or a string switches nothing off ([`floor_view`])
+        View::Code,
         Scope::Languages(RUST),
         // whatever the spacing: `# [allow(` and `#! [allow(` are the same attributes
         Match::Spaced {
@@ -716,7 +717,8 @@ const RULES: &[Rule] = &[
 
 /// The rules release 0.8.3 had for a Rust file: the entries of `RULES` at commit `d4dbc91` (the
 /// signed tag `v0.8.3`) that a Rust file can admit, in their order, as they were. They read the
-/// view of that release ([`legacy_hits`]) and no other view.
+/// view of that release ([`legacy_hits`]) and no other view, with the listed floor exceptions
+/// ([`floor_view`]).
 const LEGACY_RUST_RULES: &[Rule] = &[
     rule(
         S::UnsafeAdded,
@@ -777,7 +779,8 @@ const LEGACY_RUST_RULES: &[Rule] = &[
 /// The rules of releases 0.8.3 and 0.8.4 as they were: the table `RULES` of commit `d4dbc91`
 /// (the signed tag `v0.8.3`), which release 0.8.4 (`0a27bc2`) kept unchanged, in its order.
 /// The reading of release 0.8.4 ([`HunkLabels`]) asks these and no others, so that it finds
-/// what that release finds; [`LEGACY_RUST_RULES`] are the ones of them a Rust file can admit.
+/// what that release finds, but for the listed floor exceptions ([`floor_view`]);
+/// [`LEGACY_RUST_RULES`] are the ones of them a Rust file can admit.
 const RELEASED_RULES: &[Rule] = &[
     rule(
         S::UnsafeAdded,
@@ -1997,6 +2000,30 @@ fn texts_found(
     found
 }
 
+/// The view a rule reads, with the listed floor exceptions to "nothing scores lower than 0.8.3"
+/// (owner decision OD-E, 2026-11-23; T-08): the Rust rule of `check_suppressed` reads the code in
+/// every reading, its released rows too, so `#[allow(` in a comment or a string, which switches
+/// nothing off, is no suppression. The other exception is in [`tokens_hit`].
+fn floor_view(rule: &Rule) -> View {
+    if rule.signal == S::CheckSuppressed && rule.scope == Scope::Languages(RUST) {
+        View::Code
+    } else {
+        rule.view
+    }
+}
+
+/// Whether `text` holds one of a rule's `tokens`, with the second listed floor exception (OD-E):
+/// `r#unsafe` is an identifier named `unsafe`, not the keyword, so `unsafe_added` reads the text
+/// with each such name blanked ([`without_raw_prefixes`], which the views of this version are
+/// read through already; the readings of 0.8.3 and 0.8.4 have their own views).
+fn tokens_hit(rule: &Rule, text: &str, tokens: &[&str]) -> bool {
+    let unraw = (rule.signal == S::UnsafeAdded)
+        .then(|| without_raw_prefixes(text))
+        .flatten();
+    let text = unraw.as_deref().unwrap_or(text);
+    tokens.iter().any(|t| token_in(text, t))
+}
+
 /// What release 0.8.3 found in `hunk` of a Rust file, `legacy` being the rules of that release
 /// the file admits ([`FileKind::legacy_rules`]): the hunk alone, through the view of that
 /// release ([`legacy_views`]), by the rules that release had ([`legacy_hits`]). It is one of
@@ -2068,12 +2095,12 @@ fn legacy_hits(hunk: &PatchHunk, rules: &[&Rule], views: &Views) -> Vec<Hit> {
         };
         let Some(number) = number else { continue };
         let hits = |rule: &Rule| {
-            let text = match rule.view {
+            let text = match floor_view(rule) {
                 View::Raw => line.text.as_str(),
                 View::Code => view.unwrap_or(line.text.as_str()),
             };
             match rule.matches {
-                Match::Tokens(tokens) => tokens.iter().any(|t| token_in(text, t)),
+                Match::Tokens(tokens) => tokens_hit(rule, text, tokens),
                 Match::AnyCode => !text.trim().is_empty(),
                 Match::Secret => looks_like_secret(text),
                 // The release had no other kind of rule for Rust.
@@ -2608,7 +2635,7 @@ fn view_matches(
                 View::Code => view.unwrap_or(line.text.as_str()),
             };
             match rule.matches {
-                Match::Tokens(tokens) => tokens.iter().any(|t| token_in(text, t)),
+                Match::Tokens(tokens) => tokens_hit(rule, text, tokens),
                 Match::AnyCode => !text.trim().is_empty(),
                 Match::Secret => looks_like_secret(text),
                 Match::Imports(modules) => imports_module(text, &line.text, modules),
@@ -2685,8 +2712,14 @@ fn without_raw_prefixes(text: &str) -> Option<String> {
             .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_' || !b.is_ascii());
         if starts && names {
             let out = out.get_or_insert_with(|| bytes.to_vec());
-            out[at] = b' ';
-            out[at + 1] = b' ';
+            // `r#unsafe` is the identifier `unsafe`, never the keyword: blanked whole (a listed
+            // floor exception, [`tokens_hit`])
+            let name = if text[at + 2..].starts_with("unsafe") {
+                8
+            } else {
+                2
+            };
+            out[at..at + name].fill(b' ');
         }
     }
     // Only two ASCII bytes were replaced by two ASCII bytes: still UTF-8.
@@ -3641,7 +3674,7 @@ impl Asking<'_> {
     fn hits_in(&self, rule: &Rule, text: &str) -> bool {
         self.work.rules.set(self.work.rules.get() + 1);
         match rule.matches {
-            Match::Tokens(tokens) => tokens.iter().any(|t| token_in(text, t)),
+            Match::Tokens(tokens) => tokens_hit(rule, text, tokens),
             Match::AnyCode => !text.trim().is_empty(),
             Match::Secret => looks_like_secret(text),
             Match::Imports(modules) => imports_module(text, self.raw, modules),
@@ -3661,12 +3694,14 @@ impl Asking<'_> {
     fn first(&self, view: Option<&str>) -> u16 {
         let mut bits = 0u16;
         for (at, signal) in EvidenceSignal::ALL.into_iter().enumerate() {
-            let hit = self.of_signal(signal).any(|rule| match (rule.view, view) {
-                (View::Code, Some(view)) => self.hits_in(rule, view),
-                // A rule that reads the line as it is; and a rule that reads code where
-                // there is no language to read it in (`Scope::Any` code rules).
-                (View::Raw, _) | (View::Code, None) => self.hits_in(rule, self.raw),
-            });
+            let hit = self
+                .of_signal(signal)
+                .any(|rule| match (floor_view(rule), view) {
+                    (View::Code, Some(view)) => self.hits_in(rule, view),
+                    // A rule that reads the line as it is; and a rule that reads code where
+                    // there is no language to read it in (`Scope::Any` code rules).
+                    (View::Raw, _) | (View::Code, None) => self.hits_in(rule, self.raw),
+                });
             bits |= u16::from(hit) << at;
         }
         bits
@@ -13784,6 +13819,77 @@ mod tests {
             assert!(
                 united[0].read_now,
                 "a union with a current hit does not read now"
+            );
+        }
+    }
+
+    /// The listed floor exception of OD-E (T-08): `#[allow(` in a Rust comment or string
+    /// switches nothing off, so no reading reports it, the readings of releases 0.8.3 and 0.8.4
+    /// included; the attribute in code still is a suppression, in every reading.
+    #[test]
+    fn a_rust_allow_in_a_comment_or_a_string_is_no_suppression() {
+        let lines = [
+            "// see #[allow(dead_code)] note",
+            "let s = \"#[allow(unused)]\";",
+            "/* #![allow(clippy::all)] */",
+            "let r = r#\"#[allow(x)]\"#;",
+            "#[allow(dead_code)]",
+        ];
+        for top in [false, true] {
+            let file = if top {
+                let mut text = String::from("--- /dev/null\n+++ b/src/x.rs\n@@ -0,0 +1,5 @@\n");
+                for line in lines {
+                    let _ = writeln!(text, "+{line}");
+                }
+                parse(&text).unwrap().remove(0)
+            } else {
+                added("src/x.rs", &lines)
+            };
+            let at: Vec<u32> = file_evidence(&file)
+                .iter()
+                .filter(|e| e.signal == S::CheckSuppressed)
+                .map(|e| e.line)
+                .collect();
+            let code = if top { 5 } else { 6 };
+            assert_eq!(at, [code], "check_suppressed lines (created file: {top})");
+            let kinds = FileKinds::of(&file);
+            assert_eq!(hunk_signals(&file, 0), Some(vec![S::CheckSuppressed]));
+            assert_eq!(
+                hunk_signals_alone(&file, 0, &kinds),
+                Some(vec![S::CheckSuppressed])
+            );
+            let kind = FileKind::readings(&file).remove(0);
+            let hunk = &file.patch_twin.hunks[0];
+            let legacy: Vec<u32> = legacy_hits(hunk, &kind.legacy_rules(), &legacy_views(hunk))
+                .iter()
+                .map(|hit| hit.number)
+                .collect();
+            assert_eq!(legacy, [code], "the reading of 0.8.3 (created file: {top})");
+        }
+    }
+
+    /// The second listed floor exception of OD-E: `r#unsafe` is an identifier named `unsafe`,
+    /// not the keyword, in every reading; the keyword beside it, or `r#` that starts no
+    /// identifier, is still unsafe code.
+    #[test]
+    fn a_raw_identifier_named_unsafe_is_not_unsafe_code() {
+        for line in [
+            "let r#unsafe = 1;",
+            "f(r#unsafe);",
+            "x.r#unsafe()",
+            "let r#unsafe_x = 2;",
+        ] {
+            assert_eq!(signals(&added("src/x.rs", &[line])), [], "{line}");
+        }
+        for line in [
+            "unsafe { f() }",
+            "let r#unsafe = 1; unsafe { f() }",
+            "bar#unsafe { f() }",
+        ] {
+            assert_eq!(
+                signals(&added("src/x.rs", &[line])),
+                [S::UnsafeAdded],
+                "{line}"
             );
         }
     }

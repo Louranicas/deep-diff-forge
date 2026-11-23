@@ -111,12 +111,13 @@ fn fail_on_refuses_a_trojan_source_patch() {
     );
 }
 
-/// `p3_cappad` (M11): 40 comment lines naming `#[allow(dead_code)]` fill the 32 evidence rows
-/// before one `unsafe` line; every row is `check_suppressed`, `unsafe_added` is in `signals[]`
-/// only. `--fail-on unsafe_added` refuses on it, and the cut list refuses as well.
+/// `p3_cappad` (M11): 40 lines of `#[allow(dead_code)]` fill the 32 evidence rows before one
+/// `unsafe` line; every row is `check_suppressed`, `unsafe_added` is in `signals[]` only.
+/// `--fail-on unsafe_added` refuses on it, and the cut list refuses as well. (The attributes
+/// are code: since the floor exception of OD-E the same text in comments is no evidence.)
 #[test]
 fn fail_on_reads_signals_not_rows() {
-    let mut lines = vec!["    // #[allow(dead_code)] is named here".to_owned(); 40];
+    let mut lines = vec!["    #[allow(dead_code)] fn f() {}".to_owned(); 40];
     lines.push("    unsafe { std::ptr::null::<u8>().read() };".to_owned());
     let patch = change("src/a.rs", &lines);
     let entry = only_entry(&patch);

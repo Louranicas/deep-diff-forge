@@ -576,7 +576,7 @@ fn the_text_form_prints_no_text_of_the_change() {
 #[test]
 fn fail_on_with_diagnostics_is_the_verdict_of_rank() {
     let cap: Vec<String> = (0..34)
-        .map(|i| format!("// see #[allow(dead_code)] note {i}"))
+        .map(|i| format!("#[allow(dead_code)] fn f{i}() {{}}"))
         .chain(["unsafe { f() }".to_owned()])
         .collect();
     let cases = [
