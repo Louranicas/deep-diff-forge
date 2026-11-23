@@ -648,53 +648,119 @@ fn own_directory(own: &Path) -> Result<(), String> {
 /// processes that are gone.
 const STALE_LOOKED_AT: usize = 4096;
 
-/// Remove the scratch directories that hooks which were killed left behind: the entries
-/// directly under `own` named `tmp-<pid>` whose process is gone. A hook ended by its client
-/// left its directory, with a copy of the patch and every new object, until a process with the
-/// same id came by (independent review of the hooks, HR-L-1).
+/// The name of a scratch directory this build makes: `tmp-r` and 16 hex digits drawn at random
+/// ([`random_hex`]). A process id named it before 0.11.0, and a process id says nothing across
+/// PID namespaces (F3.a).
+const SCRATCH_PREFIX: &str = "tmp-r";
+
+/// Remove the scratch directories that hooks which were killed left behind, directly under
+/// `own`. One this build makes is locked by its process for as long as it is used
+/// ([`Scratch::new`]): a lock that can be taken means its owner is gone, and only then is it
+/// removed, under that lock. Whether a process is gone used to be read from `/proc` by the id in
+/// the name, and a check run in another PID namespace (a container), which sees no such id,
+/// removed a live stop's scratch in the middle of its judging (F3.a). A directory named
+/// `tmp-<pid>` is a build's before 0.11.0, which locks nothing: it is removed as before, when
+/// `/proc` says that process is gone (independent review of the hooks, HR-L-1).
 ///
-/// Whether a process is gone is read from `/proc`; without one nothing is removed. Only a
-/// directory is removed, never what a link of that name points at.
+/// Only a directory is removed, never what a link of that name points at.
 fn clear_stale(own: &Path) {
-    if !Path::new("/proc/self").exists() {
-        return;
-    }
     let Ok(entries) = std::fs::read_dir(own) else {
         return;
     };
+    let proc = Path::new("/proc/self").exists();
     for entry in entries.filter_map(Result::ok).take(STALE_LOOKED_AT) {
         let name = entry.file_name();
-        let Some(pid) = name
-            .to_str()
-            .and_then(|name| name.strip_prefix("tmp-"))
-            .filter(|pid| !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()))
-        else {
+        let Some(rest) = name.to_str().and_then(|name| name.strip_prefix("tmp-")) else {
             continue;
         };
-        if Path::new("/proc").join(pid).exists() {
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
             continue;
         }
-        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+        let ours = rest.strip_prefix('r').is_some_and(|hex| {
+            hex.len() == 16 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        });
+        if ours {
+            if let Ok(lock) = lock_directory(&entry.path()) {
+                let _ = std::fs::remove_dir_all(entry.path());
+                drop(lock);
+            }
+        } else if proc
+            && !rest.is_empty()
+            && rest.bytes().all(|b| b.is_ascii_digit())
+            && !Path::new("/proc").join(rest).exists()
+        {
             let _ = std::fs::remove_dir_all(entry.path());
         }
     }
 }
 
-/// A directory of this process, removed when the hook is done. A hook that was killed leaves
-/// its directory behind; the next hook of the repository removes it ([`clear_stale`]).
-struct Scratch(PathBuf);
+/// Take the lock of the directory at `dir` without waiting, never through a link.
+fn lock_directory(dir: &Path) -> Result<nix::fcntl::Flock<std::fs::File>, nix::errno::Errno> {
+    use nix::fcntl::{Flock, FlockArg};
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_DIRECTORY | nix::libc::O_NOFOLLOW)
+        .open(dir)
+        .map_err(|e| nix::errno::Errno::from_raw(e.raw_os_error().unwrap_or(0)))?;
+    Flock::lock(file, FlockArg::LockExclusiveNonblock).map_err(|(_, errno)| errno)
+}
+
+/// 16 hex digits no other process can foresee: the keys of the standard library's hasher are
+/// drawn from the system's randomness.
+fn random_hex() -> String {
+    use std::hash::{BuildHasher as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    hasher.write_u32(std::process::id());
+    format!("{:016x}", hasher.finish())
+}
+
+/// A directory of this process, removed when the hook is done, and locked while it is used
+/// (the lock, where the file system has locks). A hook that was killed leaves its directory
+/// behind, unlocked; the next hook of the repository removes it ([`clear_stale`]).
+struct Scratch(
+    PathBuf,
+    #[expect(dead_code, reason = "held for its lock")] Option<nix::fcntl::Flock<std::fs::File>>,
+);
 
 impl Scratch {
     fn new(own: &Path) -> Result<Self, String> {
+        use nix::errno::Errno;
+        use std::os::unix::fs::MetadataExt as _;
         own_directory(own)?;
         clear_stale(own);
-        let dir = own.join(format!("tmp-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        // `create_dir`, not `create_dir_all`: what is left of an earlier process must be gone,
-        // and a link standing there is not followed.
-        std::fs::create_dir(&dir)
-            .map_err(|e| format!("its scratch directory could not be made: {e}"))?;
-        Ok(Self(dir))
+        let made =
+            |e: &dyn std::fmt::Display| format!("its scratch directory could not be made: {e}");
+        for _ in 0..8 {
+            let dir = own.join(format!("{SCRATCH_PREFIX}{}", random_hex()));
+            // `create_dir`, not `create_dir_all`: a name that is taken is never used again, and
+            // a link standing there is not followed.
+            match std::fs::create_dir(&dir) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(made(&e)),
+            }
+            match lock_directory(&dir) {
+                // The directory locked must be the one at the name: a hook clearing what was
+                // left may have taken the lock between `create_dir` and here, and removed it.
+                Ok(lock)
+                    if std::fs::symlink_metadata(&dir).is_ok_and(|there| {
+                        lock.metadata().is_ok_and(|held| {
+                            held.ino() == there.ino() && held.dev() == there.dev()
+                        })
+                    }) =>
+                {
+                    return Ok(Self(dir, Some(lock)));
+                }
+                Ok(_) | Err(Errno::EWOULDBLOCK | Errno::ENOENT) => {}
+                // a file system with no locks: as before 0.11.0, with no owner to tell
+                Err(Errno::ENOLCK | Errno::EOPNOTSUPP | Errno::ENOSYS) => {
+                    return Ok(Self(dir, None));
+                }
+                Err(errno) => return Err(made(&errno)),
+            }
+        }
+        Err(made(&"every name drawn was taken"))
     }
 
     /// A new, empty directory inside the scratch directory.
@@ -1089,9 +1155,9 @@ fn load_read(path: &Path) -> Result<Option<(State, bool)>, String> {
 fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     use std::io::Write as _;
     use std::os::unix::fs::OpenOptionsExt as _;
-    let partial = path.with_extension(format!("{}.partial", std::process::id()));
-    // what an earlier process with this id left behind
-    let _ = std::fs::remove_file(&partial);
+    // A name drawn at random: one taken from the process id removed what a writer with the
+    // same id in another PID namespace had half written (F3.a).
+    let partial = path.with_extension(format!("{}.partial", random_hex()));
     std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -10961,7 +11027,13 @@ mod tests {
         // build's: a process id before 0.11.0, drawn at random since, F3.a)
         let mine = made.0.clone();
         assert_eq!(mine.parent(), Some(own.as_path()));
-        assert!(mine.file_name().unwrap().to_str().unwrap().starts_with("tmp-"));
+        assert!(
+            mine.file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("tmp-")
+        );
         assert!(mine != init && mine != gone);
         assert!(
             !gone.exists(),
@@ -10976,6 +11048,39 @@ mod tests {
         }
         drop(made);
         assert!(!mine.exists());
+    }
+
+    /// F3.a: a scratch directory is owned by its lock, not by a process id. One whose lock is
+    /// held is left; one whose lock can be taken has no owner and is removed. A name drawn is
+    /// never used again.
+    #[test]
+    fn a_scratch_directory_is_removed_only_when_its_lock_can_be_taken() {
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-scratch-lock");
+        let own = scratch.join("own");
+        std::fs::create_dir(&own).unwrap();
+        let held = Scratch::new(&own).unwrap();
+        let left = own.join(format!("{SCRATCH_PREFIX}0123456789abcdef"));
+        std::fs::create_dir_all(left.join("work")).unwrap();
+        let other = Scratch::new(&own).unwrap();
+        assert!(
+            held.0.is_dir(),
+            "a scratch directory whose lock is held was removed"
+        );
+        assert!(
+            !left.exists(),
+            "a scratch directory whose lock can be taken stays"
+        );
+        assert_ne!(held.0, other.0);
+        for made in [&held.0, &other.0] {
+            let name = made.file_name().unwrap().to_str().unwrap();
+            assert!(
+                name.starts_with(SCRATCH_PREFIX) && name.len() == 21,
+                "{name}"
+            );
+        }
+        drop(held);
+        drop(other);
+        assert_eq!(std::fs::read_dir(&own).unwrap().count(), 0);
     }
 
     /// Mutation run on the 0.9.0 code (S3.34.b), `trees_from`: a state's member `trees` with

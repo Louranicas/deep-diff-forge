@@ -440,7 +440,10 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   run of the judge, for every tree and every commit) shares 45 seconds, inside the 60 its client waits;
   advice has 4 of 5 and a start 8 of 10. A step gets the time that is left, never a limit of
   its own on top. The scratch directory a hook that was killed left behind is removed by the
-  next hook of the repository, once its process is gone (where `/proc` says so).
+  next hook of the repository: a hook holds a lock (`flock`) on its scratch directory while it
+  works, and a directory whose lock can be taken has no owner. (Until 0.11.0 the owner was
+  told by a process id read in `/proc`, and a check run in another PID namespace removed a
+  live stop's scratch.)
 
 Limits, sorted by the rule above.
 
@@ -699,8 +702,9 @@ Stated limits, which the judge on the pull request covers:
   the tree. The stop has both judged.
 - "No repository here" is read from Git's own English message, with `LC_ALL=C` set for that
   call. A Git that words it otherwise is read as a failure, which is said, not as silence.
-- The scratch directory of a hook that was killed is removed only where `/proc` says its
-  process is gone (Linux).
+- The scratch directory of a hook that was killed is removed only where the file system has
+  locks; a directory left by a build before 0.11.0 is removed where `/proc` says its process
+  is gone (Linux).
 - **A resumed conversation is a new session of the hooks** when its client gives it a new
   session id: its base is where `HEAD` is at its first hook, so what the earlier
   conversation committed is base, and a conversation that ended without a stop (a crash, a
