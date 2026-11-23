@@ -99,6 +99,36 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - A check with no judge stages and writes nothing (UNJUDGED with the reason, no unit); a HOLD or
   FAIL names its rules or, by their codes (`judge_note_codes`), what the judge named beside
   them, never the judge's words (F3).
+- Every stop appends one record for each unit it judges to the project's ledger,
+  `.git/deep-diff-forge/ledger.jsonl` (append only, mode 0600, no link followed, no line text and
+  no words of the judge, tree digests salted for each repository); a ledger that cannot be
+  written changes no decision and is said (F11).
+- `agent check --session` appends one check record to the ledger; a check without a session
+  writes nothing (F11).
+- `agent verify-branch BASE..HEAD` reads the ledger only and exits 7 `branch_unverified` for a
+  commit that no stop passed; the ledger is evidence, not proof. The registry of exit-7 reasons
+  has eleven classes (F11).
+- `check_suppressed` reads `#[expect(..)]` and `#![expect(..)]`, with a reason or without, as it
+  reads `#[allow(..)]` (F2b.b).
+- `check_suppressed` reads an allowance a conditional attribute applies:
+  `#[cfg_attr(condition, allow(..))]` and `expect(..)`, through a nested `cfg_attr` too, when the
+  side holds the attribute whole (F2b.c).
+- `check_suppressed` reads Cargo's files: in `Cargo.toml` a key whose value is the string `allow`
+  (any TOML quoting, and the `level` of an inline table of `[lints]`), and in Cargo's
+  configuration (`.cargo/config.toml`, `.cargo/config`) `-A`, `--allow` or `--cap-lints allow`
+  among compiler flags. Not read: a string over lines, `clippy.toml`, `RUSTFLAGS` set in a CI
+  file (F2b.d).
+- `build_hook` reads a build script or a procedural macro declared in `Cargo.toml`
+  (`build = "…"`, `proc-macro = true`) beside `build.rs` itself (F2b.f).
+- Changed, by owner decision OD-E (the listed floor exceptions to "nothing scores lower than
+  0.8.3"): `#[allow(` in a Rust comment or string is no longer `check_suppressed` in any reading,
+  the ones kept from 0.8.3 and 0.8.4 included, and `r#unsafe` (an identifier) is no longer
+  `unsafe_added`. On the comparison corpus (7,421 patches) 478 such rows and 3 `r#unsafe` rows
+  are no longer reported, and 116 files lose the label (113 `check_suppressed`, 3
+  `unsafe_added`); nothing outside the two exceptions is lost. A forge-warden policy that
+  forbids `check_suppressed` holds more changes (the new readings) and no longer holds one whose
+  only `#[allow(` is in a comment or string (F2b.g).
+- `tool.scorer_sha256` moves (F2b).
 
 ## [0.10.0] - 2026-11-23
 

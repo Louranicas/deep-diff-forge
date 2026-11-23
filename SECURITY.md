@@ -1192,6 +1192,10 @@ says when it closed:
 - The project does not claim isolation suitable for hosting unrelated tenants,
   cryptographic secrecy for review content, or safe display by downstream tools
   that bypass its rendering APIs.
+- The project's ledger (`.git/deep-diff-forge/ledger.jsonl`) is written with the user's
+  permissions, the agent's included: a record is evidence of a stop, not proof, and
+  `agent verify-branch` run where the agent can write is advice; the pull request's judge is
+  the boundary.
 
 ## Hardening provenance
 
