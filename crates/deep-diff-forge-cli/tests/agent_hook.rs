@@ -11714,9 +11714,9 @@ fn every_stop_outcome_is_in_the_ledger() {
         stops_of(&root, session)
     };
     let unit = |records: &[Value], at: usize| {
-        let r = records
-            .get(at)
-            .unwrap_or_else(|| panic!("the ledger has no record {at} of this session: {records:?}"));
+        let r = records.get(at).unwrap_or_else(|| {
+            panic!("the ledger has no record {at} of this session: {records:?}")
+        });
         (
             r["outcome"].clone(),
             r["class"].clone(),
