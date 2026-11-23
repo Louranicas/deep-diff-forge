@@ -12823,6 +12823,41 @@ fn an_unknown_label_hold_holds_once() {
     );
 }
 
+/// F12.b on a commit (OD-J): a commit the judge holds only for a label it does not know holds
+/// the stop that judges it, once, as the working tree's hold does; it is judged once and is
+/// HOLD at every later stop, a continuing one and a later turn's, and the ledger records the
+/// one blocked turn under `hold.version_gap`.
+#[test]
+fn an_unknown_label_hold_on_a_commit_holds_once() {
+    let scratch = Scratch::new("hook-f12-gap-commit");
+    let root = repository(&scratch);
+    let (script, log, exit_file) = judge(&scratch, &unknown_label_hold("diff_suppressed"));
+    std::fs::write(&exit_file, "8").unwrap();
+    start(&root, "s");
+    silence_a_lint(&root);
+    git(
+        &root,
+        &[
+            "commit",
+            "--quiet",
+            "-am",
+            "work held for a label the judge does not know",
+        ],
+    );
+    let reason = blocked(&stop_as(&root, "s", &script, false)).to_owned();
+    assert!(
+        reason.contains("the judge does not know the label diff_suppressed (in \"a.rs\"): the paired forge-warden must be upgraded; tell a person."),
+        "a commit held for an unknown label was let through: {reason}"
+    );
+    assert!(!reason.contains("review it by hand"), "{reason}");
+    for active in [true, false] {
+        let said = allowed(&stop_as(&root, "s", &script, active)).to_owned();
+        assert!(said.starts_with("deep-diff-forge: HOLD. "), "{said}");
+    }
+    assert_eq!(runs(&log), 1, "the commit was judged again");
+    assert_eq!(turns_of(&root, "s", "hold.version_gap", "hold")[0], 1);
+}
+
 /// F12.c: a second stop on an unchanged failing unit is allowed and recorded as FAIL STANDS,
 /// with no blocked turn; the first was recorded as the fail that blocked.
 #[test]
