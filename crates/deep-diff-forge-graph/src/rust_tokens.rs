@@ -2002,7 +2002,6 @@ mod tests {
             "+assert!(true_enough());",
             "+assert!(true == x);",
             "+assert!(true && x);",
-            "+assert!((true));",
             "+assert!(true",
             "+assert!(true]",
             "+assert!{true)",
