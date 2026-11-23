@@ -25,8 +25,7 @@ pub const SIGNALS_SCHEMA: &str = "deep-diff-forge.signals.v0";
 /// The schema identifier of one signal's explanation.
 pub const SIGNAL_EXPLAIN_SCHEMA: &str = "deep-diff-forge.signal-explain.v0";
 /// The usage line of `explain`.
-pub const EXPLAIN_USAGE: &str =
-    "explain {<code> [--family engine|council] | signal <label>} [--json]";
+pub const EXPLAIN_USAGE: &str = "explain {<code> [--family engine|council] | signal <label> [--audience agent|person]} [--json]";
 /// Captured stdout beyond this many bytes is cut and the envelope reports `truncated`.
 pub const STDOUT_CAP: usize = 16 * 1024 * 1024;
 /// Captured stderr beyond this many bytes is cut and the envelope reports `truncated`.
@@ -120,15 +119,25 @@ fn signal_json(facts: &deep_diff_forge_graph::SignalFacts) -> Value {
     })
 }
 
-/// `explain signal <label> [--json]`: why a signal matters, what answers it, what does not, and
-/// the compiler or linter rules that prevent it.
+/// `explain signal <label> [--audience agent|person] [--json]`: why a signal matters, what
+/// answers it, what does not, and the compiler or linter rules that prevent it. The people's
+/// form (the default, `"audience": "person"`) lists every substitute; `--audience agent` prints
+/// what an agent is shown (F7.c1, contract design 3.4): the same repairs, and of the substitutes
+/// only those with an `agent` sentence, in that sentence.
 fn explain_signal(args: &[String]) -> Result<String, String> {
     use std::fmt::Write as _;
-    let mut json = false;
-    let mut label = None;
-    for arg in args {
+    let (mut json, mut agent, mut label) = (false, false, None);
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
         match arg.as_str() {
             "--json" => json = true,
+            "--audience" => {
+                agent = match rest.next().map(String::as_str) {
+                    Some("agent") => true,
+                    Some("person") => false,
+                    _ => return Err("--audience takes agent or person".into()),
+                };
+            }
             value if label.is_none() => label = Some(value),
             value => return Err(format!("unexpected argument: {value}")),
         }
@@ -142,22 +151,20 @@ fn explain_signal(args: &[String]) -> Result<String, String> {
     })?;
     let facts = deep_diff_forge_graph::facts(signal);
     let remedy = deep_diff_forge_graph::remedy(signal);
+    let shown = substitutes(&remedy, agent);
     if json {
         let mut value = signal_json(&facts);
         value["schema"] = json!(SIGNAL_EXPLAIN_SCHEMA);
         value["tool"] = tool();
         value["why"] = json!(remedy.why);
         value["accept"] = json!(remedy.accept);
-        value["not_accepted"] = remedy
-            .not_accepted
-            .iter()
-            .map(|n| json!({"substitute": n.substitute, "raises": n.raises}))
-            .collect();
+        value["not_accepted"] = shown.into_iter().map(|(entry, _)| entry).collect();
         value["native_lints"] = remedy
             .native_lints
             .iter()
             .map(|l| json!({"language": l.language, "tool": l.tool, "rule": l.rule}))
             .collect();
+        value["audience"] = json!(if agent { "agent" } else { "person" });
         return Ok(format!("{value}\n"));
     }
     let mut text = String::new();
@@ -175,21 +182,10 @@ fn explain_signal(args: &[String]) -> Result<String, String> {
     for line in remedy.accept {
         let _ = writeln!(text, "  - {line}");
     }
-    if !remedy.not_accepted.is_empty() {
+    if !shown.is_empty() {
         let _ = writeln!(text, "not accepted:");
-        for not in remedy.not_accepted {
-            match not.raises {
-                Some(raised) => {
-                    let _ = writeln!(text, "  - {} (raises {raised})", not.substitute);
-                }
-                None => {
-                    let _ = writeln!(
-                        text,
-                        "  - {} (no signal sees this yet; it is still not a repair)",
-                        not.substitute
-                    );
-                }
-            }
+        for (_, line) in shown {
+            let _ = writeln!(text, "  - {line}");
         }
     }
     if !remedy.native_lints.is_empty() {
@@ -198,7 +194,46 @@ fn explain_signal(args: &[String]) -> Result<String, String> {
             let _ = writeln!(text, "  - {}, {}: {}", lint.language, lint.tool, lint.rule);
         }
     }
+    if agent {
+        let _ = writeln!(text, "audience: agent");
+    } else {
+        let _ = writeln!(
+            text,
+            "audience: person (deep-diff-forge explain signal {} --audience agent prints what an agent is shown)",
+            facts.label()
+        );
+    }
     Ok(text)
+}
+
+/// The substitutes of `remedy` as its audience reads them, each as its JSON entry and its text
+/// line: for people every one, with the label it raises or that none sees it; for an agent only
+/// those with an `agent` sentence, in that sentence and nothing else (F7.c1).
+fn substitutes(remedy: &deep_diff_forge_graph::Remedy, agent: bool) -> Vec<(Value, String)> {
+    let shown = remedy.not_accepted.iter();
+    if agent {
+        return shown
+            .filter_map(|n| {
+                n.agent
+                    .map(|a| (json!({"agent": a, "raises": n.raises}), a.into()))
+            })
+            .collect();
+    }
+    shown
+        .map(|n| {
+            let line = match n.raises {
+                Some(raised) => format!("{} (raises {raised})", n.substitute),
+                None => format!(
+                    "{} (no signal sees this yet; it is still not a repair)",
+                    n.substitute
+                ),
+            };
+            (
+                json!({"substitute": n.substitute, "raises": n.raises}),
+                line,
+            )
+        })
+        .collect()
 }
 
 /// `schema [result|exit-codes|signals]`: the JSON Schema of the envelope, the exit-code registry,
@@ -696,6 +731,84 @@ mod tests {
         assert_eq!(
             unsafe_added["native_lints"],
             json!([{"language": "Rust", "tool": "rustc", "rule": "unsafe_code"}])
+        );
+    }
+
+    /// F7.c1 (contract design 3.4): `explain signal` is the people's channel and says so; its
+    /// agent form prints what an agent is shown: the same repairs, and of the substitutes only
+    /// the witnessed `agent` sentences.
+    #[test]
+    fn explain_signal_names_its_audience() {
+        let person = explain(&args(&["signal", "test_skipped"])).unwrap();
+        assert!(
+            person.ends_with("\naudience: person (deep-diff-forge explain signal test_skipped --audience agent prints what an agent is shown)\n"),
+            "{person}"
+        );
+        assert_eq!(
+            explain(&args(&["signal", "--audience", "person", "test_skipped"])).unwrap(),
+            person
+        );
+        let agent = explain(&args(&["signal", "test_skipped", "--audience", "agent"])).unwrap();
+        assert!(agent.ends_with("\naudience: agent\n"), "{agent}");
+        assert!(agent.contains("\naccept:\n  - Make the test pass and remove the skip.\n"));
+        assert!(
+            agent.contains("`#[test]`") && agent.contains("`assert!(true)`"),
+            "{agent}"
+        );
+        let json = |list: &[&str]| -> Value {
+            serde_json::from_str(&explain(&args(list)).unwrap()).unwrap()
+        };
+        let p = json(&["signal", "test_skipped", "--json"]);
+        let a = json(&["signal", "test_skipped", "--json", "--audience", "agent"]);
+        assert_eq!(
+            (&p["audience"], &a["audience"]),
+            (&json!("person"), &json!("agent"))
+        );
+        assert_eq!((&p["accept"], &p["why"]), (&a["accept"], &a["why"]));
+        let raised: Vec<&Value> = a["not_accepted"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| &n["raises"])
+            .collect();
+        assert_eq!(raised, [&json!("test_removed"), &json!("trivial_assert")]);
+        for label in deep_diff_forge_graph::vocabulary()
+            .iter()
+            .map(deep_diff_forge_graph::SignalFacts::label)
+        {
+            let agent = explain(&args(&["signal", label, "--audience", "agent"])).unwrap();
+            let a = json(&["signal", label, "--json", "--audience", "agent"]);
+            let remedy =
+                deep_diff_forge_graph::remedy(deep_diff_forge_graph::signal_named(label).unwrap());
+            // no people's sentence of a substitute, and no pointer back to the people's channel
+            for not in remedy.not_accepted {
+                assert!(!agent.contains(not.substitute), "{label}: {agent}");
+                assert!(!a.to_string().contains(not.substitute), "{label}: {a}");
+            }
+            assert!(!agent.contains("explain signal"), "{label}: {agent}");
+            let sentences = remedy
+                .not_accepted
+                .iter()
+                .filter(|n| n.agent.is_some())
+                .count();
+            assert_eq!(
+                a["not_accepted"].as_array().unwrap().len(),
+                sentences,
+                "{label}"
+            );
+            assert_eq!(
+                agent.contains("\nnot accepted:\n"),
+                sentences > 0,
+                "{label}"
+            );
+        }
+        assert_eq!(
+            explain(&args(&["signal", "new_file", "--audience", "model"])).unwrap_err(),
+            "--audience takes agent or person"
+        );
+        assert_eq!(
+            explain(&args(&["signal", "new_file", "--audience"])).unwrap_err(),
+            "--audience takes agent or person"
         );
     }
 

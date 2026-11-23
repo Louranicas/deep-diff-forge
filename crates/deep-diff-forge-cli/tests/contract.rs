@@ -158,6 +158,19 @@ fn schema_signals_and_explain_signal_answer_from_the_vocabulary() {
         stderr.contains("unknown signal: no_such_signal"),
         "{stderr}"
     );
+    // F7.c1: the audience is agent or person, and anything else is a usage error
+    let (code, stdout, _) = run(
+        &["explain", "signal", "test_removed", "--audience", "agent"],
+        "",
+    );
+    assert_eq!(code, 0);
+    assert!(stdout.ends_with("\naudience: agent\n"), "{stdout}");
+    let (code, stdout, stderr) = run(
+        &["explain", "signal", "test_removed", "--audience", "x"],
+        "",
+    );
+    assert_eq!((code, stdout.as_str()), (2, ""));
+    assert_eq!(stderr, "error: --audience takes agent or person\n");
     let (code, _, stderr) = run(&["schema", "other"], "");
     assert_eq!(code, 2);
     assert!(stderr.contains("(result|exit-codes|signals)"), "{stderr}");
