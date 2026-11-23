@@ -872,6 +872,11 @@ pub fn acquire(
 /// attribute when check-attr answered, else `unread`. Paths are read again in Git's order, each
 /// within the budget less every other section as it stands; one that does not fit is `unread`
 /// and the next is tried. Once the limit has run out, every binary change left is `unread`.
+///
+/// Labels are monotonic across every fallback (A0100-M1): no path leaves here binary and
+/// unlabelled unless its text reading itself said it is not text (or Git failed it). When the
+/// whole patch with the text readings does not parse (the line budget, say), the binary sections
+/// stand; one whose text was read keeps its known cause, else it is `unread`.
 fn read_binary_again(
     runner: &Runner<'_>,
     first: &StructuredDiff,
@@ -919,8 +924,9 @@ fn read_binary_again(
             _ => cause,
         };
         let told = cause != DiffSuppression::Content;
-        if told {
-            mark(&mut labelled, at, cause);
+        if told || text.is_some() {
+            let fallback = if told { cause } else { DiffSuppression::Unread };
+            mark(&mut labelled, at, fallback);
         }
         match text {
             Some((text, bytes)) => {
