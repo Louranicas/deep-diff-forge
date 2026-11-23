@@ -8,7 +8,7 @@
 
 - The newest evidence is at the end of this file: [v0.5.0 release readiness (2026-10-31)](#v050-release-readiness-2026-10-31); before it, [v0.4.0 release readiness (2026-10-30)](#v040-release-readiness-2026-10-30), then [daemon metrics overhead](#daemon-metrics-overhead-2026-10-30) and [findings verification by address](#findings-verification-by-address-2026-10-30). The fuzz numbers in [v0.3.0 release readiness (2026-10-29)](#v030-release-readiness-2026-10-29) supersede the 2026-10-28 ones, which predate the last parser change.
 - Published GitHub releases are `v0.1.0`, `v0.2.0`, `v0.3.0` (2026-10-29), `v0.4.0` (2026-10-30) and `v0.5.0` (2026-10-31), each by owner decision. `v0.2.1` was never tagged.
-- crates.io is on hold by owner decision until the codebase is production-hardened. This replaces the older "token-gated" wording in the L8 and L9 sections. A configured token alone publishes nothing: the publish job in `.github/workflows/release.yml` runs only on a `v*` tag **and** when the repository variable `DDF_CRATES_IO` is `open`. `deep-diff-forge deploy release` reports `crates.io blocked` (measured with the binary).
+- crates.io was on hold by owner decision until 2026-11-23, when the owner lifted the hold: 0.9.0's crates were published on 2026-11-23, and from 0.10.0 publishing is a step of the release ([release document](docs/RELEASE_AND_PUBLICATION.md)). That wording replaced the older "token-gated" wording in the L8 and L9 sections. A configured token alone publishes nothing: the publish job in `.github/workflows/release.yml` runs only on a `v*` tag **and** when the repository variable `DDF_CRATES_IO` is `open`. `deep-diff-forge deploy release` reported `crates.io blocked` up to 0.9.0 (measured with the binary); from 0.10.0 it reports every target `published`.
 - The 2026-10-26 section ends with "Nothing is tagged or published". That refers to the council stack only. The `v0.1.0` and `v0.2.0` GitHub releases already existed.
 - Test counts in older sections (568, 765, 794) are counts at that time and are not current.
 
@@ -590,7 +590,7 @@ commits, each after all five required checks passed. Since 2026-10-26, `main` is
 protected by ruleset 25868121: pull requests only, every required check, an
 up-to-date branch, no force push, and no bypass.
 Nothing is tagged or published; crates.io publication is on hold until the
-codebase is production-ready.
+codebase is production-ready. (Lifted 2026-11-23: 0.9.0's crates were published on 2026-11-23, and from 0.10.0 publishing is a step of the release.)
 
 ## Release dry runs and fuzzing (2026-10-28)
 

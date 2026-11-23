@@ -1383,7 +1383,7 @@ fn run_with_stdout_closed(args: &[&str], stdin: &[u8]) -> (Option<i32>, String) 
 }
 
 /// S3.17a.g2 (DDF-2026-010): every `--require-*` refusal exits 7 with its reason when the reader
-/// of stdout has gone. `findings verify --require-findings` and `--require-all` wrote the verdict
+/// of stdout has gone, or stdout cannot be written. `findings verify --require-findings` and `--require-all` wrote the verdict
 /// first and treated the broken pipe as a clean exit 0 with an empty stderr, so a gate that
 /// closed its reader early passed; `--require-files` and `--require-hunks` refuse before writing.
 /// F7.h2: `--require-all` names its reason (it wrote none before 0.11.0).
@@ -1439,6 +1439,29 @@ fn a_pending_refusal_survives_a_closed_stdout() {
             (Some(7), reason),
             "{args:?} with the reader of stdout gone"
         );
+        // F3 of the 0.10.0 tree review: a write error that is not a broken pipe (a full disk)
+        // gave exit 3, "write failed", and lost the refusal.
+        if let Ok(full) = std::fs::OpenOptions::new().write(true).open("/dev/full") {
+            let out = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+                .args(args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::from(full))
+                .stderr(Stdio::piped())
+                .spawn()
+                .and_then(|mut child| {
+                    let _ = child.stdin.take().unwrap().write_all(stdin.as_bytes());
+                    child.wait_with_output()
+                })
+                .unwrap();
+            assert_eq!(
+                (
+                    out.status.code(),
+                    String::from_utf8_lossy(&out.stderr).as_ref()
+                ),
+                (Some(7), reason),
+                "{args:?} with stdout at /dev/full"
+            );
+        }
     }
 }
 
@@ -2017,12 +2040,23 @@ fn refusal_driver(
     }
 }
 
-/// Run the binary in `dir` (its own `HOME`), stdout piped or on a pipe whose reader has gone.
+/// Where a refusal run's stdout goes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Out {
+    /// A pipe the test reads.
+    Piped,
+    /// A pipe whose reader has gone (`| head` that has finished).
+    Closed,
+    /// `/dev/full`: every write fails with "no space left".
+    Full,
+}
+
+/// Run the binary in `dir` (its own `HOME`) with stdout as `out` says.
 fn run_refusal(
     args: &[String],
     stdin: &str,
     dir: &std::path::Path,
-    closed: bool,
+    out: Out,
 ) -> (Option<i32>, String, String) {
     let mut command = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"));
     command
@@ -2033,13 +2067,20 @@ fn run_refusal(
         .env_remove("CLAUDE_PROJECT_DIR")
         .stdin(Stdio::piped())
         .stderr(Stdio::piped());
-    if closed {
-        let (reader, writer) = std::io::pipe().unwrap();
-        drop(reader);
-        command.stdout(Stdio::from(writer));
-    } else {
-        command.stdout(Stdio::piped());
-    }
+    match out {
+        Out::Piped => command.stdout(Stdio::piped()),
+        Out::Closed => {
+            let (reader, writer) = std::io::pipe().unwrap();
+            drop(reader);
+            command.stdout(Stdio::from(writer))
+        }
+        Out::Full => command.stdout(Stdio::from(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open("/dev/full")
+                .unwrap(),
+        )),
+    };
     let mut child = command.spawn().unwrap();
     let _ = child.stdin.take().unwrap().write_all(stdin.as_bytes());
     let out = child.wait_with_output().unwrap();
@@ -2091,7 +2132,7 @@ fn every_refusal_names_its_reason_on_stderr() {
     let scratch = deep_diff_forge_testkit::Scratch::new("refusal-reasons");
     for (class, tag, form) in refusal_classes() {
         let (args, stdin, dir, want) = refusal_driver(&class, &scratch);
-        let (code, stdout, stderr) = run_refusal(&args, &stdin, &dir, false);
+        let (code, stdout, stderr) = run_refusal(&args, &stdin, &dir, Out::Piped);
         assert_eq!(code, Some(7), "{class}: {stderr}");
         assert_eq!(
             first_reason(&stderr),
@@ -2108,10 +2149,13 @@ fn every_refusal_names_its_reason_on_stderr() {
 
 /// F7.h2 (M27): a verdict refusal is decided before its document is written, so a reader that has
 /// closed stdout before the run still gets exit 7 and the reason, for every verdict class. Before,
-/// `eval` and `agent doctor` exited 0 with no reason when the reader had gone.
+/// `eval` and `agent doctor` exited 0 with no reason when the reader had gone (DDF-2026-011). The
+/// same holds for a stdout that cannot be written at all (`>/dev/full`): the refusal wins over
+/// the write error, which alone exits 3 (F3 of the 0.10.0 tree review, through the one door).
 #[test]
 fn a_closed_stdout_keeps_every_verdict_refusal() {
     let scratch = deep_diff_forge_testkit::Scratch::new("closed-stdout");
+    let full = std::path::Path::new("/dev/full").exists();
     let mut verdicts = 0;
     for (class, tag, form) in refusal_classes() {
         if form != "document" {
@@ -2119,12 +2163,17 @@ fn a_closed_stdout_keeps_every_verdict_refusal() {
         }
         verdicts += 1;
         let (args, stdin, dir, want) = refusal_driver(&class, &scratch);
-        let (code, _, stderr) = run_refusal(&args, &stdin, &dir, true);
-        assert_eq!(
-            (code, first_reason(&stderr)),
-            (Some(7), Some((want.as_str(), tag.as_str()))),
-            "{class} with the reader of stdout gone: {stderr}"
-        );
+        for out in [Out::Closed, Out::Full] {
+            if out == Out::Full && !full {
+                continue; // no /dev/full on this platform (Linux has it; the gate runs on Linux)
+            }
+            let (code, _, stderr) = run_refusal(&args, &stdin, &dir, out);
+            assert_eq!(
+                (code, first_reason(&stderr)),
+                (Some(7), Some((want.as_str(), tag.as_str()))),
+                "{class} with stdout {out:?}: {stderr}"
+            );
+        }
     }
     assert!(verdicts >= 4, "{verdicts} verdict classes");
 }

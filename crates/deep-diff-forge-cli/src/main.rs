@@ -1651,20 +1651,20 @@ fn deploy_doctor(json: bool, socket: Option<&std::path::Path>) {
 /// Report the release publication posture for the current version.
 ///
 /// This is a declared snapshot (like `deploy status`): the actual release acts are the
-/// owner's signed tag, `scripts/release_local.sh` and `cargo publish`. From 0.8.4 the source
-/// is on GitLab, Gitea and Forgejo, so those are `published`, and nothing goes to GitHub:
-/// `github` and `github-release` are `skipped` (the members and the target names stay, so
-/// the `release.v0` schema is unchanged), and a skipped target is not listed as `pending`.
-/// crates.io is `blocked`: publication is on hold by owner decision.
+/// owner's signed tag, `scripts/release_local.sh` and `cargo publish`. From 0.10.0 every
+/// target is `published`: the signed tag and its release on GitLab (the place of release),
+/// Gitea and Forgejo; GitHub as a mirror of the source and of the release page; the crates on
+/// crates.io from the tag. 0.8.4 and 0.9.0 declared `github` and `github-release` `skipped`
+/// and crates.io `blocked`. A skipped target is not listed as `pending`.
 fn deploy_release(json: bool) {
     use deep_diff_forge_core::{ReleasePlan, TargetState};
     let plan = ReleasePlan::new(env!("CARGO_PKG_VERSION"))
-        .with_target("github", TargetState::Skipped)
+        .with_target("github", TargetState::Published)
         .with_target("gitlab", TargetState::Published)
         .with_target("gitea", TargetState::Published)
         .with_target("forgejo", TargetState::Published)
-        .with_target("github-release", TargetState::Skipped)
-        .with_target("crates.io", TargetState::Blocked);
+        .with_target("github-release", TargetState::Published)
+        .with_target("crates.io", TargetState::Published);
     let pending: Vec<&str> = plan
         .pending()
         .into_iter()
@@ -2170,11 +2170,10 @@ MATURITY:
   records local-only strategy receipts (learn status|record) and scores them,
   reporting whether a learned default would be trusted; no engine default reads
   the scores yet. It never uploads source and never mutates patch truth.
-  From 0.8.4 a release is a signed tag on GitLab, Gitea and Forgejo and a local
-  release (binary + checksums, scripts/release_local.sh); nothing goes to GitHub
-  (deploy release --json reports the per-target posture).
-  crates.io publication is on hold until the codebase is production-ready; a
-  configured registry token does not lift the hold.
+  A release is a signed tag on GitLab (the place of release), Gitea and Forgejo
+  and a local release (binary + checksums, scripts/release_local.sh); GitHub
+  mirrors the source and the release page, and the crates are published on
+  crates.io from the tag (deploy release --json reports the per-target posture).
 
 MACHINE CONTRACT:
   envelope -- <command…> wraps any command's result in one ddf.result.v1 JSON

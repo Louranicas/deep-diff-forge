@@ -6,520 +6,58 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-23
+
+**Security and contract release.** 0.10.0 reads a `diff --git` section only if its headers are
+one of the 42 shapes Git's own diff writes and refuses every other shape with a named reason,
+which replaces the case-by-case header fixes of 0.8.0 to 0.8.4; `CONFORMANCE.md` in the patch
+crate is the table of what Git reads. It fixes six misses of released versions, each with an
+advisory: a decision journal that one fault could block for good (DDF-2026-004), a CI privilege
+grant written with quotes (DDF-2026-005), a source change that one attribute line made
+unreadable, now read as text and labelled with the new signal `diff_suppressed`
+(DDF-2026-006), GitLab tokens and fine-grained GitHub tokens (DDF-2026-007), a judge's leftover
+process that stretched an agent's stop (DDF-2026-008), and a findings gate that passed when the
+reader of its output had gone (DDF-2026-010). The stop hook reads forge-warden's verdict version
+3 as well as version 2, and a fail whose document it cannot read now holds the stop once
+instead of being allowed as UNJUDGED. Contracts change on purpose, each listed under
+[Contract changes](docs/release-notes/0.10.0.md#contract-changes) with its test: empty or prose input on `--stdin-patch`
+exits 4, `-U0` hunks without context are refused, `rank.v0` has one canonical byte form with
+`tool.scorer_sha256`, a Git file name that is not UTF-8 exits 4, `trivial_assert` is narrowed
+for Python, and the Rust library gains a `RiskSignal` variant and public fields. Install it
+before forge-warden 0.3.0, in the order under [Cutover with forge-warden](docs/release-notes/0.10.0.md#cutover-with-forge-warden),
+and keep the 0.9.0 binary as a ranker until every policy admits 0.10.0.
+
+Published as the signed tag `v0.10.0` on GitLab, the place of release, with mirrors on Gitea and
+Forgejo and a Linux x86_64 binary built on the owner's machine; GitHub mirrors the release page
+and crates.io carries the fourteen crates from the tag, as for 0.9.0.
+
 ### Security
 
 - **A `diff --git` section is read only if its headers are a shape Git's own diff writes**
-  (plan of record S3.1 to S3.3). Five independent assessments in a row, of v0.8.0 to v0.8.3,
-  each found one more header shape that DDF read one way and `git apply` wrote another, and
-  each was fixed case by case. The parser now holds a list of the 42 header shapes
-  `builtin_diff` and `fill_metainfo` write (Git 2.56's `diff.c`). The 42 are:
-  - a file created or deleted;
-  - a mode change;
-  - a rename or copy, with or without an edit;
-  - a rewrite under `-B`;
-  - a text body, a binary body, an `index` line alone (a rename, copy or mode change whose
-    edits `-w`, `-b`, `-I` or a textconv driver hides), or none.
-
-  A section whose headers are not one of them is refused (exit 4, new error
-  `HeaderNotWrittenByGit`, naming the line and why). A `similarity index`, `dissimilarity index`
-  or `index` line may be left out, since none of them changes what Git writes. Each line must
-  also be in the form Git writes it:
-  - a mode of `100644`, `100755`, `120000` or `160000`;
-  - `index` ids of hex digits;
-  - a whole percentage.
-
-  Every refusal 0.8.4 made stays, with its reason.
-  - *What is promised (C1), what a patch alone can settle:* for every patch DDF accepts, a
-    plain `git apply` in Git's default configuration either refuses the whole patch while
-    checking it and writes nothing, or writes exactly the paths, types and modes the review
-    shows and, for each hunk, removes and adds exactly the lines (as Git stores them) the review
-    shows, at the place Git's own anchor rule gives: a hunk with no trailing context at the end
-    of the file, one at old line 0 or 1 at its start (with both, the whole file), any other by
-    Git's search outward from the new-side line its header names, over lines no earlier hunk of
-    the same section wrote (a later section for the same path is applied to the earlier
-    section's result, where no line is skipped; the review does not say which of several equal
-    places Git takes). A
-    header's line numbers and `@@` text are the patch's claims, true on the tree Git made the
-    patch from. A hand-written patch can name one copy of some lines while Git changes another
-    (a last hunk with leading context only, on a file whose end repeats its lines), so the
-    review a person reads states the anchor: the inline and side-by-side layouts and the TUI's
-    hunk header say "Git places this hunk at the end of the file" (or at the start, or on the
-    whole file). No JSON member is added: `review.v0` and `review-hunks.v0` carry the lines the
-    anchor follows from (rule in `docs/API_AND_IPC.md`), and the ranges are documented, and
-    described in the MCP tools and daemon methods that serve them with both anchors, as the
-    patch's claim (the JSON carries no mark). Checking the place against the tree,
-    when DDF has one, is not built. The test oracle places each hunk by Git's anchors, and the
-    generated differential writes such hunks by hand (row `hunk-anchor`). Two kinds of patch
-    are refused (the paragraph after the list says which the promise needs):
-    - a hunk Git places by an anchor its header does not set (`HunkPlacedElsewhere`): a hunk
-      with no context past line 1, which plain `git apply` places at the end of the file, and
-      a hunk after one with no trailing context. Plain `git apply` tries no other place
-      (`apply_one_fragment`). `git diff -U0` writes such hunks; Git-written, and refused
-      (`git apply --unidiff-zero` reads them). DDF's own `git diff` passes `-U3`, whatever
-      `diff.context` says. A hunk with no context at line 1 is read: Git writes it only when it
-      is the whole file, and else refuses the patch;
-    - what `git apply` fails to write after it has removed what the patch deletes
-      (`GitCannotWrite`): a symlink whose target is empty, holds a NUL, is longer than 4,095
-      bytes or is in a binary body, and one path that is both a file and the directory of
-      another (two paths the patch writes, or a copy's source the patch keeps and a path
-      written under it or at its directory).
-
-    The restated promise does not need the first of these refusals: a hunk with no context
-    past line 1 would be stated as placed at the end of the file. DDF refuses such hunks
-    (`HunkPlacedElsewhere`) because plain `git apply` places them at the end of the file
-    whatever their author meant (`git diff -U0` output is meant for `git apply
-    --unidiff-zero`). `GitCannotWrite` is what the promise's second outcome needs.
-
-    One hunk layout no Git writes is read: a creation whose hunks all start at line 0. Git
-    writes the first hunk into the empty file and refuses the whole patch at the second, while
-    checking it, so nothing is placed elsewhere; the reading 0.8.4 gave a created file's later
-    hunks stays reachable (`CONFORMANCE.md`). A creation's later hunk at any other line is
-    refused.
-
-    "Git writes it" is not "`git apply` accepts it", and C1 allows any whole refusal. The
-    generated differential counts three presentations Git's own diff writes, which DDF reads
-    as 0.8.4 did and `git apply` refuses whole:
-    - a binary marker with abbreviated ids (a plain `git diff` of a binary file);
-    - the inner section of a `git diff --submodule=diff` envelope;
-    - `diff --git` halves Git cannot split, as `git diff --no-index` writes for two binary
-      files.
-
-    Each is tested against real Git output. The list is not exhaustive: `-D`, textconv and
-    `-w` output can also be refused whole. Outside the promise:
-    - `git apply --reject`;
-    - a failure while writing that the patch does not determine (permissions, a full disk, a
-      file or a directory already in the tree where the patch writes), which can leave the tree
-      half-written;
-    - hunks out of order, overlapping, or with a new-side start the earlier counts do not give:
-      read; Git either places each hunk by its own rule or refuses the whole patch and writes
-      nothing, and the review states neither which;
-    - another tree, where the place Git's rule finds (an offset, or the end of the file) can be
-      another copy of the hunk's lines than the one its header names;
-    - attributes in the target tree (`eol`, `ident`, `working-tree-encoding`);
-    - a non-default configuration: with `core.fileMode=false`, Git writes the mode an `index`
-      line names, so leaving that line out changes the mode written (`CONFORMANCE.md`).
-  - *Measured:* every commit was diffed as `git diff`, `git diff -M -C -B`,
-    `git diff --binary`, `git format-patch --stdout` and `git log -p --first-parent`, over:
-    - this repository: 892 commits on all refs, 4,457 patches, 57,038 `diff --git` sections;
-    - forge-warden's `hub.git`: 772 commits, 3,857 patches, 29,301 sections;
-    - a scratch repository built to give every row, with nine more option sets: 55 commits,
-      866 patches, 1,071 sections, all 37 shapes;
-    - 646 windows of 2 to 5 commits from both histories;
-    - the scratch repository again under `git diff -U0` and `-U0 -M -C` (108 patches), and
-      under `-w`, `-b` and `--ignore-blank-lines` (162 patches).
-
-    Against 0.8.4, 25 patches are newly refused, all `git diff -U0` output of the same five
-    commits of the scratch repository and its earlier versions (`HunkPlacedElsewhere`); none is
-    refused as `HeaderNotWrittenByGit` or `GitCannotWrite`. The 227 patches of an independent
-    sweep that the first S3a build refused (`-w` and the like with a move or a mode change) are
-    all read.
-    The refusals that remain are 0.8.4's own: a `format-patch` message line that begins `-`,
-    the byte budget, the line budget, a `-- ` signature after a binary body, and one path in
-    several sections.
-  - *Newly refused, each read by Git and never written by it:*
-    - `Files … differ`, which 0.8.4 read as `Binary files … differ`;
-    - a hunk with no `---`/`+++` before it;
-    - `similarity index` with no move, and `dissimilarity index` beside one;
-    - a second `copy to`, `rename to` or `index`, and a `rename to` or `copy to` with no
-      `from` line;
-    - headers out of Git's order (`index` before the mode lines, `new mode` before `old mode`,
-      `copy from` before `similarity index`);
-    - modes such as `100664` or `100600`, `index` ids that are not hex, and scores over 100
-      or without `%`.
-
-    Also newly refused, though Git writes them: `git diff -U0` hunks, which plain `git apply`
-    places elsewhere, and the patches `git apply` fails to write (both above).
-  - *Found while building it:* a binary marker that ends in a carriage return
-    (`Binary files … differ\r`, `GIT binary patch\r`) is no marker to Git, which compares the
-    line feed. After `old mode`/`new mode` and `index`, Git applied only the mode change,
-    while v0.8.3 and 0.8.4 reviewed a binary change of the content (DDF showed more than Git
-    wrote; nothing was hidden). It is refused now.
-  - *Found by the generated differential:* a section whose `diff --git` halves name two paths
-    (`diff --git a/x b/z`), with no `---`/`+++`, rename or copy header, gives Git no file name,
-    and Git refuses it ("git diff header lacks filename information"). For a file created or
-    deleted under such halves, which no Git writes, v0.8.3 and 0.8.4 took the rightmost ` b/`
-    and reviewed a creation or deletion of `z`. Git writes nothing, so nothing was hidden.
-    It is refused now (`InvalidPath`, as for a section that names no path).
-    - *Stated limit:* any other section whose halves Git cannot split, with nothing else
-      naming the files, is read as before, and Git refuses it whole. Such halves name two
-      paths, or have a trailing space or tab, mixed quoting or a repeated ` b/`.
-      `git diff --no-index` writes them for two binary files, or two files that differ only in
-      mode, and DDF's `<old> <new>` mode reviews that output.
-    - *On the 0.8.4 parser:* the first version of the generated differential (24,000
-      patches) held 81 patches DDF read and Git refuses to read, all of this shape: 20
-      creations or deletions, refused now, and 61 pairs. None of them is a patch Git writes
-      otherwise than the review shows.
-  - *Proved by applying:* `tests/generated_differential.rs` builds 24,000 patches from 64
-    fixed seeds. Each is one to three sections Git writes, with up to three near-miss moves.
-    Half the threads use SHA-1 repositories and half SHA-256. DDF reads each patch, and a real
-    `git apply` applies it in a repository whose object store holds every blob an `index` line
-    names (85 s on the build machine, beside other builds). Its sections include hunks with
-    one line of context and with none, as `git diff -U1` and `-U0` write them, and hand-written
-    last hunks with leading context only, one naming an earlier copy of its lines. The oracle
-    places each hunk by Git's anchors and search. Figures of the run at the final commit: DDF
-    read 8,448. Git applied 6,558 of those, each to exactly the tree the review describes, 723
-    of them with a hand-written hunk Git anchors at the end. A binary section
-    with a full id is held to the blob it names. Every other patch DDF read, Git refused whole,
-    writing nothing:
-    - 893 binary markers with abbreviated ids;
-    - 44 `--no-index` pairs;
-    - 953 others whose hunks or files do not fit the tree;
-    - none of the `--submodule=diff` envelope, which the generator does not write; the test
-      of real Git output covers it.
-
-    302 patches with a `-U0` hunk Git places at the end of the file were refused, as designed.
-
-    Any patch DDF read that Git refuses to read, outside the named presentations, fails the
-    test, as does any that Git applies otherwise than the review shows.
-    `DDF_DIFFERENTIAL_SEEDS=N` runs seeds 1 to N.
-
-    The oracle does not prove three things: the bytes of a binary section whose id is
-    abbreviated or whose new blob is not in the store, where Git places a hunk it finds at an
-    offset on another tree, and a write Git fails at (the generator writes no symlink Git cannot
-    write; `shapes_git_fails_to_write_are_refused` runs those against real Git).
-
-    Parser changes that earlier rescores found, each put back in a scratch clone, make the test
-    fail on the 64 seeds when the accept-list is turned off (measured on the generator of
-    `3e55b72`):
-    - `Files … differ` read as text again (G1): 57 failures, the first at seed 16;
-    - a bare header's name carried over (F3): 596 failures, the first at seed 8;
-    - `new mode` after `new file mode` accepted (F2): 6 failures, the first at seed 24.
-
-    With the accept-list on, the list itself refuses the F3 and F2 shapes. G1 still fails the
-    test (50 failures): `new file mode` and `index` followed by an unread line is a shape Git
-    writes. A binary marker ending in a carriage return read again, with the list on, fails it
-    26 times (the first at seed 16): the binary oracle sees the blob the review names where Git
-    changed only the mode. The placement rule turned off (S3B-H-1) failed it 773 times (the
-    first at seed 8) while the oracle placed hunks at their header's line. With the oracle
-    placing them by Git's anchors (`cc7b82f` on), a `-U0` hunk read is placed at the end of
-    the file, as the review then says, so the comparison no longer fails: the plant fails the
-    conformance row `hunk-placement` and the differential's count of `-U0` hunks refused by
-    design (0). An oracle that trusts a header's line (the end anchor turned off) fails the
-    differential 358 times and the row `hunk-anchor`: Git changes the last copy of the
-    hand-written hunk's lines. The empty-symlink rule
-    turned off fails the conformance test, not the differential.
-- **`CONFORMANCE.md`** (in the patch crate) is the table of what Git reads. It has one row for
-  each header line `apply.c` recognises, and one for the traditional form. Each row says what
-  Git sets from the line, which line wins when it is repeated, what Git refuses, whether Git's
-  diff writes the line, and what DDF 0.8.4 did and does now, each cited to Git 2.56.1's source.
-  Each row has a test (`tests/conformance.rs`) that runs its forms through DDF and through a
-  real `git apply`, and a test fails if a row and a test do not match.
+- **`CONFORMANCE.md`**
 
 ### Changed
 
-- **New signal `diff_suppressed`** (+5, class security, since 0.10.0; S3.20,
-  [DDF-2026-006](docs/advisories/DDF-2026-006.md)). A contract addition to `rank.v0`: a file whose
-  change Git gave as binary and DDF read again as text carries the label, and its ranked item the
-  member `"diff_suppressed": "attribute"` (a `diff` attribute unset or naming a driver for the
-  path, by `git check-attr`) or `"content"` (Git's own content check). `git-acquisition.v0`
-  marks the change with the same member. A consumer that does not know the label should hold.
-  `schema signals`, `explain signal`, the TUI and the reference tables list it. In the library,
-  `RiskSignal` has the variant `DiffSuppressed` (the enum is not `#[non_exhaustive]`, so an
-  outside `match` needs the arm), `PatchTwin`, `GitChange` and `RankedFile` a field
-  `diff_suppressed`, and `deep_diff_forge_core` the type `DiffSuppression`.
-- **New council exit code 3, `recorded_incomplete`** (`check_environment`, `may_be_transient`
-  true; plan of record S3.13, [DDF-2026-004](docs/advisories/DDF-2026-004.md)). A contract
-  addition: `council import-tuicr --execute` exits 3 when its decisions were recorded (the synced
-  append) but a later write failed, or the journal's own sync failed. The message names the
-  events and the file; the same import run again completes it. No existing code changes its
-  meaning; `schema exit-codes`, `explain`, MCP and the README list it.
-- **The decision journal's lock is an advisory `flock`** on `decisions.lock`, held for the life
-  of an executing import, as the hooks and the daemon take theirs. A lock file left by a dead
-  process, of any version, no longer blocks; two live imports still exclude each other. The
-  `Locked` message no longer tells the reader to remove the file.
-- `TuicrImportError` has a new variant `Incomplete { first, last, file, reason, durable }` (the
-  enum is `#[non_exhaustive]`); it is not a refusal.
-- Every executing import reconciles first and may repair, each step announced on standard error
-  (`note: tuicr import repair: …`; a dry run says `would repair` and writes nothing): see Fixed.
-
-- The evidence readings of 0.9.0 that join hunks without context (Git-must joins, number hints,
-  hunks of one created file) are no longer reached from a parsed patch: the parser refuses a
-  hunk with no context past line 1 and a hunk after one with no trailing context. They stay
-  tested on hunks built without the parser. Series whose hunks carry context are read as before;
-  of 6,110 corpus patches 0.9.0 read, 698 are refused and none read changed; the evaluation
-  moved 18 such sections to `fixtures/eval-refused-by-parser/` (precision 170/195, recall 170/247).
-- `PatchParseError` has three new variants (the enum is `#[non_exhaustive]`):
-  `HeaderNotWrittenByGit { line_number, header, reason }`,
-  `HunkPlacedElsewhere { line_number, reason }` and `GitCannotWrite { line_number, reason }`.
-- DDF's own `git diff` (Git selections and file pairs) passes `-U3`, so `diff.context` in the
-  user's configuration cannot change the capture.
-- The benchmark's generated patch ends each hunk with a line of context, as Git writes it (a
-  hunk with none, followed by another, is now refused). The inputs of `parse_seal`,
-  `rank_with_evidence`, `outline_page`, `findings_by_address` and `daemon_parallel` are
-  re-pinned, so `scripts/bench_compare.py` does not compare them with earlier runs.
-- A rename DDF finds from the `---`/`+++` names, with no rename header, now records its
-  `rename from`/`rename to` before the `index` line, where Git writes them, so that DDF's
-  rendering is a shape Git writes. Before, they came after it.
-
-- **The repository no longer links into the maintainer's private Obsidian vault** (S3.17b.a).
-  251 links of the `obsidian` scheme in 103 tracked files were replaced by in-repository pointers (in
-  source comments, with every line number kept) or removed (in documents), and the contract
-  test `no_tracked_file_links_the_private_vault` keeps them out. The two policy scripts that
-  are compiled into the binary changed in one comment line each, so the release binary's hash
-  changes; its answers do not (7,421 comparison patches, identical in both directions).
-
-- **`deep-diff-forge.tuicr-import.v1` gains `repairs`** (S3.17a.d; additive): the repairs an
-  import made to the journal are returned in the document, and the command line prints the same
-  `note:` lines as before. `TuicrImportError::Incomplete` carries the I/O error as its `source`
-  (library users of `deep-diff-forge-review`: the field `reason: String` is replaced). The refusal
-  for a held import lock names what to do first, so that it survives the 200-byte cut.
-
-
-- **Binary creations, deletions and renames carry Git's status** (S3.4): `added`, `deleted`,
-  `renamed`, the word `git apply --summary` gives, instead of `binary_changed`. They stay binary
-  (strategy `binary`, signal `binary_change`) and score as in 0.9.0; a binary change in place and
-  a binary copy stay `binary_changed`. A traditional diff that creates or deletes a file without
-  `/dev/null` still reads `modified` (an open difference recorded in `CONFORMANCE.md`).
-
-- **`--stdin-patch` refuses input in which Git finds no patch** (S3.5): zero bytes, whitespace,
-  prose, a commit message alone. Exit 4 with `error: no_patch_in_input`, as `git apply` refuses
-  it; before, it was exit 0 with zero files, which read as a clean change. Git's own
-  `--allow-empty` (new, admitted with `--stdin-patch` only) restores the empty answer for a
-  pipeline that means it. `--require-files` and `--require-hunks` still refuse first with exit
-  7; Git selections, file pairs and the daemon, rpc, MCP and SDK surfaces are unchanged.
-  forge-warden: with a 0.10.0 ranker, an authority check of an empty patch ends in "the ranker
-  exited 4" (its exit 3) instead of a holding verdict document.
-
-- **A `GIT binary patch` body that `git apply` calls corrupt is refused** with exit 4 (S3.6): a
-  hunk without its terminating empty line or without data, or a base85 group above 0xffffffff.
-  Corruption inside the deflate data is still not detected (stated in `SECURITY.md`). New public
-  items in the core crate: `is_binary_marker` and `PatchTwin::is_binary`.
-
-
-- **The documents say what is built and where it is released** (S3.7, S3.10, S3.17a.k).
-  `SECURITY.md` lists every Git setting that changes what `git apply` writes (`apply.whitespace`,
-  `core.autocrlf`, `-p`, `--directory`, `--3way`, `core.fileMode`, a case-insensitive file
-  system), each declared, six measured against a real `git apply` by the test
-  `a_setting_that_changes_the_write_is_declared`. Linux x86_64 is built and tested, with its
-  receipt under "Runs on record" in the platforms page; arm64 and macOS are not built for this
-  release. Releases are on GitLab and mirrored on GitHub; 0.9.0 is on crates.io and publishing
-  the crates is a release step from 0.10.0; contributions are GitLab merge requests. The
-  generated differential draws four more shapes Git writes (no final newline, an edit of an
-  empty file, a file emptied, unequal hunk counts).
-
-
-- **`rank.v0` has one byte form on every surface** (S3.15): the bytes `--rank --json` prints.
-  They are built by one renderer. The daemon's `diff.rank` (so `rpc`, the Python SDK and
-  `review.change` with the rank view) keeps its value and adds those exact bytes as
-  `canonical_json`; MCP `rank_patch` gives them as its text and their value as
-  `structuredContent`, and its 256 KiB cap counts them. The command line's own output for a
-  patch is unchanged apart from one added member (7,421 comparison patches, identical once
-  that member is set aside): `tool.scorer_sha256`, a build-time SHA-256 of the ranking crate's
-  sources that decide labels (every source file of the graph crate but `lib.rs`), which moves
-  on any edit of them. A consumer that seals the ranking's bytes (forge-warden) sees its seals
-  change once by that member. `agent doctor`'s `rank_parity` now compares the command line's,
-  the daemon's and MCP's bytes. A `diff.rank` answer is about 2.2 times its earlier size.
-
-
-- **What the hooks tell the judged agent** (S3.17a.f, i, l; S3.21.d). Advice after a tool call
-  says how a line was read as the ranking reads it (`lexical` or `hunk`) and names only the
-  accepted repair: no hook message names a substitute that does not count (0.9.0 printed the
-  first "Not accepted" substitute, some of which no label raises) or points the agent at
-  `explain signal`. Commands the hooks name are this binary's absolute, shell-quoted path.
-  Advice names once, for the whole file, a signal that has no evidence row (`hazardous_text`,
-  `executable_bit`, `symlink_change`, or a code signal past the 32 rows). When advice is off for
-  a reason told once, the model is told as well as the user. A built-in rule `builtin:<name>`
-  keeps its name at later stops.
-
-- **The judge's patch is the bytes forge-warden's `make_patch.sh` writes** (S3.17a.h): full index
-  lines and the submodule options, held by a test that runs a recorded copy of that script. A
-  verdict's `patch_sha256` therefore differs from 0.9.0's for the same change.
-
-- **`agent doctor --gate` gains the link `claims_verified`** (S3.25.a). Under a policy that
-  requires verified claims (forge-warden 0.3.0's `init` writes one) the hook's stops hold and
-  never pass, an uncommitted or staged change can at best hold ("commit first"), and the
-  session start says so. `docs/reference/agent-hooks.md` states the hooks' limits, among them
-  four ways a judged agent can make a stop silent or unjudged, each re-run on this build.
-
-
-- **`eval` says where it is right and wrong** (S3.35). The `deep-diff-forge.eval.v0` receipt
-  (`eval --json`) gains `by_signal` and `by_language`: evidence precision and recall split by
-  signal and by the language of the file (additive; each adds up to the aggregate; the text
-  summary is unchanged). A case whose patch the parser refuses is listed in the new member
-  `refused` with the reason and fails the run with exit 7 while every other case is still scored;
-  before, the first such case ended the run with exit 4 and no figures. A test holds the figures
-  written in `docs/reference/evaluation.md` and `docs/TESTING_GOLD_STANDARD.md` to what the run
-  measures. The hooks' mutation misses of the 0.9.0 run are answered by six new tests (S3.34.b).
-
-
-- **The local gate is honest about what it runs, and runs the contract with forge-warden**
-  (S3.17b.b, F4.a, F4.b). The gate's SBOM step writes nothing into the checkout (it rewrote the
-  tracked `sbom.spdx.json` in place and restored it, with no trap). The gate now also runs the
-  release-script self-test, checks the comparison corpus's manifest where that corpus exists,
-  and runs `scripts/contract_matrix.sh`: the hooks against stand-in judges for verdict v2 and
-  v3 (pass, hold, fail, an unreadable document, exit 4, a hang, a policy that requires verified
-  claims, the judge patch's bytes), and, when `FW_BIN` names a recorded forge-warden binary,
-  against that binary (the stop, the rank bytes, unknown labels, an empty patch with this
-  ranker and with 0.9.0's). Steps that exist only locally are listed in `ci_replica.rs`. The
-  gate has 35 steps (it had 32). The release receipt records the gate's result and the checks
-  run on the artefact.
-
-
-- **Fuzzing** (S3.9, S3.32). Three targets for readers of hostile bytes this release added or
-  changed: `verdict_reader`, `journal_recover` and `git_raw_stream` (18 targets in all; each ran
-  five minutes clean). `scripts/campaign_local.sh` (`just fuzz-campaign`) runs every target for a
-  fixed time, stops red at the first crash and writes a receipt; it is a release step.
-  `scripts/fuzz_target.sh` refuses to run without `DDF_FUZZ_CORPUS_ROOT` (or CI's `RUNNER_TEMP`)
-  instead of falling back to `/tmp`.
-
+- **New signal `diff_suppressed`**
+- **New council exit code 3, `recorded_incomplete`**
+- **`--stdin-patch` refuses input in which Git finds no patch**
+- **`rank.v0` has one byte form on every surface**
+- **The judge's patch is the bytes forge-warden's `make_patch.sh` writes**
+- **Binary creations, deletions and renames carry Git's status**
+- and 10 more, in the full notes
 
 ### Fixed
 
-- **A text file Git was told to show as binary is read as text** (S3.20,
-  [DDF-2026-006](docs/advisories/DDF-2026-006.md)). In the Git selections (and so in MCP and RPC
-  `review_change`), one line `*.rs -diff` in a `.gitattributes` the change need not contain, in
-  `.git/info/attributes` or in a file the repository's own `core.attributesFile` names, `* binary`,
-  a `diff=` driver with `binary = true`, or one NUL byte in a comment made `git diff` print a source
-  change as a `GIT binary patch`, and no evidence rule read it: a change that starts a process
-  ranked `binary_changed`, 3, `binary_change` (measured on the published 0.8.2, 0.8.3 and 0.9.0
-  binaries and the 0.8.4 release binary, every selection). The acquisition as it was stays the
-  first reading; every change Git gives as binary is asked for once more with `--text`, the same
-  selection and flags, limited to its own literal paths. When that is the same change, as text,
-  valid UTF-8 (NUL bytes included), within what is left of the byte budget, and the parser reads
-  it, it replaces the binary section (both apply to the same bytes; tests apply the reviewed patch
-  with a real `git apply`); otherwise the binary section stands. Real binaries and text over the
-  budget stay binary; `--stdin-patch` and file pairs are unchanged (stated limits in
-  `docs/reference/commands.md`). An ordinary repository's output is byte for byte what it was.
-- **`ci_privilege` reads a key or a value in quotes as the key or value** (S3.18,
-  [DDF-2026-005](docs/advisories/DDF-2026-005.md)). 0.8.2 to 0.9.0 labelled `contents: write`
-  in a workflow but not `contents: 'write'`, `contents: "write"`, `id-token: 'write'`,
-  `"contents": "write"`, `{contents: 'write'}` or `contents : write`, which YAML reads the same:
-  a privilege grant was missed. A YAML text is now read a second time with each quoted scalar
-  that holds no escape as its content and the blanks around a key's `:` as one space, by the
-  bytes of the line; what the two readings find is united, so no line has fewer items than
-  before. Still not read, and stated in the README row: a value with an escape, a tag, a block
-  scalar, an explicit `?` key. `build_hook` reads the JSON key of `package.json` in every
-  spelling JSON allows but a `\u` escape, as before; that limit is now stated.
-- **`trivial_assert` no longer labels a Python `assert True` followed by more of an expression**
-  (S3.16; a change of a released label's behaviour). 0.9.0 gave the label ("an added assertion
-  cannot fail") to the token `assert True` whatever followed it, so to `assert True == False`,
-  `assert True and False`, `assert True in []` and eight more that fail on every run, to five
-  that depend on a variable (`assert True and ready`), and to `assert True \` continued on the
-  next line. Each of those labels was false. The label is now given only where the statement
-  ends: the end of the line, a `,` and a message, a `;` or a comment. `assert True or ready`,
-  which cannot fail, is no longer labelled either (a stated limit). The other spellings do not
-  change. Measured on the 0.9.0 release binary and on this tree before the change; 0.8.4 and
-  earlier had no such label.
-- **A fault during `council import-tuicr --execute` no longer blocks a run's journal for good,
-  reports a recorded decision as refused, or leaves a cut back undetected** (S3.13,
-  [DDF-2026-004](docs/advisories/DDF-2026-004.md); measured on 0.9.0 by fault injection from
-  outside the process).
-  - `write_new`, the writer of checkpoints, the export ledger, reports, `execution.json` and
-    `qualification.json`, is all or nothing: it writes and syncs a temporary file in the same
-    directory and links it to its name, which fails if the name exists. A failed write leaves no
-    file (before, an empty one every reader refused and create-new would not replace), and the
-    error names the file. Readers that list a directory skip a temporary name.
-  - The journal's commit point is the synced append. The new head's checkpoint is written and
-    synced under its temporary name first, so a failure before the append is exit 4 with nothing
-    appended (before, exit 4 with the decision appended); a failed append is cut back. After it,
-    exit 3.
-  - Every executing import writes the head's checkpoint when the head is beyond the newest one,
-    even when it plans no events (before, the retry never wrote it and a cut back went
-    undetected); this also heals runs left so by 0.8.3 to 0.9.0.
-  - Repairs under the lock: an empty checkpoint the journal holds is replaced; a torn last record
-    no checkpoint names is cut off and its bytes kept in `decisions.torn-<seq>-<digest>`;
-    leftover temporary checkpoint files are removed. A torn record a checkpoint names, and other
-    malformed checkpoints, stay refusals.
-
-- **The stop hook reads forge-warden's verdict version 3, and a fail it cannot read holds the
-  stop** (S3.21). forge-warden's main branch (for 0.3.0) writes `forge-warden.verdict.v3`;
-  0.9.0 read only v2, so a v3 document was no verdict and a stop the judge failed was allowed
-  as UNJUDGED. No released pair is affected (forge-warden 0.2.1 writes v2), so there is no
-  advisory.
-  - A v3 document is checked member by member against forge-warden's v3 schema, as v2 is
-    against its own; v2 is read as before. What v3 adds is read in its own form only: bound
-    claims (`verified: true`, `base`, `head` and `merge_base` of one length, 40 or 64 hex
-    digits), which the hook cannot check and does not use (the seals bind the verdict to its
-    patch); a rule of kind `builtin`, which has a `builtin:` id (and is the only one that
-    may), holds and names no waiver; the note code `claims_unverified`. Any other schema is no
-    verdict, and the reason names it.
-  - Exit 7, the judge's fail, now holds the stop when its document is no verdict (missing, of
-    a schema this build does not read, not whole, not sealed to the inputs, saying another
-    outcome): once, as a fail with no failing rule, with why the verdict could not be read.
-    Before, it was allowed as UNJUDGED. Exit 0 and 8 still need a verdict.
-  - `agent doctor --gate` names, in the link `chain`, the verdict schema and forge-warden
-    version of the judge's document and the schemas this build reads; a judge that writes a
-    schema this build does not read fails that link, named with its version.
-
-- **A moved file's old path is squashed as Git squashes it** (independent review of S3a,
-  S3A-L-1, low). `rename from d//x` or `copy from d//x` was reported as `old_path` `d//x`, while
-  `git apply` read `d/x`. It is `d/x` now (`render::old_path`), with a real-apply test.
-
+- **A text file Git was told to show as binary is read as text**
+- **`ci_privilege` reads a key or a value in quotes as the key or value**
+- **The stop hook reads forge-warden's verdict version 3, and a fail it cannot read holds the stop**
 - **A judge that left a process holding its output could stretch an agent's stop past its limit**
-  (S3.17a.a, [DDF-2026-008](docs/advisories/DDF-2026-008.md)). Measured on 0.9.0: a stand-in judge
-  that exits at once and leaves a child holding its standard output held the stop for 75 s against
-  the documented 45 s. Every child DDF waits for (the judge, the ranker seal, the council's Git and
-  tuicr calls) now runs in a process group of its own; the whole group is killed on every exit path
-  (time limit, output cap, normal exit), and the output is joined only until the deadline. The same
-  stop now takes 0.15 s. A process that leaves the group (`setsid`, a double fork) is not killed by
-  DDF, and Ctrl-C on an interactive council command no longer reaches its Git or tuicr child: both
-  are stated in `SECURITY.md` and in the module's documentation.
+- **`secret_like` finds GitLab tokens and fine-grained GitHub tokens**
+- **A gate flag failed open when its output was closed**
+- **A fault during `council import-tuicr --execute` no longer blocks a run's journal for good, reports a recorded decision as refused, or leaves a cut back undetected**
+- and 7 more, in the full notes
 
-- **`council import-tuicr`: four low findings of the journal review** (S3.17a.d, S3.17a.e). The
-  journal is no longer appended through a link at `decisions.jsonl` (a dangling link used to create
-  and fill its target). A session that is refused no longer triggers the journal's repairs. A failed
-  directory sync of a bare file name no longer removes the file. Temporary files that a killed writer
-  left in the export ledger, the reports and the job directories are removed when their writer has
-  ended, and named when it is still running. A mounted host path of the gate sandbox that holds `:`
-  or `,` is refused before it reaches `--volume`.
-
-- **The daemon's clients** (S3.14). Python `StdioClient`: reads a large answer in linear time
-  (64 MiB: 14 s before, 0.3 s now), holds the answer line to the 80 MiB line cap with its newline
-  counted, kills a child that broke the pipe before taking the whole request, turns read errors
-  into `TransportError`, closes both pipes on every exit, and raises `TransportError` for a call
-  after `close()` (it was `ValueError`). Python `SocketClient`: reads the daemon's early refusal
-  after a broken or reset send (it said "could not be reached"), applies one deadline to the whole
-  call ("no answer from the daemon at PATH within T s"), holds the answer line to the line cap,
-  and reads `SO_PEERCRED` user ids at or above 2^31 correctly. Rust client
-  (`deep_diff_forge_daemon::request`, the SDK's `Client`): reads the daemon's answer when the
-  write breaks with a connection reset. The reference states one line cap for the daemon
-  protocol: 80 MiB counting the newline, in both directions (one stated exception: the server's
-  answer bound still measures without the newline).
-
-- **`secret_like` finds GitLab tokens and fine-grained GitHub tokens** (S3.24,
-  [DDF-2026-007](docs/advisories/DDF-2026-007.md)): `glpat-` and its routable form, `gldt-`,
-  `glrt-` and `glcbt-` with 20 bytes or more, `glptt-` with 40, `gloas-` with 64, and
-  `github_pat_` with 82. Releases 0.5.0 to 0.9.0 missed them. The eleven earlier prefixes are
-  unchanged (a test holds "released implies now"), and the token is never copied into evidence.
-  Measured before release: no line of 2,086 real history patches gains the label; a repository
-  whose forge-warden policy forbids `secret_like` fails, from 0.10.0, a commit that adds a line
-  with one of the seven forms. The eval corpus gains the case `evidence/secret-forge-tokens`
-  (59 cases: precision 186 of 211, recall 186 of 264).
-
-- **The daemon answers a changed file name that is not UTF-8 with code 4** (`review.change`),
-  as the command line exits 4 (S3.27.f); it was code 3, which reads as "may be transient".
-
-- **A file hidden from `git diff` is never both blind and unlabelled** (S3.27,
-  [DDF-2026-006](docs/advisories/DDF-2026-006.md)). The first fix of this release read such a
-  file again as text and labelled it; it left the file silent when that reading failed. Now a
-  path whose `diff` attribute is unset or names a driver carries `diff_suppressed` whatever the
-  second reading gives (a byte that is not UTF-8, the byte budget, a refusal). A UTF-16 or
-  UTF-32 file, also an existing source rewritten in one of them, is labelled with the new cause
-  `encoding` (labelled, not decoded). A second reading of a binary change (or its
-  `git check-attr`) that the 64 MiB budget or the 120 s limit cuts off never leaves the change
-  silent and no longer fails the review: the file stays a binary change and is labelled by its
-  attribute, else with the new cause `unread` (S3.27.g); paths are read again in Git's order
-  within what is left of the budget, so one large file does not keep later files unread, and
-  once the limit has run out every binary change left is `unread`. A changed file whose name is
-  not UTF-8 exits 4
-  (`change_input`), not 3, in every Git selection and in a file pair. A Git helper that
-  outlives Git can no longer stretch the acquisition past its limit (S3.17a.b).
-
-- **A gate flag failed open when its output was closed** (S3.17a.g2,
-  [DDF-2026-010](docs/advisories/DDF-2026-010.md)). `findings verify --require-findings` and
-  `--require-all` exited 0 with nothing on stderr when the reader of standard output had gone
-  (`… | head`, a wrapper that closes the pipe); measured on 0.8.3, 0.8.4 and 0.9.0. Every
-  `--require-*` refusal is now decided before the output is written and exits 7 with its reason.
-  A diagnostic that cannot be written (`2>/dev/full`) no longer turns the exit code into 101
-  (S3.17a.g).
-
-- **The daemon** (S3.8). `daemon stop` answers within a second when idle clients hold every data
-  and control slot (it gave "no answer", exit 6, until a slot freed). The line reader retries an
-  interrupted read; the writer retries an interrupted write and ends a write of no bytes; two
-  `unreachable!()` in the views are gone. `daemon path` and `daemon start` refuse a socket path
-  of 108 bytes or more with exit 2. The answer bound counts the newline, so no answer exceeds
-  the 80 MiB line cap that every client holds. The status lines of `SECURITY.md` and the release
-  document say what they describe and no longer go stale at a tag, held by a test.
+Full notes: [docs/release-notes/0.10.0.md](docs/release-notes/0.10.0.md)
 
 ## [0.9.0] - 2026-11-18
 

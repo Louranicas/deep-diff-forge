@@ -54,16 +54,30 @@ or names a driver for the path, `"encoding"` for a UTF-16 or UTF-32 file, `"unre
 could not be read again within the limits below, else `"content"`).
 A file hidden by a `diff` attribute carries the label also when its text cannot be read back
 (a byte that is not UTF-8, the byte budget): it then stays `binary_changed`. A UTF-16 or
-UTF-32 file is labelled and not decoded, so its code evidence is not found. No attribute is trusted or looked for first,
+UTF-32 file is labelled and not decoded, so its code evidence is not found; its byte order mark
+is seen only when the change shows line 1, so wide text outside Latin-1 edited elsewhere, with
+no mark in the change, is not labelled. No attribute is trusted or looked for first,
 and attributes keep every other effect (line endings, the user's filters). Still read as binary,
-with `binary_change` and no new label: a real binary (not UTF-8) that no attribute hides. A
+with `binary_change` and no new label: a change no attribute hides whose second reading is
+not UTF-8, a real binary most often (and whatever is made to look like one: the limit below). A
 second reading (or `git check-attr`) that the byte budget or the 120 s limit cuts off never
 leaves a binary change silent and never fails the review: the file stays `binary_changed`, and
 the attribute label stands, else it carries `"diff_suppressed": "unread"`. Paths are read again
 in Git's order, each within the budget less every other section as it stands, so a large file
 that does not fit is `unread` and the files after it are still read; once the time limit has
 run out, every binary change not yet read again is `unread`. A binary by content whose text
-form passes the 64 MiB budget is therefore labelled `unread` (each binary change costs up to
+form passes the 64 MiB budget is therefore labelled `unread`. A binary section stays
+unlabelled only when no attribute covers it and Git's second reading of it succeeded and is
+not valid UTF-8 (nor UTF-16 or UTF-32). That is decided on the whole reading, so it is no
+proof of a real binary: one byte that is not UTF-8 on either side of the change, or in a
+change Git pairs with it as a copy, is enough (a script with a NUL byte and such a byte, a
+real binary replaced by a script), and the file then carries `binary_change` only, its lines
+unread: a stated limit. Every other
+outcome that does not end in a used text section keeps a known cause or is `unread`: a reading
+Git failed or cut, and a valid UTF-8 reading not used for any reason (the parser refused it
+alone, more than 1,000,000 lines say; Git answered it as more than one change, a copy under
+the repository's `diff.renames=copies` say; or the whole patch with the readings did not
+parse) (each binary change costs up to
 two more Git calls, about 8 ms each: 300 changed images took 2.4 s instead of 0.25 s, measured
 2026-11-22). `--stdin-patch` reviews the patch it is given: a binary section a
 caller pipes in cannot be read again. A file pair (below) also shows a file with a NUL byte as
@@ -171,9 +185,11 @@ relative one is ignored for `$HOME/.local/state`). An invalid receipt exits 4.
 `analyze` checks that a patch turns the captured base directory into the candidate before it
 attaches semantics.
 
-`deploy release` is a declared snapshot. From 0.8.4 the source is published on GitLab, Gitea
-and Forgejo, nothing goes to GitHub (`github` and `github-release` are `skipped`), the release
-is the owner's signed tag and a local release, and crates.io is on hold.
+`deploy release` is a declared snapshot. From 0.10.0 every target is `published`: the owner's
+signed tag and a local release on GitLab (the place of release), Gitea and Forgejo; GitHub as a
+mirror of the source (`github`) and of the release page (`github-release`); the crates on
+crates.io from the tag. 0.8.4 and 0.9.0 declared `github` and `github-release` `skipped` and
+crates.io `blocked`.
 
 DDF reads a patch as a plain `git apply` reads it in Git's default configuration; the
 settings that change what Git writes are in

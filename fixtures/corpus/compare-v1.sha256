@@ -3,12 +3,16 @@
 # release binaries); it is named here by the SHA-256 of its manifest. The local gate's step
 # "comparison corpus manifest" verifies the corpus where it exists.
 #
-# Whole-tree record for commit 1b1d4a49aabfd67765f78d46b05205a5bc30f2e0 (binary sha256
-# 7ffb5c332d2c3dc2df527113b8b77d460ff1467ec021d7d14e18ed681e53ffe4), run 2026-11-22T23:23Z:
+# Whole-tree record for the release-prepared commit 2343eef1 (version 0.10.0; binary sha256
+# df8359c42d99a957c5266825b1d8e87c84b7b7d6aaeb30753527454b321c3e6f), run 2026-11-23T02:31Z,
+# record runs/20261123T023136Z-df8359c42d99 of the corpus:
 #   identity control                 lost 0   gained 0
 #   against v0.8.3 (4cafd0ad…)       lost 1   gained 2063   (see note 1)
 #   against v0.8.4 (0c93b3ed…)       lost 1   gained 2025   (see note 1)
 #   against v0.9.0 code (5ba0a366…)  lost 54  gained 242    (see note 2)
+#   against the binary both reviewers first read (7ffb5c33…, commit 1b1d4a49): lost 0, gained 0,
+#   and with the tool's version member normalised the same stdout, stderr and exit code on
+#   every patch.
 #   Git selections, 45 planted repositories and 8 history ranges, against v0.9.0 code and against
 #   the first fix of this release: every lost item is binary_change on a file that gains
 #   diff_suppressed; no file lost a label without gaining one.

@@ -6,8 +6,24 @@ an exceptional one. This policy documents the maintained security boundary,
 the controls enforced by the repository, and the limits operators must account
 for.
 
-## Status of 0.9.0 and the releases before it
+## Status of 0.10.0 and the releases before it
 
+- 0.10.0 reads a `diff --git` section only if its headers are a shape Git's own diff writes, and
+  fixes six misses of 0.9.0 and earlier, each with an advisory:
+  [DDF-2026-004](docs/advisories/DDF-2026-004.md) (one fault during `council import-tuicr
+  --execute` could block a run's decision journal for good),
+  [DDF-2026-005](docs/advisories/DDF-2026-005.md) (a CI privilege grant written with quotes),
+  [DDF-2026-006](docs/advisories/DDF-2026-006.md) (one attribute line made a reviewed source
+  change unreadable), [DDF-2026-007](docs/advisories/DDF-2026-007.md) (GitLab tokens and
+  fine-grained GitHub tokens), [DDF-2026-008](docs/advisories/DDF-2026-008.md) (a judge's
+  leftover process stretched an agent's stop) and
+  [DDF-2026-010](docs/advisories/DDF-2026-010.md) (a findings gate passed when the reader of its
+  output had gone); the number DDF-2026-009 was not used. The advisories are published with the
+  release: as files in `docs/advisories/` of the signed tag `v0.10.0`, which is published on
+  GitLab (the place of release), Gitea and Forgejo with a binary built locally for Linux x86_64,
+  mirrored on GitHub with its release page, and with its crates on crates.io. Its known issues,
+  its contract changes and the order of the cutover with forge-warden are in its
+  [release notes](docs/release-notes/0.10.0.md).
 - 0.9.0 adds five integrity signals and the agent hooks, and fixes two defects of 0.8.4 and
   earlier ([DDF-2026-003](docs/advisories/DDF-2026-003.md)): a process spawn cut across two
   sections of one path that Git applies in order was not found, and one long JavaScript word or
@@ -84,7 +100,8 @@ Fixes land on `main` first and reach users in the next tagged release.
 | Version | State | Security fixes |
 | --- | --- | --- |
 | `main` | Unreleased work after the newest tag | Land here first. |
-| `v0.9.0` (2026-11-18) | Published | While it is the newest released minor line. |
+| `v0.10.0` (2026-11-23) | Published | While it is the newest released minor line. |
+| `v0.9.0` (2026-11-18) | Published, superseded | No. A journal one fault could block ([DDF-2026-004](docs/advisories/DDF-2026-004.md)), a quoted CI privilege grant ([DDF-2026-005](docs/advisories/DDF-2026-005.md)), a source change an attribute made unreadable ([DDF-2026-006](docs/advisories/DDF-2026-006.md)), GitLab and fine-grained GitHub tokens ([DDF-2026-007](docs/advisories/DDF-2026-007.md)), a judge's leftover process ([DDF-2026-008](docs/advisories/DDF-2026-008.md)) and a findings gate with its reader gone ([DDF-2026-010](docs/advisories/DDF-2026-010.md)); 0.10.0 fixes them. |
 | `v0.8.4` (2026-11-17) | Published, superseded | No. A process spawn cut across two sections of one path, and the cost of one long word or run of secret prefixes ([DDF-2026-003](docs/advisories/DDF-2026-003.md)); 0.9.0 fixes them. |
 | `v0.8.3` (2026-11-11 UTC) | Published, superseded | No. G1/G2 ([DDF-2026-001](docs/advisories/DDF-2026-001.md)) and the Rust code view ([DDF-2026-002](docs/advisories/DDF-2026-002.md)); 0.8.4 fixes them. |
 | `v0.8.2` (2026-11-10) | Published, superseded | No. It can show a change on a different file, or with a different mode or type, than `git apply` writes: a name left by a bare `diff --git` line before a binary line, a new file's mode overridden by `new mode`, or content under a mode Git reads as a submodule ([GHSA-rq5r-p3g9-phff](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-rq5r-p3g9-phff)); 0.8.3 fixes them. |
@@ -803,6 +820,9 @@ bounded form.** What it holds to:
   or a double fork into its own group) is not killed by DDF and runs on. Under Claude Code
   2.1.330 the client ends a timed-out hook's descendants, including those in their own group
   or session (measured 2026-11-22); a process that detaches from them is ended by no one.
+  A judge that exits while a process it detached from its group still holds its output is not
+  read: the stop is UNJUDGED when the limit passes, whatever the judge's exit code was;
+  forge-warden starts no such process.
 - **Text from the judge is data.** When a verdict fails or holds for something that is not a
   rule (an expired waiver, a note), the message repeats the judge's own words for it: at
   most twelve, each cut at 400 characters, escaped like every other text the hook did not

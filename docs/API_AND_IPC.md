@@ -128,7 +128,7 @@ deep-diff-forge structural <old> <new> [--json]
 deep-diff-forge review [--probe [--cols N] [--rows N]] [--side] [--palette | --cmd NAME] [--findings FILE]
 deep-diff-forge daemon {path|start [--foreground] [--allow-repo PATH]... [--log-format text|json]|health|status|metrics [--format json|prometheus] [--out PATH]|stop} [--socket PATH]
 deep-diff-forge learn {status|record --stdin} [--json]
-deep-diff-forge <old> <new> [<--stdin-patch output flags>]
+deep-diff-forge <old> <new> [<--stdin-patch output flags but --allow-empty>]
 deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side | --outline | --hunks [--address A]... [--path P]...] [--max-bytes N] [--cursor C] [--require-files] [--require-hunks]
 deep-diff-forge {--git-working-tree [--include-untracked] | --git-staged | --git-range A..B} [--repo PATH] [--acquisition-json | <--stdin-patch output flags>]
 deep-diff-forge agent {setup --client claude|codex [--allow-repo PATH]... [--hooks] | doctor [--gate] | hook session-start|post-tool|stop --client claude} [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--json]
@@ -521,7 +521,9 @@ Additive members, so the schema names stay `v0`. They are present only when foun
     attribute unset or naming a driver for the path (also when the text cannot be read back),
     Git's own content check (a NUL byte), or a UTF-16 or UTF-32 file (labelled, not decoded);
     `"unread"` when no attribute label covers it and its second reading was cut off by the byte
-    budget or the time limit (the file stays a binary change).
+    budget or the time limit, failed, or came back as valid UTF-8 and was not used for any reason
+    (the file stays a binary change); only a second reading that succeeded and is not UTF-8
+    leaves a binary change unlabelled.
     The file then carries the signal `diff_suppressed` (+5). The member is absent otherwise; the
     same member marks the change in `git-acquisition.v0`.
   - At the bound the list is not simply the first 32 in that order (since release 0.8.4, which

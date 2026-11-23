@@ -369,7 +369,9 @@ fn help_after_the_paths_prints_the_direct_comparison_usage() {
     let (code, stdout, _) = ddf(&["old.rs", "new.rs", "--help"]);
     assert_eq!(code, 0);
     assert!(
-        stdout.contains("USAGE:\n  deep-diff-forge <old> <new> [<--stdin-patch output flags>]"),
+        stdout.contains(
+            "USAGE:\n  deep-diff-forge <old> <new> [<--stdin-patch output flags but --allow-empty>]"
+        ),
         "{stdout}"
     );
 }

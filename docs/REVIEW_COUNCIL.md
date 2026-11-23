@@ -167,7 +167,7 @@ Exit 0 means the requested operation completed under its contract; status exit 0
 
 ### Exporting admitted findings to tuicr (DDF-R54)
 
-`council export-tuicr` files admitted council findings into a local tuicr (0.27.0) review session as *local draft notes*. It is a read-only analysis adapter in the sense of the vault plan: it never submits to a forge, marks a file or hunk reviewed, resolves or deletes a comment, or turns a model claim into an approval.
+`council export-tuicr` files admitted council findings into a local tuicr (0.27.0) review session as *local draft notes*. It is a read-only analysis adapter: it never submits to a forge, marks a file or hunk reviewed, resolves or deletes a comment, or turns a model claim into an approval.
 
 ```sh
 # Dry run (default): every identity check, then the planned notes as JSON. Never invokes tuicr, never writes.

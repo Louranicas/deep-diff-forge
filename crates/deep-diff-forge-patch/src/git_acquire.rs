@@ -872,6 +872,14 @@ pub fn acquire(
 /// attribute when check-attr answered, else `unread`. Paths are read again in Git's order, each
 /// within the budget less every other section as it stands; one that does not fit is `unread`
 /// and the next is tried. Once the limit has run out, every binary change left is `unread`.
+///
+/// Labels are monotonic across every fallback (A0100-M1, N1): a binary section leaves here
+/// unlabelled only when no attribute covers it, Git's second reading succeeded, and the reading
+/// is not valid UTF-8 and shows no wide encoding. Most often a real binary, and no proof of one:
+/// a byte that is not UTF-8 anywhere in the reading does it (a stated limit, DDF-2026-006). Any
+/// other outcome with no used text section keeps the known cause or is `unread`: a reading Git
+/// failed or cut, and a valid UTF-8 reading not used for any reason (the parser refused it alone,
+/// it is not one change, it still says binary, or the whole patch with the readings did not parse).
 fn read_binary_again(
     runner: &Runner<'_>,
     first: &StructuredDiff,
@@ -889,9 +897,9 @@ fn read_binary_again(
         let (cause, out) =
             if let Some(Ok(cause)) = (!out_of_time).then(|| suppression(runner, &change)) {
                 match second_reading(runner, &read, &change, selection) {
-                    Ok(out) => (cause, out),
-                    Err(cut) => {
-                        out_of_time = matches!(cut, GitAcquireError::TimedOut { .. });
+                    Ok(Some(out)) => (cause, Some(out)),
+                    no => {
+                        out_of_time = matches!(no, Err(GitAcquireError::TimedOut { .. }));
                         match cause {
                             DiffSuppression::Content => unread,
                             told => (told, None),
@@ -902,6 +910,7 @@ fn read_binary_again(
                 out_of_time = true;
                 unread
             };
+        let utf8 = matches!(&out, Some(out) if std::str::from_utf8(out).is_ok());
         let again = out.and_then(|out| {
             let mut again = StructuredDiff::default();
             again.append_stream(&out, change.origin).ok()?;
@@ -919,8 +928,9 @@ fn read_binary_again(
             _ => cause,
         };
         let told = cause != DiffSuppression::Content;
-        if told {
-            mark(&mut labelled, at, cause);
+        let fallback = if told { cause } else { DiffSuppression::Unread };
+        if told || text.is_some() || utf8 {
+            mark(&mut labelled, at, fallback);
         }
         match text {
             Some((text, bytes)) => {
@@ -931,7 +941,7 @@ fn read_binary_again(
                 read.replace_section(at, text, &bytes);
                 replaced = true;
             }
-            None if told => mark(&mut read, at, cause),
+            None if told || utf8 => mark(&mut read, at, fallback),
             None => {}
         }
     }

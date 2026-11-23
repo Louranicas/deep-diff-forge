@@ -71,8 +71,11 @@ pub fn finish() {
     }
 }
 
-/// A write to stdout failed: a reader that has gone is [`stdout_closed`]; any other error exits 3.
+/// A write to stdout failed. A pending refusal wins over any write error, a reader that has gone
+/// or a full disk (F3 of the 0.10.0 tree review): its reason lines, exit 7. With none pending, a
+/// reader that has gone is [`stdout_closed`] (exit 0) and any other error exits 3.
 pub fn stdout_failed(err: &std::io::Error) -> ! {
+    finish();
     if err.kind() == std::io::ErrorKind::BrokenPipe {
         stdout_closed();
     }
