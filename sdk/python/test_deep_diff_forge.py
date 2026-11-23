@@ -100,6 +100,9 @@ for line in sys.stdin:
                 page["page"]["next_cursor"] = pages[1]["page"]["next_cursor"]
             if mode == "endless" and index == last:
                 page["page"]["next_cursor"] = "dg0.0000000000000000.0000000000000000.1"
+            if mode == "past" and index == last:
+                page["diagnostics"].append(page["diagnostics"][0])
+                page["page"]["count"] += 1
             if mode == "empty" and index == 2:
                 page["page"]["count"], page["diagnostics"] = 0, []
             answer = {"jsonrpc": "2.0", "result": page}
@@ -256,7 +259,8 @@ class Diagnostics(unittest.TestCase):
                  ("hash", len(pages), "the rebuilt document does not hash to document_sha256"),
                  ("repeat", 3, "a cursor came back"),
                  ("endless", last + 1, "the cursors did not end with the document"),
-                 ("empty", 3, "a page holds no diagnostic")]
+                 ("empty", 3, "a page holds no diagnostic"),
+                 ("past", len(pages), "a page goes past total")]
         with tempfile.TemporaryDirectory() as directory:
             source = pathlib.Path(directory) / "pages.json"
             source.write_text(json.dumps(pages), encoding="utf-8")

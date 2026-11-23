@@ -2282,6 +2282,54 @@ mod tests {
         );
     }
 
+    /// F5b: when the answer at half the budget is over it, the page shrinks; a page tried smaller
+    /// than its first diagnostic is paged again at that diagnostic's size, so a diagnostic is
+    /// refused only when it cannot fit half the budget (the answer carries it twice). A first
+    /// file with one spawn under a long path, then a short one, at the smallest budget.
+    #[test]
+    fn a_page_tried_smaller_than_its_first_diagnostic_is_paged_again() {
+        let (mut served, mut refused) = (0, 0);
+        for length in (3600..7000).step_by(25) {
+            let mut patch = spawns(&format!("src/{}.rs", "a".repeat(length)), 2);
+            patch.push_str(&spawns("z.rs", 1));
+            let result = call_tool(
+                json!({"name": "diagnose_patch", "arguments": {"patch": patch, "max_bytes": MCP_DIAGNOSTICS_MIN_BYTES}}),
+                &[],
+            )
+            .unwrap();
+            if result["isError"] == false {
+                assert!(emitted_with_page(&result) <= MCP_DIAGNOSTICS_MIN_BYTES);
+                served += 1;
+                continue;
+            }
+            let message = result["content"][0]["text"].as_str().unwrap();
+            // At the size of its first diagnostic the answer can still be over the budget.
+            if let Some(rest) =
+                message.strip_prefix("max_bytes 12364 is below this answer at its smallest page (")
+            {
+                let size: usize = rest.split(' ').next().unwrap().parse().unwrap();
+                assert!(size > MCP_DIAGNOSTICS_MIN_BYTES, "{message}");
+                refused += 1;
+                continue;
+            }
+            let takes: usize = message
+                .split("it takes ")
+                .nth(1)
+                .and_then(|rest| rest.split(' ').next())
+                .and_then(|n| n.parse().ok())
+                .unwrap_or_else(|| panic!("{message}"));
+            assert!(
+                takes > MCP_DIAGNOSTICS_MIN_BYTES / 2,
+                "refused a diagnostic of {takes} bytes, which fits half the budget: {message}"
+            );
+            refused += 1;
+        }
+        assert!(
+            served > 0 && refused > 0,
+            "served {served}, refused {refused}"
+        );
+    }
+
     /// F5b, ruling R2: nothing from the patch reaches a model through a diagnostics answer but
     /// the escaped path. A marker stands in every place the patch writes (the path, beside a bidi
     /// control; the hunk heading; context, removed and added lines); on each line the server

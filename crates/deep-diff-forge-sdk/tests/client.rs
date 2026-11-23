@@ -323,7 +323,18 @@ fn a_daemon_that_breaks_paging_ends_the_call_with_a_named_error() {
             .to_json(),
         diagnostics(&review(&patch, Guards::none()).unwrap()).to_json()
     );
-    let cases: [Case; 6] = [
+    let cases: [Case; 7] = [
+        (
+            |_, p| {
+                if p["page"]["next_cursor"].is_null() {
+                    let extra = p["diagnostics"][0].clone();
+                    p["diagnostics"].as_array_mut().unwrap().push(extra);
+                    p["page"]["count"] = json!(p["page"]["count"].as_u64().unwrap() + 1);
+                }
+            },
+            usize::MAX,
+            "a page goes past total",
+        ),
         (
             |i, p| {
                 if i == 2 {
@@ -437,4 +448,67 @@ fn cursors_that_repeat_or_never_end_end_the_call() {
             problem: "the cursors did not end with the document"
         }
     );
+}
+
+/// Measurement, run by hand (lane w11S): `DDF_SDK_SAMPLE` names a file of patch paths, one a
+/// line; `DDF_SDK_SOCKET` a running daemon (else one in this process). Each patch the daemon
+/// answers is fetched with `Client::diagnostics` at the smallest budget, 4096, and must be the
+/// builder's bytes; a patch the facade refuses must be refused by the daemon too.
+#[test]
+#[ignore = "a measurement over a corpus sample; run by hand"]
+fn sample_pages_at_the_floor_rebuild_the_builders_document() {
+    let Some(list) = std::env::var_os("DDF_SDK_SAMPLE") else {
+        return;
+    };
+    let own = std::env::var_os("DDF_SDK_SOCKET")
+        .is_none()
+        .then(|| live_daemon("sdk-sample"));
+    let client = std::env::var_os("DDF_SDK_SOCKET").map_or_else(
+        || own.as_ref().unwrap().1.clone(),
+        |socket| Client::at(std::path::Path::new(&socket)),
+    );
+    let (mut same, mut refused, mut skipped, mut differ) = (0, 0, 0, Vec::new());
+    for path in std::fs::read_to_string(list).unwrap().lines() {
+        let Ok(patch) = String::from_utf8(std::fs::read(path).unwrap()) else {
+            skipped += 1;
+            continue;
+        };
+        match (
+            review(&patch, Guards::none()),
+            client.diagnostics(&patch, Guards::none(), Some(4096)),
+        ) {
+            (Ok(local), Ok(remote)) if diagnostics(&local).to_json() == remote.to_json() => {
+                same += 1;
+            }
+            (Err(_), Err(Error::Rpc { code: 4, .. })) => refused += 1,
+            (_, outcome) => differ.push(format!("{path}: {:?}", outcome.map(|d| d.counts))),
+        }
+    }
+    println!(
+        "same {same} refused_both {refused} not_utf8 {skipped} differ {}",
+        differ.len()
+    );
+    assert!(differ.is_empty(), "{differ:?}");
+}
+
+/// By hand (lane w11S): `DDF_OLD_DAEMON_SOCKET` names the socket of a daemon of release 0.10.0;
+/// prints what `Client::diagnostics` returns.
+#[test]
+#[ignore = "needs a published 0.10.0 daemon; run by hand"]
+fn an_old_daemon_by_hand() {
+    let Some(socket) = std::env::var_os("DDF_OLD_DAEMON_SOCKET") else {
+        return;
+    };
+    let client = Client::at(std::path::Path::new(&socket));
+    let outcome = client.diagnostics(
+        "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n",
+        Guards::none(),
+        None,
+    );
+    println!("{outcome:?}");
+    if let Err(error) = &outcome {
+        println!("{error}");
+        println!("exit code {}", error.exit_code());
+    }
+    assert!(matches!(outcome, Err(Error::ProtocolTooOld { .. })));
 }
