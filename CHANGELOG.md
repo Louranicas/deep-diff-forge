@@ -209,6 +209,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   (F5b).
 - `deep_diff_forge_daemon::change_review`: `review.change`'s acquisition, public for a caller
   that builds its own view of the change (F5b).
+- `agent doctor` checks `diagnostics_parity`: the probe's diagnostics document from the command,
+  the daemon's `diff.diagnostics` and MCP's `diagnose_patch` is one document, compared by the
+  SHA-256 of the command's bytes and by the pages' bytes (F5c).
 
 ## [0.10.0] - 2026-11-23
 
