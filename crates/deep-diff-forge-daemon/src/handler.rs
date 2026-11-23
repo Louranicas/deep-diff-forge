@@ -2009,7 +2009,7 @@ mod tests {
                 .unwrap()
                 .contains(&json!("findings.verify"))
         );
-        for other in ["3", "\"1\"", "1.5", "null", "-1"] {
+        for other in ["4", "\"1\"", "1.5", "null", "-1"] {
             let line =
                 format!(r#"{{"method":"engine.initialize","params":{{"protocol":{other}}}}}"#);
             assert_eq!(
