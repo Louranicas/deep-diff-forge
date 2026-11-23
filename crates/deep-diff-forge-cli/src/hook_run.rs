@@ -1931,44 +1931,54 @@ fn change(
     work: &Path,
     deadline: Deadline,
 ) -> Result<Change, (String, Option<Refusal>)> {
-    let read = |words: String| format!("the change could not be read from Git: {words}");
     match judge_patch_probed(top, base, work, &deadline.git(), &opens) {
         Ok(patch) => Ok(Change {
             patch: Some(patch.bytes).filter(|bytes| !bytes.is_empty()),
             nested: patch.nested,
         }),
-        Err(JudgePatchError::NoBase) => Err((
+        Err(error) => Err(not_made(error, called, base)),
+    }
+}
+
+/// Why [`change`] made no patch, and the cause that holds a stop once when the failure has one
+/// that is named whole (F12): a search for unreadable files that a bound cut names none.
+fn not_made(error: JudgePatchError, called: &str, base: &str) -> (String, Option<Refusal>) {
+    let read = |words: String| format!("the change could not be read from Git: {words}");
+    match error {
+        JudgePatchError::NoBase => (
             format!(
                 "{called} ({}) can no longer be read from the repository",
                 base.chars().take(7).collect::<String>()
             ),
             None,
-        )),
-        Err(JudgePatchError::Failed(error)) => Err((read(git_words(&error)), None)),
-        Err(JudgePatchError::Unreadable {
+        ),
+        JudgePatchError::Failed(error) => (read(git_words(&error)), None),
+        JudgePatchError::Unreadable {
             paths,
             whole,
             error,
-        }) => Err(if whole {
-            let class = "work.unreadable";
-            (read(git_words(&error)), Some(Refusal { class, paths }))
-        } else {
-            let words = git_words(&error);
-            (
-                read(format!(
-                    "{words} (files it cannot read were found, but not all names are known)"
-                )),
-                None,
-            )
-        }),
-        Err(error @ JudgePatchError::SkipWorktree) => Err((
+        } => {
+            if whole {
+                let class = "work.unreadable";
+                (read(git_words(&error)), Some(Refusal { class, paths }))
+            } else {
+                let words = git_words(&error);
+                (
+                    read(format!(
+                        "{words} (files it cannot read were found, but not all names are known)"
+                    )),
+                    None,
+                )
+            }
+        }
+        error @ JudgePatchError::SkipWorktree => (
             read(error.to_string()),
             Some(Refusal {
                 class: "work.skip_worktree",
                 paths: Vec::new(),
             }),
-        )),
-        Err(error @ JudgePatchError::Unmerged) => Err((read(error.to_string()), None)),
+        ),
+        error @ JudgePatchError::Unmerged => (read(error.to_string()), None),
     }
 }
 
@@ -8050,6 +8060,44 @@ fn probe(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F12.a, the coordinator's condition 3: a search for unreadable files that a bound cut is
+    /// no cause that holds once: the stop stays UNJUDGED as in 0.10.0 and says that not all
+    /// names are known; a whole search is `work.unreadable` with its paths.
+    #[test]
+    fn a_search_for_unreadable_files_that_was_cut_holds_nothing() {
+        let error = || GitAcquireError::CommandFailed {
+            command: "git add",
+            code: Some(128),
+            stderr: "fatal: adding files failed".to_owned(),
+        };
+        let paths = vec![PathBuf::from("a.rs")];
+        let cut = JudgePatchError::Unreadable {
+            paths: paths.clone(),
+            whole: false,
+            error: error(),
+        };
+        let (reason, refusal) = not_made(cut, "the commit HEAD names", "0123456");
+        assert!(refusal.is_none(), "{refusal:?}");
+        assert!(
+            reason.starts_with("the change could not be read from Git: ")
+                && reason.contains("not all names are known"),
+            "{reason}"
+        );
+        let whole = JudgePatchError::Unreadable {
+            paths: paths.clone(),
+            whole: true,
+            error: error(),
+        };
+        let (_, refusal) = not_made(whole, "the commit HEAD names", "0123456");
+        assert_eq!(
+            refusal,
+            Some(Refusal {
+                class: "work.unreadable",
+                paths
+            })
+        );
+    }
 
     /// Review V4 round 6, VD4R6-M-1: the first files by name are chosen while the directory is
     /// read, and only a path that would be kept is asked whether it is a file. The answer is
