@@ -5288,6 +5288,10 @@ fn tree_units(
 ///   reason, and what was remembered of it stands. A tree that was not read says its reason
 ///   once: its index, which was not read for the same reason, is a unit of its own only
 ///   when something of it has blocked before, and then says that it stands.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one tree's readings, what is remembered of it and its units, with the causes that hold once (F12), in one place"
+)]
 fn seen(
     id: &str,
     top: &str,
@@ -5325,20 +5329,11 @@ fn seen(
     let once_tag = unit_tag(id, 'o');
     let before = hook::remembered_as(blocked, &once_tag);
     let mut once: Option<Lines> = tree_read.then(|| held_counts(&before, None));
-    let refused_unit = refused.map(|(refusal, root)| {
-        let name = hook::once_name(&refusal_words(refusal));
-        let state = refusal_state(root, refusal);
-        let (lines, how) = hook::once_lines(&name, state.as_deref(), &before, active);
-        let mut memory = held_counts(&before, Some(&name));
-        memory.extend(lines.clone());
+    let cause = refused.map(|refused| {
+        let (unit, memory) =
+            refused_unit(id, top, refused, (&before, active), not_read_why.as_ref());
         once = Some(memory);
-        let reason = not_read_why.clone().unwrap_or_default();
-        TreeJudged {
-            tag: once_tag.clone(),
-            what: hook::tree_label(top),
-            judged: Some(refused_judged(refusal, reason + &once_said(how), lines)),
-            holds: Holds::WhileNew,
-        }
+        unit
     });
     let unknown = |judged: &Option<Judged>| matches!(judged, Some(Judged::Unjudged { .. }));
     let lines = |judged: &Option<Judged>| -> Lines {
@@ -5456,10 +5451,35 @@ fn seen(
         });
     }
     // what holds once stands in for the tree's change that could not be read
-    if let Some(unit) = refused_unit {
+    if let Some(unit) = cause {
         units[0] = unit;
     }
     (looked, units)
+}
+
+/// The unit a cause that holds once is at this stop ([`hook::once_lines`]), standing in for the
+/// tree's change that could not be read (`why`), and what is kept of the tree's causes after
+/// it: `before` is what was kept, `active` the client's `stop_hook_active`.
+fn refused_unit(
+    id: &str,
+    top: &str,
+    (refusal, root): (&Refusal, &Path),
+    (before, active): (&std::collections::BTreeMap<&str, usize>, bool),
+    why: Option<&String>,
+) -> (TreeJudged, Lines) {
+    let name = hook::once_name(&refusal_words(refusal));
+    let state = refusal_state(root, refusal);
+    let (lines, how) = hook::once_lines(&name, state.as_deref(), before, active);
+    let mut memory = held_counts(before, Some(&name));
+    memory.extend(lines.clone());
+    let reason = why.cloned().unwrap_or_default();
+    let unit = TreeJudged {
+        tag: unit_tag(id, 'o'),
+        what: hook::tree_label(top),
+        judged: Some(refused_judged(refusal, reason + &once_said(how), lines)),
+        holds: Holds::WhileNew,
+    };
+    (unit, memory)
 }
 
 /// The most causes of one tree whose count of holds a session keeps (F12).
@@ -5490,7 +5510,7 @@ fn once_said(how: hook::Once) -> String {
     }
 }
 
-/// A hold for a label the judge does not know ([`hook::version_gap`]) with the lines it has at
+/// A hold for a label the judge does not know (F12.b) with the lines it has at
 /// this stop ([`hook::once_lines`]); any other answer as it is.
 fn once_again(
     judged: Judged,

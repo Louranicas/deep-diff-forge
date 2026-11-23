@@ -1548,6 +1548,7 @@ fn refused_text(
     blocks: bool,
     many: bool,
 ) -> String {
+    use std::fmt::Write as _;
     let work = class.starts_with("work.");
     let outcome = match (blocks, work) {
         (true, _) => "CANNOT PASS AS IT IS",
@@ -1560,7 +1561,7 @@ fn refused_text(
         String::new()
     };
     if blocks {
-        text.push_str(&format!("  {sentence}\n"));
+        let _ = writeln!(text, "  {sentence}");
     } else {
         let whole = display_safe(reason);
         let shown: String = whole.chars().take(REASON_CHARS).collect();
@@ -1570,7 +1571,29 @@ fn refused_text(
             "."
         };
         let head = if work { "not judged" } else { "the judge says" };
-        text.push_str(&format!("  {head}: {shown}{end}\n"));
+        let _ = writeln!(text, "  {head}: {shown}{end}");
+    }
+    text
+}
+
+/// Every [`Judged::Refused`] unit of `trees` as [`refused_text`] shows it.
+fn refused_texts(trees: &[TreeJudged], blocked: &[String], many: bool) -> String {
+    let mut text = String::new();
+    for unit in trees {
+        if let Some(Judged::Refused {
+            class,
+            sentence,
+            reason,
+            ..
+        }) = &unit.judged
+        {
+            text.push_str(&refused_text(
+                unit,
+                (class, sentence, reason),
+                blocks_now(unit, blocked),
+                many,
+            ));
+        }
     }
     text
 }
@@ -2039,22 +2062,7 @@ fn trees_text(trees: &[TreeJudged], blocked: &[String]) -> String {
     }
     // what cannot pass as it is (F12): what holds this stop by its sentence, the rest as
     // UNJUDGED or HOLD with its reason
-    for unit in trees {
-        if let Some(Judged::Refused {
-            class,
-            sentence,
-            reason,
-            ..
-        }) = &unit.judged
-        {
-            unjudged.push_str(&refused_text(
-                unit,
-                (class, sentence, reason),
-                blocks_now(unit, blocked),
-                many,
-            ));
-        }
-    }
+    unjudged.push_str(&refused_texts(trees, blocked, many));
     let (mut text, mut rules_shown) =
         blocking_text(trees, blocked, room.saturating_sub(unjudged.len()));
     text.push_str(&unjudged);
