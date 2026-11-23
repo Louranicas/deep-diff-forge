@@ -29,7 +29,7 @@ fi
 if [ $# -gt 0 ]; then
   targets=("$@")
 else
-  list="$(scripts/fuzz_target.sh --list)" || exit 2
+  list="$(bash scripts/fuzz_target.sh --list)" || exit 2
   mapfile -t targets <<<"$list"
 fi
 if [ "${#targets[@]}" -eq 0 ] || [ -z "${targets[0]}" ]; then
@@ -54,7 +54,7 @@ commit="$(git rev-parse HEAD)"
 
 for target in "${targets[@]}"; do
   start=$SECONDS
-  scripts/fuzz_target.sh "$target" "$seconds" >"$dir/$target.log" 2>&1 </dev/null
+  bash scripts/fuzz_target.sh "$target" "$seconds" >"$dir/$target.log" 2>&1 </dev/null
   rc=$?
   echo "run: $target rc=$rc $((SECONDS - start)) s" >>"$receipt"
   if [ "$rc" -ne 0 ]; then
