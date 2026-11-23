@@ -1143,6 +1143,58 @@ fn doctor_gate_checks_every_link_of_a_judged_stop() {
     assert_eq!(gate_checks(&doc), []);
 }
 
+/// Lane D1's finding: `agent doctor --gate --ranker-dir DIR` compared DIR as text with the
+/// registered stop's, so a relative directory never matched the absolute one `agent setup
+/// --hooks` writes. A stop lists its ranker directory with `read_dir`, which follows every link
+/// of the path; the gate now compares the directories that resolves to: a relative path, a
+/// trailing `/` and a link to the directory are the stop's; another directory, and one that
+/// does not exist, are not.
+#[test]
+fn doctor_gate_compares_the_ranker_directory_as_the_stop_opens_it() {
+    let (scratch, root, home, script, _log, _exit_file) = gate_fixture("doctor-gate-ranker-dir");
+    let rankers = scratch.join("rankers");
+    std::fs::create_dir(&rankers).unwrap();
+    std::fs::create_dir(scratch.join("other")).unwrap();
+    std::os::unix::fs::symlink(&rankers, scratch.join("rankers-link")).unwrap();
+    let resolved = std::fs::canonicalize(&rankers).unwrap();
+    std::fs::create_dir(root.join(".claude")).unwrap();
+    std::fs::write(
+        root.join(".claude/settings.local.json"),
+        settings_with(&format!(
+            "{} --ranker-dir '{}'",
+            stop_command(&script),
+            resolved.display()
+        )),
+    )
+    .unwrap();
+    let judge = script.to_str().unwrap();
+    for (given, same) in [
+        (resolved.display().to_string(), true),
+        ("../rankers".to_owned(), true),
+        ("../rankers/".to_owned(), true),
+        (format!("{}/", rankers.display()), true),
+        ("../rankers-link".to_owned(), true),
+        ("../other".to_owned(), false),
+        ("../not-there".to_owned(), false),
+    ] {
+        let (code, doc, _) = doctor_gate(&root, &home, &["--judge", judge, "--ranker-dir", &given]);
+        if same {
+            assert_eq!(
+                (code, gate_checks(&doc)),
+                (0, gate_but(&[])),
+                "{given}: {}",
+                detail(&doc, "hooks_registered")
+            );
+        } else {
+            assert_eq!(code, 7, "{given}");
+            assert!(
+                detail(&doc, "hooks_registered").contains("offers other rankers"),
+                "{given}: {doc:#}"
+            );
+        }
+    }
+}
+
 /// Each link of the chain is broken on its own: the gate names it, exits 7, and reports what
 /// depends on a missing link as not checked, never as fine.
 #[test]

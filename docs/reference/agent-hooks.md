@@ -162,7 +162,11 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   `--ranker-dir DIR` and writes them into the session-start and stop commands (the judge and
   the directory by their absolute paths, a judge that is no file and a directory that does
   not exist refused with exit 2); give `agent doctor --gate` the same values, since it
-  compares them with the registered stop's. Without `--judge` it is looked up in the directories of `PATH` that are named by
+  compares them with the registered stop's: the judge by its absolute path, the policy by
+  its name, and the ranker directory by the directory a stop lists (its path with every
+  link resolved, so a relative path, a trailing `/` or a link to that directory is the
+  same; a relative directory written in the stop command is the same only by its text, since
+  the stop takes it from its own directory, and so is one that does not exist). Without `--judge` it is looked up in the directories of `PATH` that are named by
   an absolute path. A judge inside the repository it would judge is not run, however it was
   named: the change could have written it.
 - **A verdict is an exit code and a document that agree.** Exit 0, 7 or 8 counts only with a

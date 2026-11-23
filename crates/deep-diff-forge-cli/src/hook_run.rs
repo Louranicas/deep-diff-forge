@@ -7246,10 +7246,37 @@ fn not_this_chain(
     if read.policy.as_deref().unwrap_or(DEFAULT_POLICY) != policy {
         return Some("judges by another policy file than the one checked here".to_owned());
     }
-    if read.ranker_dir != crate::flag_value(args, "--ranker-dir") {
+    if !same_ranker_dir(
+        read.ranker_dir.as_deref(),
+        crate::flag_value(args, "--ranker-dir").as_deref(),
+    ) {
         return Some("offers other rankers than the ones checked here (--ranker-dir)".to_owned());
     }
     None
+}
+
+/// Whether the ranker directory a registered stop names (`registered`) is the one checked here
+/// (`given`): none in both, or the same text, or the same directory as the stop opens it. A
+/// stop lists its directory with `read_dir` ([`rankers`]), which follows every link of the
+/// path, the last one too, so each is resolved as that does ([`std::fs::canonicalize`]):
+/// `agent setup --hooks` writes the resolved path, and a relative one given here, a trailing
+/// `/` or a link to it is the same directory. A relative directory in the registered command
+/// is taken from the hook's own directory when the stop runs, which is not known here: it is
+/// the same only by its text. One that cannot be resolved (it does not exist) is the same
+/// only by its text, as before.
+fn same_ranker_dir(registered: Option<&str>, given: Option<&str>) -> bool {
+    match (registered, given) {
+        (None, None) => true,
+        (Some(registered), Some(given)) => {
+            registered == given
+                || (Path::new(registered).is_absolute()
+                    && matches!(
+                        (std::fs::canonicalize(registered), std::fs::canonicalize(given)),
+                        (Ok(stop), Ok(here)) if stop == here
+                    ))
+        }
+        _ => false,
+    }
 }
 
 /// A Claude Code settings file, read as JSON; `None` when it is missing or cannot be read.
