@@ -840,9 +840,9 @@ struct State {
     blocked: Vec<String>,
     /// The SHA-256 and the number of lines of the session's file of judged commits
     /// ([`judged_file`]): the first so many lines of that file are the commits of the session
-    /// that have their answer, each as `ID:p`, `ID:h`, `ID:f` or `ID:u` (it passed, was held,
-    /// failed, or cannot be judged), in the order they got it. A commit is asked about once
-    /// in a session. With no line yet there is no file and the digest is empty.
+    /// that have their answer or are still waiting for one, each as [`answer`] reads it
+    /// (`ID:p`, `ID:h[:kept]`, `ID:f[:kept]`, `ID:n<attempts>@<stop>:reason`, `ID:x:reason`),
+    /// in the order they got it. With no line yet there is no file and the digest is empty.
     judged_sha256: String,
     judged_count: usize,
     /// The top level of each linked working tree that something in `blocked` is remembered
@@ -858,11 +858,109 @@ struct State {
     trees: std::collections::BTreeMap<String, String>,
 }
 
-const STATE_SCHEMA: &str = "deep-diff-forge.hook-state.v10";
-/// The schema before [`STATE_SCHEMA`]: read as one with no tree recorded (`trees` empty) and
-/// written back in the new one. Refusing it would make every stop of a session that was
-/// running when the hooks were upgraded UNJUDGED.
-const STATE_SCHEMA_BEFORE: &str = "deep-diff-forge.hook-state.v9";
+/// The schema this build writes: `deep-diff-forge.hook-state.v` and [`STATE_OWN`].
+const STATE_SCHEMA: &str = "deep-diff-forge.hook-state.v11";
+/// What every schema of a state is named by, before its number ([`schema_number`]).
+const STATE_SCHEMA_PREFIX: &str = "deep-diff-forge.hook-state.v";
+/// The number of [`STATE_SCHEMA`].
+const STATE_OWN: u32 = 11;
+/// The oldest schema read: the one the last release wrote (0.9.0 and 0.10.0 write v10). A
+/// state of a schema below it is refused by its name ([`StateRefusal::Older`]); v9 was
+/// written only by builds before any release and is not read since 0.11.0.
+const STATE_FLOOR: u32 = 10;
+/// For each schema above [`STATE_FLOOR`] up to [`STATE_OWN`], in order, the change that makes
+/// a state of the schema before it one of that schema: a state is read through every
+/// migration from its own number on, and the first hook that keeps state writes it in
+/// [`STATE_SCHEMA`] ([`Session::keep`]). Any change to the members of a state, to a member's
+/// type, grammar or meaning, or to the lines of the files beside it is a new number.
+const STATE_MIGRATIONS: &[(u32, Migration)] = &[(11, from_v10)];
+/// A change from a state of one schema to one of the next ([`STATE_MIGRATIONS`]): the JSON
+/// of the state, or why it cannot be made (a damaged state).
+type Migration = fn(Value) -> Result<Value, &'static str>;
+
+/// v10 to v11: the same members, read as they are. v11 is v10 with the lines F12 keeps in
+/// `blocked` of a cause that holds once (`<tree>/o/w…` and `<tree>/o/v…`, and `w…` under a
+/// change's own tag), whose count is the stops it held and not a number of items: 0.10.0 read
+/// such a line as a failure that stands in another tree, and forgot one under a change's tag so
+/// that the hold came back past its bound. No v10 state holds such a line (a key of 0.9.0 and
+/// 0.10.0 is hex digits or `all…`), so every v10 state means the same as v11.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "a migration's form: a later one can find a state it cannot carry over"
+)]
+fn from_v10(value: Value) -> Result<Value, &'static str> {
+    Ok(value)
+}
+
+/// The number `N` of a state's `schema` that is exactly `deep-diff-forge.hook-state.v<N>`, with
+/// `N` written in one to six decimal digits and no leading zero; `None` for any other text.
+/// Read byte by byte: a schema is a name, not something to parse.
+fn schema_number(schema: &str) -> Option<u32> {
+    let digits = schema.strip_prefix(STATE_SCHEMA_PREFIX)?.as_bytes();
+    if digits.is_empty() || digits.len() > 6 || digits[0] == b'0' {
+        return None;
+    }
+    let mut number = 0_u32;
+    for &digit in digits {
+        if !digit.is_ascii_digit() {
+            return None;
+        }
+        number = number * 10 + u32::from(digit - b'0');
+    }
+    Some(number)
+}
+
+/// Why a session's state file is not read as its state. None of these is "no state", and none
+/// is written over.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StateRefusal {
+    /// It cannot be opened or read, or it is not a state at all: not JSON, a schema that is
+    /// not one of the hooks, a member missing or not what the hooks write. The words say which.
+    Damaged(String),
+    /// Of a schema below [`STATE_FLOOR`], by its number.
+    Older(u32),
+    /// Of a schema above [`STATE_OWN`]: a newer build of the hooks wrote it.
+    Newer(u32),
+}
+
+impl std::fmt::Display for StateRefusal {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Damaged(why) => out.write_str(why),
+            Self::Older(number) => write!(
+                out,
+                "it is of schema v{number}, written by a deep-diff-forge older than the last release; this one reads v{STATE_FLOOR} to v{STATE_OWN}"
+            ),
+            Self::Newer(number) => write!(
+                out,
+                "it is of schema v{number}, written by a newer deep-diff-forge; this one reads v{STATE_FLOOR} to v{STATE_OWN}"
+            ),
+        }
+    }
+}
+
+/// What removing a state file that is not read costs, as the next hook finds it: with no state
+/// that hook is the session's first.
+const REMOVING_COSTS: &str = "removing it makes the next hook take the commit HEAD names as this session's base: what this session committed before would not be judged";
+
+/// What a hook says of the session's state file `file` that it does not read. A newer one is
+/// never to be removed, so no removal is named for it.
+fn refused_text(file: &Path, refusal: &StateRefusal) -> String {
+    match refusal {
+        StateRefusal::Newer(number) => format!(
+            "this session's state file {} is of schema v{number}, written by a newer deep-diff-forge; this one reads v{STATE_FLOOR} to v{STATE_OWN}, and nothing was written over it",
+            shown(file)
+        ),
+        StateRefusal::Older(number) => format!(
+            "this session's state file {} is of schema v{number}, written by a deep-diff-forge older than the last release; this one reads v{STATE_FLOOR} to v{STATE_OWN}, and nothing is recorded over it ({REMOVING_COSTS})",
+            shown(file)
+        ),
+        StateRefusal::Damaged(why) => format!(
+            "this session's state file {} cannot be read as a state ({why}), so the project and the commit this session began from are not known; nothing is recorded over it ({REMOVING_COSTS})",
+            shown(file)
+        ),
+    }
+}
 /// The most bytes of the paths in [`State::trees`], all together.
 const TREES_BYTES: usize = 256 * 1024;
 
@@ -940,29 +1038,54 @@ fn is_digest(text: &str) -> bool {
     text.len() == 64 && text.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// The state a state file's text holds, without whether it is of the schema before.
+/// The state a state file's text holds, without whether it is of an older schema.
 #[cfg(test)]
-fn state_from(text: &str) -> Result<State, &'static str> {
+fn state_from(text: &str) -> Result<State, StateRefusal> {
     state_read(text).map(|(state, _)| state)
 }
 
-/// Read a state file's text. `Err` says why it is not a state this version wrote: such a file
+/// Read a state file's text. `Err` says why it is not a state this version reads: such a file
 /// is never read as "no state", in part or whole. An empty state would make the next hook the
 /// session's first, and the commit `HEAD` names then its base: what the session had committed
 /// until then passed in silence (second independent review of the hooks, HR2-M-1).
 ///
-/// With the state, whether the text is of the schema before ([`STATE_SCHEMA_BEFORE`]): such
-/// a state is written back in the new one by the first hook that reads it and keeps its state,
-/// whether or not that hook changes it ([`Session::keep`]). It is read into the same state as
-/// one of the new schema with no tree recorded, so the state alone could not tell, and a hook
-/// that changed nothing left the file as it was (review V4 round 23, VD4R23-L-1).
-fn state_read(text: &str) -> Result<(State, bool), &'static str> {
-    const MEMBER: &str = "one of its members is missing";
-    let value = serde_json::from_str::<Value>(text).map_err(|_| "it is not JSON")?;
-    let before = value["schema"] == STATE_SCHEMA_BEFORE;
-    if value["schema"] != STATE_SCHEMA && !before {
-        return Err("it is not a state of this version of the hooks");
+/// Every schema from [`STATE_FLOOR`] to [`STATE_OWN`] is read, through its migrations
+/// ([`STATE_MIGRATIONS`]); one below is [`StateRefusal::Older`], one above
+/// [`StateRefusal::Newer`], and a `schema` that is not the name of one is damaged.
+///
+/// With the state, whether the text is of a schema older than [`STATE_OWN`]: such a state is
+/// written back in this one by the first hook that reads it and keeps its state, whether or not
+/// that hook changes it ([`Session::keep`]). The state alone could not tell, and a hook that
+/// changed nothing left the file as it was (review V4 round 23, VD4R23-L-1).
+fn state_read(text: &str) -> Result<(State, bool), StateRefusal> {
+    let damaged = |why: &str| StateRefusal::Damaged(why.to_owned());
+    let mut value = serde_json::from_str::<Value>(text).map_err(|_| damaged("it is not JSON"))?;
+    let number = value["schema"]
+        .as_str()
+        .and_then(schema_number)
+        .ok_or_else(|| damaged("its member `schema` names no schema of the hooks"))?;
+    if number < STATE_FLOOR {
+        return Err(StateRefusal::Older(number));
     }
+    if number > STATE_OWN {
+        return Err(StateRefusal::Newer(number));
+    }
+    // every schema after this one up to this build's own, by its own migration: a state that
+    // a step is missing for is not read (as an older one), never read as if it were this one
+    for to in number + 1..=STATE_OWN {
+        let Some((_, migrate)) = STATE_MIGRATIONS.iter().find(|(step, _)| *step == to) else {
+            return Err(StateRefusal::Older(number));
+        };
+        value = migrate(value).map_err(damaged)?;
+    }
+    let state = state_members(&value).map_err(damaged)?;
+    Ok((state, number < STATE_OWN))
+}
+
+/// The members of a state of [`STATE_SCHEMA`], as JSON: `Err` with the reason when one is
+/// missing or is not what the hooks write.
+fn state_members(value: &Value) -> Result<State, &'static str> {
+    const MEMBER: &str = "one of its members is missing";
     let strings = |member: &Value| -> Option<Vec<String>> {
         member
             .as_array()?
@@ -1030,12 +1153,9 @@ fn state_read(text: &str) -> Result<(State, bool), &'static str> {
     {
         return Err("what it says of the judged commits is not whole");
     }
-    let trees = if before {
-        std::collections::BTreeMap::new()
-    } else {
-        trees_from(&value["trees"]).ok_or("what it says of the working trees is not whole")?
-    };
-    let state = State {
+    let trees =
+        trees_from(&value["trees"]).ok_or("what it says of the working trees is not whole")?;
+    Ok(State {
         trees,
         project,
         stops: value["stops"].as_u64().ok_or(MEMBER)?,
@@ -1044,8 +1164,7 @@ fn state_read(text: &str) -> Result<(State, bool), &'static str> {
         blocked: list("blocked", BLOCKED_CAP)?,
         judged_sha256: judged_sha256.to_owned(),
         judged_count,
-    };
-    Ok((state, before))
+    })
 }
 
 fn state_text(state: &State) -> String {
@@ -1110,10 +1229,12 @@ fn recordable(top: &str) -> bool {
 /// file they would not read back.
 const STATE_CAP: u64 = 4 * 1024 * 1024;
 
-/// The state a session's state file holds, without whether it is of the schema before.
+/// The state a session's state file holds, without whether it is of an older schema.
 #[cfg(test)]
 fn load(path: &Path) -> Result<Option<State>, String> {
-    load_read(path).map(|read| read.map(|(state, _)| state))
+    load_read(path)
+        .map(|read| read.map(|(state, _)| state))
+        .map_err(|refusal| refusal.to_string())
 }
 
 /// Read a session's state file: `Ok(None)` when there is none, `Err` with the reason when
@@ -1121,9 +1242,10 @@ fn load(path: &Path) -> Result<Option<State>, String> {
 /// of file, a file over [`STATE_CAP`], other content). The file is opened without following a
 /// link and without waiting on a FIFO, must be a regular file once open, and its size is
 /// checked before anything is read (review V4, VD4-M-1). With the state, whether the file is
-/// of the schema before ([`state_read`]).
-fn load_read(path: &Path) -> Result<Option<(State, bool)>, String> {
+/// of an older schema ([`state_read`]).
+fn load_read(path: &Path) -> Result<Option<(State, bool)>, StateRefusal> {
     use std::os::unix::fs::OpenOptionsExt as _;
+    let damaged = StateRefusal::Damaged;
     let file = match std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
@@ -1131,28 +1253,50 @@ fn load_read(path: &Path) -> Result<Option<(State, bool)>, String> {
     {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("it cannot be opened ({error})")),
+        Err(error) => return Err(damaged(format!("it cannot be opened ({error})"))),
     };
     let found = file
         .metadata()
-        .map_err(|e| format!("it cannot be read ({e})"))?;
+        .map_err(|e| damaged(format!("it cannot be read ({e})")))?;
     if !found.is_file() {
-        return Err("it is not a regular file".to_owned());
+        return Err(damaged("it is not a regular file".to_owned()));
     }
     if found.len() > STATE_CAP {
-        return Err("it is larger than any state the hooks write".to_owned());
+        return Err(damaged(
+            "it is larger than any state the hooks write".to_owned(),
+        ));
     }
     let mut text = String::new();
     file.take(STATE_CAP)
         .read_to_string(&mut text)
-        .map_err(|e| format!("it cannot be read ({e})"))?;
-    state_read(&text).map(Some).map_err(str::to_owned)
+        .map_err(|e| damaged(format!("it cannot be read ({e})")))?;
+    state_read(&text).map(Some)
+}
+
+/// The schema of the state file at `path` when a newer build of the hooks wrote it
+/// ([`StateRefusal::Newer`]): a write is abandoned then, whatever this hook read before
+/// ([`Session::keep`]).
+fn newer_there(path: &Path) -> Option<u32> {
+    match load_read(path) {
+        Err(StateRefusal::Newer(number)) => Some(number),
+        _ => None,
+    }
 }
 
 /// Write `text` beside `path` and move it into place, so a reader never sees half of it. The
 /// partial file is made new, with mode 0600 and without following a link; the move replaces
 /// whatever stands at the name, a link included, and follows nothing.
 fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
+    write_private_unless(path, text, || Ok(()))
+}
+
+/// [`write_private`], with `refuse` asked after the partial file is written and before it is
+/// moved into place: when it says why not, nothing is moved and the partial file is removed.
+fn write_private_unless(
+    path: &Path,
+    text: &str,
+    refuse: impl FnOnce() -> std::io::Result<()>,
+) -> std::io::Result<()> {
     use std::io::Write as _;
     use std::os::unix::fs::OpenOptionsExt as _;
     // A name drawn at random: one taken from the process id removed what a writer with the
@@ -1165,6 +1309,7 @@ fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
         .custom_flags(nix::libc::O_NOFOLLOW)
         .open(&partial)
         .and_then(|mut file| file.write_all(text.as_bytes()))
+        .and_then(|()| refuse())
         .and_then(|()| std::fs::rename(&partial, path))
         .inspect_err(|_| {
             // what could not be moved into place is not left beside the state
@@ -1179,7 +1324,21 @@ fn save(path: &Path, state: &State) -> Result<(), String> {
     if text.len() as u64 > STATE_CAP {
         return Err("its state is larger than it reads back".to_owned());
     }
-    write_private(path, &text).map_err(|e| format!("its state could not be saved: {e}"))
+    // nor over a state a newer build wrote since this hook read it (where there are no file
+    // locks; read again just before the move, which narrows that race and does not close it)
+    write_private_unless(path, &text, || match newer_there(path) {
+        Some(number) => Err(std::io::Error::other(newer_written(path, number))),
+        None => Ok(()),
+    })
+    .map_err(|e| format!("its state could not be saved: {e}"))
+}
+
+/// Why a write was abandoned: the state file at `path` is now of the newer schema `number`.
+fn newer_written(path: &Path, number: u32) -> String {
+    format!(
+        "this session's state file {} is now of schema v{number}, written by a newer deep-diff-forge; this one reads v{STATE_FLOOR} to v{STATE_OWN}, and nothing was written over it",
+        shown(path)
+    )
 }
 
 /// A session's tips file, beside its state file: one commit id a line.
@@ -1223,7 +1382,7 @@ fn load_list(
     use std::os::unix::fs::OpenOptionsExt as _;
     let refused = |why: &str| {
         format!(
-            "this session's list of {called}, {}, {why}, so which commits are the session's to judge is not known; start a new session to have its work judged",
+            "this session's list of {called}, {}, {why}, so which commits are the session's to judge is not known; start a new session to have its work judged (a new session begins at the commit HEAD names then: what this session committed before is not judged)",
             shown(path)
         )
     };
@@ -1282,8 +1441,8 @@ struct Session {
     state: State,
     /// The state as the file holds it; `None` when there is no file.
     kept: Option<State>,
-    /// The file holds a state of the schema before ([`STATE_SCHEMA_BEFORE`]): it is written
-    /// in the new one at the next [`Session::keep`], changed or not.
+    /// The file holds a state of a schema older than [`STATE_OWN`]: it is written in
+    /// [`STATE_SCHEMA`] at the next [`Session::keep`], changed or not.
     upgrade: bool,
     /// The tips this hook recorded and has not written yet.
     tips: Option<Vec<String>>,
@@ -1309,12 +1468,7 @@ impl Session {
             _ => {}
         }
         let file = state_file(&dir, id);
-        let read = load_read(&file).map_err(|why| {
-            format!(
-                "this session's state file {} cannot be read as a state ({why}), so the project and the commit this session began from are not known; nothing is recorded over it (remove the file to have the next hook record the session anew)",
-                shown(&file)
-            )
-        })?;
+        let read = load_read(&file).map_err(|refusal| refused_text(&file, &refusal))?;
         let (kept, upgrade) = read.map_or((None, false), |(state, before)| (Some(state), before));
         Ok(Self {
             dir,
@@ -1327,9 +1481,11 @@ impl Session {
         })
     }
 
-    /// Write the state if this hook changed it, or if the file holds the schema before,
+    /// Write the state if this hook changed it, or if the file holds an older schema,
     /// making its directory first; and before it the lists this hook recorded, so that a state
-    /// never names a list that is not there.
+    /// never names a list that is not there. Nothing is written when the file holds a state of
+    /// a newer schema now, read just before the lists and again just before the state is
+    /// moved into place ([`save`]).
     fn keep(&mut self) -> Result<(), String> {
         if self.tips.is_none()
             && self.judged.is_none()
@@ -1344,6 +1500,12 @@ impl Session {
                 .map_err(|e| format!("its state directory could not be made: {e}"))?;
         }
         own_directory(&self.dir)?;
+        if let Some(number) = newer_there(&self.file) {
+            return Err(format!(
+                "its state could not be saved: {}",
+                newer_written(&self.file, number)
+            ));
+        }
         let lists = [
             (tips_file(&self.file), &self.tips),
             (judged_file(&self.file), &self.judged),
@@ -1391,12 +1553,7 @@ impl Session {
             said(&self.state.noticed, &read.noticed),
         );
         let mine = std::mem::take(&mut self.state);
-        let read = load_read(&self.file).map_err(|why| {
-            format!(
-                "this session's state file {} cannot be read as a state ({why})",
-                shown(&self.file)
-            )
-        })?;
+        let read = load_read(&self.file).map_err(|refusal| refused_text(&self.file, &refusal))?;
         let (now, upgrade) = read.map_or((None, false), |(state, before)| (Some(state), before));
         self.upgrade = upgrade;
         self.kept.clone_from(&now);
@@ -7106,10 +7263,37 @@ fn not_this_chain(
     if read.policy.as_deref().unwrap_or(DEFAULT_POLICY) != policy {
         return Some("judges by another policy file than the one checked here".to_owned());
     }
-    if read.ranker_dir != crate::flag_value(args, "--ranker-dir") {
+    if !same_ranker_dir(
+        read.ranker_dir.as_deref(),
+        crate::flag_value(args, "--ranker-dir").as_deref(),
+    ) {
         return Some("offers other rankers than the ones checked here (--ranker-dir)".to_owned());
     }
     None
+}
+
+/// Whether the ranker directory a registered stop names (`registered`) is the one checked here
+/// (`given`): none in both, or the same text, or the same directory as the stop opens it. A
+/// stop lists its directory with `read_dir` ([`rankers`]), which follows every link of the
+/// path, the last one too, so each is resolved as that does ([`std::fs::canonicalize`]):
+/// `agent setup --hooks` writes the resolved path, and a relative one given here, a trailing
+/// `/` or a link to it is the same directory. A relative directory in the registered command
+/// is taken from the hook's own directory when the stop runs, which is not known here: it is
+/// the same only by its text. One that cannot be resolved (it does not exist) is the same
+/// only by its text, as before.
+pub(crate) fn same_ranker_dir(registered: Option<&str>, given: Option<&str>) -> bool {
+    match (registered, given) {
+        (None, None) => true,
+        (Some(registered), Some(given)) => {
+            registered == given
+                || (Path::new(registered).is_absolute()
+                    && matches!(
+                        (std::fs::canonicalize(registered), std::fs::canonicalize(given)),
+                        (Ok(stop), Ok(here)) if stop == here
+                    ))
+        }
+        _ => false,
+    }
 }
 
 /// A Claude Code settings file, read as JSON; `None` when it is missing or cannot be read.
@@ -8275,7 +8459,7 @@ mod tests {
             spoiled[member] = value.clone();
             assert_eq!(
                 state_from(&with(&spoiled)),
-                Err("its project is not whole"),
+                Err(StateRefusal::Damaged("its project is not whole".to_owned())),
                 "{member}: {value}"
             );
         }
@@ -8380,7 +8564,7 @@ mod tests {
         std::fs::write(&file, "{}").unwrap();
         assert_eq!(
             load(&file),
-            Err("it is not a state of this version of the hooks".to_owned())
+            Err("its member `schema` names no schema of the hooks".to_owned())
         );
         std::fs::remove_file(&file).unwrap();
         std::fs::create_dir(&file).unwrap();
@@ -10083,27 +10267,31 @@ mod tests {
         }
     }
 
-    /// Round 23: a state of the schema before (v9) is read, with no tree recorded and its
-    /// memory as it was, and is written back in the new one; a `trees` member that is not
-    /// what the hooks write is no state.
+    /// Round 23 read a state of the schema before (v9) with no tree recorded and wrote it back
+    /// in v10. Since 0.11.0 the oldest schema read is the one the last release wrote (v10,
+    /// [`STATE_FLOOR`]): v9, which no release wrote, is refused by its name, as every older
+    /// one is; a v10 state is read through its migration with its memory as it was and is
+    /// written back in v11, and a v11 state is read as it is; a `trees` member that is not what
+    /// the hooks write is no state.
     #[test]
-    fn a_state_of_the_schema_before_is_read_and_written_anew() {
+    fn a_state_older_than_the_floor_is_refused_and_one_since_it_is_read() {
         let entry = format!("0123456789abcdef/u/{}:2", "f".repeat(24));
         let v9 = json!({"schema": "deep-diff-forge.hook-state.v9", "project": null, "stops": 3,
                         "reported": [], "noticed": [], "blocked": [entry],
                         "judged_sha256": "", "judged_count": 0})
         .to_string();
-        let (state, before) = state_read(&v9).unwrap();
-        assert!(
-            before,
-            "a state of the schema before is written back in the new one"
-        );
+        assert_eq!(state_read(&v9), Err(StateRefusal::Older(9)));
+        let v10 = json!({"schema": "deep-diff-forge.hook-state.v10", "project": null, "stops": 3,
+                         "reported": [], "noticed": [], "blocked": [entry],
+                         "judged_sha256": "", "judged_count": 0, "trees": {}})
+        .to_string();
+        let (state, older) = state_read(&v10).unwrap();
+        assert!(older, "a v10 state is written back in v11");
         assert_eq!(state.blocked, std::slice::from_ref(&entry));
-        assert!(state.trees.is_empty());
         assert_eq!(state.stops, 3);
         let text = state_text(&state);
         assert!(
-            text.contains("\"schema\":\"deep-diff-forge.hook-state.v10\""),
+            text.contains("\"schema\":\"deep-diff-forge.hook-state.v11\""),
             "{text}"
         );
         assert_eq!(state_read(&text), Ok((state, false)));
@@ -10123,7 +10311,187 @@ mod tests {
             assert!(state_from(&text).is_err(), "{text}");
         }
         let v8 = v9.replace("hook-state.v9", "hook-state.v8");
-        assert!(state_from(&v8).is_err());
+        assert_eq!(state_from(&v8), Err(StateRefusal::Older(8)));
+    }
+
+    /// Rule V1 of the hook-state version policy: a schema is exactly
+    /// `deep-diff-forge.hook-state.v<N>`, `N` in one to six decimal digits with no leading
+    /// zero; any other text names no schema, and a state with it is damaged.
+    #[test]
+    fn schema_numbers_parse_strictly() {
+        for (schema, number) in [
+            ("deep-diff-forge.hook-state.v1", 1),
+            ("deep-diff-forge.hook-state.v10", 10),
+            ("deep-diff-forge.hook-state.v11", 11),
+            ("deep-diff-forge.hook-state.v999999", 999_999),
+        ] {
+            assert_eq!(schema_number(schema), Some(number), "{schema}");
+        }
+        for schema in [
+            "",
+            "deep-diff-forge.hook-state.v",
+            "deep-diff-forge.hook-state.v0",
+            "deep-diff-forge.hook-state.v010",
+            "deep-diff-forge.hook-state.v1000000",
+            "deep-diff-forge.hook-state.v10 ",
+            " deep-diff-forge.hook-state.v10",
+            "deep-diff-forge.hook-state.v+10",
+            "deep-diff-forge.hook-state.v-1",
+            "deep-diff-forge.hook-state.v1e1",
+            "deep-diff-forge.hook-state.V10",
+            "deep-diff-forge.hook-state.10",
+            "deep-diff-forge.hook-state.v\u{0661}",
+            "deep-diff-forge.hook-state.v10\n",
+            "deep-diff-forge.ledger.v1",
+        ] {
+            assert_eq!(schema_number(schema), None, "{schema:?}");
+        }
+        // what a state with such a schema is: damaged, never another schema's state
+        let with = |schema: &Value| {
+            json!({"schema": schema, "project": null, "stops": 0, "reported": [],
+                   "noticed": [], "blocked": [], "judged_sha256": "", "judged_count": 0,
+                   "trees": {}})
+            .to_string()
+        };
+        for schema in [
+            json!("deep-diff-forge.hook-state.v010"),
+            json!("deep-diff-forge.hook-state.v1000000"),
+            json!(10),
+            json!(null),
+        ] {
+            assert!(
+                matches!(state_read(&with(&schema)), Err(StateRefusal::Damaged(_))),
+                "{schema}"
+            );
+        }
+        assert_eq!(
+            state_read(&with(&json!("deep-diff-forge.hook-state.v999999"))),
+            Err(StateRefusal::Newer(999_999))
+        );
+    }
+
+    /// Rules V2 and V3: what a state is written in is this build's own schema, the one
+    /// [`STATE_OWN`] numbers; every schema from [`STATE_FLOOR`] up to it has its migration,
+    /// in order, and the floor is no higher than this build's own.
+    #[test]
+    fn state_text_names_the_newest_schema() {
+        assert_eq!(STATE_SCHEMA, format!("{STATE_SCHEMA_PREFIX}{STATE_OWN}"));
+        assert_eq!(schema_number(STATE_SCHEMA), Some(STATE_OWN));
+        let text = state_text(&State::default());
+        let value: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["schema"], STATE_SCHEMA);
+        const { assert!(STATE_FLOOR <= STATE_OWN) };
+        let numbers: Vec<u32> = STATE_MIGRATIONS.iter().map(|(to, _)| *to).collect();
+        // (the bounds read at run time: with no migration the range is empty, as it should be)
+        let own = std::hint::black_box(STATE_OWN);
+        assert_eq!(numbers, (STATE_FLOOR + 1..=own).collect::<Vec<u32>>());
+        assert_eq!(state_read(&text), Ok((State::default(), false)));
+    }
+
+    /// Rule V9: the lines of the file of judged commits are exactly the documented ones (`p`,
+    /// `h` and `f` with or without what was kept, `n<attempts>@<stop>:reason`, `x:reason`);
+    /// `u`, any other letter and a count that is not one are refused, and a list with such a
+    /// line is damaged.
+    #[test]
+    fn the_judged_file_letters_are_the_documented_ones() {
+        let id = "0123456789abcdef0123456789abcdef01234567";
+        for (line, said) in [
+            ("p", Answer::Pass),
+            ("h", Answer::Hold("")),
+            ("h:", Answer::Hold("")),
+            ("h:rule|said", Answer::Hold("rule|said")),
+            ("f", Answer::Fail("")),
+            ("f:a,b;c", Answer::Fail("a,b;c")),
+            (
+                "n2@7:why",
+                Answer::NoVerdict {
+                    attempts: 2,
+                    last: 7,
+                    reason: "why",
+                },
+            ),
+            ("x:why", Answer::Final("why")),
+        ] {
+            assert_eq!(answer(&format!("{id}:{line}")), Some((id, said)), "{line}");
+        }
+        for line in [
+            "u",
+            "u:why",
+            "x",
+            "n",
+            "n2@7",
+            "n@7:why",
+            "n2@:why",
+            "n+2@7:why",
+            "z:why",
+            "P",
+            "",
+        ] {
+            assert_eq!(answer(&format!("{id}:{line}")), None, "{line}");
+        }
+        assert_eq!(answer("HEAD:p"), None);
+    }
+
+    /// Rules V5 and V6: a hook that read this schema and then finds a newer one at the state's
+    /// name when it writes (a newer build wrote it meanwhile, where no lock kept it out) writes
+    /// nothing: not the lists beside the state, not the state, and leaves no partial file. The
+    /// same file read again before the move into place is how the write is abandoned when the
+    /// newer state comes after the first look ([`save`]).
+    #[test]
+    fn a_write_is_abandoned_over_a_newer_state() {
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-state-newer-write");
+        let dir = scratch.join("hooks");
+        std::fs::create_dir(&dir).unwrap();
+        let file = state_file(&dir, "s");
+        let newer = r#"{"schema":"deep-diff-forge.hook-state.v12","what":"a newer build's"}"#;
+        std::fs::write(&file, newer).unwrap();
+        let mut session = Session {
+            dir: dir.clone(),
+            file: file.clone(),
+            state: State {
+                stops: 1,
+                ..State::default()
+            },
+            kept: Some(State::default()),
+            upgrade: false,
+            tips: Some(vec!["0123456789abcdef0123456789abcdef01234567".to_owned()]),
+            judged: Some(vec![
+                "0123456789abcdef0123456789abcdef01234567:p".to_owned(),
+            ]),
+        };
+        let said = session.keep().unwrap_err();
+        assert!(
+            said.contains("is now of schema v12, written by a newer deep-diff-forge")
+                && said.contains("nothing was written over it"),
+            "{said}"
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), newer);
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(left, [file.file_name().unwrap()], "{left:?}");
+        // the newer state arrives after the first look: the move into place is abandoned
+        std::fs::remove_file(&file).unwrap();
+        let written = std::cell::Cell::new(false);
+        let said = write_private_unless(&file, "mine", || {
+            std::fs::write(&file, newer)?;
+            written.set(true);
+            match newer_there(&file) {
+                Some(number) => Err(std::io::Error::other(newer_written(&file, number))),
+                None => Ok(()),
+            }
+        })
+        .unwrap_err();
+        assert!(written.get());
+        assert!(said.to_string().contains("schema v12"), "{said}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), newer);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        // and a state of this schema there is written over as before
+        assert!(save(&file, &State::default()).is_err());
+        std::fs::write(&file, state_text(&State::default())).unwrap();
+        save(&file, &session.state).unwrap();
+        assert_eq!(load(&file), Ok(Some(session.state.clone())));
     }
 
     /// The thirteenth independent review of the hooks (suspected, reproduced in round 22)

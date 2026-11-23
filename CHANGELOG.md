@@ -176,6 +176,25 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   listed and is still served. A refusal of an unknown protocol now says `this daemon speaks 0 to
   3`. Every protocol-2 method keeps its params, shapes, codes and messages, held by a replay of a
   transcript of the published 0.10.0 binary (`tests/protocol_compat.rs`; F7.d1, F5a).
+- Hook state: the schema is now `deep-diff-forge.hook-state.v11`, read from v10 (written by
+  0.9.0 and 0.10.0) by a migration that keeps every member: a session started under 0.10.0
+  keeps its base, what has blocked and its judged commits. v11 marks the lines in `blocked`
+  of a cause that holds once (F12), which 0.10.0 misread. The published 0.10.0 and 0.9.0
+  refuse a session this build has written (UNJUDGED, file kept), so do not run both on one
+  session (F7.e).
+- Hook state: the schema is read strictly (`deep-diff-forge.hook-state.v<N>`), from the
+  last release's (v10) to this build's own, through every migration step. An older state
+  (v9 and before) is refused by its name. A newer one is refused by its name and the range
+  this build reads, and its message advises no removal. A newer state is never written over:
+  the file is read again before the lists and before the state is moved into place (where
+  file locks do not keep two hooks apart, a newer build that writes between that read and
+  the write is not seen). The refusals of an older or damaged state, and of a list beside
+  it, say what removing or starting anew costs: the commits the session made before are not
+  judged. Fixtures written by the published 0.9.0 and 0.10.0 binaries, and by this build, are
+  read by a test; `scripts/capture_hook_state.sh` captures them (F7.e).
+- `agent doctor --gate` and `agent check` compare `--ranker-dir` with the registered stop's
+  by the directory a stop lists. A relative path, a trailing `/` or a link to that directory
+  is the same; they compared it as text (found by lane D1).
 
 ## [0.10.0] - 2026-11-23
 

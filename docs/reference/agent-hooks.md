@@ -162,7 +162,11 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   `--ranker-dir DIR` and writes them into the session-start and stop commands (the judge and
   the directory by their absolute paths, a judge that is no file and a directory that does
   not exist refused with exit 2); give `agent doctor --gate` the same values, since it
-  compares them with the registered stop's. Without `--judge` it is looked up in the directories of `PATH` that are named by
+  compares them with the registered stop's: the judge by its absolute path, the policy by
+  its name, and the ranker directory by the directory a stop lists (its path with every
+  link resolved, so a relative path, a trailing `/` or a link to that directory is the
+  same; a relative directory written in the stop command is the same only by its text, since
+  the stop takes it from its own directory, and so is one that does not exist). Without `--judge` it is looked up in the directories of `PATH` that are named by
   an absolute path. A judge inside the repository it would judge is not run, however it was
   named: the change could have written it.
 - **A verdict is an exit code and a document that agree.** Exit 0, 7 or 8 counts only with a
@@ -767,11 +771,11 @@ project and not judged at every stop while it is true, as stated above):
   until the directory is gone or it is a tree again"), and a stop made from inside it is
   UNJUDGED. It is forgotten when its directory is gone (the ordinary
   `git worktree remove`), or when it is a tree again and the judge's own reading finds
-  that tree clean. For this the session's state (schema `deep-diff-forge.hook-state.v10`)
-  records the top level of each linked tree it remembers a failure of; a state of the
-  schema before (`v9`) is read with no tree recorded and written back in the new one by
-  the first hook that reads it and keeps its state (a stop, or a session's start), changed
-  or not. A path that is not UTF-8 or is longer than 16 KiB, and the paths past 256 KiB in
+  that tree clean. For this the session's state (schema `deep-diff-forge.hook-state.v11`)
+  records the top level of each linked tree it remembers a failure of (a state of the
+  schema before, `v9`, which no release wrote, was read with no tree recorded until
+  0.10.0; since 0.11.0 it is refused as older than the last release: "The state's schema",
+  at the end). A path that is not UTF-8 or is longer than 16 KiB, and the paths past 256 KiB in
   all, are not recorded: such a tree is forgotten when it is no longer listed, as before.
 - The order of a stop, and its time. One limit: 45 seconds for everything, of which 4 are
   kept for remembering and saying, and 6 more for looking at the submodules and the other
@@ -835,8 +839,10 @@ project and not judged at every stop while it is true, as stated above):
   saved nothing is remembered, so a cause, like a failure, holds the first stop of every turn
   and never the stop that follows it. A hold for an unknown label has no state: it holds once
   per set of labels and paths; a commit held so holds the stop that judges it, once, as a
-  commit that fails does. The names and states are kept under the tree's own tag in `blocked`
-  (as `tag/key:count`, so the state's schema is unchanged). `agent check` says the same
+  commit that fails does. The names and states are kept in `blocked` (as `tag/key:count`:
+  under the tag `o` of the tree for a refused cause, under the change's own tag for an
+  unknown label, the count being the stops the cause held), and these lines are why the
+  state's schema is v11 since 0.11.0 ("The state's schema", at the end). `agent check` says the same
   sentence for these causes, and `agent doctor --gate` says "a stop here would hold once, then
   be UNJUDGED". What is not closed: while a file stays unreadable or the marks stay, nothing
   else of that working tree is judged (staging the rest is not built), so failing work added
@@ -983,6 +989,74 @@ Stated limits, which the judge on the pull request covers:
   the session's id: the state, the list of commits that were there when it began, and the
   list of commits that have their answer. Files of sessions that have
   ended are not removed. Hooks for Codex are not designed.
+- **The state's schema** (from 0.11.0; the hook-state version policy):
+  - Names. The files are `session-<the first 32 hex digits of the SHA-256 of the session's
+    id>` with `.json` (the state), `.tips` (the commits there when the session began, one id
+    a line), `.judged` (the commits that have their answer) and `.lock` (an exclusive
+    `flock`). Names and the lock do not change from one schema to the next: two builds of
+    different versions share them.
+  - The schema. The state's member `schema` is exactly `deep-diff-forge.hook-state.v<N>`,
+    `N` in one to six decimal digits with no leading zero, read byte by byte; any other
+    text is a damaged state. Any change to the state's members, to a member's type, grammar
+    or meaning, or to the lines of `.tips` or `.judged` is a new `N`, between releases too.
+    The lines of `.judged` are `ID:p`, `ID:h[:kept]`, `ID:f[:kept]`,
+    `ID:n<attempts>@<stop>:reason` and `ID:x:reason`; any other line makes the list damaged.
+  - What is read. A build reads every schema from the one the last release wrote (v10,
+    written by 0.9.0 and 0.10.0) to its own (v11 since 0.11.0), and writes its own; one of a
+    schema in that range below its own is written in its own by the first hook that keeps
+    state. A v10 state is read as it is (the migration to v11 changes no member): its base,
+    what has blocked and the judged commits are kept, so a failure that blocked does not
+    block again and a judged commit is not judged again. A state
+    of an older schema is refused by its name: "this session's state file … is of schema
+    v9, written by a deep-diff-forge older than the last release; this one reads v10 to
+    v11, and nothing is recorded over it (removing it makes the next hook take the commit
+    HEAD names as this session's base: what this session committed before would not be
+    judged)". A damaged one (not JSON, a schema that is not one, a member missing or not
+    what the hooks write) says why and the same about removing it. That is what removing
+    it does: the next stop takes the commit `HEAD` names as the session's base, says that
+    the session's start was not recorded, and the commits made before are not judged.
+    A list beside the state that is not what the state names (`.tips` or `.judged` missing,
+    cut, changed, or with a line that is not one) is refused with the same cost in its own
+    words: "start a new session to have its work judged (a new session begins at the commit
+    HEAD names then: what this session committed before is not judged)".
+  - A newer state is never written over. A state of a schema above this build's own (a
+    newer build of the hooks wrote it) is refused by its name: "this session's state file
+    … is of schema v12, written by a newer deep-diff-forge; this one reads v10 to v11, and
+    nothing was written over it". No hook writes the state, `.tips` or `.judged` then (a
+    stop, an advice hook, a session's start; the lock may be taken), and the message names
+    no removal: the newer build reads its state again. The stop is UNJUDGED, as for any
+    state it cannot use, and the judge is not run. A hook writes a state only after reading
+    what is there: a stop and a session's start hold the session's lock from their read to
+    their write, an advice hook reads again under the lock, and every write reads the file
+    once more before its lists and again just before the state is moved into place, and
+    is abandoned (said as a state that could not be kept) when the file is then newer.
+    **Stated limit:** where file locks do not keep two hooks of a session apart (a file
+    system with none, or a build that takes none), a newer build that writes between those
+    reads and this hook's writes is not seen, and its state or the lists beside it are
+    replaced: the reads narrow that race and do not close it.
+  - Why v11, and what it means for two builds on one session. F12's lines in `blocked` (a
+    cause that holds once, kept by its name with the number of stops it held, under the tree's
+    tag `o` or under the change's own tag) mean nothing to 0.10.0, which read them as v10:
+    measured with the published 0.10.0 on a state this tree wrote, it read such a line of a
+    linked tree as "A failure there has blocked a stop of this session and stands", and it
+    forgot one under a change's tag at its next stop, so a hold for an unknown label came back
+    at every stop of the newer build that followed one of its own (four blocks in eight
+    stops, past the bound of three). So the schema is v11, and since then: the published
+    0.10.0 (and 0.9.0) refuses a session a 0.11.0 hook has written, at every hook, as UNJUDGED
+    ("cannot be read as a state (it is not a state of this version of the hooks) … (remove the
+    file to have the next hook record the session anew)"), which is not a pass, and keeps the
+    file byte for byte; following that released advice costs what is said above (the commits
+    the session made before are not judged). A 0.11.0 hook reads a session 0.10.0 wrote and
+    writes it as v11: a failure that blocked under 0.10.0 says FAIL STANDS and a commit it
+    judged is not judged again. A commit that 0.10.0 judged HOLD for a label the judge does
+    not know keeps that answer: it is not held once after the upgrade (its line in `.judged`
+    is a hold like any other).
+  - The fixtures `crates/deep-diff-forge-cli/tests/fixtures/hook-state/<schema>-<release>/`
+    hold the three files the published 0.9.0 and 0.10.0 binaries wrote, and the same files
+    written by a build of this tree in v11 (each directory's
+    `ORIGIN` names the binary by its SHA-256 and says whether it was published), captured once by
+    `scripts/capture_hook_state.sh` and never edited; the test
+    `every_schema_since_the_last_release_is_read` has the build under test read each.
 
 ---
 

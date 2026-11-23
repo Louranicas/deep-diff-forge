@@ -904,7 +904,12 @@ bounded form.** What it holds to:
   state turns a judged fail into a pass; but whoever edits the file can move the base, and
   with it what is judged. A base in the file is believed only as a full commit id. "The same
   failure" is the rule, the signal, the path and the number of items the judge cites: a new
-  item blocks again. A state that cannot be kept is said with the stop's decision.
+  item blocks again. A state that cannot be kept is said with the stop's decision. A state
+  of a newer schema than a build reads (a newer build of the hooks wrote it) is refused by
+  its name and never written over, and its refusal advises no removal; where file locks do
+  not keep two hooks of a session apart, a newer build that writes between a hook's last
+  read of the file and its write is not seen, and is written over: the read narrows that
+  race and does not close it (`docs/reference/agent-hooks.md`, "The state's schema").
 - **Not a boundary:** the agent runs as the user. It can edit the settings that install the
   hooks, the state file, or the judge on `PATH`. An agent that edits Git's own
   administrative files (`gitdir`, `commondir`, `core.worktree`, a tree's `.git` file) can make one tree be read

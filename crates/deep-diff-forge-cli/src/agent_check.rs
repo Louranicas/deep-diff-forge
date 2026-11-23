@@ -272,10 +272,14 @@ fn installed(
     let mut bench = Vec::new();
     let mut take = |flag: &str, hooked: Option<String>, default: Option<&str>| {
         let given = crate::flag_value(args, flag);
-        if found.is_some()
-            && given.is_some()
-            && given.as_deref().or(default) != hooked.as_deref().or(default)
-        {
+        // (a ranker directory is the stop's when it is the directory the stop lists, as
+        // `agent doctor --gate` compares it: a relative path, a trailing `/` or a link to it)
+        let other = if flag == "--ranker-dir" {
+            !crate::hook_run::same_ranker_dir(hooked.as_deref(), given.as_deref())
+        } else {
+            given.as_deref().or(default) != hooked.as_deref().or(default)
+        };
+        if found.is_some() && given.is_some() && other {
             differs.push(format!("{flag} is not the registered Stop hook's"));
         }
         let value = given.or(hooked);

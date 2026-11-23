@@ -1143,6 +1143,154 @@ fn doctor_gate_checks_every_link_of_a_judged_stop() {
     assert_eq!(gate_checks(&doc), []);
 }
 
+/// Lane D1's finding: `agent doctor --gate --ranker-dir DIR` compared DIR as text with the
+/// registered stop's, so a relative directory never matched the absolute one `agent setup
+/// --hooks` writes. A stop lists its ranker directory with `read_dir`, which follows every link
+/// of the path; the gate now compares the directories that resolves to: a relative path, a
+/// trailing `/` and a link to the directory are the stop's; another directory, and one that
+/// does not exist, are not.
+#[test]
+fn doctor_gate_compares_the_ranker_directory_as_the_stop_opens_it() {
+    let (scratch, root, home, script, _log, _exit_file) = gate_fixture("doctor-gate-ranker-dir");
+    let rankers = scratch.join("rankers");
+    std::fs::create_dir(&rankers).unwrap();
+    std::fs::create_dir(scratch.join("other")).unwrap();
+    std::os::unix::fs::symlink(&rankers, scratch.join("rankers-link")).unwrap();
+    let resolved = std::fs::canonicalize(&rankers).unwrap();
+    std::fs::create_dir(root.join(".claude")).unwrap();
+    std::fs::write(
+        root.join(".claude/settings.local.json"),
+        settings_with(&format!(
+            "{} --ranker-dir '{}'",
+            stop_command(&script),
+            resolved.display()
+        )),
+    )
+    .unwrap();
+    let judge = script.to_str().unwrap();
+    for (given, same) in [
+        (resolved.display().to_string(), true),
+        ("../rankers".to_owned(), true),
+        ("../rankers/".to_owned(), true),
+        (format!("{}/", rankers.display()), true),
+        ("../rankers-link".to_owned(), true),
+        ("../other".to_owned(), false),
+        ("../not-there".to_owned(), false),
+    ] {
+        let (code, doc, _) = doctor_gate(&root, &home, &["--judge", judge, "--ranker-dir", &given]);
+        if same {
+            assert_eq!(
+                (code, gate_checks(&doc)),
+                (0, gate_but(&[])),
+                "{given}: {}",
+                detail(&doc, "hooks_registered")
+            );
+        } else {
+            assert_eq!(code, 7, "{given}");
+            assert!(
+                detail(&doc, "hooks_registered").contains("offers other rankers"),
+                "{given}: {doc:#}"
+            );
+        }
+    }
+}
+
+/// `agent check`, `agent doctor --gate` and the stop agree on which ranker directory is the
+/// registered stop's. The stop lists the directory its `--ranker-dir` resolves to from its own
+/// directory, following links: here the stand-in judge admits only the ranker in that
+/// directory, so a stop given a relative path, a trailing `/` or a link to it offers that
+/// ranker and its judge answers (HOLD), and one given a directory that does not exist offers
+/// none and is UNJUDGED (exit 4). The gate is ready for exactly the first four, and the check
+/// says that the option is not the registered Stop hook's for exactly the last.
+#[test]
+fn check_doctor_and_the_stop_agree_on_the_ranker_directory() {
+    let (scratch, root, home, holding, _log, _exit_file) = gate_fixture("ranker-dir-agree");
+    let rankers = scratch.join("rankers");
+    std::fs::create_dir(&rankers).unwrap();
+    std::fs::write(rankers.join("ddf-0.8.4"), "stand-in ranker\n").unwrap();
+    std::os::unix::fs::symlink(&rankers, scratch.join("rankers-link")).unwrap();
+    let resolved = std::fs::canonicalize(&rankers).unwrap();
+    let judge = scratch.join("admits-the-directory-ranker");
+    write_program(
+        &judge,
+        &format!(
+            "#!/bin/sh\ncase \"$*\" in *ddf-0.8.4*) exec '{}' \"$@\";; *) exit 4;; esac\n",
+            holding.display()
+        ),
+    );
+    std::fs::create_dir(root.join(".claude")).unwrap();
+    std::fs::write(
+        root.join(".claude/settings.local.json"),
+        settings_with(&format!(
+            "{} --ranker-dir '{}'",
+            stop_command(&judge),
+            resolved.display()
+        )),
+    )
+    .unwrap();
+    start(&root, "s");
+    silence_a_lint(&root);
+    let judge = judge.to_str().unwrap();
+    for (given, same) in [
+        ("../rankers", true),
+        ("../rankers/", true),
+        ("../rankers-link", true),
+        ("../not-there", false),
+    ] {
+        // the stop, run from the project's directory as the client runs it
+        let (code, stdout, _) = hook_in(
+            "stop",
+            &["--judge", judge, "--ranker-dir", given],
+            &input("Stop", &root, "s", false),
+            |command| {
+                command.current_dir(&root);
+            },
+        );
+        assert_eq!(code, 0);
+        let said = system_message(&stdout);
+        if same {
+            assert!(
+                said.starts_with("deep-diff-forge: HOLD. "),
+                "stop {given}: {said}"
+            );
+        } else {
+            assert!(
+                said.contains("the judge refused the policy, the ranking or the ranker (exit 4)"),
+                "stop {given}: {said}"
+            );
+        }
+        // the gate
+        let (code, doc, _) = doctor_gate(&root, &home, &["--judge", judge, "--ranker-dir", given]);
+        let registered = detail(&doc, "hooks_registered");
+        assert_eq!(code == 0, same, "doctor {given}: {registered}");
+        assert_eq!(
+            registered.contains("offers other rankers"),
+            !same,
+            "doctor {given}: {registered}"
+        );
+        // the check
+        let out = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+            .current_dir(&root)
+            .envs(ISOLATE)
+            .env("HOME", &home)
+            .args(["agent", "check", "--json", "--ranker-dir", given])
+            .output()
+            .unwrap();
+        let doc: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+            panic!(
+                "check {given}: {e}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            )
+        });
+        let differs = doc["stop"]["differences"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|line| line == "--ranker-dir is not the registered Stop hook's");
+        assert_eq!(differs, !same, "check {given}: {doc}");
+    }
+}
+
 /// Each link of the chain is broken on its own: the gate names it, exits 7, and reports what
 /// depends on a missing link as not checked, never as fine.
 #[test]
@@ -1576,17 +1724,21 @@ fn a_state_file_that_cannot_be_read_is_never_no_state() {
         std::fs::metadata(&state[0]).unwrap().len(),
         64 * 1024 * 1024
     );
+    // (a schema older than the last release's is refused by its name since 0.11.0: the
+    // hook-state version policy, rule V4; it said "not a state of this version" before)
     std::fs::write(&state[0], "{\"schema\":\"deep-diff-forge.hook-state.v1\"}").unwrap();
     let said = stop();
     assert!(
         said.contains("UNJUDGED")
-            && said.contains("it is not a state of this version of the hooks"),
+            && said.contains(
+                "is of schema v1, written by a deep-diff-forge older than the last release"
+            ),
         "{said}"
     );
     let started = start(&root, "s");
     assert!(
         started.starts_with("deep-diff-forge: the stops of this session will not be judged")
-            && started.contains("cannot be read as a state"),
+            && started.contains("is of schema v1"),
         "{started}"
     );
     assert_eq!(
@@ -8478,29 +8630,471 @@ fn a_tree_no_longer_listed_stands_while_its_directory_does() {
     assert_eq!(the_state()["trees"], json!({}));
 }
 
-/// Round 23: a state of the schema before (v9) is read, and written back in the new one. It
-/// records no tree, so a tree no longer listed is forgotten as before.
+// --- The hook-state version policy (F7.e; rules V1 to V10 of the model design) ------------
+
+/// The session id the fixtures of `tests/fixtures/hook-state/` were captured under.
+const FIXTURE_SESSION: &str = "fixture";
+/// What removing a state file that is not read costs, as every refusal of one says it.
+const REMOVING_COSTS: &str = "removing it makes the next hook take the commit HEAD names as this session's base: what this session committed before would not be judged";
+
+/// Git in `root` as `scripts/capture_hook_state.sh` runs it: the same names and dates, so the
+/// same files give the same commit ids.
+fn git_as_captured(root: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .current_dir(root)
+        .envs(ISOLATE)
+        .envs([
+            ("GIT_AUTHOR_NAME", "ddf"),
+            ("GIT_AUTHOR_EMAIL", "ddf@example.invalid"),
+            ("GIT_COMMITTER_NAME", "ddf"),
+            ("GIT_COMMITTER_EMAIL", "ddf@example.invalid"),
+            ("GIT_AUTHOR_DATE", "2026-11-20T00:00:00+0000"),
+            ("GIT_COMMITTER_DATE", "2026-11-20T00:00:00+0000"),
+        ])
+        .args([
+            "-c",
+            "init.defaultBranch=main",
+            "-c",
+            "commit.gpgSign=false",
+        ])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap()
+}
+
+/// The repository the fixtures were captured in, made again: its base, a commit of failing
+/// work (`c.rs`) and a failing edit of `a.rs`. The scratch directory becomes the home of this
+/// test's hooks.
+fn captured_repository(scratch: &Scratch) -> PathBuf {
+    home_in(scratch);
+    let root = scratch.join("repo");
+    std::fs::create_dir(&root).unwrap();
+    git_as_captured(&root, &["init", "--quiet"]);
+    std::fs::write(root.join("a.rs"), "fn a() {}\nfn b() {}\n").unwrap();
+    std::fs::write(root.join("warden.toml"), "# policy\n").unwrap();
+    git_as_captured(&root, &["add", "--all"]);
+    git_as_captured(&root, &["commit", "--quiet", "-m", "base"]);
+    std::fs::write(root.join("c.rs"), "fn c() {}\n// BADLINE committed\n").unwrap();
+    git_as_captured(&root, &["add", "c.rs"]);
+    git_as_captured(&root, &["commit", "--quiet", "-m", "failing work"]);
+    std::fs::write(
+        root.join("a.rs"),
+        "fn a() {}\n#[allow(dead_code)] // BADLINE\nfn b() {}\n",
+    )
+    .unwrap();
+    root
+}
+
+/// Every fixture directory: its name and its three files (state, `.tips`, `.judged`), as
+/// bytes, by extension.
+fn fixtures() -> Vec<(String, std::collections::BTreeMap<String, Vec<u8>>)> {
+    let top = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hook-state");
+    let mut all = Vec::new();
+    for entry in std::fs::read_dir(&top).unwrap() {
+        let dir = entry.unwrap().path();
+        let mut files = std::collections::BTreeMap::new();
+        for file in std::fs::read_dir(&dir).unwrap() {
+            let file = file.unwrap().path();
+            let kind = file.extension().unwrap_or_default().to_string_lossy();
+            if ["json", "tips", "judged"].contains(&kind.as_ref()) {
+                files.insert(kind.into_owned(), std::fs::read(&file).unwrap());
+            }
+        }
+        assert_eq!(files.len(), 3, "{}: {files:?}", dir.display());
+        all.push((
+            dir.file_name().unwrap().to_string_lossy().into_owned(),
+            files,
+        ));
+    }
+    all.sort();
+    assert!(all.len() >= 2, "{all:?}");
+    all
+}
+
+/// Put a fixture's files in place as the session [`FIXTURE_SESSION`]'s, for the repository at
+/// `root`: byte for byte, but the state's `top` and `id`, which name the directory and the
+/// inode of the repository it was captured in, name `root`'s. Returns the state file's path.
+fn place_fixture(files: &std::collections::BTreeMap<String, Vec<u8>>, root: &Path) -> PathBuf {
+    use std::os::unix::fs::MetadataExt as _;
+    let text = String::from_utf8(files["json"].clone()).unwrap();
+    let state: Value = serde_json::from_str(&text).unwrap();
+    let (top, id) = (
+        state["project"]["top"].as_str().unwrap(),
+        state["project"]["id"].as_str().unwrap(),
+    );
+    let here = git(root, &["rev-parse", "--show-toplevel"]);
+    let ino = std::fs::metadata(root.join(".git"))
+        .unwrap()
+        .ino()
+        .to_string();
+    let text = text
+        .replacen(
+            &format!("\"top\":{}", json!(top)),
+            &format!("\"top\":{}", json!(here.trim())),
+            1,
+        )
+        .replacen(&format!("\"id\":\"{id}\""), &format!("\"id\":\"{ino}\""), 1);
+    let dir = sessions();
+    std::fs::create_dir_all(&dir).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let name = format!(
+        "session-{}",
+        &deep_diff_forge_core::sha256_hex(FIXTURE_SESSION.as_bytes())[..32]
+    );
+    std::fs::write(dir.join(format!("{name}.json")), text).unwrap();
+    std::fs::write(dir.join(format!("{name}.tips")), &files["tips"]).unwrap();
+    std::fs::write(dir.join(format!("{name}.judged")), &files["judged"]).unwrap();
+    dir.join(format!("{name}.json"))
+}
+
+/// The three files of the session whose state is `state`, as bytes.
+fn three_files(state: &Path) -> [Vec<u8>; 3] {
+    ["json", "tips", "judged"].map(|kind| std::fs::read(state.with_extension(kind)).unwrap())
+}
+
+/// Rule V3: a state of every schema since the last release is read, here the state, the list of
+/// commits and the list of judged commits that the published 0.9.0 and 0.10.0 binaries wrote
+/// in the middle of a session (v10: a failure that blocked, a commit judged FAIL), and one this
+/// build wrote (v11) (`tests/fixtures/hook-state/`, each directory's `ORIGIN` says which
+/// binary, by its SHA-256). A v10 state is migrated to v11 at the first stop with its base, its
+/// memory of what blocked and its judged commits kept: the failure that blocked does not block
+/// again and the commit is not judged again (one run of the judge at each stop, for the
+/// working tree), at that stop and at the next turn's.
 #[test]
-fn a_state_of_the_schema_before_is_read_and_written_anew() {
-    let scratch = Scratch::new("hook-state-v9");
+fn every_schema_since_the_last_release_is_read() {
+    for (name, files) in fixtures() {
+        let scratch = Scratch::new("hook-state-fixture");
+        let root = captured_repository(&scratch);
+        let captured: Value = serde_json::from_slice(&files["json"]).unwrap();
+        assert_eq!(
+            git(&root, &["rev-parse", "HEAD~1"]).trim(),
+            captured["project"]["base"],
+            "{name}: the repository was not made again as it was captured"
+        );
+        let state = place_fixture(&files, &root);
+        let (script, log, _) = failing_judge(&scratch);
+        let decision = stop_from(&root, FIXTURE_SESSION, &script);
+        let said = allowed(&decision);
+        assert!(
+            said.starts_with("deep-diff-forge: FAIL STANDS. "),
+            "{name}: a state of an earlier release was not read: {said}"
+        );
+        assert_eq!(
+            runs(&log),
+            1,
+            "{name}: the commit judged before was asked again"
+        );
+        let now: Value = serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap();
+        assert_eq!(now["schema"], "deep-diff-forge.hook-state.v11", "{name}");
+        assert_eq!(
+            now["project"]["base"], captured["project"]["base"],
+            "{name}"
+        );
+        assert_eq!(
+            now["project"]["tips_sha256"],
+            captured["project"]["tips_sha256"]
+        );
+        assert_eq!(now["blocked"], captured["blocked"], "{name}");
+        assert_eq!(now["reported"], captured["reported"], "{name}");
+        assert_eq!(
+            std::fs::read(state.with_extension("tips")).unwrap(),
+            files["tips"]
+        );
+        assert_eq!(
+            std::fs::read(state.with_extension("judged")).unwrap(),
+            files["judged"]
+        );
+        // the next turn: the same, from the migrated state
+        let said = allowed(&stop_from(&root, FIXTURE_SESSION, &script)).to_owned();
+        assert!(
+            said.starts_with("deep-diff-forge: FAIL STANDS. "),
+            "{name}: {said}"
+        );
+        assert_eq!(
+            runs(&log),
+            2,
+            "{name}: the commit judged before was asked again"
+        );
+    }
+}
+
+/// Rule V4: a state of a schema older than the last release's (v9 and before; no release
+/// wrote one) is refused by its name, with the range this build reads and what removing it
+/// costs; nothing is written over it, by a stop, an advice hook or a session's start. (Round
+/// 23 read v9 and wrote it back as v10; v9 is retired since 0.11.0.)
+#[test]
+fn a_state_older_than_the_last_release_is_refused_with_its_name() {
+    let (_, files) = fixtures().remove(0);
+    let scratch = Scratch::new("hook-state-older");
+    let root = captured_repository(&scratch);
+    let state = place_fixture(&files, &root);
+    let mut v9: Value = serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap();
+    v9["schema"] = json!("deep-diff-forge.hook-state.v9");
+    v9.as_object_mut().unwrap().remove("trees");
+    std::fs::write(&state, v9.to_string()).unwrap();
+    let before = three_files(&state);
+    let (script, log, _) = failing_judge(&scratch);
+    let said = allowed(&stop_from(&root, FIXTURE_SESSION, &script)).to_owned();
+    assert!(
+        said.starts_with(
+            "deep-diff-forge: UNJUDGED. The stop hook did not run: this session's state file "
+        ) && said.contains(
+            "is of schema v9, written by a deep-diff-forge older than the last release; this one reads v10 to v11, and nothing is recorded over it ("
+        ) && said.contains(REMOVING_COSTS),
+        "{said}"
+    );
+    let advice = hook(
+        "post-tool",
+        &[],
+        &input("PostToolUse", &root, FIXTURE_SESSION, false),
+    )
+    .1;
+    assert!(
+        system_message(&advice).contains("is of schema v9"),
+        "{advice}"
+    );
+    let started = start(&root, FIXTURE_SESSION);
+    assert!(started.contains("is of schema v9"), "{started}");
+    assert_eq!(three_files(&state), before);
+    assert_eq!(runs(&log), 0);
+}
+
+/// Rules V5 and V1: a state of a newer schema (here v12 with a member this build does not
+/// know, and v999999) is refused by its name with the range this build reads; no hook writes
+/// the state, its list of commits or its list of judged commits (a stop, a continuing stop, an
+/// advice hook, a session's start), none leaves a partial file, and none advises removing
+/// it or says that anything else judges. What the stop then does is what it does for a
+/// state it cannot use: UNJUDGED, the judge not run.
+#[test]
+fn a_newer_state_is_refused_and_kept_byte_for_byte() {
+    let (_, files) = fixtures().remove(0);
+    let scratch = Scratch::new("hook-state-newer");
+    let root = captured_repository(&scratch);
+    let state = place_fixture(&files, &root);
+    let (script, log, _) = failing_judge(&scratch);
+    for number in [12_u32, 999_999] {
+        let mut newer: Value =
+            serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap();
+        newer["schema"] = json!(format!("deep-diff-forge.hook-state.v{number}"));
+        newer["a_member_of_a_newer_build"] = json!(["x"]);
+        std::fs::write(&state, newer.to_string()).unwrap();
+        let before = three_files(&state);
+        let refused = format!(
+            "is of schema v{number}, written by a newer deep-diff-forge; this one reads v10 to v11, and nothing was written over it"
+        );
+        for active in [false, true] {
+            let (code, stdout, _) = hook(
+                "stop",
+                &["--judge", script.to_str().unwrap()],
+                &input("Stop", &root, FIXTURE_SESSION, active),
+            );
+            assert_eq!(code, 0);
+            let said = system_message(&stdout);
+            assert!(
+                said.starts_with(
+                    "deep-diff-forge: UNJUDGED. The stop hook did not run: this session's state file "
+                ) && said.contains(&refused),
+                "{said}"
+            );
+            assert!(
+                !said.contains("remov") && !said.contains("judged without"),
+                "{said}"
+            );
+            assert_eq!(
+                three_files(&state),
+                before,
+                "a stop wrote over a newer state"
+            );
+        }
+        let advice = hook(
+            "post-tool",
+            &[],
+            &input("PostToolUse", &root, FIXTURE_SESSION, false),
+        )
+        .1;
+        let advice = system_message(&advice);
+        assert!(
+            advice.contains(&refused) && !advice.contains("remov"),
+            "{advice}"
+        );
+        let started = start(&root, FIXTURE_SESSION);
+        assert!(
+            started.contains(&refused) && !started.contains("remov"),
+            "{started}"
+        );
+        assert_eq!(
+            three_files(&state),
+            before,
+            "a hook wrote over a newer state"
+        );
+        let mut names: Vec<String> = std::fs::read_dir(sessions())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        let stem = state.file_stem().unwrap().to_string_lossy().into_owned();
+        assert_eq!(
+            names,
+            ["json", "judged", "lock", "tips"].map(|kind| format!("{stem}.{kind}")),
+            "something beside the state was left"
+        );
+    }
+    assert_eq!(runs(&log), 0);
+}
+
+/// Rule V6: a hook writes a state only after reading what is there, and never over a newer
+/// one. Here a newer build writes the state while a stop of this session runs (the judge
+/// does it, as a hook of a build that took no lock could): the stop's answer stands, it says
+/// that its state could not be kept and why, and the state, its list of commits and its list
+/// of judged commits are as the newer build left them. With file locks the session's lock
+/// keeps two hooks of a session apart; this is the case without them, where the state is read
+/// again just before it is moved into place, which narrows that race and does not close it.
+#[test]
+fn a_hook_never_writes_over_a_newer_state_placed_while_it_runs() {
+    let (_, files) = fixtures().remove(0);
+    let scratch = Scratch::new("hook-state-newer-meanwhile");
+    let root = captured_repository(&scratch);
+    let state = place_fixture(&files, &root);
+    let mut newer: Value = serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap();
+    newer["schema"] = json!("deep-diff-forge.hook-state.v12");
+    let newer_file = scratch.join("newer.json");
+    std::fs::write(&newer_file, newer.to_string()).unwrap();
+    let (script, log, exit_file) = (
+        scratch.join("judge"),
+        scratch.join("judge.log"),
+        scratch.join("judge.exit"),
+    );
+    std::fs::write(&exit_file, "7").unwrap();
+    let body = judge_script(
+        &log,
+        &exit_file,
+        &verdict("fail", "no-silent-suppression", "check_suppressed", "a.rs"),
+    )
+    .replacen(
+        "#!/bin/sh\n",
+        &format!(
+            "#!/bin/sh\ncp '{}' '{}.next' && mv '{}.next' '{}'\n",
+            newer_file.display(),
+            state.display(),
+            state.display(),
+            state.display()
+        ),
+        1,
+    );
+    write_program(&script, &body);
+    // a commit the fixture's state does not know, so the stop has something to write: its
+    // answer in the list of judged commits
+    std::fs::write(root.join("d.rs"), "// BADLINE new\n").unwrap();
+    git_as_captured(&root, &["add", "d.rs"]);
+    git_as_captured(&root, &["commit", "--quiet", "-m", "more failing work"]);
+    let decision = stop_from(&root, FIXTURE_SESSION, &script);
+    let said = decision["systemMessage"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned()
+        + decision["reason"].as_str().unwrap_or_default();
+    assert!(
+        said.contains("The hook could not keep its state (its state could not be saved: this session's state file ")
+            && said.contains("is now of schema v12, written by a newer deep-diff-forge"),
+        "{decision}"
+    );
+    assert_eq!(runs(&log), 2);
+    assert_eq!(
+        std::fs::read(&state).unwrap(),
+        std::fs::read(&newer_file).unwrap()
+    );
+    assert_eq!(
+        std::fs::read(state.with_extension("tips")).unwrap(),
+        files["tips"]
+    );
+    assert_eq!(
+        std::fs::read(state.with_extension("judged")).unwrap(),
+        files["judged"]
+    );
+}
+
+/// Rule V7: a damaged state is refused with what removing it costs, and that is what the next
+/// hook then does: with the file removed, the stop takes the commit `HEAD` names as the
+/// session's base, says that the session's start was not recorded, and the failing commit
+/// the session made before is not judged.
+#[test]
+fn a_damaged_state_says_what_removing_it_costs() {
+    let scratch = Scratch::new("hook-state-damaged");
     let root = repository(&scratch);
-    let (script, _) = reading_judge(&scratch);
-    let linked = scratch.join("linked");
-    linked_tree(&root, &linked, "side");
+    let (script, log, _) = failing_judge(&scratch);
     start(&root, "s");
-    secret(&linked, "first.rs");
-    blocked(&stop_from(&linked, "s", &script));
-    assert_ne!(remembered_lines(), Vec::<String>::new());
-    let file = states_in(&sessions()).remove(0);
-    let mut state = the_state();
-    assert_eq!(state["schema"], "deep-diff-forge.hook-state.v10");
-    state["schema"] = json!("deep-diff-forge.hook-state.v9");
-    state.as_object_mut().unwrap().remove("trees");
-    std::fs::write(&file, state.to_string()).unwrap();
-    remove_both_records(&linked);
-    assert_eq!(stop_from(&root, "s", &script), Value::Null);
-    assert_eq!(remembered_lines(), Vec::<String>::new());
-    assert_eq!(the_state()["schema"], "deep-diff-forge.hook-state.v10");
+    std::fs::write(root.join("c.rs"), "fn c() {}\n").unwrap();
+    git(&root, &["add", "c.rs"]);
+    git(
+        &root,
+        &["commit", "--quiet", "-m", "failing work of the session"],
+    );
+    let state = states_in(&sessions()).remove(0);
+    for damage in [
+        "{\"schema\":\"deep-diff-forge.hook-state.v11\"}",
+        "{\"schema\":\"deep-diff-forge.hook-state.v010\"}",
+        "{",
+    ] {
+        std::fs::write(&state, damage).unwrap();
+        let said = allowed(&stop_from(&root, "s", &script)).to_owned();
+        assert!(
+            said.starts_with(
+                "deep-diff-forge: UNJUDGED. The stop hook did not run: this session's state file "
+            ) && said.contains("cannot be read as a state (")
+                && said.contains(&format!("; nothing is recorded over it ({REMOVING_COSTS})")),
+            "{said}"
+        );
+        assert_eq!(std::fs::read_to_string(&state).unwrap(), damage);
+    }
+    assert_eq!(runs(&log), 0);
+    // what removing it costs, as the next hook finds it
+    std::fs::remove_file(&state).unwrap();
+    let said = allowed(&stop_from(&root, "s", &script)).to_owned();
+    assert!(
+        said.contains("This session's start was not recorded"),
+        "{said}"
+    );
+    assert_eq!(
+        runs(&log),
+        0,
+        "the commit made before the state was removed was judged"
+    );
+}
+
+/// Rule V10: the names of a session's files and its lock are the documented ones, and do not
+/// change from one schema to the next: `session-<the first 32 hex digits of the SHA-256 of the
+/// session's id>` with `.json` (the state), `.tips`, `.judged` and `.lock` (`flock`).
+#[test]
+fn state_and_lock_names_are_the_documented_ones() {
+    let scratch = Scratch::new("hook-state-names");
+    let root = repository(&scratch);
+    let (script, _, _) = failing_judge(&scratch);
+    start(&root, "a session id");
+    silence_a_lint(&root);
+    git(&root, &["commit", "--quiet", "-am", "failing work"]);
+    blocked(&stop_from(&root, "a session id", &script));
+    let stem = format!(
+        "session-{}",
+        &deep_diff_forge_core::sha256_hex(b"a session id")[..32]
+    );
+    let mut names: Vec<String> = std::fs::read_dir(sessions())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        ["json", "judged", "lock", "tips"].map(|kind| format!("{stem}.{kind}"))
+    );
 }
 
 /// Copy the files of the commit `HEAD` names in `tree` into `into`, as `git archive` would.
@@ -8734,28 +9328,6 @@ fn a_copy_of_a_project_whose_git_directory_was_made_apart_is_not_judged_as_it() 
     assert_eq!(remembered_lines(), before);
     // the project was judged at each of its four stops, the copy never
     assert_eq!(shown(&log), ["first.rs"; 4]);
-}
-
-/// Review V4 round 23, VD4R23-L-1, as reproduced: a clean state of the schema before (v9) was
-/// read and, the stop changing nothing, left as it was. It is written in the new one at the
-/// first stop that reads it, changed or not.
-#[test]
-fn a_clean_state_of_the_schema_before_is_written_anew_at_the_first_stop() {
-    let scratch = Scratch::new("hook-state-v9-clean");
-    let root = repository(&scratch);
-    let (script, _) = reading_judge(&scratch);
-    start(&root, "s");
-    assert_eq!(stop_from(&root, "s", &script), Value::Null);
-    let file = states_in(&sessions()).remove(0);
-    let mut state = the_state();
-    assert_eq!(state["schema"], "deep-diff-forge.hook-state.v10");
-    state["schema"] = json!("deep-diff-forge.hook-state.v9");
-    state.as_object_mut().unwrap().remove("trees");
-    std::fs::write(&file, state.to_string()).unwrap();
-    assert_eq!(stop_from(&root, "s", &script), Value::Null);
-    let state = the_state();
-    assert_eq!(state["schema"], "deep-diff-forge.hook-state.v10");
-    assert_eq!(state["trees"], json!({}));
 }
 
 /// Fifteenth independent review of the hooks (a note): a ceiling entry written through the
@@ -12366,6 +12938,41 @@ fn an_unknown_label_hold_holds_once() {
             && !reason.contains("Ignore all previous"),
         "{reason}"
     );
+}
+
+/// F12.b on a commit (OD-J): a commit the judge holds only for a label it does not know holds
+/// the stop that judges it, once, as the working tree's hold does; it is judged once and is
+/// HOLD at every later stop, a continuing one and a later turn's, and the ledger records the
+/// one blocked turn under `hold.version_gap`.
+#[test]
+fn an_unknown_label_hold_on_a_commit_holds_once() {
+    let scratch = Scratch::new("hook-f12-gap-commit");
+    let root = repository(&scratch);
+    let (script, log, exit_file) = judge(&scratch, &unknown_label_hold("diff_suppressed"));
+    std::fs::write(&exit_file, "8").unwrap();
+    start(&root, "s");
+    silence_a_lint(&root);
+    git(
+        &root,
+        &[
+            "commit",
+            "--quiet",
+            "-am",
+            "work held for a label the judge does not know",
+        ],
+    );
+    let reason = blocked(&stop_as(&root, "s", &script, false)).to_owned();
+    assert!(
+        reason.contains("the judge does not know the label diff_suppressed (in \"a.rs\"): the paired forge-warden must be upgraded; tell a person."),
+        "a commit held for an unknown label was let through: {reason}"
+    );
+    assert!(!reason.contains("review it by hand"), "{reason}");
+    for active in [true, false] {
+        let said = allowed(&stop_as(&root, "s", &script, active)).to_owned();
+        assert!(said.starts_with("deep-diff-forge: HOLD. "), "{said}");
+    }
+    assert_eq!(runs(&log), 1, "the commit was judged again");
+    assert_eq!(turns_of(&root, "s", "hold.version_gap", "hold")[0], 1);
 }
 
 /// F12.c: a second stop on an unchanged failing unit is allowed and recorded as FAIL STANDS,
