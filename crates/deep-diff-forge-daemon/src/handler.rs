@@ -620,6 +620,13 @@ pub const METHODS: &[MethodSpec] = &[
         2,
         Work::Request,
     ),
+    method(
+        "diff.diagnostics",
+        "patch: string, require_files?: boolean, require_hunks?: boolean, max_bytes?: integer, cursor?: string",
+        "one page of the deep-diff-forge.diagnostics.v0 document `deep-diff-forge --stdin-patch --diagnostics --json` prints for the same patch: whole diagnostics within max_bytes (4096 to 16777216, the page as emitted), each file's cut entry with its first diagnostic, the texts they name, and page {first, count, total, next_cursor, document_sha256}, the SHA-256 of the document's bytes",
+        3,
+        Work::Request,
+    ),
 ];
 
 /// Dispatch a parsed request against the engine, returning the result value or
@@ -693,6 +700,11 @@ pub fn dispatch(request: &Request, engine: &Engine) -> Result<Value, RpcError> {
         }
         "diff.compute" => review_document(&sealed(request)?),
         "diff.rank" => Ok(rank_document(&sealed(request)?)),
+        "diff.diagnostics" => {
+            let page = page_param(&request.params)?;
+            crate::pages::page(&sealed(request)?, &page)
+                .map_err(|e| RpcError::invalid_params(e.to_string()))
+        }
         "review.change" => review_change(&request.params, &engine.allowed_repos),
         "review.outline" => {
             let page = page_param(&request.params)?;
@@ -1893,6 +1905,57 @@ mod tests {
         assert_eq!(at_limit(1).unwrap_err().code, RESOURCE_EXHAUSTED);
     }
 
+    /// Protocol 3 adds `diff.diagnostics` (F5a.2): a client that asks for protocol 2 is not told
+    /// about it, one that names no protocol or 3 is, and dispatch stays stateless, so a
+    /// protocol-2 client that calls it anyway is served.
+    #[test]
+    fn an_older_client_asking_for_protocol_2_does_not_see_diff_diagnostics() {
+        let e = Engine::new();
+        let listed = |line: &str| {
+            let v = call(line, &e).unwrap();
+            let names: Vec<String> = v["methods"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|m| m.as_str().unwrap().to_owned())
+                .collect();
+            (
+                v["protocol"].clone(),
+                names.iter().any(|n| n == "diff.diagnostics"),
+            )
+        };
+        assert_eq!(
+            listed(r#"{"method":"engine.initialize","params":{"protocol":2}}"#),
+            (json!(2), false),
+            "a protocol-2 client is told about diff.diagnostics"
+        );
+        for line in [
+            r#"{"method":"engine.initialize"}"#,
+            r#"{"method":"engine.initialize","params":{"protocol":3}}"#,
+        ] {
+            assert_eq!(listed(line), (json!(3), true), "{line}");
+        }
+        let spec = METHODS
+            .iter()
+            .find(|m| m.name == "diff.diagnostics")
+            .unwrap();
+        assert_eq!(spec.since, 3);
+        let v = call(r#"{"method":"engine.methods"}"#, &e).unwrap();
+        assert_eq!(v["methods"].as_array().unwrap().last().unwrap()["since"], 3);
+        let served = call(
+            r#"{"method":"engine.initialize","params":{"protocol":2}}"#,
+            &e,
+        )
+        .and_then(|_| {
+            call(
+                r#"{"method":"diff.diagnostics","params":{"patch":"--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n"}}"#,
+                &e,
+            )
+        })
+        .unwrap();
+        assert_eq!(served["schema"], "deep-diff-forge.diagnostics.v0");
+    }
+
     #[test]
     fn initialize_refuses_a_protocol_it_does_not_speak() {
         let e = Engine::new();
@@ -1946,7 +2009,7 @@ mod tests {
                 .unwrap()
                 .contains(&json!("findings.verify"))
         );
-        for other in ["3", "\"1\"", "1.5", "null", "-1"] {
+        for other in ["4", "\"1\"", "1.5", "null", "-1"] {
             let line =
                 format!(r#"{{"method":"engine.initialize","params":{{"protocol":{other}}}}}"#);
             assert_eq!(

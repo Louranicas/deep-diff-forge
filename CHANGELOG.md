@@ -160,6 +160,22 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - `deep-diff-forge-patch`: `judge_patch_probed` and the type `Opens`; `JudgePatchError` gains the
   variant `Unreadable { paths, whole, error }` (the enum is not `#[non_exhaustive]`: a match
   outside the crate that names every variant needs an arm). `judge_patch` is unchanged (F12.a).
+- The daemon and `rpc` speak engine protocol 3. The new method `diff.diagnostics` (params
+  `patch`, `require_files`, `require_hunks`, `max_bytes`, `cursor`) answers one page of the
+  `deep-diff-forge.diagnostics.v0` document `--stdin-patch --diagnostics --json` prints: whole
+  diagnostics within `max_bytes` (4096 to 16777216, counted on the page as emitted), each cut
+  file's entry with its first diagnostic, the texts they name, and
+  `page {first, count, total, next_cursor, document_sha256}`, the SHA-256 of the bytes the command
+  prints; `docs/reference/diagnostics.md` gives the byte form exactly, so a client can rebuild and
+  check them. The cursor `dg0.…` belongs to one patch and one engine; a cursor of another patch,
+  another engine or outside the document, and a diagnostic that cannot fit `max_bytes` with the
+  page header, are refused (-32602) and never cut. In its answer line, bidi controls, invisible
+  characters and controls are written as `\u` escapes (F5a).
+- `engine.initialize` without `protocol` (or with 3), `engine.methods`, `daemon.health` and
+  `daemon.status` report protocol 3 and list `diff.diagnostics`; with `protocol: 2` it is not
+  listed and is still served. A refusal of an unknown protocol now says `this daemon speaks 0 to
+  3`. Every protocol-2 method keeps its params, shapes, codes and messages, held by a replay of a
+  transcript of the published 0.10.0 binary (`tests/protocol_compat.rs`; F7.d1, F5a).
 
 ## [0.10.0] - 2026-11-23
 

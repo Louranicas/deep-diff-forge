@@ -7,7 +7,7 @@ section says whether it describes what ships today or a planned design.
 ## Status 2026-10-28 (0.3.0), updated 2026-11-01
 
 - **Ships today:** the CLI, the optional Unix-socket daemon (JSON-RPC 2.0,
-  protocol 2), `rpc` (the same protocol over stdio, no daemon), `mcp` (a
+  protocol 3 on this branch; 0.10.0 published protocol 2), `rpc` (the same protocol over stdio, no daemon), `mcp` (a
   read-only MCP stdio server), `envelope` / `schema` / `explain`, the Rust SDK
   crate `deep-diff-forge-sdk` and the Python SDK `sdk/python/deep_diff_forge.py`.
 - **Ships since 2026-10-31:** `deep-diff-forge <old> <new>` for two regular files
@@ -180,13 +180,14 @@ path that exists but is not a regular file is exit 4, and stays so until the inp
 | `git difftool` | planned | Old/new file paths and labels. Not implemented. |
 | Pager | planned | No pager or ANSI mode for `--stdin-patch`; it prints plain text. |
 
-## JSON-RPC Methods (shipped, protocol 2)
+## JSON-RPC Methods (protocol 3; release 0.10.0 shipped protocol 2)
 
 The daemon and `rpc` speak newline-delimited JSON-RPC 2.0. `engine.methods` is
 the authoritative list. `METHODS` in `handler.rs` is the only route into the
 dispatcher, and a test keeps the two in step. Protocol versions are additive: a
 client may pass `{"protocol": N}` to `engine.initialize` for any integer N from 0
-to 2, and the answer lists that version's methods. A newer or non-integer
+to 3, and the answer lists that version's methods (with `protocol: 2`, no
+`diff.diagnostics`). A newer or non-integer
 version is refused with domain error 2.
 
 | Method | Params | Result | Since |
@@ -207,6 +208,7 @@ version is refused with domain error 2.
 | `session.close` | `session: string` | `{closed}` | 0 |
 | `daemon.metrics` | — | `deep-diff-forge.daemon-metrics.v0`: requests, errors and latency per method; admission, connection and engine counters since start ([operations](OPERATIONS_AND_DAEMON.md#observability)) | 2 |
 | `findings.verify` | `patch: string, findings: [object], require_files?, require_hunks?` | `deep-diff-forge.findings.v0`: each finding accepted (anchor, address and line checked against the sealed review, body sanitised) or refused with a reason; `claim_verified` is always `false` | 2 |
+| `diff.diagnostics` | `patch: string, require_files?, require_hunks?, max_bytes?: integer, cursor?: string` | one page of the `deep-diff-forge.diagnostics.v0` document `--stdin-patch --diagnostics --json` prints for the same patch: whole diagnostics within `max_bytes` (4096 to 16777216, the page as emitted), and `page {first, count, total, next_cursor, document_sha256}`, the SHA-256 of the document's bytes; `dg0` cursor ([paging](reference/diagnostics.md#paging)) | 3 |
 
 `cache_entries` is always 0: there is no response cache (`handler.rs`, decision
 D-03).
@@ -417,7 +419,7 @@ reason.
 
 ## Protocol Versioning
 
-Shipped: `engine.protocol = 2` (`protocol.rs`, `PROTOCOL_VERSION`; 0 and 1 still negotiate),
+On this branch: `engine.protocol = 3` (`protocol.rs`, `PROTOCOL_VERSION`; 0, 1 and 2 still negotiate; release 0.10.0 shipped 2),
 negotiated through `engine.initialize` as described above. Documents carry their own schema
 names (`deep-diff-forge.review.v0`, `ddf.result.v1` and so on).
 
