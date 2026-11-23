@@ -894,9 +894,9 @@ fn read_binary_again(
         let (cause, out) =
             if let Some(Ok(cause)) = (!out_of_time).then(|| suppression(runner, &change)) {
                 match second_reading(runner, &read, &change, selection) {
-                    Ok(out) => (cause, out),
-                    Err(cut) => {
-                        out_of_time = matches!(cut, GitAcquireError::TimedOut { .. });
+                    Ok(Some(out)) => (cause, Some(out)),
+                    no => {
+                        out_of_time = matches!(no, Err(GitAcquireError::TimedOut { .. }));
                         match cause {
                             DiffSuppression::Content => unread,
                             told => (told, None),
@@ -907,6 +907,7 @@ fn read_binary_again(
                 out_of_time = true;
                 unread
             };
+        let utf8 = matches!(&out, Some(out) if std::str::from_utf8(out).is_ok());
         let again = out.and_then(|out| {
             let mut again = StructuredDiff::default();
             again.append_stream(&out, change.origin).ok()?;
@@ -924,8 +925,8 @@ fn read_binary_again(
             _ => cause,
         };
         let told = cause != DiffSuppression::Content;
-        if told || text.is_some() {
-            let fallback = if told { cause } else { DiffSuppression::Unread };
+        let fallback = if told { cause } else { DiffSuppression::Unread };
+        if told || text.is_some() || utf8 {
             mark(&mut labelled, at, fallback);
         }
         match text {
@@ -937,7 +938,7 @@ fn read_binary_again(
                 read.replace_section(at, text, &bytes);
                 replaced = true;
             }
-            None if told => mark(&mut read, at, cause),
+            None if told || utf8 => mark(&mut read, at, fallback),
             None => {}
         }
     }

