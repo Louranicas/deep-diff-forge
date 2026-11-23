@@ -43,6 +43,24 @@ else
   fail "$id" "the judge's patch is not what forge-warden's make_patch.sh writes for the commit ($why)"
 fi
 
+# F11.c: a stop records each commit in the project's ledger, and `agent verify-branch` refuses
+# (exit 7, branch_unverified) a commit no stop passed: one that failed, one the judge refused
+# (exit 4: unjudged); one that passed is verified (exit 0).
+for answer in fail:7:7 refuse:4:7 pass:0:0; do
+  IFS=: read -r kind code want <<<"$answer"
+  id="verify-branch-$kind"
+  if [ "$kind" = refuse ]; then row "$id" '{"refuse":true}'
+  else row "$id" '{"schema":"v3","outcome":"'"$kind"'","exit":'"$code"'}'; fi
+  stop s1 false; git_ -C "$d/repo" commit --quiet -am "the change, committed"
+  if stop s1 true; then
+    run_ddf agent verify-branch HEAD~1..HEAD >"$d/verify.out" 2>"$d/verify.err"; rc=$?
+    if [ "$rc" -eq "$want" ] && { [ "$want" -eq 0 ] ||
+      grep -qx 'refused: 1 of 1 commits are not verified by the ledger (verify-branch)' "$d/verify.err"; }; then
+      pass "$id" "exit $rc"
+    else fail "$id" "verify-branch exit $rc (want $want): $(head -c 300 "$d/verify.err")"; fi
+  else fail "$id" "$why"; fi
+done
+
 id=control-a-fail-let-through-is-red
 row "$id" '{"schema":"v3","outcome":"fail","exit":7}'
 if stop s1 false && expect allow ""; then

@@ -7,7 +7,8 @@
 # (exit 7), which holds the stop once and then stands; exit 4; a judge that hangs; a hold for
 # claims the judge cannot verify (a policy with `[claims] require_verified`), at the stop and in
 # `agent doctor --gate` (link claims_verified); the patch the judge is given equals the bytes of
-# forge-warden's recorded scripts/make_patch.sh. A known-bad control row (a FAIL expected to be
+# forge-warden's recorded scripts/make_patch.sh; `agent verify-branch` on a commit a stop failed,
+# could not judge or passed, read from the project's ledger (F11.c). A known-bad control row (a FAIL expected to be
 # let through) must come out red, or the matrix cannot see what it is for.
 #
 # Real rows (only with FW_BIN=<path to a forge-warden binary>): the binary is named by path and
