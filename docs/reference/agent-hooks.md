@@ -409,46 +409,67 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   it has and says "stops will be judged" only when every one of them is ready, or when the
   only ones that are not are `policy_protects_itself` and `claims_verified`, which it then
   names as weak.
-- **`agent check` judges the uncommitted change on demand, with a stop's judge and policy**
-  (0.11.0, first part). `deep-diff-forge agent check [--session ID | --base REV] [--judge
-  PATH] [--policy NAME] [--ranker-dir DIR] [--json]` stages the working tree around the
-  current directory against the commit its `HEAD` names, as a stop does, and asks the judge
-  once. The judge, the policy and the ranker directory are those of the first `Stop` hook in
-  the form `agent setup --hooks` prints, in the settings the gate reads (each can be replaced
-  with its option); the judge is never looked up on `PATH`: with no judge named the change is
-  UNJUDGED and says so. With `--session ID` (the id Claude Code gives the hooks) the policy is
-  read at the base that session recorded, from its state file, which is opened for reading
-  only: no lock is taken and nothing in the state directory is made or changed. Without a
-  session the policy is read at `--base REV`, else at `HEAD`, and the answer names that base.
+- **`agent check` judges, on demand, the units a stop judges, with a stop's judge and
+  policy** (0.11.0). `deep-diff-forge agent check [--session ID | --base REV] [--range A..B]
+  [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--json]` judges, in the stop's order
+  and each by the patch a stop makes for it: the uncommitted change of the working tree around
+  the current directory against the commit its `HEAD` names; the staged change, when it is
+  another change than the tree's; then each commit by its own patch, from its first parent:
+  with `--range A..B` the commits of that range, which must be one line (each the first parent
+  of the next, from `A` to `B`; otherwise nothing is judged and `unjudged` says why), and
+  with `--session` and no range the session's commits as a stop finds them (named now by the
+  project's branches, tags, stash, `HEAD`s or their reflogs, and by nothing named when the
+  session began); with a session a range may hold only those. The judge, the policy and the
+  ranker directory are those of the first `Stop` hook in the form `agent setup --hooks`
+  prints, in the settings the gate reads (each can be replaced with its option); the judge is
+  never looked up on `PATH`. With `--session ID` (the id Claude Code gives the hooks) the
+  policy is read at the base that session recorded, and its state file, its list of the
+  commits there when it began and its list of answered commits are opened for reading only:
+  no lock is taken and nothing in the state directory is made or changed. Without a session
+  the policy is read at `--base REV`, else at `HEAD`, and the answer names that base.
   `--json` prints `deep-diff-forge.agent-check.v0`: `project`, `session` (`state_file`,
   `base_recorded_by`: `session_start` or `first_hook`), `base` (`commit`, `from`: `session`,
   `--base` or `HEAD`), `judge` (`program`, `policy`, `ranker_dir`, `stop_hook`: the settings
-  file), `units` (none when the tree equals `HEAD`, else one, `uncommitted`, with its
+  file), `units` (each with `unit`: `uncommitted`, `staged` or `commit`, its `commit` id,
   `outcome` `pass`, `hold`, `fail` or `unjudged`, each rule by `id` with `held` and the
-  `signal`, `path` and number of `items` of each violation, the number of `judge_notes`, and
-  the `reason` of an UNJUDGED), `unjudged` (why nothing could be judged: no repository, a
-  session with no state or no base, a base that names no commit) and `stop`. Nothing of the
-  judge's own words is repeated: they can quote the patch. **What it says about a stop.**
-  `stop.whole_answer` is `false` and every answer ends with "This is not the stop's answer: a
-  stop also judges what is staged and each commit of the session, and blocks only for a
-  failure that has not blocked before; this build of agent check judges the uncommitted
-  change alone." `stop.same_inputs` is `true` only with a session whose base was read, a
-  registered `Stop` hook that runs this binary by its own path and names a judge, and no
-  option that replaces its judge, policy or ranker directory; the text form then says, of a
-  change it judged, "Judged with what a stop of this session judges the uncommitted change
-  with: the policy at the base the session recorded, and the judge, the policy and the ranker
-  directory of the registered Stop hook." Every other case is listed in `stop.differences` and said as "Not as the stop:
-  …". Same inputs are not the same answer: a stop has its own time, and a failure that has
-  blocked once stands there. **What a check writes.** With no judge it stages nothing and
-  writes nothing (the answer is UNJUDGED with the reason). With a judge it writes one scratch
-  directory, `.git/deep-diff-forge/tmp-r<16 hex digits>` under the repository's Git common
-  directory, holding the scratch index and objects of the staged tree, the policy and the patch
-  it gives the judge, and removes it before it exits; it makes `.git/deep-diff-forge/` when that
-  is missing and removes it again when it made it and it is empty. Making its directory, it
-  removes what killed hooks left there, as every hook does. It changes neither the index nor the
-  working tree (`git status` and the index file are as they were), nor anything in the state
-  directory. Exit 0 with the document, 2 for a usage error; `--range` and `--require-pass` are
-  refused as not in this build.
+  `signal`, `path` and number of `items` of each violation, the number of things the judge
+  named beside its rules, `judge_notes`, with their codes, `judge_note_codes`, and the
+  `reason` of an UNJUDGED), `unjudged` (why nothing could be judged: no repository, no
+  judge, a session with no state or no base, a base or a range that is refused) and `stop`.
+  Nothing of the judge's own words is repeated: they can quote the patch.
+  **What it says about a stop.** `stop.same_inputs` is `true` only with a session whose base
+  was read, a registered `Stop` hook that runs this binary by its own path and names a judge,
+  and no option that replaces its judge, policy or ranker directory. `stop.whole_answer` is
+  `true` only when, besides, every unit a stop of the session answers for was judged: the
+  session's commits could be told (its list of the commits there when it began was read), no
+  session commit was left out by `--range`, and the project has no linked working tree (a
+  stop from inside one also judges that tree). Only then does the answer end with "Equal to
+  the stop in its units and inputs: every unit a stop of this session answers for (the
+  uncommitted change, the staged change where it is another, and each commit of the session
+  by its own patch) was judged here with the stop's patch, the policy at the base the session
+  recorded, and the judge and rankers of the registered Stop hook. What the stop then decides
+  can still differ: the lines "The stop may differ" say where." Otherwise it ends with "This
+  is not the stop's whole answer: not every unit a stop of this session answers for was judged
+  here with the stop's inputs (the lines "Not as the stop" say what differs).", each
+  difference is in `stop.differences` and said as "Not as the stop: …", and with the same
+  inputs the text form says "Judged with what a stop of this session judges these units with:
+  …". Equal units and inputs are not an equal decision, and `stop.may_differ` lists, where
+  they apply: a failure blocks a stop once (what has blocked stands and does not block again;
+  the session's memory of it is not read); a commit an earlier stop answered is reported from
+  that answer and not asked again; and a stop's time (45 seconds in all, 30 for one run of
+  the judge, time kept back for what it asks after, its own order). Neither a stop nor a check
+  sees what Git does not list (the six ways in the limits below), and a judge whose verdict
+  changes between two runs on the same inputs can answer otherwise at the stop.
+  **What a check writes.** With no judge it stages nothing and writes nothing (the answer is
+  UNJUDGED with the reason). With a judge it writes one scratch directory,
+  `.git/deep-diff-forge/tmp-r<16 hex digits>` under the repository's Git common directory,
+  holding the scratch indexes and objects of what it stages, the lists of commits Git is
+  given, the policy and the patches it gives the judge, and removes it before it exits; it
+  makes `.git/deep-diff-forge/` when that is missing and removes it again when it made it and
+  it is empty. Making its directory, it removes what killed hooks left there, as every hook
+  does. It changes neither the index nor the working tree (`git status` and the index file are
+  as they were), nor anything in the state directory. Exit 0 with the document, 2 for a usage
+  error; `--require-pass` is refused as not in this build.
 - **A hook never fails its client, and a failure is never silence.** A hook always exits 0;
   exit 2, which Claude Code reads from a stop hook as a block, is never used, also not for a
   command line the hook cannot read (a mistyped option says that the hook did not run, and

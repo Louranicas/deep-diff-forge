@@ -1,8 +1,10 @@
-//! `agent check` (F3, part 1): the judgement a stop gives the uncommitted change, on demand.
-//! With `--session ID` it reads that session's state, read only, for the base the session
-//! recorded; the judge, the policy and the ranker directory come from the registered `Stop`
-//! hook, never from `PATH`. It judges the uncommitted change alone: what is staged and the
-//! session's commits are not judged in this build, so it never says it is the stop's answer.
+//! `agent check` (F3): the judgement a stop gives, on demand, unit by unit: the uncommitted
+//! change, the staged change when it is another, and each commit by its own patch (a session's
+//! commits, or those of `--range`). With `--session ID` it reads that session's state, read
+//! only, for the base the session recorded and the commits that are the session's; the judge,
+//! the policy and the ranker directory come from the registered `Stop` hook, never from `PATH`.
+//! It says it equals the stop in its units and inputs only when it judged every unit the stop
+//! answers for with the stop's inputs, and it lists what the stop can still decide otherwise.
 
 use crate::emit;
 use crate::hook::{self, Judged};
@@ -10,10 +12,12 @@ use deep_diff_forge_core::{display_safe, exit};
 use serde_json::{Value, json};
 use std::path::Path;
 
-pub(crate) const CHECK_USAGE: &str = "deep-diff-forge agent check [--session ID | --base REV] [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--json]";
+pub(crate) const CHECK_USAGE: &str = "deep-diff-forge agent check [--session ID | --base REV] [--range A..B] [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--json]";
 
-/// What a check does not judge, said with every answer: true of this build whatever it finds.
-const NOT_THE_STOP: &str = "This is not the stop's answer: a stop also judges what is staged and each commit of the session, and blocks only for a failure that has not blocked before; this build of agent check judges the uncommitted change alone.";
+/// Said when not every unit a stop answers for was judged with the stop's inputs.
+const NOT_WHOLE: &str = "This is not the stop's whole answer: not every unit a stop of this session answers for was judged here with the stop's inputs (the lines \"Not as the stop\" say what differs).";
+/// Said only when every unit a stop of the session answers for was judged with its inputs.
+const EQUAL: &str = "Equal to the stop in its units and inputs: every unit a stop of this session answers for (the uncommitted change, the staged change where it is another, and each commit of the session by its own patch) was judged here with the stop's patch, the policy at the base the session recorded, and the judge and rankers of the registered Stop hook. What the stop then decides can still differ: the lines \"The stop may differ\" say where.";
 
 pub(crate) fn run(args: &[String]) {
     crate::args::admit_or_exit(
@@ -32,8 +36,8 @@ pub(crate) fn run(args: &[String]) {
         },
         CHECK_USAGE,
     );
-    if crate::flag_value(args, "--range").is_some() || args.iter().any(|a| a == "--require-pass") {
-        refuse("--range and --require-pass are not in this build of agent check");
+    if args.iter().any(|a| a == "--require-pass") {
+        refuse("--require-pass is not in this build of agent check");
     }
     let (session, base) = (
         crate::flag_value(args, "--session"),
@@ -64,11 +68,16 @@ fn check(session: Option<&str>, base: Option<&str>, args: &[String]) -> Value {
         "tool": {"name": "deep-diff-forge", "version": env!("CARGO_PKG_VERSION")},
         "project": null, "session": null, "base": null, "judge": null, "units": [],
         "unjudged": null,
-        "stop": {"same_inputs": false, "differences": [], "whole_answer": false, "said": NOT_THE_STOP},
+        "stop": {"same_inputs": false, "differences": [], "whole_answer": false, "said": NOT_WHOLE,
+                 "may_differ": []},
     });
     let mut differs: Vec<String> = Vec::new();
+    let mut lists = None;
     let found = if let Some(id) = session {
-        from_session(id, &mut doc)
+        from_session(id, &mut doc).map(|(top, base, seen)| {
+            lists = Some(seen);
+            (top, base, "session")
+        })
     } else {
         differs.push(
             "no session: the policy is read at the base named here, not at the base a session recorded"
@@ -88,26 +97,107 @@ fn check(session: Option<&str>, base: Option<&str>, args: &[String]) -> Value {
     };
     doc["project"] = json!(top.to_string_lossy());
     let (bench, no_judge) = installed(&top, args, &mut differs, &mut doc);
-    match crate::hook_run::check_uncommitted(&top, &base, &bench, no_judge.as_deref()) {
-        Ok((commit, judged)) => {
-            doc["base"] = json!({"commit": commit, "from": from});
-            if let Some(judged) = judged {
-                doc["units"] = json!([unit(&judged)]);
-            }
-            doc["stop"]["same_inputs"] = json!(differs.is_empty());
-            doc["stop"]["differences"] = json!(differs);
-            doc
-        }
-        Err(why) => unjudged(doc, &differs, &why),
+    let same_inputs = differs.is_empty();
+    let tips = lists
+        .as_ref()
+        .and_then(|(tips, _)| tips.as_ref().ok())
+        .map(Vec::as_slice);
+    let range = crate::flag_value(args, "--range");
+    let checked = match crate::hook_run::check_units(
+        &top,
+        &base,
+        &bench,
+        no_judge.as_deref(),
+        range.as_deref(),
+        tips,
+    ) {
+        Ok(checked) => checked,
+        Err(why) => return unjudged(doc, &differs, &why),
+    };
+    doc["base"] = json!({"commit": checked.base, "from": from});
+    doc["units"] = checked
+        .units
+        .iter()
+        .map(|(kind, id, judged)| unit(kind, id.as_deref(), judged))
+        .collect();
+    // The units a stop of the session answers for that were not judged here.
+    if let Some((Err(why), _)) = &lists {
+        differs.push(format!(
+            "a stop of this session tells none of its commits from the others, so it judges none ({})",
+            display_safe(why)
+        ));
     }
+    if let Some(all) = &checked.session_commits {
+        let judged = |id: &String| {
+            checked
+                .units
+                .iter()
+                .any(|(_, at, _)| at.as_ref() == Some(id))
+        };
+        let left = all.iter().filter(|id| !judged(id)).count();
+        if left > 0 {
+            differs.push(format!(
+                "{left} of the session's {} commits were not judged here (the range leaves them out)",
+                all.len()
+            ));
+        }
+    }
+    if checked.linked {
+        differs.push("the project has linked working trees: a stop from inside one also judges that tree's changes, which this check does not".to_owned());
+    }
+    let whole = same_inputs && differs.is_empty() && session.is_some();
+    let answered = lists.as_ref().map(|(_, answered)| answered.as_slice());
+    doc["stop"]["same_inputs"] = json!(same_inputs);
+    doc["stop"]["whole_answer"] = json!(whole);
+    doc["stop"]["said"] = json!(if whole { EQUAL } else { NOT_WHOLE });
+    doc["stop"]["may_differ"] = json!(may_differ(&checked, answered));
+    doc["stop"]["differences"] = json!(differs);
+    doc
+}
+
+/// Where a stop can decide otherwise than these verdicts read alone: only what applies.
+fn may_differ(checked: &crate::hook_run::Checked, answered: Option<&[String]>) -> Vec<String> {
+    let mut said = Vec::new();
+    if checked.units.is_empty() {
+        return said;
+    }
+    if checked
+        .units
+        .iter()
+        .any(|(_, _, judged)| matches!(judged, Judged::Fail { .. }))
+    {
+        said.push("a failure blocks a stop once: what has blocked before stands at the stop and does not block again (the session's memory of it is not read here)".to_owned());
+    }
+    let recorded = |id: &String| answered.is_some_and(|list| list.contains(id));
+    let known = checked
+        .units
+        .iter()
+        .filter(|(_, id, _)| id.as_ref().is_some_and(recorded))
+        .count();
+    if known > 0 {
+        said.push(format!("{known} of these commits have an answer an earlier stop recorded: the stop reports that answer and does not ask the judge again"));
+    }
+    said.push("a stop has 45 seconds for all it does and 30 for one run of the judge, keeps time back for what it asks after, and judges in its own order: what it does not reach is UNJUDGED at that stop".to_owned());
+    said
 }
 
 /// The session's project, the base it recorded and where that base is from, read from the
 /// session's state without writing it ([`crate::hook_run::session_seen`]).
+#[expect(
+    clippy::type_complexity,
+    reason = "the project, the base, and the session's two lists"
+)]
 fn from_session(
     id: &str,
     doc: &mut Value,
-) -> Result<(std::path::PathBuf, String, &'static str), String> {
+) -> Result<
+    (
+        std::path::PathBuf,
+        String,
+        (Result<Vec<String>, String>, Vec<String>),
+    ),
+    String,
+> {
     let seen = crate::hook_run::session_seen(id)
         .map_err(|why| format!("the session {}: {why}", display_safe(id)))?;
     // (a base its first hook recorded is the stop's base all the same)
@@ -126,7 +216,7 @@ fn from_session(
             hook::shown_path(&seen.top.to_string_lossy())
         ));
     }
-    Ok((top, base, "session"))
+    Ok((top, base, (seen.tips, seen.answered)))
 }
 
 fn unjudged(mut doc: Value, differs: &[String], why: &str) -> Value {
@@ -199,7 +289,7 @@ fn installed(
 /// One unit as the document gives it: its outcome, and for a hold or a fail each rule by its
 /// id with the signals and paths the judge cites (never the judge's words: they can quote the
 /// patch).
-fn unit(judged: &Judged) -> Value {
+fn unit(kind: &str, commit: Option<&str>, judged: &Judged) -> Value {
     let rules = |rules: &[hook::RuleOutcome]| -> Value {
         rules
             .iter()
@@ -216,7 +306,7 @@ fn unit(judged: &Judged) -> Value {
         Judged::Fail { rules: r, said } => ("fail", rules(r), &said[..], None),
         Judged::Unjudged { reason } => ("unjudged", json!([]), &[][..], Some(reason.as_str())),
     };
-    json!({"unit": "uncommitted", "outcome": outcome, "rules": rules, "judge_notes": said.len(),
+    json!({"unit": kind, "commit": commit, "outcome": outcome, "rules": rules, "judge_notes": said.len(),
            "judge_note_codes": said.iter().map(|words| note_code(words)).collect::<Vec<_>>(), "reason": reason})
 }
 
@@ -248,20 +338,25 @@ fn text(doc: &Value) -> String {
             .map_or_else(|| "none".to_owned(), hook::shown_path)
     };
     let mut out = Vec::new();
-    match doc["units"].get(0) {
-        _ if !doc["unjudged"].is_null() => {
-            out.push(format!("UNJUDGED: {}", word(&doc["unjudged"])));
-        }
-        None => out
-            .push("Nothing uncommitted: the working tree equals the commit HEAD names.".to_owned()),
-        Some(unit) => {
+    if !doc["unjudged"].is_null() {
+        out.push(format!("UNJUDGED: {}", word(&doc["unjudged"])));
+    } else if doc["units"].as_array().is_none_or(Vec::is_empty) {
+        out.push("Nothing to judge: the working tree and the index equal the commit HEAD names, and no commit was judged.".to_owned());
+    }
+    for unit in doc["units"].as_array().into_iter().flatten() {
+        let name = match (unit["unit"].as_str(), unit["commit"].as_str()) {
+            (Some("staged"), _) => "The staged change".to_owned(),
+            (Some("commit"), Some(id)) => format!(
+                "Commit {}",
+                display_safe(&id.chars().take(12).collect::<String>())
+            ),
+            _ => "The uncommitted change".to_owned(),
+        };
+        {
             let outcome = unit["outcome"].as_str().unwrap_or_default().to_uppercase();
             match unit["reason"].as_str() {
-                Some(reason) => out.push(format!(
-                    "The uncommitted change: {outcome}: {}",
-                    display_safe(reason)
-                )),
-                None => out.push(format!("The uncommitted change: {outcome}")),
+                Some(reason) => out.push(format!("{name}: {outcome}: {}", display_safe(reason))),
+                None => out.push(format!("{name}: {outcome}")),
             }
             for rule in unit["rules"].as_array().into_iter().flatten() {
                 for cited in rule["violations"].as_array().into_iter().flatten() {
@@ -311,13 +406,17 @@ fn text(doc: &Value) -> String {
         path(&doc["judge"]["ranker_dir"]),
         path(&doc["judge"]["stop_hook"])
     ));
-    if doc["stop"]["same_inputs"] == true && doc["units"].get(0).is_some() {
-        out.push("Judged with what a stop of this session judges the uncommitted change with: the policy at the base the session recorded, and the judge, the policy and the ranker directory of the registered Stop hook.".to_owned());
+    let judged = doc["units"].get(0).is_some();
+    if doc["stop"]["same_inputs"] == true && doc["stop"]["whole_answer"] != true && judged {
+        out.push("Judged with what a stop of this session judges these units with: the policy at the base the session recorded, and the judge, the policy and the ranker directory of the registered Stop hook.".to_owned());
     }
     for why in doc["stop"]["differences"].as_array().into_iter().flatten() {
         out.push(format!("Not as the stop: {}", word(why)));
     }
-    out.push(NOT_THE_STOP.to_owned());
+    for why in doc["stop"]["may_differ"].as_array().into_iter().flatten() {
+        out.push(format!("The stop may differ: {}", word(why)));
+    }
+    out.push(word(&doc["stop"]["said"]));
     out.join("\n")
 }
 
@@ -334,7 +433,7 @@ mod tests {
             "expired waiver 0 for rule r: owner o, expired 2026-01-01".to_owned(),
             "note Bad Code: words".to_owned(),
         ];
-        let mut doc = json!({"units": [unit(&Judged::Hold { rules: vec![], said })],
+        let mut doc = json!({"units": [unit("uncommitted", None, &Judged::Hold { rules: vec![], said })],
                              "unjudged": null, "stop": {"differences": []}});
         let said = text(&doc);
         assert!(
@@ -342,10 +441,14 @@ mod tests {
             "{said}"
         );
         assert!(!said.contains("requires verified"), "{said}");
-        doc["units"] = json!([unit(&Judged::Fail {
-            rules: vec![],
-            said: vec![]
-        })]);
+        doc["units"] = json!([unit(
+            "uncommitted",
+            None,
+            &Judged::Fail {
+                rules: vec![],
+                said: vec![]
+            }
+        )]);
         assert!(
             text(&doc).contains("the judge named no rule and nothing beside its rules"),
             "{doc}"

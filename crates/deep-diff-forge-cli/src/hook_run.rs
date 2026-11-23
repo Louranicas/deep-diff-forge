@@ -6685,6 +6685,10 @@ pub(crate) struct SessionSeen {
     /// The commit the session began from, or why there is none.
     pub(crate) base: Result<String, &'static str>,
     pub(crate) by_start: bool,
+    /// The commits that were there when the session began, or why they cannot be read.
+    pub(crate) tips: Result<Vec<String>, String>,
+    /// The commits of the session that have their answer.
+    pub(crate) answered: Vec<String>,
 }
 
 /// The state of `session`, read only: the file is opened for reading as every hook reads it
@@ -6692,13 +6696,35 @@ pub(crate) struct SessionSeen {
 /// included. `agent check` is no hook of the session and must leave its record as it is.
 pub(crate) fn session_seen(session: &str) -> Result<SessionSeen, String> {
     let file = state_file(&sessions_dir()?, session);
-    let project = match load_read(&file) {
-        Ok(Some((state, _))) => state.project,
+    let state = match load_read(&file) {
+        Ok(Some((state, _))) => state,
         Ok(None) => return Err(format!("it has no state ({} is not there)", shown(&file))),
         Err(why) => return Err(format!("its state {} cannot be read: {why}", shown(&file))),
     };
-    let project = project.ok_or_else(|| "its state records no project yet".to_owned())?;
+    let project =
+        (state.project.clone()).ok_or_else(|| "its state records no project yet".to_owned())?;
+    let tips = match &project.no_baseline {
+        Some(why) => Err(why.clone()),
+        None => load_tips(&tips_file(&file), &project),
+    };
+    let answered = if state.judged_count == 0 {
+        Vec::new()
+    } else {
+        let list = (state.judged_sha256.as_str(), state.judged_count);
+        load_list(
+            &judged_file(&file),
+            list,
+            false,
+            is_judged_entry,
+            "the judged commits",
+        )?
+    };
     Ok(SessionSeen {
+        tips,
+        answered: answered
+            .iter()
+            .filter_map(|entry| Some(entry.split_once(':')?.0.to_owned()))
+            .collect(),
         base: match project.base {
             Base::Commit(id) => Ok(id),
             Base::NoCommit => Err("the repository had no commit when the session began"),
@@ -6738,23 +6764,40 @@ fn place_of(dir: &Path, deadline: Deadline) -> Result<Place, String> {
     }
 }
 
-/// The uncommitted change of the working tree at `top` judged as a stop judges it: against
-/// the commit its `HEAD` names, in a scratch directory under the hooks' own directory, by the
-/// policy at the commit `base` names, with the judge and the rankers `args` names. `no_judge`
-/// says why there is no judge to run: then nothing is looked up on `PATH`. The commit `base`
-/// names comes with the answer, which is `None` when the tree equals that commit.
-pub(crate) fn check_uncommitted(
+/// What `agent check` judged: each unit (`uncommitted`, `staged`, `commit`) with its commit and
+/// answer, the commit the policy was read from, the session's commits (when its list was read)
+/// and whether the project has linked working trees.
+pub(crate) struct Checked {
+    pub(crate) base: String,
+    pub(crate) units: Vec<(&'static str, Option<String>, Judged)>,
+    pub(crate) session_commits: Option<Vec<String>>,
+    pub(crate) linked: bool,
+}
+
+/// The units a stop judges, judged as it judges them, in its order: the uncommitted change of
+/// the working tree at `top` against the commit its `HEAD` names, the staged change when it is
+/// another, then each commit by its own patch (from its first parent): those of `range`
+/// (`A..B`, which must be one line of commits, each the parent of the next) or, with `tips` (a
+/// session's), the session's commits. With `tips` the range must hold only the session's
+/// commits. All in a scratch directory under the hooks' own directory, by the policy at the
+/// commit `base` names, with the judge and rankers `args` names; `no_judge` says why there is no
+/// judge to run, and then nothing is staged and nothing is looked up on `PATH`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the units in the stop's order: the tree, the index, then each commit"
+)]
+pub(crate) fn check_units(
     top: &Path,
     base: &str,
     args: &[String],
     no_judge: Option<&str>,
-) -> Result<(String, Option<Judged>), String> {
+    range: Option<&str>,
+    tips: Option<&[String]>,
+) -> Result<Checked, String> {
     let deadline = Deadline::after(STOP_LIMIT);
     let place = place_of(top, deadline)?;
     let deadline = deadline.with_project(&place);
-    let base = deep_diff_forge_patch::merge_base(&place.top, base, base, &deadline.git())
-        .map_err(|e| format!("the base names no commit: {}", git_words(&e)))?
-        .ok_or("the base names no commit")?;
+    let base = commit_of(&place, deadline, base)?;
     let head = match head_state(&place.top, &deadline.git()) {
         Ok(HeadState::Commit(id)) => id,
         Ok(HeadState::Unborn { .. }) => base.clone(),
@@ -6769,37 +6812,161 @@ pub(crate) fn check_uncommitted(
     if let Some(why) = no_judge {
         return Err(why.to_owned());
     }
+    let linked = worktrees(&place.top, &deadline.git()).is_ok_and(|trees| trees.len() > 1);
     // The hooks' own directory is removed again when this check made it and left it empty.
     let made_own = place.own.symlink_metadata().is_err();
-    let judged = (|| {
+    let checked = (|| {
         let scratch = Scratch::new(&place.own)?;
-        let work = scratch.sub("tree")?;
-        Ok(
-            match change(&place.top, &head, "the commit HEAD names", &work, deadline) {
-                Err(reason) => Some(Judged::Unjudged { reason }),
-                Ok(Change { patch: None, .. }) => None,
-                Ok(Change {
-                    patch: Some(patch), ..
-                }) => {
-                    let writable = [place.top.as_path(), place.common.as_path()];
-                    Some(
-                        match Bench::new(&place.top, &base, &scratch, args, &writable, deadline) {
-                            Ok(bench) => {
-                                bench
-                                    .judge(&patch, "change.patch", After::Trees(Duration::ZERO))
-                                    .0
-                            }
-                            Err(reason) => Judged::Unjudged { reason },
-                        },
-                    )
+        let session = match tips {
+            Some(tips) => {
+                let own = named_commits(&place.top, Named::Own, &deadline.git())
+                    .map_err(|e| format!("the commits could not be listed: {}", git_words(&e)))?;
+                Some(listed(
+                    &place,
+                    deadline,
+                    &scratch,
+                    (&own, tips),
+                    "session.list",
+                )?)
+            }
+            None => None,
+        };
+        let commits = match range {
+            Some(range) => range_line(&place, deadline, &scratch, range, session.as_deref())?,
+            None => session.clone().unwrap_or_default(),
+        };
+        let mut units = Vec::new();
+        let mut bench: Option<Result<Bench<'_>, String>> = None;
+        let mut judge = |patch: &[u8]| {
+            let writable = [place.top.as_path(), place.common.as_path()];
+            match bench.get_or_insert_with(|| {
+                Bench::new(&place.top, &base, &scratch, args, &writable, deadline)
+            }) {
+                Ok(bench) => {
+                    bench
+                        .judge(patch, "change.patch", After::Trees(Duration::ZERO))
+                        .0
                 }
-            },
-        )
+                Err(reason) => Judged::Unjudged {
+                    reason: reason.clone(),
+                },
+            }
+        };
+        match change(
+            &place.top,
+            &head,
+            "the commit HEAD names",
+            &scratch.sub("tree")?,
+            deadline,
+        ) {
+            Err(reason) => units.push(("uncommitted", None, Judged::Unjudged { reason })),
+            Ok(Change { patch, .. }) => {
+                if let Some(patch) = &patch {
+                    units.push(("uncommitted", None, judge(patch)));
+                }
+                match staged_patch(&place.top, &head, &scratch.sub("index")?, &deadline.git()) {
+                    Ok(bytes) if bytes.is_empty() || Some(&bytes) == patch.as_ref() => {}
+                    Ok(bytes) => units.push(("staged", None, judge(&bytes))),
+                    Err(e) => units.push((
+                        "staged",
+                        None,
+                        Judged::Unjudged {
+                            reason: format!("what is staged cannot be judged: {e}"),
+                        },
+                    )),
+                }
+            }
+        }
+        for (at, (id, parent)) in commits.iter().enumerate() {
+            let sub = scratch.sub(&format!("commit-{at}"))?;
+            let judged =
+                match commit_patch(&place.top, parent.as_deref(), id, &sub, &deadline.git()) {
+                    Ok(bytes) if bytes.is_empty() => Judged::Pass,
+                    Ok(bytes) => judge(&bytes),
+                    Err(e) => Judged::Unjudged {
+                        reason: format!("the commit could not be read from Git: {e}"),
+                    },
+                };
+            units.push(("commit", Some(id.clone()), judged));
+        }
+        Ok(Checked {
+            base: base.clone(),
+            units,
+            session_commits: session.map(|list| list.into_iter().map(|(id, _)| id).collect()),
+            linked,
+        })
     })();
     if made_own {
         let _ = std::fs::remove_dir(&place.own);
     }
-    judged.map(|judged| (base, judged))
+    checked
+}
+
+/// The commit `rev` names in the project at `place`.
+fn commit_of(place: &Place, deadline: Deadline, rev: &str) -> Result<String, String> {
+    let shown = deep_diff_forge_core::display_safe(rev);
+    deep_diff_forge_patch::merge_base(&place.top, rev, rev, &deadline.git())
+        .map_err(|e| format!("{shown} names no commit: {}", git_words(&e)))?
+        .ok_or_else(|| format!("{shown} names no commit"))
+}
+
+/// The commits `sources` lead to that none of `known` does, the oldest first, with their first
+/// parents (the list Git is given is the file `name` in the scratch directory).
+fn listed(
+    place: &Place,
+    deadline: Deadline,
+    scratch: &Scratch,
+    (sources, known): (&[String], &[String]),
+    name: &str,
+) -> Result<Vec<CommitAndParent>, String> {
+    commits_beyond(
+        &place.top,
+        sources,
+        known,
+        &scratch.0.join(name),
+        &deadline.git(),
+    )
+    .map_err(|e| format!("the commits could not be listed: {}", git_words(&e)))
+}
+
+/// The commits of `range` (`A..B`), the oldest first: refused unless they are one line, each
+/// the first parent of the next from `A` to `B`, and, with a session's commits, all of them
+/// the session's.
+fn range_line(
+    place: &Place,
+    deadline: Deadline,
+    scratch: &Scratch,
+    range: &str,
+    session: Option<&[CommitAndParent]>,
+) -> Result<Vec<CommitAndParent>, String> {
+    let shown = deep_diff_forge_core::display_safe(range);
+    let (from, to) = range
+        .split_once("..")
+        .filter(|(a, b)| !a.is_empty() && !b.is_empty() && !b.starts_with('.'))
+        .ok_or_else(|| format!("the range {shown} is not A..B"))?;
+    let (from, to) = (
+        commit_of(place, deadline, from)?,
+        commit_of(place, deadline, to)?,
+    );
+    let ends = (std::slice::from_ref(&to), std::slice::from_ref(&from));
+    let line = listed(place, deadline, scratch, ends, "range.list")?;
+    let chained = line.last().is_some_and(|(id, _)| *id == to)
+        && line.iter().enumerate().all(|(at, (_, parent))| {
+            parent.as_deref() == Some(if at == 0 { &from } else { &line[at - 1].0 })
+        });
+    if !chained {
+        return Err(format!(
+            "the range {shown} is not one line of commits, each the parent of the next"
+        ));
+    }
+    if let Some(session) = session
+        && line.iter().any(|commit| !session.contains(commit))
+    {
+        return Err(format!(
+            "the range {shown} holds commits a stop of this session does not judge (there before it began, or named only by a remote-tracking ref)"
+        ));
+    }
+    Ok(line)
 }
 
 /// `agent doctor --gate`: every link a judged stop depends on, checked in order in the

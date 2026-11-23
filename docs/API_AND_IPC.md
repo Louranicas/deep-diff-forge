@@ -131,7 +131,7 @@ deep-diff-forge learn {status|record --stdin} [--json]
 deep-diff-forge <old> <new> [<--stdin-patch output flags but --allow-empty>]
 deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side | --outline | --hunks [--address A]... [--path P]...] [--max-bytes N] [--cursor C] [--require-files] [--require-hunks]
 deep-diff-forge {--git-working-tree [--include-untracked] | --git-staged | --git-range A..B} [--repo PATH] [--acquisition-json | <--stdin-patch output flags>]
-deep-diff-forge agent {setup --client claude|codex [--allow-repo PATH]... [--hooks] | doctor [--gate] | check [--session ID | --base REV] | hook session-start|post-tool|stop --client claude} [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--json]
+deep-diff-forge agent {setup --client claude|codex [--allow-repo PATH]... [--hooks] | doctor [--gate] | check [--session ID | --base REV] [--range A..B] | hook session-start|post-tool|stop --client claude} [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--json]
 # internal, started by the stop hook itself: agent hook seal-rankers [--ranker-dir DIR]
 #   prints one JSON list of {"path", "sha256"} or {"path", "refused"} for the candidate rankers
 deep-diff-forge mcp [--allow-repo PATH]...

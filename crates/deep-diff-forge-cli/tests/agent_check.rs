@@ -163,6 +163,12 @@ fn write_program(path: &Path, body: &str) {
 /// it is given says `# strict`, else pass). With `wait`, it first writes the directory of the
 /// patch it was given to `wait/started` and waits, at most 20 seconds, for `wait/release`.
 fn judge(path: &Path, answer: &str, wait: Option<&Path>) {
+    judge_of("forge-warden.verdict.v2", path, answer, wait);
+}
+
+/// [`judge`] printing a document of the verdict schema `schema` (v3 reads as v2 where no claim
+/// is bound and no rule is built in).
+fn judge_of(schema: &str, path: &Path, answer: &str, wait: Option<&Path>) {
     const SCRIPT: &str = r#"#!/bin/sh
 policy=; patch=; ranker=
 while [ $# -gt 0 ]; do
@@ -180,27 +186,32 @@ code=0
 case '@ANSWER@' in
   fail) code=7;;
   policy) if grep -q '^# strict' "$policy"; then code=7; fi;;
+  marked) if grep -q '^+#\[allow' "$patch"; then code=7; fi;;
+  hold) code=8;;
+  unreadable) printf 'not a verdict\n'; exit 7;;
 esac
 sum() { sha256sum < "$1" | cut -d' ' -f1; }
+sev=fail
 if [ "$code" = 7 ]; then said=fail; name=policy_fail; action=change_input; counts='"passed":0,"waived":0,"held":0,"failed":1'
+elif [ "$code" = 8 ]; then said=hold; name=policy_hold; action=review_evidence; sev=hold; counts='"passed":0,"waived":0,"held":1,"failed":0'
 else said=pass; name=pass; action=proceed; counts='"passed":1,"waived":0,"held":0,"failed":0'; fi
 p="$(sum "$policy")"; f="$(sum "$patch")"; r="$(sum "$ranker")"
 seals="{\"policy_sha256\":\"$p\",\"rank_sha256\":\"$f\",\"patch_sha256\":\"$f\",\"patch_facts_sha256\":null,\"provenance\":\"produced\",\"ranked_by\":{\"version\":\"stand-in\",\"sha256\":\"$r\"},\"git\":{\"path\":\"/usr/bin/git\",\"version\":\"git version 2.56.0\",\"sha256\":\"$p\",\"admission\":\"approved\",\"allowlist_sha256\":\"$f\"}}"
 sed -e "s/\"@VERDICT@\"/\"$said\"/g" -e "s/\"@CODE@\"/$code/" -e "s/\"@NAME@\"/\"$name\"/" \
-    -e "s/\"@ACTION@\"/\"$action\"/" -e "s|\"@SEALS@\"|$seals|" -e "s/\"@COUNTS@\":0/$counts/" <<'VERDICT'
+    -e "s/\"@ACTION@\"/\"$action\"/" -e "s|\"@SEALS@\"|$seals|" -e "s/\"@COUNTS@\":0/$counts/" -e "s/\"@SEVERITY@\"/\"$sev\"/" <<'VERDICT'
 @VERDICT_DOCUMENT@
 VERDICT
 exit "$code"
 "#;
     let verdict = json!({
-        "schema": "forge-warden.verdict.v2",
+        "schema": schema,
         "tool": {"name": "forge-warden", "version": "0.2.0"},
         "evaluated_on": "2026-11-14",
         "seals": "@SEALS@",
         "verdict": "@VERDICT@",
         "exit": {"code": "@CODE@", "name": "@NAME@", "action": "@ACTION@"},
         "summary": {"files": 1, "rules": 1, "@COUNTS@": 0},
-        "rules": [{"id": "no-silent-suppression", "kind": "forbid_signal", "severity": "fail",
+        "rules": [{"id": "no-silent-suppression", "kind": "forbid_signal", "severity": "@SEVERITY@",
                    "outcome": "@VERDICT@", "why": "A silenced check hides the next real bug.",
                    "violations": [{"signal": "check_suppressed", "path": "a.rs", "message": "m"}]}],
         "expired_waivers": [], "unused_waivers": [], "notes": [],
@@ -278,7 +289,7 @@ fn agent_check_says_its_usage_and_names_its_schema() {
     let outside = scratch.join("outside");
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&outside).unwrap();
-    let usage = "deep-diff-forge agent check [--session ID | --base REV] [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--json]";
+    let usage = "deep-diff-forge agent check [--session ID | --base REV] [--range A..B] [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--json]";
     let (code, _, stderr) = finish(
         {
             let mut command = ddf(&home, &outside);
@@ -290,7 +301,6 @@ fn agent_check_says_its_usage_and_names_its_schema() {
     assert_eq!(code, 2);
     assert!(stderr.contains(usage), "{stderr}");
     for (args, said) in [
-        (&["--range", "a..b"][..], "not in this build"),
         (&["--require-pass"][..], "not in this build"),
         (
             &["--session", "s", "--base", "HEAD"][..],
@@ -389,11 +399,13 @@ fn check_uses_the_session_base_and_the_installed_judge() {
     assert_eq!(doc["units"][0]["rules"][0]["id"], "no-silent-suppression");
     let (_, text, _) = check(&home, &root, &["--session", "s1"], Some(&bin));
     assert!(text.starts_with("The uncommitted change: FAIL\n"), "{text}");
+    // (the session's one commit, the loosening, is judged too: every unit the stop answers for)
+    assert_eq!(doc["units"][1]["unit"], "commit", "{doc}");
+    assert_eq!(doc["stop"]["whole_answer"], true, "{doc}");
     assert!(
-        text.contains("Judged with what a stop of this session judges the uncommitted change with"),
+        text.contains("Equal to the stop in its units and inputs"),
         "{text}"
     );
-    assert!(text.contains("This is not the stop's answer"), "{text}");
 
     // Without a session the base is HEAD, whose policy is the loosened one: the check says
     // which base and judge it used and claims no equality.
@@ -681,4 +693,220 @@ fn a_check_leaves_nothing_behind_and_changes_neither_index_nor_tree() {
     let _ = check_json(&home, &root, &["--judge", fast.to_str().unwrap()], None);
     assert!(own.is_dir(), "a check removed a directory it did not make");
     assert_eq!(std::fs::read_dir(&own).unwrap().count(), 0);
+}
+
+/// What a stop decided, as a check names an outcome: a block is `fail`, a HOLD message `hold`,
+/// silence `pass`.
+fn stop_outcome(stdout: &str) -> &'static str {
+    if stdout.contains("\"decision\":\"block\"") {
+        "fail"
+    } else if stdout.contains("HOLD.") {
+        "hold"
+    } else if stdout.trim().is_empty() {
+        "pass"
+    } else {
+        "other"
+    }
+}
+
+/// A session `s1` in a new repository whose Stop hook names a stand-in judge of `schema` that
+/// gives `answer`; `change` then makes the session's work. The stop's output, and the check's
+/// document with `--session s1`.
+fn stop_and_check(schema: &str, answer: &str, change: impl FnOnce(&Path)) -> (String, Value) {
+    let scratch = Scratch::new("agent-check-equal");
+    let (home, root) = repository(&scratch);
+    let judge_path = scratch.join("judge");
+    judge_of(schema, &judge_path, answer, None);
+    install(&home, &judge_path);
+    let (code, _, _) = hook(
+        &home,
+        "session-start",
+        &[],
+        &input("SessionStart", &root, "s1"),
+    );
+    assert_eq!(code, 0);
+    change(&root);
+    let (_, stdout, _) = hook(
+        &home,
+        "stop",
+        &["--judge", judge_path.to_str().unwrap()],
+        &input("Stop", &root, "s1"),
+    );
+    (stdout, check_json(&home, &root, &["--session", "s1"], None))
+}
+
+/// F3.d: on the same tree each unit's answer under `agent check --session` is the stop's
+/// decision, for verdict v2 and v3, PASS, HOLD, FAIL and an exit 7 whose document cannot be
+/// read, and for a staged change the tree no longer has; every unit was judged, so the check
+/// says it equals the stop in its units and inputs.
+#[test]
+fn check_equals_the_stop_on_the_same_tree() {
+    let v2 = "forge-warden.verdict.v2";
+    let v3 = "forge-warden.verdict.v3";
+    for (schema, answer) in [
+        (v2, "pass"),
+        (v2, "hold"),
+        (v2, "fail"),
+        (v2, "unreadable"),
+        (v3, "hold"),
+        (v3, "fail"),
+    ] {
+        let (stop, doc) = stop_and_check(schema, answer, silence_a_lint);
+        let units = doc["units"].as_array().unwrap();
+        assert_eq!(units.len(), 1, "{schema} {answer}: {doc}");
+        assert_eq!(units[0]["unit"], "uncommitted", "{doc}");
+        assert_eq!(
+            units[0]["outcome"],
+            stop_outcome(&stop),
+            "{schema} {answer}: the check is not the stop: {stop} / {doc}"
+        );
+        assert_eq!(doc["stop"]["whole_answer"], true, "{doc}");
+    }
+    // staged, then repaired in the working tree without `git add`: the staged change is the unit
+    let (stop, doc) = stop_and_check(v2, "marked", |root| {
+        silence_a_lint(root);
+        git(root, &["add", "a.rs"]);
+        std::fs::write(root.join("a.rs"), "fn a() {}\nfn b() {}\n").unwrap();
+    });
+    assert_eq!(stop_outcome(&stop), "fail", "{stop}");
+    assert_eq!(
+        doc["units"],
+        json!([doc["units"][0].clone()]),
+        "one unit: {doc}"
+    );
+    assert_eq!(doc["units"][0]["unit"], "staged", "{doc}");
+    assert_eq!(doc["units"][0]["outcome"], "fail", "{doc}");
+}
+
+/// F3.d: each commit is judged by its own patch: a session of two commits, the second failing,
+/// gives two units that agree with the stop; a range of one of them is one unit and the check
+/// no longer says it equals the stop; a range that is not one line, or that holds a commit from
+/// before the session, is refused.
+#[test]
+#[expect(clippy::too_many_lines, reason = "one session, its ranges in turn")]
+fn a_range_is_judged_commit_by_commit() {
+    let scratch = Scratch::new("agent-check-range");
+    let (home, root) = repository(&scratch);
+    std::fs::write(root.join("c.rs"), "fn c() {}\n").unwrap();
+    git(&root, &["add", "c.rs"]);
+    git(&root, &["commit", "--quiet", "-m", "before the session"]);
+    let marked = scratch.join("judge");
+    judge(&marked, "marked", None);
+    install(&home, &marked);
+    let (code, _, _) = hook(
+        &home,
+        "session-start",
+        &[],
+        &input("SessionStart", &root, "s1"),
+    );
+    assert_eq!(code, 0);
+    std::fs::write(root.join("c.rs"), "fn c() {}\nfn d() {}\n").unwrap();
+    git(&root, &["commit", "--quiet", "-am", "passes"]);
+    silence_a_lint(&root);
+    git(&root, &["commit", "--quiet", "-am", "fails"]);
+    let (_, stop, _) = hook(
+        &home,
+        "stop",
+        &["--judge", marked.to_str().unwrap()],
+        &input("Stop", &root, "s1"),
+    );
+    assert_eq!(stop_outcome(&stop), "fail", "{stop}");
+    let outcomes = |doc: &Value| -> Vec<(String, String)> {
+        doc["units"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|u| {
+                (
+                    u["unit"].as_str().unwrap().to_owned(),
+                    u["outcome"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect()
+    };
+    let two = vec![
+        ("commit".to_owned(), "pass".to_owned()),
+        ("commit".to_owned(), "fail".to_owned()),
+    ];
+    let doc = check_json(&home, &root, &["--session", "s1"], None);
+    assert_eq!(outcomes(&doc), two, "{doc}");
+    assert_eq!(doc["stop"]["whole_answer"], true, "{doc}");
+    let doc = check_json(
+        &home,
+        &root,
+        &["--session", "s1", "--range", "HEAD~2..HEAD"],
+        None,
+    );
+    assert_eq!(
+        outcomes(&doc),
+        two,
+        "the range is not judged commit by commit: {doc}"
+    );
+    let (_, text, _) = check(
+        &home,
+        &root,
+        &["--session", "s1", "--range", "HEAD~2..HEAD"],
+        None,
+    );
+    assert!(
+        text.contains("Equal to the stop in its units and inputs"),
+        "{text}"
+    );
+
+    let doc = check_json(
+        &home,
+        &root,
+        &["--session", "s1", "--range", "HEAD~1..HEAD"],
+        None,
+    );
+    assert_eq!(outcomes(&doc), two[1..].to_vec(), "{doc}");
+    assert_eq!(doc["stop"]["whole_answer"], false, "{doc}");
+    assert_eq!(
+        doc["stop"]["differences"][0],
+        "1 of the session's 2 commits were not judged here (the range leaves them out)"
+    );
+    let (_, text, _) = check(
+        &home,
+        &root,
+        &["--session", "s1", "--range", "HEAD~1..HEAD"],
+        None,
+    );
+    assert!(!text.contains("Equal to the stop"), "{text}");
+    assert!(
+        text.contains("This is not the stop's whole answer"),
+        "{text}"
+    );
+
+    // a commit from before the session
+    let doc = check_json(
+        &home,
+        &root,
+        &["--session", "s1", "--range", "HEAD~3..HEAD"],
+        None,
+    );
+    assert!(
+        doc["unjudged"]
+            .as_str()
+            .is_some_and(|why| why.contains("does not judge")),
+        "{doc}"
+    );
+    // not one line: a merge brings in a commit of another branch
+    git(&root, &["switch", "--quiet", "-c", "side", "HEAD~2"]);
+    std::fs::write(root.join("s.rs"), "fn s() {}\n").unwrap();
+    git(&root, &["add", "s.rs"]);
+    git(&root, &["commit", "--quiet", "-m", "side"]);
+    git(&root, &["switch", "--quiet", "main"]);
+    git(&root, &["merge", "--quiet", "--no-ff", "--no-edit", "side"]);
+    let doc = check_json(
+        &home,
+        &root,
+        &["--session", "s1", "--range", "HEAD~1..HEAD"],
+        None,
+    );
+    assert!(
+        doc["unjudged"]
+            .as_str()
+            .is_some_and(|why| why.contains("not one line")),
+        "{doc}"
+    );
 }

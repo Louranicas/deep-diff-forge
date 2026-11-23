@@ -687,6 +687,7 @@ fn patch_option_rows<'a>(
         // F3: `agent check` prints its document, with the reason when it cannot judge
         ("--session", vec!["agent", "check", "--session", "x"]),
         ("--base", vec!["agent", "check", "--base", "refs/no/such"]),
+        ("--range", vec!["agent", "check", "--range", "HEAD..HEAD"]),
         (
             "--judge",
             vec![
