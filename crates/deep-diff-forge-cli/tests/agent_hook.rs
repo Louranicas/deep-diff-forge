@@ -8667,10 +8667,12 @@ fn three_files(state: &Path) -> [Vec<u8>; 3] {
 
 /// Rule V3: a state of every schema since the last release is read, here the state, the list of
 /// commits and the list of judged commits that the published 0.9.0 and 0.10.0 binaries wrote
-/// (`tests/fixtures/hook-state/`, each directory's `ORIGIN` says which binary, by its
-/// SHA-256): the failure that blocked is remembered and the commit judged is not asked about
-/// again, so the stop says FAIL STANDS with one run of the judge, for the working tree; and the
-/// state is written in this build's own schema at that stop.
+/// in the middle of a session (v10: a failure that blocked, a commit judged FAIL), and one this
+/// build wrote (v11) (`tests/fixtures/hook-state/`, each directory's `ORIGIN` says which
+/// binary, by its SHA-256). A v10 state is migrated to v11 at the first stop with its base, its
+/// memory of what blocked and its judged commits kept: the failure that blocked does not block
+/// again and the commit is not judged again (one run of the judge at each stop, for the
+/// working tree), at that stop and at the next turn's.
 #[test]
 fn every_schema_since_the_last_release_is_read() {
     for (name, files) in fixtures() {
@@ -8696,7 +8698,15 @@ fn every_schema_since_the_last_release_is_read() {
             "{name}: the commit judged before was asked again"
         );
         let now: Value = serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap();
-        assert_eq!(now["schema"], "deep-diff-forge.hook-state.v10", "{name}");
+        assert_eq!(now["schema"], "deep-diff-forge.hook-state.v11", "{name}");
+        assert_eq!(
+            now["project"]["base"], captured["project"]["base"],
+            "{name}"
+        );
+        assert_eq!(
+            now["project"]["tips_sha256"],
+            captured["project"]["tips_sha256"]
+        );
         assert_eq!(now["blocked"], captured["blocked"], "{name}");
         assert_eq!(now["reported"], captured["reported"], "{name}");
         assert_eq!(
@@ -8706,6 +8716,17 @@ fn every_schema_since_the_last_release_is_read() {
         assert_eq!(
             std::fs::read(state.with_extension("judged")).unwrap(),
             files["judged"]
+        );
+        // the next turn: the same, from the migrated state
+        let said = allowed(&stop_from(&root, FIXTURE_SESSION, &script)).to_owned();
+        assert!(
+            said.starts_with("deep-diff-forge: FAIL STANDS. "),
+            "{name}: {said}"
+        );
+        assert_eq!(
+            runs(&log),
+            2,
+            "{name}: the commit judged before was asked again"
         );
     }
 }
@@ -8731,7 +8752,7 @@ fn a_state_older_than_the_last_release_is_refused_with_its_name() {
         said.starts_with(
             "deep-diff-forge: UNJUDGED. The stop hook did not run: this session's state file "
         ) && said.contains(
-            "is of schema v9, written by a deep-diff-forge older than the last release; this one reads v10 to v10, and nothing is recorded over it ("
+            "is of schema v9, written by a deep-diff-forge older than the last release; this one reads v10 to v11, and nothing is recorded over it ("
         ) && said.contains(REMOVING_COSTS),
         "{said}"
     );
@@ -8751,7 +8772,7 @@ fn a_state_older_than_the_last_release_is_refused_with_its_name() {
     assert_eq!(runs(&log), 0);
 }
 
-/// Rules V5 and V1: a state of a newer schema (here v11 with a member this build does not
+/// Rules V5 and V1: a state of a newer schema (here v12 with a member this build does not
 /// know, and v999999) is refused by its name with the range this build reads; no hook writes
 /// the state, its list of commits or its list of judged commits (a stop, a continuing stop, an
 /// advice hook, a session's start), none leaves a partial file, and none advises removing
@@ -8764,7 +8785,7 @@ fn a_newer_state_is_refused_and_kept_byte_for_byte() {
     let root = captured_repository(&scratch);
     let state = place_fixture(&files, &root);
     let (script, log, _) = failing_judge(&scratch);
-    for number in [11_u32, 999_999] {
+    for number in [12_u32, 999_999] {
         let mut newer: Value =
             serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap();
         newer["schema"] = json!(format!("deep-diff-forge.hook-state.v{number}"));
@@ -8772,7 +8793,7 @@ fn a_newer_state_is_refused_and_kept_byte_for_byte() {
         std::fs::write(&state, newer.to_string()).unwrap();
         let before = three_files(&state);
         let refused = format!(
-            "is of schema v{number}, written by a newer deep-diff-forge; this one reads v10 to v10, and nothing was written over it"
+            "is of schema v{number}, written by a newer deep-diff-forge; this one reads v10 to v11, and nothing was written over it"
         );
         for active in [false, true] {
             let (code, stdout, _) = hook(
@@ -8848,7 +8869,7 @@ fn a_hook_never_writes_over_a_newer_state_placed_while_it_runs() {
     let root = captured_repository(&scratch);
     let state = place_fixture(&files, &root);
     let mut newer: Value = serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap();
-    newer["schema"] = json!("deep-diff-forge.hook-state.v11");
+    newer["schema"] = json!("deep-diff-forge.hook-state.v12");
     let newer_file = scratch.join("newer.json");
     std::fs::write(&newer_file, newer.to_string()).unwrap();
     let (script, log, exit_file) = (
@@ -8887,7 +8908,7 @@ fn a_hook_never_writes_over_a_newer_state_placed_while_it_runs() {
         + decision["reason"].as_str().unwrap_or_default();
     assert!(
         said.contains("The hook could not keep its state (its state could not be saved: this session's state file ")
-            && said.contains("is now of schema v11, written by a newer deep-diff-forge"),
+            && said.contains("is now of schema v12, written by a newer deep-diff-forge"),
         "{decision}"
     );
     assert_eq!(runs(&log), 2);
@@ -8923,7 +8944,7 @@ fn a_damaged_state_says_what_removing_it_costs() {
     );
     let state = states_in(&sessions()).remove(0);
     for damage in [
-        "{\"schema\":\"deep-diff-forge.hook-state.v10\"}",
+        "{\"schema\":\"deep-diff-forge.hook-state.v11\"}",
         "{\"schema\":\"deep-diff-forge.hook-state.v010\"}",
         "{",
     ] {

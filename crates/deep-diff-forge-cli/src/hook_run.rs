@@ -859,11 +859,11 @@ struct State {
 }
 
 /// The schema this build writes: `deep-diff-forge.hook-state.v` and [`STATE_OWN`].
-const STATE_SCHEMA: &str = "deep-diff-forge.hook-state.v10";
+const STATE_SCHEMA: &str = "deep-diff-forge.hook-state.v11";
 /// What every schema of a state is named by, before its number ([`schema_number`]).
 const STATE_SCHEMA_PREFIX: &str = "deep-diff-forge.hook-state.v";
 /// The number of [`STATE_SCHEMA`].
-const STATE_OWN: u32 = 10;
+const STATE_OWN: u32 = 11;
 /// The oldest schema read: the one the last release wrote (0.9.0 and 0.10.0 write v10). A
 /// state of a schema below it is refused by its name ([`StateRefusal::Older`]); v9 was
 /// written only by builds before any release and is not read since 0.11.0.
@@ -873,10 +873,24 @@ const STATE_FLOOR: u32 = 10;
 /// migration from its own number on, and the first hook that keeps state writes it in
 /// [`STATE_SCHEMA`] ([`Session::keep`]). Any change to the members of a state, to a member's
 /// type, grammar or meaning, or to the lines of the files beside it is a new number.
-const STATE_MIGRATIONS: &[(u32, Migration)] = &[];
+const STATE_MIGRATIONS: &[(u32, Migration)] = &[(11, from_v10)];
 /// A change from a state of one schema to one of the next ([`STATE_MIGRATIONS`]): the JSON
 /// of the state, or why it cannot be made (a damaged state).
 type Migration = fn(Value) -> Result<Value, &'static str>;
+
+/// v10 to v11: the same members, read as they are. v11 is v10 with the lines F12 keeps in
+/// `blocked` of a cause that holds once (`<tree>/o/w…` and `<tree>/o/v…`, and `w…` under a
+/// change's own tag), whose count is the stops it held and not a number of items: 0.10.0 read
+/// such a line as a failure that stands in another tree, and forgot one under a change's tag so
+/// that the hold came back past its bound. No v10 state holds such a line (a key of 0.9.0 and
+/// 0.10.0 is hex digits or `all…`), so every v10 state means the same as v11.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "a migration's form: a later one can find a state it cannot carry over"
+)]
+fn from_v10(value: Value) -> Result<Value, &'static str> {
+    Ok(value)
+}
 
 /// The number `N` of a state's `schema` that is exactly `deep-diff-forge.hook-state.v<N>`, with
 /// `N` written in one to six decimal digits and no leading zero; `None` for any other text.
@@ -10253,10 +10267,11 @@ mod tests {
     /// Round 23 read a state of the schema before (v9) with no tree recorded and wrote it back
     /// in v10. Since 0.11.0 the oldest schema read is the one the last release wrote (v10,
     /// [`STATE_FLOOR`]): v9, which no release wrote, is refused by its name, as every older
-    /// one is; a state of this schema is read as it is and is not written back for its schema;
-    /// a `trees` member that is not what the hooks write is no state.
+    /// one is; a v10 state is read through its migration with its memory as it was and is
+    /// written back in v11, and a v11 state is read as it is; a `trees` member that is not what
+    /// the hooks write is no state.
     #[test]
-    fn a_state_older_than_the_floor_is_refused_and_one_of_this_schema_is_read() {
+    fn a_state_older_than_the_floor_is_refused_and_one_since_it_is_read() {
         let entry = format!("0123456789abcdef/u/{}:2", "f".repeat(24));
         let v9 = json!({"schema": "deep-diff-forge.hook-state.v9", "project": null, "stops": 3,
                         "reported": [], "noticed": [], "blocked": [entry],
@@ -10268,15 +10283,12 @@ mod tests {
                          "judged_sha256": "", "judged_count": 0, "trees": {}})
         .to_string();
         let (state, older) = state_read(&v10).unwrap();
-        assert!(
-            !older,
-            "a state of this schema is not written back for its schema"
-        );
+        assert!(older, "a v10 state is written back in v11");
         assert_eq!(state.blocked, std::slice::from_ref(&entry));
         assert_eq!(state.stops, 3);
         let text = state_text(&state);
         assert!(
-            text.contains("\"schema\":\"deep-diff-forge.hook-state.v10\""),
+            text.contains("\"schema\":\"deep-diff-forge.hook-state.v11\""),
             "{text}"
         );
         assert_eq!(state_read(&text), Ok((state, false)));
@@ -10428,7 +10440,7 @@ mod tests {
         let dir = scratch.join("hooks");
         std::fs::create_dir(&dir).unwrap();
         let file = state_file(&dir, "s");
-        let newer = r#"{"schema":"deep-diff-forge.hook-state.v11","what":"a newer build's"}"#;
+        let newer = r#"{"schema":"deep-diff-forge.hook-state.v12","what":"a newer build's"}"#;
         std::fs::write(&file, newer).unwrap();
         let mut session = Session {
             dir: dir.clone(),
@@ -10446,7 +10458,7 @@ mod tests {
         };
         let said = session.keep().unwrap_err();
         assert!(
-            said.contains("is now of schema v11, written by a newer deep-diff-forge")
+            said.contains("is now of schema v12, written by a newer deep-diff-forge")
                 && said.contains("nothing was written over it"),
             "{said}"
         );
@@ -10469,7 +10481,7 @@ mod tests {
         })
         .unwrap_err();
         assert!(written.get());
-        assert!(said.to_string().contains("schema v11"), "{said}");
+        assert!(said.to_string().contains("schema v12"), "{said}");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), newer);
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         // and a state of this schema there is written over as before

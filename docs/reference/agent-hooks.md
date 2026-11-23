@@ -771,7 +771,7 @@ project and not judged at every stop while it is true, as stated above):
   until the directory is gone or it is a tree again"), and a stop made from inside it is
   UNJUDGED. It is forgotten when its directory is gone (the ordinary
   `git worktree remove`), or when it is a tree again and the judge's own reading finds
-  that tree clean. For this the session's state (schema `deep-diff-forge.hook-state.v10`)
+  that tree clean. For this the session's state (schema `deep-diff-forge.hook-state.v11`)
   records the top level of each linked tree it remembers a failure of (a state of the
   schema before, `v9`, which no release wrote, was read with no tree recorded until
   0.10.0; since 0.11.0 it is refused as older than the last release: "The state's schema",
@@ -839,8 +839,10 @@ project and not judged at every stop while it is true, as stated above):
   saved nothing is remembered, so a cause, like a failure, holds the first stop of every turn
   and never the stop that follows it. A hold for an unknown label has no state: it holds once
   per set of labels and paths; a commit held so holds the stop that judges it, once, as a
-  commit that fails does. The names and states are kept under the tree's own tag in `blocked`
-  (as `tag/key:count`, so the state's schema is unchanged). `agent check` says the same
+  commit that fails does. The names and states are kept in `blocked` (as `tag/key:count`:
+  under the tag `o` of the tree for a refused cause, under the change's own tag for an
+  unknown label, the count being the stops the cause held), and these lines are why the
+  state's schema is v11 since 0.11.0 ("The state's schema", at the end). `agent check` says the same
   sentence for these causes, and `agent doctor --gate` says "a stop here would hold once, then
   be UNJUDGED". What is not closed: while a file stays unreadable or the marks stay, nothing
   else of that working tree is judged (staging the rest is not built), so failing work added
@@ -1000,11 +1002,14 @@ Stated limits, which the judge on the pull request covers:
     The lines of `.judged` are `ID:p`, `ID:h[:kept]`, `ID:f[:kept]`,
     `ID:n<attempts>@<stop>:reason` and `ID:x:reason`; any other line makes the list damaged.
   - What is read. A build reads every schema from the one the last release wrote (v10,
-    written by 0.9.0 and 0.10.0) to its own (v10), and writes its own; one of a schema in
-    that range below its own is written in its own by the first hook that keeps state. A state
+    written by 0.9.0 and 0.10.0) to its own (v11 since 0.11.0), and writes its own; one of a
+    schema in that range below its own is written in its own by the first hook that keeps
+    state. A v10 state is read as it is (the migration to v11 changes no member): its base,
+    what has blocked and the judged commits are kept, so a failure that blocked does not
+    block again and a judged commit is not judged again. A state
     of an older schema is refused by its name: "this session's state file … is of schema
     v9, written by a deep-diff-forge older than the last release; this one reads v10 to
-    v10, and nothing is recorded over it (removing it makes the next hook take the commit
+    v11, and nothing is recorded over it (removing it makes the next hook take the commit
     HEAD names as this session's base: what this session committed before would not be
     judged)". A damaged one (not JSON, a schema that is not one, a member missing or not
     what the hooks write) says why and the same about removing it. That is what removing
@@ -1012,7 +1017,7 @@ Stated limits, which the judge on the pull request covers:
     the session's start was not recorded, and the commits made before are not judged.
   - A newer state is never written over. A state of a schema above this build's own (a
     newer build of the hooks wrote it) is refused by its name: "this session's state file
-    … is of schema v11, written by a newer deep-diff-forge; this one reads v10 to v10, and
+    … is of schema v12, written by a newer deep-diff-forge; this one reads v10 to v11, and
     nothing was written over it". No hook writes the state, `.tips` or `.judged` then (a
     stop, an advice hook, a session's start; the lock may be taken), and the message names
     no removal: the newer build reads its state again. The stop is UNJUDGED, as for any
