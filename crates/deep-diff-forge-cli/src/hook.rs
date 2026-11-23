@@ -512,6 +512,94 @@ pub(crate) enum Judged {
     /// No verdict: the judge or the policy is missing, no ranker is admitted, the judge failed
     /// or timed out. Never a pass.
     Unjudged { reason: String },
+    /// A unit that cannot pass as it is (F12, owner decision OD-J): a cause the hook finds in
+    /// the working tree (`work.*`: a file it cannot read, paths marked skip-worktree), or a
+    /// hold whose only cause is a label the judge does not know
+    /// (`hold.version_gap`). It holds the stop once by its `lines` ([`once_lines`]); after that
+    /// it is UNJUDGED, or HOLD, as before. Never a pass.
+    Refused {
+        /// Its reason class, as the ledger records it.
+        class: &'static str,
+        /// What the agent is told: a fixed sentence, DDF's own label names and escaped paths.
+        sentence: String,
+        /// What the user's display says when it does not block (Git's or the judge's words).
+        reason: String,
+        /// What it is remembered by ([`once_lines`]).
+        lines: BTreeMap<String, usize>,
+    },
+}
+
+/// The most stops one cause of a [`Judged::Refused`] holds in a session (F12): a file that
+/// another program keeps changing would otherwise hold the first stop of every turn.
+pub(crate) const ONCE_BOUND: usize = 3;
+
+/// The key of the cause whose words are `words` ([`once_lines`]): `w` and 23 hex digits.
+pub(crate) fn once_name(words: &str) -> String {
+    format!("w{}", &line_key(words)[..23])
+}
+
+/// The key of the state `state` of the cause known by `name`: `v`, eleven digits of the name
+/// and twelve of the state, so that the states of a cause are found by its name.
+fn once_state(name: &str, state: &str) -> String {
+    format!("v{}{}", &name[1..12], &line_key(state)[..12])
+}
+
+/// Whether a remembered key is one of a cause that holds once, not a failing line.
+pub(crate) fn is_once(key: &str) -> bool {
+    key.starts_with('w') || key.starts_with('v')
+}
+
+/// How a cause that holds once stands at a stop ([`once_lines`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Once {
+    /// It holds this stop: it is new, or its state changed at a turn's first stop.
+    Holds,
+    /// It held before and is as it was, or this stop follows a block (the client's
+    /// `stop_hook_active`): it does not hold here.
+    Stands,
+    /// It is new at a stop that follows a block: the first stop of the next turn holds for it.
+    Waits,
+    /// Its state changed after it held [`ONCE_BOUND`] stops: it is let through.
+    Spent,
+}
+
+/// What a cause that holds once, known by `name` ([`once_name`]) and, where it has one, by the lstat list
+/// `state`, is at this stop: the lines it is given (which are what is remembered of it after
+/// the stop) and how it stands. `remembered` is what the session keeps of its unit; `active`
+/// is the client's `stop_hook_active`. The name line's count is the number of stops it held.
+///
+/// It holds when its name is not remembered, and again when its state is not among the
+/// remembered ones, at most [`ONCE_BOUND`] times in all; never at a stop that follows a block,
+/// so one cause holds at most the first stop of a turn and cannot keep a session from
+/// stopping.
+pub(crate) fn once_lines(
+    name: &str,
+    state: Option<&str>,
+    remembered: &BTreeMap<&str, usize>,
+    active: bool,
+) -> (BTreeMap<String, usize>, Once) {
+    let state = state.map(|state| once_state(name, state));
+    let before: BTreeMap<String, usize> = remembered
+        .iter()
+        .filter(|(key, _)| key.starts_with('v') && key.get(1..12) == name.get(1..12))
+        .map(|(key, count)| ((*key).to_owned(), *count))
+        .collect();
+    let with = |held: usize, states: BTreeMap<String, usize>| {
+        let mut lines = states;
+        lines.insert(name.to_owned(), held);
+        lines
+    };
+    let now = || state.iter().map(|key| (key.clone(), 1)).collect();
+    match remembered.get(name).copied() {
+        None if active => (BTreeMap::new(), Once::Waits),
+        None => (with(1, now()), Once::Holds),
+        Some(held) if state.as_ref().is_none_or(|key| before.contains_key(key)) => {
+            (with(held, now()), Once::Stands)
+        }
+        Some(held) if active => (with(held, before), Once::Stands),
+        Some(held) if held < ONCE_BOUND => (with(held + 1, now()), Once::Holds),
+        Some(held) => (with(held, before), Once::Spent),
+    }
 }
 
 /// One rule of a verdict that did not pass.
@@ -925,9 +1013,78 @@ pub(crate) fn stop_judged(
                     .collect(),
             ],
         },
+        Judged::Hold { rules, said } if rules.is_empty() => match version_gap(verdict) {
+            Some(gap) => gap,
+            None => Judged::Hold { rules, said },
+        },
         answer => answer,
     }
 }
+
+/// A hold whose only cause is a label the judge does not know (F12.b): no rule is held and
+/// every note is `unknown_signal`. It holds the stop once, as [`Judged::Refused`]. The label is
+/// named only when the word between the note's first two backticks is a label of DDF's own
+/// vocabulary; any other word is "a label DDF does not list", and nothing else of the note is
+/// said to the agent or kept.
+fn version_gap(verdict: Option<&Value>) -> Option<Judged> {
+    let notes = verdict?["notes"].as_array()?;
+    if notes.is_empty() || notes.iter().any(|note| note["code"] != "unknown_signal") {
+        return None;
+    }
+    let mut gaps: Vec<(Option<&'static str>, &str)> = notes
+        .iter()
+        .map(|note| {
+            let detail = note["detail"].as_str().unwrap_or_default();
+            let label = detail
+                .split('`')
+                .nth(1)
+                .filter(|_| detail.matches('`').count() >= 2)
+                .and_then(signal_named)
+                .map(deep_diff_forge_graph::RiskSignal::label);
+            (label, note["path"].as_str().unwrap_or_default())
+        })
+        .collect();
+    gaps.sort_unstable();
+    gaps.dedup();
+    let words: Vec<String> = gaps
+        .iter()
+        .map(|(label, path)| format!("\0gap\0{}\0{path}", label.unwrap_or("")))
+        .collect();
+    let named: Vec<String> = gaps
+        .iter()
+        .take(ONCE_PATHS_NAMED)
+        .map(|(label, path)| {
+            let label = label.map_or_else(
+                || "a label DDF does not list".to_owned(),
+                |label| format!("the label {label}"),
+            );
+            if path.is_empty() {
+                label
+            } else {
+                format!("{label} (in {})", shown_path(path))
+            }
+        })
+        .collect();
+    let more = gaps.len().saturating_sub(ONCE_PATHS_NAMED);
+    let more = if more > 0 {
+        format!(" and {more} more")
+    } else {
+        String::new()
+    };
+    let said = said_beside_rules(verdict?, false);
+    Some(Judged::Refused {
+        class: "hold.version_gap",
+        sentence: format!(
+            "the judge does not know {}{more}: the paired forge-warden must be upgraded; tell a person.",
+            named.join(", ")
+        ),
+        reason: said.join("; "),
+        lines: BTreeMap::from([(once_name(&words.join("\n")), 1)]),
+    })
+}
+
+/// The most paths, or labels, a [`Judged::Refused`] names one by one; more are counted.
+pub(crate) const ONCE_PATHS_NAMED: usize = 20;
 
 /// What a `Stop` hook does.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1110,6 +1267,9 @@ fn violation_words(rule: &RuleOutcome, signal: &str, path: &str) -> String {
 /// credential added to a file that already failed for one was never put to the agent
 /// (independent review of the hooks, HR-L-4).
 pub(crate) fn lines_whole(judged: &Judged) -> BTreeMap<String, usize> {
+    if let Judged::Refused { lines, .. } = judged {
+        return lines.clone();
+    }
     let Judged::Fail { rules, said } = judged else {
         return BTreeMap::new();
     };
@@ -1312,7 +1472,7 @@ pub(crate) fn uncommitted_failures(units: &[TreeJudged]) -> Vec<String> {
 /// or does not fail.
 fn new_lines(unit: &TreeJudged, blocked: &[String]) -> BTreeSet<String> {
     match (&unit.judged, unit.holds) {
-        (Some(judged @ Judged::Fail { .. }), Holds::WhileNew) => {
+        (Some(judged @ (Judged::Fail { .. } | Judged::Refused { .. })), Holds::WhileNew) => {
             lines_beyond(judged, &remembered(blocked, &unit.tag))
         }
         _ => BTreeSet::new(),
@@ -1324,8 +1484,10 @@ fn new_lines(unit: &TreeJudged, blocked: &[String]) -> BTreeSet<String> {
 /// stand, however many of the remembered ones are gone.
 pub(crate) fn blocks_now(unit: &TreeJudged, blocked: &[String]) -> bool {
     match (&unit.judged, unit.holds) {
-        (Some(Judged::Fail { .. }), Holds::Now) => true,
-        (Some(Judged::Fail { .. }), Holds::WhileNew) => !new_lines(unit, blocked).is_empty(),
+        (Some(Judged::Fail { .. } | Judged::Refused { .. }), Holds::Now) => true,
+        (Some(Judged::Fail { .. } | Judged::Refused { .. }), Holds::WhileNew) => {
+            !new_lines(unit, blocked).is_empty()
+        }
         _ => false,
     }
 }
@@ -1375,6 +1537,65 @@ fn unit_text(unit: &TreeJudged, outcome: &str, named: bool) -> (String, bool) {
         _ => {}
     }
     (text, rules_shown)
+}
+
+/// One [`Judged::Refused`] unit as a stop's message shows it (F12): when it holds the stop, its
+/// sentence alone, which the agent reads (nothing of Git's or the judge's words); else
+/// UNJUDGED (`work.*`) or HOLD, with what the user's display is told.
+fn refused_text(
+    unit: &TreeJudged,
+    (class, sentence, reason): (&str, &str, &str),
+    blocks: bool,
+    many: bool,
+) -> String {
+    use std::fmt::Write as _;
+    let work = class.starts_with("work.");
+    let outcome = match (blocks, work) {
+        (true, _) => "CANNOT PASS AS IT IS",
+        (false, true) => "UNJUDGED",
+        (false, false) => "HOLD",
+    };
+    let mut text = if many {
+        format!("{}: {outcome}\n", unit.what)
+    } else {
+        String::new()
+    };
+    if blocks {
+        let _ = writeln!(text, "  {sentence}");
+    } else {
+        let whole = display_safe(reason);
+        let shown: String = whole.chars().take(REASON_CHARS).collect();
+        let end = if shown.len() < whole.len() {
+            "…"
+        } else {
+            "."
+        };
+        let head = if work { "not judged" } else { "the judge says" };
+        let _ = writeln!(text, "  {head}: {shown}{end}");
+    }
+    text
+}
+
+/// Every [`Judged::Refused`] unit of `trees` as [`refused_text`] shows it.
+fn refused_texts(trees: &[TreeJudged], blocked: &[String], many: bool) -> String {
+    let mut text = String::new();
+    for unit in trees {
+        if let Some(Judged::Refused {
+            class,
+            sentence,
+            reason,
+            ..
+        }) = &unit.judged
+        {
+            text.push_str(&refused_text(
+                unit,
+                (class, sentence, reason),
+                blocks_now(unit, blocked),
+                many,
+            ));
+        }
+    }
+    text
 }
 
 /// The most characters of what is said under a stop's first line ([`trees_text`]). With the
@@ -1839,6 +2060,9 @@ fn trees_text(trees: &[TreeJudged], blocked: &[String]) -> String {
     {
         unjudged.push_str(&unit_text(unit, "UNJUDGED", many).0);
     }
+    // what cannot pass as it is (F12): what holds this stop by its sentence, the rest as
+    // UNJUDGED or HOLD with its reason
+    unjudged.push_str(&refused_texts(trees, blocked, many));
     let (mut text, mut rules_shown) =
         blocking_text(trees, blocked, room.saturating_sub(unjudged.len()));
     text.push_str(&unjudged);
@@ -2003,6 +2227,27 @@ pub(crate) fn decide_stop_trees(
             .any(|tree| tree.judged.as_ref().is_some_and(wanted))
     };
     if trees.iter().any(|tree| blocks_now(tree, blocked)) {
+        // (only what cannot pass as it is holds this stop: F12)
+        if !trees.iter().any(|tree| {
+            blocks_now(tree, blocked) && matches!(tree.judged, Some(Judged::Fail { .. }))
+        }) {
+            // Only the sentences of what holds: the reason is the agent's, and what else this
+            // stop has to say (Git's words among it) is said at the next stop, to the user.
+            let held: String = (trees.iter())
+                .filter(|tree| blocks_now(tree, blocked))
+                .filter_map(|tree| match &tree.judged {
+                    Some(Judged::Refused { sentence, .. }) => {
+                        Some(format!("{}: {sentence}\n", tree.what))
+                    }
+                    _ => None,
+                })
+                .collect();
+            return StopDecision::Block {
+                reason: format!(
+                    "deep-diff-forge: this change cannot pass as it is ({range}).\n{held}Then stop again: what holds this stop once does not block again while it stays as it is."
+                ),
+            };
+        }
         let names_a_rule = trees.iter().any(|tree| {
             blocks_now(tree, blocked)
                 && matches!(&tree.judged, Some(Judged::Fail { rules, .. }) if rules.iter().any(|rule| !rule.held))
@@ -2018,14 +2263,21 @@ pub(crate) fn decide_stop_trees(
             ),
         };
     }
-    let message = if is(|judged| matches!(judged, Judged::Unjudged { .. })) {
+    let unjudged = |judged: &Judged| match judged {
+        Judged::Unjudged { .. } => true,
+        Judged::Refused { class, .. } => class.starts_with("work."),
+        _ => false,
+    };
+    let message = if is(unjudged) {
         if many {
             format!(
                 "deep-diff-forge: UNJUDGED. Not everything of this change ({range}) was judged.\n{detail}That is not a pass."
             )
         } else {
             let reason = trees.iter().find_map(|tree| match &tree.judged {
-                Some(Judged::Unjudged { reason }) => Some(reason.as_str()),
+                Some(Judged::Unjudged { reason } | Judged::Refused { reason, .. }) => {
+                    Some(reason.as_str())
+                }
                 _ => None,
             });
             format!(
@@ -2033,7 +2285,7 @@ pub(crate) fn decide_stop_trees(
                 display_safe(reason.unwrap_or_default())
             )
         }
-    } else if is(|judged| matches!(judged, Judged::Hold { .. })) {
+    } else if is(|judged| matches!(judged, Judged::Hold { .. } | Judged::Refused { .. })) {
         format!(
             "deep-diff-forge: HOLD. The judge wants a person to look at this change ({range}).\n{detail}"
         )
@@ -2112,6 +2364,32 @@ pub(crate) const STOP_CUT: &str =
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F12: a cause holds when new, not again while its state stays, again when its state
+    /// changes at a turn's first stop, at most [`ONCE_BOUND`] times, and never at a stop that
+    /// follows a block.
+    #[test]
+    fn a_cause_holds_once_again_when_it_changes_and_at_most_the_bound() {
+        let name = once_name("\0work.unreadable\0x");
+        let mut kept: BTreeMap<String, usize> = BTreeMap::new();
+        let at = |state: &str, active: bool, kept: &mut BTreeMap<String, usize>| {
+            let view: BTreeMap<&str, usize> = kept.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+            let (lines, how) = once_lines(&name, Some(state), &view, active);
+            *kept = lines;
+            how
+        };
+        assert_eq!(at("a", true, &mut kept), Once::Waits);
+        assert!(kept.is_empty());
+        assert_eq!(at("a", false, &mut kept), Once::Holds);
+        assert_eq!(at("a", false, &mut kept), Once::Stands);
+        assert_eq!(at("b", true, &mut kept), Once::Stands);
+        assert_eq!(at("b", false, &mut kept), Once::Holds);
+        assert_eq!(at("c", false, &mut kept), Once::Holds);
+        assert_eq!(kept.get(&name), Some(&ONCE_BOUND));
+        assert_eq!(at("d", false, &mut kept), Once::Spent);
+        assert_eq!(at("e", false, &mut kept), Once::Spent);
+        assert!(kept.keys().all(|key| is_once(key)), "{kept:?}");
+    }
 
     fn finding(label: &str, path: &str, line: u32, text: &str) -> Finding {
         Finding {

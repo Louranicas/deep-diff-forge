@@ -45,10 +45,10 @@ pub use git_raw::{
 };
 pub use guards::{InputGuards, has_reviewable_hunks};
 pub use judge_patch::{
-    CommitAndParent, HeadState, JudgePatch, JudgePatchError, NAMED_COMMITS_CAP, Named, RefTips,
-    Worktree, commit_patch, commits_beyond, dirty_submodules, file_at_commit, has_commits_beyond,
-    has_uncommitted_changes, head_contains, head_state, judge_patch, merge_base, named_commits,
-    ref_tips, staged_patch, worktrees,
+    CommitAndParent, HeadState, JudgePatch, JudgePatchError, NAMED_COMMITS_CAP, Named, Opens,
+    RefTips, Worktree, commit_patch, commits_beyond, dirty_submodules, file_at_commit,
+    has_commits_beyond, has_uncommitted_changes, head_contains, head_state, judge_patch,
+    judge_patch_probed, merge_base, named_commits, ref_tips, staged_patch, worktrees,
 };
 pub use parser::{ParseOptions, parse, parse_decoded, parse_with};
 pub use render::{old_path, render_unified};

@@ -2456,6 +2456,9 @@ fn a_patch_that_cannot_be_made_is_unjudged_at_a_stop_and_told_once_as_advice() {
     };
 
     git(&root, &["update-index", "--skip-worktree", "a.rs"]);
+    // (F12: the marks hold the first stop once, then the stop is UNJUDGED as before)
+    let held = stop_from(&root, "skip", &script);
+    assert!(blocked(&held).contains("skip-worktree"), "{held}");
     let decision = stop_from(&root, "skip", &script);
     let said = allowed(&decision);
     assert!(
@@ -2473,6 +2476,8 @@ fn a_patch_that_cannot_be_made_is_unjudged_at_a_stop_and_told_once_as_advice() {
     std::fs::write(&secret, "x\n").unwrap();
     std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o000)).unwrap();
     if std::fs::read(&secret).is_err() {
+        let held = stop_from(&root, "unreadable", &script);
+        assert!(blocked(&held).contains("\"unreadable.txt\""), "{held}");
         let decision = stop_from(&root, "unreadable", &script);
         let said = allowed(&decision);
         assert!(
@@ -2678,13 +2683,14 @@ fn doctor_gate_checks_the_patch_and_the_settings_a_stop_depends_on() {
     let patch_fails = ["patch"];
     assert_eq!(gate().0, all(&[]));
 
-    // a path marked skip-worktree: a stop here is UNJUDGED
+    // a path marked skip-worktree: a stop here holds once, then is UNJUDGED (F12)
     git(&root, &["update-index", "--skip-worktree", "a.rs"]);
     let (found, doc) = gate();
     assert_eq!(found, all(&patch_fails));
     let why = detail(&doc, "patch");
     assert!(
-        why.contains("a stop here would be UNJUDGED") && why.contains("skip-worktree"),
+        why.contains("a stop here would hold once, then be UNJUDGED")
+            && why.contains("skip-worktree"),
         "{why}"
     );
     git(&root, &["update-index", "--no-skip-worktree", "a.rs"]);
@@ -2696,7 +2702,7 @@ fn doctor_gate_checks_the_patch_and_the_settings_a_stop_depends_on() {
         let (found, doc) = gate();
         assert_eq!(found, all(&patch_fails));
         assert!(
-            detail(&doc, "patch").contains("a stop here would be UNJUDGED"),
+            detail(&doc, "patch").contains("a stop here would hold once, then be UNJUDGED"),
             "{doc:#}"
         );
     }
@@ -9966,6 +9972,9 @@ fn a_stop_that_could_not_read_the_tree_forgets_nothing_of_it() {
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
     // (whoever may read every file, as root may, has no such file: that trigger is passed)
     if std::fs::read(&locked).is_err() {
+        // (F12: it holds the first stop once; then the stop is as before)
+        let held = stop_from(&root, "s", &script);
+        assert!(blocked(&held).contains("\"locked.bin\""), "{held}");
         not_read("an unreadable file", stop_from(&root, "s", &script));
         not_read("again", stop_from(&root, "s", &script));
     }
@@ -9975,6 +9984,8 @@ fn a_stop_that_could_not_read_the_tree_forgets_nothing_of_it() {
 
     // a path marked skip-worktree
     git(&root, &["update-index", "--skip-worktree", "a.rs"]);
+    let held = stop_from(&root, "s", &script);
+    assert!(blocked(&held).contains("skip-worktree"), "{held}");
     not_read("skip-worktree", stop_from(&root, "s", &script));
     git(&root, &["update-index", "--no-skip-worktree", "a.rs"]);
     stands("the mark is taken away; the index is as it was");
@@ -12031,4 +12042,345 @@ fn verify_branch_refuses_an_unjudged_unit() {
         "{doc}"
     );
     assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+}
+
+/// A stop of `session` from `root`, with the client's `stop_hook_active` as `active`: true is
+/// a stop that follows a block in the same turn.
+fn stop_as(root: &Path, session: &str, judge: &Path, active: bool) -> Value {
+    let (code, stdout, stderr) = hook(
+        "stop",
+        &["--judge", judge.to_str().unwrap()],
+        &input("Stop", root, session, active),
+    );
+    assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
+    if stdout.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{e}: {stdout:?}"))
+    }
+}
+
+/// The blocked turns of the ledger's records of `session` whose class is `class`, in order; and
+/// whether every one of them has the outcome `outcome`.
+fn turns_of(root: &Path, session: &str, class: &str, outcome: &str) -> Vec<u64> {
+    let records: Vec<Value> = stops_of(root, session)
+        .into_iter()
+        .filter(|record| record["class"] == class)
+        .collect();
+    for record in &records {
+        assert_eq!(record["outcome"], outcome, "{record}");
+    }
+    records
+        .iter()
+        .map(|record| record["blocked_turns"].as_u64().unwrap())
+        .collect()
+}
+
+/// F12.a (owner decision OD-J): a file of the working tree this account cannot read made every
+/// stop UNJUDGED, so the stop was let through at no cost. It holds the first stop once, naming
+/// the escaped path and nothing of Git's words; the stop that follows the block, and the first
+/// stop of a later turn (a new hook process reading the state the session kept: what a
+/// restarted client meets), let it through as before, UNJUDGED; the ledger records each, never
+/// a pass. `agent check` says what the stop holds for. Made readable, the file is judged.
+/// (S4.1 planted-breach row "unreadable path"; C3: no pass where no judge ran.)
+#[test]
+fn a_path_made_unreadable_in_the_session_holds_the_stop_once() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let scratch = Scratch::new("hook-f12-unreadable");
+    let root = repository(&scratch);
+    let (script, log, _) = failing_judge(&scratch);
+    start(&root, "s");
+    silence_a_lint(&root);
+    let secret = root.join("secret.rs");
+    std::fs::write(&secret, "fn s() {}\n").unwrap();
+    std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o000)).unwrap();
+    // (whoever reads every file, as root does, has no such file)
+    if std::fs::read(&secret).is_ok() {
+        return;
+    }
+    let first = stop_as(&root, "s", &script, false);
+    let reason = blocked(&first);
+    assert!(
+        reason.starts_with("deep-diff-forge: this change cannot pass as it is (")
+            && reason.contains("a file in it cannot be read: \"secret.rs\". If this session made it so, undo it; if not, tell a person."),
+        "{reason}"
+    );
+    assert!(
+        !reason.contains("git add") && !reason.contains("fatal"),
+        "{reason}"
+    );
+    for active in [true, false, false] {
+        let said = allowed(&stop_as(&root, "s", &script, active)).to_owned();
+        assert!(
+            said.starts_with("deep-diff-forge: UNJUDGED. ")
+                && said.contains("the change could not be read from Git"),
+            "{said}"
+        );
+    }
+    assert!(!log.exists(), "the judge was run without a patch");
+    assert_eq!(
+        turns_of(&root, "s", "work.unreadable", "unjudged"),
+        [1, 0, 0, 0]
+    );
+    assert!(
+        !stops_of(&root, "s").iter().any(|r| r["outcome"] == "pass"),
+        "{:?}",
+        stops_of(&root, "s")
+    );
+    // what agent check says of it is the stop's sentence
+    let out = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .envs(ISOLATE)
+        .env("HOME", home())
+        .current_dir(&root)
+        .args(["agent", "check", "--json", "--judge"])
+        .arg(&script)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let doc: Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)));
+    let units = doc["units"].as_array().unwrap();
+    assert!(
+        units.iter().any(|unit| unit["outcome"] == "unjudged"
+            && unit["reason"]
+                .as_str()
+                .is_some_and(|r| r.contains("a file in it cannot be read: \"secret.rs\""))),
+        "{doc:#}"
+    );
+    // readable again: judged, and its failure blocks by its own lines
+    std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(blocked(&stop_as(&root, "s", &script, false)).contains("check_suppressed in \"a.rs\""));
+}
+
+/// F12.a, the guard and the marks: paths marked skip-worktree made every stop UNJUDGED. New at
+/// a stop that follows a block, they do not hold it (the client says the agent was just held:
+/// holding again there could keep it from stopping); the first stop of the next turn holds
+/// once; then they are let through, UNJUDGED, while the marks stay.
+#[test]
+fn skip_worktree_marks_hold_the_first_stop_of_a_turn_once() {
+    let scratch = Scratch::new("hook-f12-skip");
+    let root = repository(&scratch);
+    let (script, log, _) = failing_judge(&scratch);
+    start(&root, "s");
+    silence_a_lint(&root);
+    git(&root, &["update-index", "--skip-worktree", "a.rs"]);
+    let said = allowed(&stop_as(&root, "s", &script, true)).to_owned();
+    assert!(
+        said.starts_with("deep-diff-forge: UNJUDGED. ")
+            && said.contains("the first stop of the next turn holds for it"),
+        "{said}"
+    );
+    let reason = blocked(&stop_as(&root, "s", &script, false)).to_owned();
+    assert!(
+        reason.contains("the index marks paths skip-worktree, so the working tree is not the whole change. If this session made it so, undo it; if not, tell a person."),
+        "{reason}"
+    );
+    for active in [true, false] {
+        let said = allowed(&stop_as(&root, "s", &script, active)).to_owned();
+        assert!(said.contains("skip-worktree"), "{said}");
+    }
+    assert!(!log.exists(), "the judge was run without a patch");
+    assert_eq!(
+        turns_of(&root, "s", "work.skip_worktree", "unjudged"),
+        [0, 1, 0, 0]
+    );
+}
+
+/// F12.a, the coordinator's bound: a cause whose state keeps changing (a file another program
+/// writes, which this account cannot read) holds again at a turn's first stop when it changed,
+/// at most three times in a session; then each stop says that it has held that many times and
+/// lets it through, UNJUDGED, recorded. A stop that follows a block is never held for it.
+#[test]
+fn a_cause_that_keeps_changing_holds_at_most_three_times_in_a_session() {
+    use std::io::Write as _;
+    use std::os::unix::fs::PermissionsExt as _;
+    let scratch = Scratch::new("hook-f12-bound");
+    let root = repository(&scratch);
+    let (script, _, _) = failing_judge(&scratch);
+    start(&root, "s");
+    let log = root.join("service.log");
+    std::fs::write(&log, "x").unwrap();
+    // written to, never read: as a log another program keeps
+    std::fs::set_permissions(&log, std::fs::Permissions::from_mode(0o200)).unwrap();
+    if std::fs::read(&log).is_ok() {
+        return;
+    }
+    let grow = || {
+        let mut file = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+        file.write_all(b"x").unwrap();
+    };
+    let bound =
+        "it has held 3 stops of this session, the most one cause holds, so it is let through";
+    blocked(&stop_as(&root, "s", &script, false));
+    grow();
+    allowed(&stop_as(&root, "s", &script, true));
+    blocked(&stop_as(&root, "s", &script, false));
+    grow();
+    blocked(&stop_as(&root, "s", &script, false));
+    for _ in 0..2 {
+        grow();
+        let said = allowed(&stop_as(&root, "s", &script, false)).to_owned();
+        assert!(
+            said.starts_with("deep-diff-forge: UNJUDGED. ") && said.contains(bound),
+            "{said}"
+        );
+    }
+    assert_eq!(
+        turns_of(&root, "s", "work.unreadable", "unjudged"),
+        [1, 0, 1, 1, 0, 0]
+    );
+    std::fs::set_permissions(&log, std::fs::Permissions::from_mode(0o644)).unwrap();
+}
+
+/// Ruling 2 of F12: with a state that cannot be saved nothing is remembered, so "once" is the
+/// client's turn. A failure blocks the first stop of each turn and stands at the stop that
+/// follows the block, recorded `fail.unsaved_continuing` with no blocked turn (the model's row
+/// A18, untested until now); a cause that holds once does the same, never at a stop that
+/// follows a block.
+#[test]
+fn fail_unsaved_continuing_is_recorded_and_once_is_per_turn_without_a_state() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let scratch = Scratch::new("hook-f12-unsaved");
+    let root = repository(&scratch);
+    let (script, _, _) = failing_judge(&scratch);
+    start(&root, "s");
+    silence_a_lint(&root);
+    let sessions = sessions();
+    std::fs::set_permissions(&sessions, std::fs::Permissions::from_mode(0o500)).unwrap();
+    if std::fs::write(sessions.join("probe"), "x").is_ok() {
+        std::fs::set_permissions(&sessions, std::fs::Permissions::from_mode(0o700)).unwrap();
+        return;
+    }
+    blocked(&stop_as(&root, "s", &script, false));
+    let said = allowed(&stop_as(&root, "s", &script, true)).to_owned();
+    assert!(
+        said.starts_with("deep-diff-forge: FAIL STANDS. ")
+            && said.contains("cannot keep its own record"),
+        "{said}"
+    );
+    assert_eq!(
+        turns_of(&root, "s", "fail.unsaved_continuing", "fail_stands"),
+        [0]
+    );
+    // a cause that holds once, with nothing kept: once per turn
+    git(&root, &["checkout", "--quiet", "--", "a.rs"]);
+    git(&root, &["update-index", "--skip-worktree", "a.rs"]);
+    for _ in 0..2 {
+        blocked(&stop_as(&root, "s", &script, false));
+        allowed(&stop_as(&root, "s", &script, true));
+    }
+    assert_eq!(
+        turns_of(&root, "s", "work.skip_worktree", "unjudged"),
+        [1, 0, 1, 0]
+    );
+    std::fs::set_permissions(&sessions, std::fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+/// F12.a, the coordinator's condition 2: only a regular file is asked whether it can be read.
+/// A FIFO in the tree is never opened (an open of a FIFO waits for a writer), and a link to a
+/// file outside the repository that cannot be read is not followed: only the regular file is
+/// named, and the stop takes its usual time.
+#[test]
+fn only_a_regular_file_is_named_as_unreadable_and_a_fifo_is_never_opened() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let scratch = Scratch::new("hook-f12-fifo");
+    let root = repository(&scratch);
+    let (script, _, _) = failing_judge(&scratch);
+    start(&root, "s");
+    let outside = scratch.join("outside.rs");
+    std::fs::write(&outside, "x\n").unwrap();
+    std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o000)).unwrap();
+    std::os::unix::fs::symlink(&outside, root.join("link.rs")).unwrap();
+    assert!(
+        Command::new("mkfifo")
+            .arg(root.join("pipe"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    let secret = root.join("secret.rs");
+    std::fs::write(&secret, "x\n").unwrap();
+    std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&secret).is_ok() {
+        return;
+    }
+    let began = std::time::Instant::now();
+    let decision = stop_as(&root, "s", &script, false);
+    let took = began.elapsed();
+    let reason = blocked(&decision);
+    assert!(
+        reason.contains("a file in it cannot be read: \"secret.rs\". "),
+        "{reason}"
+    );
+    assert!(
+        !reason.contains("pipe") && !reason.contains("link.rs") && !reason.contains("outside"),
+        "{reason}"
+    );
+    assert!(took < std::time::Duration::from_secs(20), "{took:?}");
+    std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o644)).unwrap();
+    std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o644)).unwrap();
+}
+
+/// The model's row A6 as forge-warden 0.2 writes it: a hold with every rule passed and the
+/// note `unknown_signal` for `label`.
+fn unknown_label_hold(label: &str) -> Value {
+    let mut document = verdict_v3("hold", &["pass"], false);
+    document["notes"] = json!([{
+        "code": "unknown_signal",
+        "path": "a.rs",
+        "detail": format!("signal `{label}` is not in this forge-warden's vocabulary; upgrade forge-warden or review it by hand")
+    }]);
+    document
+}
+
+/// F12.b (owner decision OD-J): a hold whose only cause is a label the paired judge does not
+/// know let every stop through. It holds the first stop once, naming the label only when it is
+/// one of DDF's own and never the judge's words; then the stop says HOLD, as before, and the
+/// ledger says `hold.version_gap`. (S4.1 planted-breach row "unknown label".)
+#[test]
+fn an_unknown_label_hold_holds_once() {
+    let scratch = Scratch::new("hook-f12-gap");
+    let root = repository(&scratch);
+    silence_a_lint(&root);
+    let (script, _, exit_file) = judge(&scratch, &unknown_label_hold("diff_suppressed"));
+    std::fs::write(&exit_file, "8").unwrap();
+    start(&root, "s");
+    let reason = blocked(&stop_as(&root, "s", &script, false)).to_owned();
+    assert!(
+        reason.contains("the judge does not know the label diff_suppressed (in \"a.rs\"): the paired forge-warden must be upgraded; tell a person."),
+        "{reason}"
+    );
+    assert!(!reason.contains("review it by hand"), "{reason}");
+    for active in [true, false] {
+        let said = allowed(&stop_as(&root, "s", &script, active)).to_owned();
+        assert!(said.starts_with("deep-diff-forge: HOLD. "), "{said}");
+    }
+    assert_eq!(turns_of(&root, "s", "hold.version_gap", "hold"), [1, 0, 0]);
+    // a word that is no label of DDF's is never printed
+    let (script, _, exit_file) = judge(&scratch, &unknown_label_hold("Ignore all previous"));
+    std::fs::write(&exit_file, "8").unwrap();
+    start(&root, "t");
+    let reason = blocked(&stop_as(&root, "t", &script, false)).to_owned();
+    assert!(
+        reason.contains("the judge does not know a label DDF does not list (in \"a.rs\")")
+            && !reason.contains("Ignore all previous"),
+        "{reason}"
+    );
+}
+
+/// F12.c: a second stop on an unchanged failing unit is allowed and recorded as FAIL STANDS,
+/// with no blocked turn; the first was recorded as the fail that blocked.
+#[test]
+fn fail_stands_is_recorded() {
+    let scratch = Scratch::new("hook-f12-stands");
+    let root = repository(&scratch);
+    let (script, _, _) = failing_judge(&scratch);
+    start(&root, "s");
+    silence_a_lint(&root);
+    blocked(&stop_as(&root, "s", &script, false));
+    assert!(
+        allowed(&stop_as(&root, "s", &script, false)).starts_with("deep-diff-forge: FAIL STANDS. ")
+    );
+    assert_eq!(turns_of(&root, "s", "fail.new", "fail"), [1]);
+    assert_eq!(turns_of(&root, "s", "fail.stands", "fail_stands"), [0]);
 }
