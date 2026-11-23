@@ -12367,3 +12367,20 @@ fn an_unknown_label_hold_holds_once() {
         "{reason}"
     );
 }
+
+/// F12.c: a second stop on an unchanged failing unit is allowed and recorded as FAIL STANDS,
+/// with no blocked turn; the first was recorded as the fail that blocked.
+#[test]
+fn fail_stands_is_recorded() {
+    let scratch = Scratch::new("hook-f12-stands");
+    let root = repository(&scratch);
+    let (script, _, _) = failing_judge(&scratch);
+    start(&root, "s");
+    silence_a_lint(&root);
+    blocked(&stop_as(&root, "s", &script, false));
+    assert!(
+        allowed(&stop_as(&root, "s", &script, false)).starts_with("deep-diff-forge: FAIL STANDS. ")
+    );
+    assert_eq!(turns_of(&root, "s", "fail.new", "fail"), [1]);
+    assert_eq!(turns_of(&root, "s", "fail.stands", "fail_stands"), [0]);
+}
