@@ -9,8 +9,7 @@ use crate::{emit, mcp};
 use deep_diff_forge_core::{display_safe, exit, json_escape};
 use serde_json::{Value, json};
 
-const SETUP_USAGE: &str =
-    "deep-diff-forge agent setup --client claude|codex [--allow-repo PATH]... [--hooks] [--json]";
+const SETUP_USAGE: &str = "deep-diff-forge agent setup --client claude|codex [--allow-repo PATH]... [--hooks [--judge PATH] [--policy NAME] [--ranker-dir DIR]] [--json]";
 const DOCTOR_USAGE: &str = "deep-diff-forge agent doctor [--gate [--judge PATH] [--policy NAME] [--ranker-dir DIR]] [--json]";
 
 /// `agent setup`, `agent doctor`, `agent check`, `agent verify-branch` or `agent hook`.
@@ -50,23 +49,34 @@ fn setup(args: &[String]) {
         args,
         &crate::args::Spec {
             flags: &["--json", "--hooks"],
-            valued: &["--client", "--allow-repo"],
+            valued: &[
+                "--client",
+                "--allow-repo",
+                "--judge",
+                "--policy",
+                "--ranker-dir",
+            ],
             positionals: 0,
         },
         SETUP_USAGE,
     );
     let client = crate::flag_value(args, "--client").unwrap_or_default();
     if !matches!(client.as_str(), "claude" | "codex") {
-        eprintln!("error: --client must be claude or codex");
-        eprintln!("usage: {SETUP_USAGE}");
-        std::process::exit(exit::USAGE);
+        setup_refused("--client must be claude or codex");
     }
     let hooks = args.iter().any(|a| a == "--hooks");
     if hooks && client != "claude" {
-        eprintln!("error: --hooks is for --client claude; hooks for Codex are not designed yet");
-        eprintln!("usage: {SETUP_USAGE}");
-        std::process::exit(exit::USAGE);
+        setup_refused("--hooks is for --client claude; hooks for Codex are not designed yet");
     }
+    let judged_by = judged_options(args, hooks);
+    let judge = judged_by
+        .iter()
+        .find(|(option, _)| *option == "--judge")
+        .map(|(_, path)| path.clone());
+    let judged_by: Vec<(&str, &str)> = judged_by
+        .iter()
+        .map(|(option, value)| (*option, value.as_str()))
+        .collect();
     let binary = std::env::current_exe()
         .and_then(std::fs::canonicalize)
         .unwrap_or_else(|e| {
@@ -83,14 +93,10 @@ fn setup(args: &[String]) {
         server_args.push(canonical.to_string_lossy().into_owned());
     }
     let command = binary.to_string_lossy().into_owned();
-    // The judge the hooks will run, found now and named by its absolute path.
-    let judge = crate::hook_run::judge_program(&[], &[])
-        .ok()
-        .map(|path| path.to_string_lossy().into_owned());
     if args.iter().any(|a| a == "--json") {
         let mut document = json!({"schema": "deep-diff-forge.agent-setup.v0", "client": client, "name": "deep-diff-forge", "command": command, "args": server_args});
         if hooks {
-            document["hooks"] = hook_settings(&command, judge.as_deref())["hooks"].clone();
+            document["hooks"] = hook_settings(&command, &judged_by)["hooks"].clone();
             document["judge"] = json!(judge);
         }
         emitln!("{document}");
@@ -120,9 +126,9 @@ fn setup(args: &[String]) {
                     "The judge is named by its path as found now: {}",
                     display_safe(judge)
                 ),
-                None => "forge-warden was not found on PATH: install it and print these settings again, or add --judge /absolute/path to the session-start and stop commands. Until then a stop is UNJUDGED.".to_owned(),
+                None => "forge-warden was not found on PATH: install it and print these settings again, or print them with --judge /absolute/path. Until then a stop is UNJUDGED.".to_owned(),
             },
-            hook_settings(&command, judge.as_deref())
+            hook_settings(&command, &judged_by)
         );
     }
     if server_args.len() == 1 {
@@ -132,20 +138,77 @@ fn setup(args: &[String]) {
     }
 }
 
+/// Refuses `agent setup`'s command line: the reason, the usage, exit 2.
+fn setup_refused(reason: &str) -> ! {
+    eprintln!("error: {reason}");
+    eprintln!("usage: {SETUP_USAGE}");
+    std::process::exit(exit::USAGE);
+}
+
+/// The options of the two judged hooks, in the order `--judge`, `--policy`, `--ranker-dir`,
+/// each with its value: the judge named by `--judge` or found now on `PATH` and the ranker
+/// directory, both by their absolute paths, and the policy as given. They go into the
+/// session-start and stop commands: the stop runs with them, and the start of a session and
+/// `agent doctor --gate` compare a registered stop's with their own. Without `--hooks` nothing
+/// would carry them, so naming one is refused; so are a judge named that is no file and a
+/// ranker directory that is not one.
+fn judged_options(args: &[String], hooks: bool) -> Vec<(&'static str, String)> {
+    if !hooks
+        && ["--judge", "--policy", "--ranker-dir"]
+            .iter()
+            .any(|option| crate::flag_value(args, option).is_some())
+    {
+        setup_refused("--judge, --policy and --ranker-dir go into the hook commands: add --hooks");
+    }
+    let judge = match crate::hook_run::judge_program(args, &[]) {
+        Ok(path) => Some(path.to_string_lossy().into_owned()),
+        Err(_) => match crate::flag_value(args, "--judge") {
+            Some(named) => {
+                setup_refused(&format!("--judge {}: no such file", display_safe(&named)))
+            }
+            None => None,
+        },
+    };
+    let ranker_dir = crate::flag_value(args, "--ranker-dir").map(|dir| {
+        let shown = display_safe(&dir);
+        match std::fs::canonicalize(&dir) {
+            Ok(path) if path.is_dir() => match path.to_str() {
+                Some(path) => path.to_owned(),
+                None => setup_refused(&format!("--ranker-dir {shown}: not UTF-8")),
+            },
+            Ok(_) => setup_refused(&format!("--ranker-dir {shown}: not a directory")),
+            Err(e) => setup_refused(&format!("--ranker-dir {shown}: {e}")),
+        }
+    });
+    [
+        ("--judge", judge),
+        ("--policy", crate::flag_value(args, "--policy")),
+        ("--ranker-dir", ranker_dir),
+    ]
+    .into_iter()
+    .filter_map(|(option, value)| Some((option, value?)))
+    .collect()
+}
+
 /// The `hooks` block of a Claude Code settings file that runs this binary: at the start of a
 /// session, after every tool call (no matcher: a shell command can write files too) and at a
 /// stop. Each timeout is in seconds; a hook that runs past it is dropped by the client and
 /// decides nothing.
 ///
-/// `judge` is the judge found when the settings are printed, by its absolute path. It goes into
-/// the commands that use one, so that the program is chosen once by the person who installs the
-/// hooks and not at every stop by whatever `PATH` holds then (review V4, VD4-H-1).
-fn hook_settings(command: &str, judge: Option<&str>) -> Value {
+/// `judged_by` are the options of the two hooks that use a judge (`--judge`, `--policy`,
+/// `--ranker-dir`, in that order, each with its value). The judge is the one found or named
+/// when the settings are printed, by its absolute path, so that the program is chosen once by
+/// the person who installs the hooks and not at every stop by whatever `PATH` holds then
+/// (review V4, VD4-H-1).
+fn hook_settings(command: &str, judged_by: &[(&str, &str)]) -> Value {
     let hook = |event: &str, timeout: u64, judged: bool| {
-        let judge = match judge {
-            Some(judge) if judged => format!(" --judge {}", sh_quote(judge)),
-            _ => String::new(),
-        };
+        let mut judge = String::new();
+        for (option, value) in judged_by.iter().filter(|_| judged) {
+            judge.push(' ');
+            judge.push_str(option);
+            judge.push(' ');
+            judge.push_str(&sh_quote(value));
+        }
         json!([{"hooks": [{
             "type": "command",
             "command": format!("{} agent hook {event} --client claude{judge}", sh_quote(command)),
@@ -416,7 +479,7 @@ mod tests {
     /// (a shell command writes files too) and a timeout on each.
     #[test]
     fn hook_settings_name_three_events_with_timeouts_and_a_quoted_command() {
-        let settings = hook_settings("/opt/my tools/deep-diff-forge", None);
+        let settings = hook_settings("/opt/my tools/deep-diff-forge", &[]);
         let hooks = settings["hooks"].as_object().unwrap();
         let events: std::collections::BTreeSet<&str> = hooks.keys().map(String::as_str).collect();
         assert_eq!(
@@ -441,7 +504,7 @@ mod tests {
             );
         }
         // a judge found at setup is named by its path in the commands that use one
-        let settings = hook_settings("/bin/ddf", Some("/opt/my tools/forge-warden"));
+        let settings = hook_settings("/bin/ddf", &[("--judge", "/opt/my tools/forge-warden")]);
         let command = |event: &str| {
             settings["hooks"][event][0]["hooks"][0]["command"]
                 .as_str()
@@ -462,13 +525,41 @@ mod tests {
         );
     }
 
+    /// D1: the judged hooks' options are written so that the reader of a registered hook (the
+    /// one `agent doctor --gate` and the start of a session use to compare) reads each back,
+    /// quoted paths included.
+    #[test]
+    fn the_judged_options_read_back_as_a_registered_hook_is_read() {
+        let judged_by = [
+            ("--judge", "/opt/my tools/forge-warden"),
+            ("--policy", "ci/policy.toml"),
+            ("--ranker-dir", "/srv/ddf rankers"),
+        ];
+        let settings = hook_settings("/bin/ddf", &judged_by);
+        for (event, word) in [("SessionStart", "session-start"), ("Stop", "stop")] {
+            let command = settings["hooks"][event][0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap();
+            let read = crate::hook::hook_command(command, word)
+                .unwrap_or_else(|| panic!("{event} not read back: {command}"));
+            assert_eq!(read.program, "/bin/ddf");
+            assert_eq!(read.judge.as_deref(), Some(judged_by[0].1), "{command}");
+            assert_eq!(read.policy.as_deref(), Some(judged_by[1].1), "{command}");
+            assert_eq!(
+                read.ranker_dir.as_deref(),
+                Some(judged_by[2].1),
+                "{command}"
+            );
+        }
+    }
+
     /// Independent review of the hooks, HR-L-1 and HR-M-4: the timeout the printed settings
     /// give each hook is longer than everything that hook may take, and the stop hook's is at
     /// least what `agent doctor --gate` asks of a registered one. The steps' own limits used
     /// to add up to several times the sixty seconds printed for a stop.
     #[test]
     fn the_printed_timeouts_leave_each_hook_its_time() {
-        let settings = hook_settings("/bin/ddf", None);
+        let settings = hook_settings("/bin/ddf", &[]);
         let timeout = |event: &str| {
             settings["hooks"][event][0]["hooks"][0]["timeout"]
                 .as_u64()

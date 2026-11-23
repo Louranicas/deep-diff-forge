@@ -23,6 +23,7 @@ writes nothing:
 
 ```bash
 deep-diff-forge agent setup --client claude --hooks   # the MCP registration, then a `hooks` block for .claude/settings.json
+deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the same, with older rankers offered (0.11.0; also --judge PATH, --policy NAME)
 ```
 
 | Event | Command | What the agent gets |
@@ -157,7 +158,11 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   mode: `forge-warden check --policy P --patch F --ranker R --json`. DDF does not judge.
   `agent setup --hooks` finds it once and writes its absolute path into the commands as
   `--judge PATH`, so the program is chosen by whoever installs the hooks and not at every stop
-  by `PATH`. Without `--judge` it is looked up in the directories of `PATH` that are named by
+  by `PATH`. From 0.11.0 `agent setup --hooks` also takes `--judge PATH`, `--policy NAME` and
+  `--ranker-dir DIR` and writes them into the session-start and stop commands (the judge and
+  the directory by their absolute paths, a judge that is no file and a directory that does
+  not exist refused with exit 2); give `agent doctor --gate` the same values, since it
+  compares them with the registered stop's. Without `--judge` it is looked up in the directories of `PATH` that are named by
   an absolute path. A judge inside the repository it would judge is not run, however it was
   named: the change could have written it.
 - **A verdict is an exit code and a document that agree.** Exit 0, 7 or 8 counts only with a

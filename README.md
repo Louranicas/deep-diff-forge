@@ -310,7 +310,8 @@ git diff | deep-diff-forge --stdin-patch --rank --json --require-files --require
 
 With Claude Code's hooks, this binary tells the agent what its own change looks like while it is
 still working, and asks a judge before it stops.
-`deep-diff-forge agent setup --client claude --hooks` prints the settings and writes nothing. The
+`deep-diff-forge agent setup --client claude --hooks` prints the settings and writes nothing
+(`--judge PATH`, `--policy NAME` and `--ranker-dir DIR` go into the commands it prints). The
 hooks guard against an agent's honest mistakes and shortcuts; they are not a boundary against an
 agent that sets out to evade them (that boundary is the judge on the pull request). The events,
 the rule of the stop hook and the stated limits are in [the agent hooks reference](docs/reference/agent-hooks.md).

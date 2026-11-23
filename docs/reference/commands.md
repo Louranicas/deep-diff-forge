@@ -166,6 +166,9 @@ deep-diff-forge schema [result|exit-codes|signals|diagnostics]  # the envelope's
 deep-diff-forge explain {<code> [--family engine|council] | signal <label> [--audience agent|person]} [--json]
 deep-diff-forge mcp [--allow-repo PATH]...      # read-only MCP server over stdio; --allow-repo lets review_change read those repositories
 deep-diff-forge rpc [--allow-repo PATH]...      # the daemon's JSON-RPC over stdio, no daemon; --allow-repo as for mcp
+deep-diff-forge agent setup --client claude|codex [--allow-repo PATH]... [--hooks [--judge PATH] [--policy NAME] [--ranker-dir DIR]] [--json]  # print the MCP registration and the hooks, never written (agent-hooks.md)
+deep-diff-forge agent doctor [--gate [--judge PATH] [--policy NAME] [--ranker-dir DIR]] [--json]  # the agent surfaces agree; --gate: every link a judged stop needs
+deep-diff-forge agent hook session-start|post-tool|stop --client claude [--judge PATH] [--policy NAME] [--ranker-dir DIR]  # the hook commands agent setup --hooks prints
 deep-diff-forge agent check [--session ID | --base REV] [--range A..B] [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--require-pass] [--json]  # the units a stop judges, judged with its judge and policy (agent-hooks.md)
 deep-diff-forge agent verify-branch BASE..HEAD [--json]  # every commit of the range passed by a stop in the project's ledger, else exit 7 (agent-hooks.md)
 deep-diff-forge daemon {path|start [--foreground] [--allow-repo PATH]... [--log-format text|json]|health|status|metrics [--format json|prometheus] [--out PATH]|stop} [--socket PATH]

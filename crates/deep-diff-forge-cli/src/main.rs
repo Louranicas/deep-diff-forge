@@ -2118,7 +2118,7 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "agent",
-        "deep-diff-forge agent {setup --client claude|codex [--allow-repo PATH]... [--hooks] | doctor [--gate] | check [--session ID | --base REV] [--range A..B] [--require-pass] | verify-branch BASE..HEAD | hook session-start|post-tool|stop --client claude} [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--json]",
+        "deep-diff-forge agent {setup --client claude|codex [--allow-repo PATH]... [--hooks [--judge PATH] [--policy NAME] [--ranker-dir DIR]] [--json] | doctor [--gate [--judge PATH] [--policy NAME] [--ranker-dir DIR]] [--json] | check [--session ID | --base REV] [--range A..B] [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--require-pass] [--json] | verify-branch BASE..HEAD [--json] | hook session-start|post-tool|stop --client claude [--judge PATH] [--policy NAME] [--ranker-dir DIR]}",
         "Print the MCP and hook setup for Claude Code or Codex (never written), check that every agent surface agrees, judge the uncommitted change with a stop's judge and policy (check), verify a branch against the project's ledger of stops (verify-branch), or answer a Claude Code hook: advice after a tool call, a judged stop.",
     ),
     (

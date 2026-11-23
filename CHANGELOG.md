@@ -132,6 +132,11 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - `--help` names the values `--cluster --parallel` takes (`serial|auto|N`, as it took before);
   the reference names `--allow-repo` for `mcp`, `rpc` and `daemon start`; the 0.10.0 release
   notes gain an errata list (D1).
+- `agent setup --client claude --hooks` takes `--judge PATH`, `--policy NAME` and `--ranker-dir
+  DIR` and writes them into the session-start and stop commands it prints (the judge and the
+  directory by absolute path; without `--hooks`, a judge that is no file or a directory that
+  does not exist: exit 2). 0.10.0's release notes named `--ranker-dir` there, and 0.10.0 refused
+  it. `agent --help` lists each form with its own options (D1).
 
 ## [0.10.0] - 2026-11-23
 
