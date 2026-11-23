@@ -10,6 +10,7 @@
 //! what the changed lines do, found lexically and pointed at by hunk address and line
 //! ([`evidence`]). Ranking reads only the patch, so it works for every input.
 
+mod diagnostics;
 pub mod evidence;
 pub mod lexical;
 mod rank;
@@ -19,6 +20,7 @@ mod rust_tokens;
 mod unplaced;
 mod vocabulary;
 
+pub use diagnostics::{Diagnostic, Diagnostics, code_of, diagnostics};
 pub use evidence::{
     Basis, EVIDENCE_BASIS, Evidence, EvidenceSignal, FileKinds, HunkLabels, MAX_EVIDENCE_PER_FILE,
     Side, file_evidence, file_evidence_released, file_walks, hunk_signals, hunk_signals_alone,

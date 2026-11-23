@@ -264,6 +264,10 @@ pub struct Evidence {
     /// not changed since. The bounded list of a file keeps these items first
     /// ([`crate::rank::RankedFile::evidence`]); the mark is not printed.
     pub released: bool,
+    /// A reading of this version finds it, alone or with another; false when only a reading
+    /// kept for the floor does (0.8.3's of a Rust hunk, the frozen 0.8.4 one). By reader, not
+    /// by `released`: a diagnostic's `reading` (`floor_only` when false). Not printed.
+    pub read_now: bool,
 }
 
 /// One finding of a hunk's scan: the side, the signal, the line, and whether the reading every
@@ -1252,6 +1256,7 @@ pub(crate) fn file_evidence_marked(file: &ReviewFile, share: Share) -> (Vec<Evid
                 line: hit.number,
                 test_likely: hit.signal == S::PanicPathAdded && hit.side == Side::New && hit.likely,
                 released: hit.released,
+                read_now: hit.read_now,
             });
         }
     }
@@ -1311,6 +1316,7 @@ fn hits_of_items(hunk: &PatchHunk, items: &[Item]) -> Vec<Hit> {
                 likely: false,
                 from_code: false,
                 released,
+                read_now: false,
             });
         }
     }
@@ -2089,6 +2095,7 @@ fn legacy_hits(hunk: &PatchHunk, rules: &[&Rule], views: &Views) -> Vec<Hit> {
                     likely: false,
                     from_code: false,
                     released: true,
+                    read_now: false,
                 });
             }
         }
@@ -2308,6 +2315,10 @@ fn quote_hash_records(texts: &[&str]) -> Vec<usize> {
 /// One item one reading of a text found: on the line at `at` of the text (in what
 /// [`texts_found`] gives, of its hunk).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "four marks of one hit, each read alone"
+)]
 pub(crate) struct Hit {
     at: usize,
     side: Side,
@@ -2322,6 +2333,9 @@ pub(crate) struct Hit {
     /// Release 0.8.3 reported it ([`Evidence::released`]). No reading sets it but that
     /// release's own: [`texts_found`] does.
     released: bool,
+    /// [`Evidence::read_now`]: true where `text_hits` makes it, false where the readings kept
+    /// for the floor make theirs (`legacy_hits`, `hits_of_items`); [`unite`] ORs it.
+    read_now: bool,
 }
 
 /// Every signal found on a changed line of the text `lines` (`top`: Git must put its first
@@ -2496,6 +2510,7 @@ fn unite(one: &[Hit], other: &[Hit]) -> Vec<Hit> {
                 },
                 from_code: x.from_code || y.from_code,
                 released: x.released || y.released,
+                read_now: x.read_now || y.read_now,
                 ..*x
             }),
         };
@@ -2635,6 +2650,7 @@ fn view_matches(
                     likely,
                     from_code,
                     released: false,
+                    read_now: true,
                 });
             }
         }
@@ -4064,6 +4080,7 @@ mod tests {
                     test_likely: false,
                     // release 0.8.3 reported both
                     released: true,
+                    read_now: true,
                 },
                 Evidence {
                     signal: S::ProcessSpawn,
@@ -4075,6 +4092,7 @@ mod tests {
                     test_likely: false,
                     // release 0.8.3 reported both
                     released: true,
+                    read_now: true,
                 },
             ]
         );
@@ -5660,6 +5678,7 @@ mod tests {
                     line,
                     test_likely: false,
                     released,
+                    read_now: false,
                 });
             }
         }
@@ -11204,6 +11223,7 @@ mod tests {
             likely,
             from_code,
             released: false,
+            read_now: from_code,
         };
         let key = |hits: &[Hit]| -> Vec<(usize, S, Basis, bool)> {
             hits.iter()
@@ -13737,5 +13757,34 @@ mod tests {
         });
         // A debug build takes a few tenths of a second; the search of every run took minutes.
         assert!(spent < COST_BOUND, "{spent:?}");
+    }
+
+    /// The frozen reading of release 0.8.4 makes its hits not read now, and a union is read now
+    /// when either reading is ([`Evidence::read_now`]). No patch of the comparison corpus has an
+    /// item that reading alone finds, so the reader is held where it makes its hits.
+    #[test]
+    fn an_item_only_the_0_8_4_reading_finds_reads_floor_only() {
+        let file = parse("--- a/x.py\n+++ b/x.py\n@@ -1,1 +1,2 @@\n a\n+b\n").unwrap();
+        let floor = hits_of_items(
+            &file[0].patch_twin.hunks[0],
+            &[(Side::New, S::ProcessSpawn, 2, false)],
+        );
+        assert_eq!(floor.len(), 1);
+        assert!(!floor[0].read_now, "the 0.8.4 reading's hit reads now");
+        assert!(
+            !unite(&floor, &[])[0].read_now,
+            "a union of floor hits reads now"
+        );
+        let now = Hit {
+            read_now: true,
+            ..floor[0]
+        };
+        for united in [unite(&floor, &[now]), unite(&[now], &floor)] {
+            assert_eq!(united.len(), 1);
+            assert!(
+                united[0].read_now,
+                "a union with a current hit does not read now"
+            );
+        }
     }
 }

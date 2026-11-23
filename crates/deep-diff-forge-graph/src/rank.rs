@@ -27,6 +27,9 @@ pub struct RankedFile {
     pub evidence_truncated: bool,
     /// Why Git gave this text file's change as binary, when it did (`diff_suppressed`).
     pub diff_suppressed: Option<deep_diff_forge_core::DiffSuppression>,
+    /// The code signals no item of which a reading of this version finds, over every item, not
+    /// only the listed ones ([`Evidence::read_now`]): `floor_only` in `diagnostics.v0`.
+    pub floor_only: Vec<EvidenceSignal>,
 }
 
 impl RankedFile {
@@ -50,6 +53,11 @@ impl RankedFile {
 
     fn sharing(file: &ReviewFile, share: Share) -> Self {
         let (assessment, _) = assess_file_marked(file, share);
+        let floor_only = EvidenceSignal::ALL.into_iter().filter(|signal| {
+            let mut of = assessment.evidence.iter().filter(|e| e.signal == *signal);
+            of.next().is_some_and(|first| !first.read_now) && !of.any(|e| e.read_now)
+        });
+        let floor_only = floor_only.collect();
         let (evidence, evidence_truncated) = listed(assessment.evidence);
         Self {
             path: file.path.clone(),
@@ -59,6 +67,7 @@ impl RankedFile {
             evidence,
             evidence_truncated,
             diff_suppressed: file.patch_twin.diff_suppressed,
+            floor_only,
         }
     }
 }
