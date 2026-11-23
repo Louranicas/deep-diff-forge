@@ -12,8 +12,14 @@ use std::process::{Command, Stdio};
 const PATCH: &str = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,2 +1,2 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n";
 
 fn exchange(lines: &[String]) -> (i32, Vec<Value>, String) {
+    exchange_with(&[], lines)
+}
+
+/// [`exchange`] with `deep-diff-forge mcp ARGS`.
+fn exchange_with(args: &[&str], lines: &[String]) -> (i32, Vec<Value>, String) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
         .arg("mcp")
+        .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -313,4 +319,159 @@ fn bad_detail_or_paths_are_tool_errors() {
         missing["content"][0]["text"],
         "no file in the patch is named nope.rs"
     );
+}
+
+/// The bytes `deep-diff-forge ARGS` prints for `stdin` in `dir`.
+fn cli_bytes(args: &[&str], stdin: &str, dir: &std::path::Path) -> Vec<u8> {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .args(args)
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stdin.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "{args:?}");
+    out.stdout
+}
+
+/// Every page an MCP server gives for `call` (a tools/call `arguments` object), following
+/// `page.next_cursor`, each `structuredContent`.
+fn mcp_pages(args: &[&str], name: &str, arguments: &Value) -> Vec<Value> {
+    let (mut pages, mut cursor) = (Vec::new(), Value::Null);
+    loop {
+        let mut arguments = arguments.clone();
+        arguments["cursor"] = cursor;
+        let call = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"_meta": meta(), "name": name, "arguments": arguments}});
+        let (code, out, _) = exchange_with(args, &[call.to_string()]);
+        assert_eq!(code, 0);
+        let result = &out[0]["result"];
+        assert_eq!(result["isError"], false, "{result}");
+        pages.push(result["structuredContent"].clone());
+        cursor = result["structuredContent"]["page"]["next_cursor"].clone();
+        assert!(pages.len() < 200, "paging must end");
+        if cursor.is_null() {
+            return pages;
+        }
+    }
+}
+
+/// `scripts/reassemble_diagnostics.py`: the document's bytes written from pages by the byte form
+/// of docs/reference/diagnostics.md alone.
+fn reassembled(pages: &[Value]) -> Vec<u8> {
+    let mut child = Command::new("python3")
+        .arg("-I")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../scripts/reassemble_diagnostics.py"
+        ))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = String::new();
+    for page in pages {
+        input.push_str(&page.to_string());
+        input.push('\n');
+    }
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "the pages do not hash to their document_sha256"
+    );
+    out.stdout
+}
+
+/// F5b: MCP's `diagnose_patch`, and `review_change` with view `diagnostics`, serve the document the
+/// command prints, compared by bytes: the pages' `document_sha256` is the SHA-256 of
+/// `--diagnostics --json`'s bytes, and the pages written in the documented byte form are those
+/// bytes. Git input: `--git-staged --diagnostics --json` and the staged change read by MCP.
+#[test]
+fn diagnose_patch_and_the_change_view_are_the_cli_document_by_bytes() {
+    use std::fmt::Write as _;
+    let scratch = deep_diff_forge_testkit::Scratch::new("mcp-diagnostics-parity");
+    let root = std::fs::canonicalize(scratch.path()).unwrap();
+    let mut patch = String::new();
+    for f in 0..4 {
+        let name = format!("src/m{f}\u{200b}.rs");
+        let _ = write!(
+            patch,
+            "diff --git a/{name} b/{name}\nnew file mode 100644\n--- /dev/null\n+++ b/{name}\n@@ -0,0 +1,{} @@\n",
+            30 + 3 * f
+        );
+        for i in 0..30 + 3 * f {
+            let _ = writeln!(patch, "+std::process::Command::new(\"p{i}\");");
+        }
+    }
+    let cli = cli_bytes(&["--stdin-patch", "--diagnostics", "--json"], &patch, &root);
+    let digest = deep_diff_forge_core::sha256_hex(&cli);
+    for max_bytes in [12_364, 65_536] {
+        let pages = mcp_pages(
+            &[],
+            "diagnose_patch",
+            &json!({"patch": patch, "max_bytes": max_bytes}),
+        );
+        assert!(
+            max_bytes > 12_364 || pages.len() > 2,
+            "{} pages",
+            pages.len()
+        );
+        for page in &pages {
+            assert_eq!(page["page"]["document_sha256"], digest.as_str());
+        }
+        assert_eq!(reassembled(&pages), cli, "at {max_bytes}");
+    }
+
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t.invalid"])
+            .args(args)
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{args:?}: {out:?}");
+    };
+    git(&["init", "-q"]);
+    let mut body = String::from("fn main() {\n");
+    for i in 0..40 {
+        let _ = writeln!(body, "    std::process::Command::new(\"p{i}\");");
+    }
+    body.push_str("    unsafe { f() }\n}\n");
+    std::fs::write(root.join("a.rs"), body).unwrap();
+    git(&["add", "a.rs"]);
+    let cli = cli_bytes(&["--git-staged", "--diagnostics", "--json"], "", &root);
+    let repo = root.to_str().unwrap();
+    let pages = mcp_pages(
+        &["--allow-repo", repo],
+        "review_change",
+        &json!({"repo": repo, "selection": "staged", "view": "diagnostics", "max_bytes": 12_364}),
+    );
+    assert!(pages.len() > 1, "{} pages", pages.len());
+    for page in &pages {
+        assert_eq!(
+            page["page"]["document_sha256"],
+            deep_diff_forge_core::sha256_hex(&cli).as_str()
+        );
+        assert_eq!(page["acquisition"]["selection"], "staged");
+    }
+    let without: Vec<Value> = pages
+        .into_iter()
+        .map(|mut p| {
+            p.as_object_mut().unwrap().remove("acquisition");
+            p
+        })
+        .collect();
+    assert_eq!(reassembled(&without), cli);
 }
