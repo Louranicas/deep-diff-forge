@@ -191,6 +191,7 @@ case '@ANSWER@' in
   unreadable) printf 'not a verdict\n'; exit 7;;
 esac
 sum() { sha256sum < "$1" | cut -d' ' -f1; }
+sum "$patch" >> "$0.patches"
 sev=fail
 if [ "$code" = 7 ]; then said=fail; name=policy_fail; action=change_input; counts='"passed":0,"waived":0,"held":0,"failed":1'
 elif [ "$code" = 8 ]; then said=hold; name=policy_hold; action=review_evidence; sev=hold; counts='"passed":0,"waived":0,"held":1,"failed":0'
@@ -464,6 +465,16 @@ fn check_leaves_the_session_state_byte_identical() {
         &input("SessionStart", &root, "s1"),
     );
     assert_eq!(code, 0);
+    // a commit of the session (answered by the stop: the file of judged commits), a staged
+    // change and an uncommitted one
+    std::fs::write(root.join("c.rs"), "fn c() {}\n").unwrap();
+    git(&root, &["add", "c.rs"]);
+    git(
+        &root,
+        &["commit", "--quiet", "-m", "a commit of the session"],
+    );
+    std::fs::write(root.join("s.rs"), "fn s() {}\n").unwrap();
+    git(&root, &["add", "s.rs"]);
     silence_a_lint(&root);
     let (_, stdout, _) = hook(
         &home,
@@ -473,17 +484,26 @@ fn check_leaves_the_session_state_byte_identical() {
     );
     assert!(stdout.contains("\"decision\":\"block\""), "{stdout}");
     let before = state_listing(&home);
-    assert!(
-        before
-            .keys()
-            .any(|name| Path::new(name).extension().is_some_and(|e| e == "json")),
-        "{before:?}"
-    );
+    for kind in ["json", "tips", "judged", "lock"] {
+        assert!(
+            before
+                .keys()
+                .any(|name| Path::new(name).extension().is_some_and(|e| e == kind)),
+            "no .{kind} file: {before:?}"
+        );
+    }
     // (times are compared to the nanosecond: a write within the same tick still changes ctime)
     std::thread::sleep(Duration::from_millis(20));
     let doc = check_json(&home, &root, &["--session", "s1"], None);
     assert_eq!(doc["units"][0]["outcome"], "fail", "{doc}");
+    assert_eq!(doc["units"][2]["unit"], "commit", "{doc}");
     let _ = check(&home, &root, &["--session", "s1"], None);
+    let _ = check(
+        &home,
+        &root,
+        &["--session", "s1", "--range", "HEAD~1..HEAD"],
+        None,
+    );
     let _ = check(&home, &root, &["--session", "another"], None);
     assert_eq!(
         state_listing(&home),
@@ -908,5 +928,65 @@ fn a_range_is_judged_commit_by_commit() {
             .as_str()
             .is_some_and(|why| why.contains("not one line")),
         "{doc}"
+    );
+}
+
+/// The digests of the patches the stand-in judge at `judge` was given since this was last
+/// asked, each once, in order; the log is emptied.
+fn patches_given(judge: &Path) -> Vec<String> {
+    let log = PathBuf::from(format!("{}.patches", judge.display()));
+    let text = std::fs::read_to_string(&log).unwrap_or_default();
+    std::fs::write(&log, "").unwrap();
+    let mut seen: Vec<String> = text.lines().map(str::to_owned).collect();
+    seen.sort();
+    seen.dedup();
+    seen
+}
+
+/// F3.d, the stop and the check read the same units of the same tree: the judge is given the
+/// same patches, byte for byte (by digest), by a stop and by `agent check --session`, for a
+/// session with two commits, a staged change and an uncommitted change that differs from it.
+#[test]
+fn a_check_gives_the_judge_the_patches_a_stop_gives() {
+    let scratch = Scratch::new("agent-check-same-patches");
+    let (home, root) = repository(&scratch);
+    let marked = scratch.join("judge");
+    judge(&marked, "marked", None);
+    install(&home, &marked);
+    let (code, _, _) = hook(
+        &home,
+        "session-start",
+        &[],
+        &input("SessionStart", &root, "s1"),
+    );
+    assert_eq!(code, 0);
+    std::fs::write(root.join("c.rs"), "fn c() {}\n").unwrap();
+    git(&root, &["add", "c.rs"]);
+    git(&root, &["commit", "--quiet", "-m", "passes"]);
+    silence_a_lint(&root);
+    git(&root, &["commit", "--quiet", "-am", "fails"]);
+    std::fs::write(root.join("e.rs"), "fn e() {}\n").unwrap();
+    git(&root, &["add", "e.rs"]);
+    std::fs::write(root.join("e.rs"), "fn e() {}\nfn f() {}\n").unwrap();
+    let _ = patches_given(&marked);
+    let (_, stop, _) = hook(
+        &home,
+        "stop",
+        &["--judge", marked.to_str().unwrap()],
+        &input("Stop", &root, "s1"),
+    );
+    assert_eq!(stop_outcome(&stop), "fail", "{stop}");
+    let by_stop = patches_given(&marked);
+    assert_eq!(
+        by_stop.len(),
+        4,
+        "the tree, the index and two commits: {by_stop:?}"
+    );
+    let doc = check_json(&home, &root, &["--session", "s1"], None);
+    assert_eq!(doc["units"].as_array().map(Vec::len), Some(4), "{doc}");
+    assert_eq!(
+        patches_given(&marked),
+        by_stop,
+        "the check gave the judge other patches than the stop: {doc}"
     );
 }
