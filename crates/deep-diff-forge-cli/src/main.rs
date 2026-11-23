@@ -43,10 +43,12 @@ fn emit(s: &str) {
     // (`trusted`, `session_id`) as cleartext logging on PR #83. Output is single-threaded.
     let mut stdout = std::io::stdout();
     if let Err(err) = stdout.write_all(s.as_bytes()).and_then(|()| stdout.flush()) {
+        // A refusal decided before the output wins over any write error: a gone reader or a
+        // full disk (F3 of the 0.10.0 tree review).
+        if let Some(reason) = PENDING_REFUSAL.get() {
+            refuse_now(reason);
+        }
         if err.kind() == std::io::ErrorKind::BrokenPipe {
-            if let Some(reason) = PENDING_REFUSAL.get() {
-                refuse_now(reason);
-            }
             std::process::exit(exit::SUCCESS);
         }
         eprintln!("error: write failed: {err}");

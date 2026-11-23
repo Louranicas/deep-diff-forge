@@ -803,6 +803,9 @@ bounded form.** What it holds to:
   or a double fork into its own group) is not killed by DDF and runs on. Under Claude Code
   2.1.330 the client ends a timed-out hook's descendants, including those in their own group
   or session (measured 2026-11-22); a process that detaches from them is ended by no one.
+  A judge that exits while a process it detached from its group still holds its output is not
+  read: the stop is UNJUDGED when the limit passes, whatever the judge's exit code was;
+  forge-warden starts no such process.
 - **Text from the judge is data.** When a verdict fails or holds for something that is not a
   rule (an expired waiver, a note), the message repeats the judge's own words for it: at
   most twelve, each cut at 400 characters, escaped like every other text the hook did not

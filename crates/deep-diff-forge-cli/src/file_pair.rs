@@ -22,7 +22,8 @@ use deep_diff_forge_core::{display_safe, display_safe_bounded, exit};
 use deep_diff_forge_patch::{GitAcquireOptions, diff_files};
 
 /// The `--help` line for the direct comparison, whose `COMMANDS` key is `<old>`.
-pub(crate) const USAGE: &str = "deep-diff-forge <old> <new> [<--stdin-patch output flags>]";
+pub(crate) const USAGE: &str =
+    "deep-diff-forge <old> <new> [<--stdin-patch output flags but --allow-empty>]";
 
 /// Whether the arguments after an unrecognised first word ask for a direct comparison: a second
 /// path follows it. A lone unknown word stays an unknown command.

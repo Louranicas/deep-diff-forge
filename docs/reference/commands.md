@@ -54,7 +54,9 @@ or names a driver for the path, `"encoding"` for a UTF-16 or UTF-32 file, `"unre
 could not be read again within the limits below, else `"content"`).
 A file hidden by a `diff` attribute carries the label also when its text cannot be read back
 (a byte that is not UTF-8, the byte budget): it then stays `binary_changed`. A UTF-16 or
-UTF-32 file is labelled and not decoded, so its code evidence is not found. No attribute is trusted or looked for first,
+UTF-32 file is labelled and not decoded, so its code evidence is not found; its byte order mark
+is seen only when the change shows line 1, so wide text outside Latin-1 edited elsewhere, with
+no mark in the change, is not labelled. No attribute is trusted or looked for first,
 and attributes keep every other effect (line endings, the user's filters). Still read as binary,
 with `binary_change` and no new label: a real binary (not UTF-8) that no attribute hides. A
 second reading (or `git check-attr`) that the byte budget or the 120 s limit cuts off never
@@ -63,7 +65,10 @@ the attribute label stands, else it carries `"diff_suppressed": "unread"`. Paths
 in Git's order, each within the budget less every other section as it stands, so a large file
 that does not fit is `unread` and the files after it are still read; once the time limit has
 run out, every binary change not yet read again is `unread`. A binary by content whose text
-form passes the 64 MiB budget is therefore labelled `unread` (each binary change costs up to
+form passes the 64 MiB budget is therefore labelled `unread`. The labels hold when the text
+readings are dropped: if the whole patch with them does not parse (more than 1,000,000 lines,
+say), the binary sections stand and a file whose text was read is `unread`, a known cause
+stays (each binary change costs up to
 two more Git calls, about 8 ms each: 300 changed images took 2.4 s instead of 0.25 s, measured
 2026-11-22). `--stdin-patch` reviews the patch it is given: a binary section a
 caller pipes in cannot be read again. A file pair (below) also shows a file with a NUL byte as
