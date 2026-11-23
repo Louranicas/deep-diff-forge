@@ -1070,10 +1070,13 @@ fn state_read(text: &str) -> Result<(State, bool), StateRefusal> {
     if number > STATE_OWN {
         return Err(StateRefusal::Newer(number));
     }
-    for (to, migrate) in STATE_MIGRATIONS {
-        if *to > number {
-            value = migrate(value).map_err(damaged)?;
-        }
+    // every schema after this one up to this build's own, by its own migration: a state that
+    // a step is missing for is not read (as an older one), never read as if it were this one
+    for to in number + 1..=STATE_OWN {
+        let Some((_, migrate)) = STATE_MIGRATIONS.iter().find(|(step, _)| *step == to) else {
+            return Err(StateRefusal::Older(number));
+        };
+        value = migrate(value).map_err(damaged)?;
     }
     let state = state_members(&value).map_err(damaged)?;
     Ok((state, number < STATE_OWN))
