@@ -482,7 +482,9 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   error. With `--require-pass` it exits 7 after the document when there is no unit (nothing
   to judge, or nothing could be judged: `refused: there is no unit to judge (--require-pass
   no_unit)`) or when any unit is not a pass (`refused: N of M units did not pass
-  (--require-pass not_pass)`): a clean CI checkout is no pass. The refusal is decided before
+  (--require-pass not_pass)`): a clean CI checkout is no pass. Without a session and without
+  `--range` a check judges no commits, so a CI job names its range (`--range origin/main..HEAD`
+  or the like) to cover them. The refusal is decided before
   the document is written, so a reader that has gone, or a full disk, still gets exit 7 and the
   reason.
 - **A hook never fails its client, and a failure is never silence.** A hook always exits 0;

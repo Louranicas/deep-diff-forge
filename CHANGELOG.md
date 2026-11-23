@@ -81,6 +81,24 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   Directories named `tmp-<pid>` by earlier builds are removed as before (F3.a).
 - The partial file a hook state is written through is named at random, not by the process id
   (F3.a).
+- `agent check` judges the units a stop judges, in its order and each by the patch a stop makes
+  for it: the uncommitted change, the staged change where it is another, then each commit from
+  its first parent (`--range A..B`, one line of first parents, or with `--session` the
+  session's commits as a stop finds them). It says "Equal to the stop in its units and inputs"
+  only with the stop's inputs and every unit a stop of the session answers for judged, never
+  that the stop decides the same; `stop.may_differ` and the lines "The stop may differ" say
+  where a stop can decide otherwise from the same verdicts (F3.d).
+- `agent check --require-pass` exits 7 after the document when there is no unit
+  (`require_pass_no_unit`: a clean CI checkout is no pass) or when any unit is not a pass
+  (`require_pass_not_pass`), through the one door, so a reader that has gone still gets exit 7;
+  the registry has ten classes (F3.e).
+- When the policy admits a ranker of the ranker directory, `agent check` judges the unit with
+  it, as a stop does, names it in `ranker`, and lists the labels this binary raises that it does
+  not as `advice_only`; a ranker that runs out of time, fails or prints no rank document leaves
+  `advice_only` null and says why in `advice_unread` (F3.f).
+- A check with no judge stages and writes nothing (UNJUDGED with the reason, no unit); a HOLD or
+  FAIL names its rules or, by their codes (`judge_note_codes`), what the judge named beside
+  them, never the judge's words (F3).
 
 ## [0.10.0] - 2026-11-23
 
