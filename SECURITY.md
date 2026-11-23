@@ -814,7 +814,10 @@ bounded form.** What it holds to:
   --gate` fails a registered timeout under 50. Each step is given the time that is left.
   Before, the steps' own limits added up to several minutes, and a client that ended the
   hook dropped its answer, which reads as a pass.
-- **Every child DDF waits for runs in a process group of its own.** The judge, the helper
+- **Every child DDF's process runner waits for runs in a process group of its own.** Git in a
+  review's acquisition (`--git-*`, `review_change`, `review.change`) is not run by it: that
+  runner kills Git alone at the time limit and returns, and a process Git started runs on
+  (see "Git subprocesses have a time limit" below). The judge, the helper
   that hashes the rankers, and the council's Git and tuicr calls are each the leader of their
   own group, and the whole group is killed when the call ends, however it ends (time limit,
   output cap, normal exit); the call returns by its time limit even when something holds its

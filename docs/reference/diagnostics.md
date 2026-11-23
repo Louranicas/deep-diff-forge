@@ -74,8 +74,9 @@ every other diagnostic lists all of its label's repairs.
 A `hazardous_text@line` holds the kinds of its line and, when the file's path also raises the
 label, the path's kinds too: while a line locates the label the path has no diagnostic of its own.
 A `hazardous_text@file` holds every kind of its file. `unread` means the engine could not tell why
-Git gave the file as binary: `git check-attr` or the second reading as text was cut off by the byte
-budget or the time limit, the second reading failed or could not be asked for the path, or its
+Git gave the file as binary: `git check-attr` was cut off by the time limit, or the second reading
+as text by the byte budget or the time limit, the second reading failed or could not be asked for
+the path, or its
 answer could not be used (a copy Git gives as two changes, a reading that still says binary or
 does not parse). In some of these ways an attribute is
 ruled out, but the engine does not keep which, so every repair is listed. Where the byte budget or

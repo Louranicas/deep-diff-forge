@@ -158,7 +158,9 @@ is the primary reason. The text holds counts, flag names, label names and class 
 path or other text of the input; other stderr lines may come before or after it. A class's **Next**
 refines exit 7's `change_input` for that class. `schema exit-codes` lists the classes as
 `refusals` beside `codes`; `explain 7 [--json]` and the MCP tools `explain_exit_code` (code 7) and
-`exit_code_registry` list the same.
+`exit_code_registry` list the same. The list is new in 0.11.0 (0.10.0's `schema exit-codes` has
+`codes` only); **Since** is the release in which the refusal itself first shipped, and its
+reason line may be newer.
 
 | Class | Tag | Commands | Stdout | Next | Since | Reason line |
 | --- | --- | --- | --- | --- | --- | --- |

@@ -1080,7 +1080,9 @@ fn wide_encoding(patch: &[u8]) -> [bool; 2] {
 
 /// Why Git called `change`'s file binary: [`DiffSuppression::Content`] when `git check-attr`
 /// says the path's `diff` attribute is unspecified (or set), else
-/// [`DiffSuppression::Attribute`]. Attribute raises the label whatever the text reading gives;
+/// [`DiffSuppression::Attribute`], also when the path cannot be passed as an argument or
+/// `git check-attr` fails in any way but by the time limit (its 64 KiB output cap included).
+/// Attribute raises the label whatever the text reading gives;
 /// content raises it only beside a text reading. A question cut off by the time limit is an
 /// error, not an answer (S3.27.d).
 fn suppression(

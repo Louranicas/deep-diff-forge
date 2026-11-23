@@ -241,7 +241,9 @@ impl PatchTwin {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffSuppression {
     /// The path's `diff` attribute is unset (`-diff`, the `binary` macro) or names a diff
-    /// driver, from any attributes file Git reads.
+    /// driver, from any attributes file Git reads. Also given when `git check-attr` fails for a
+    /// reason other than the time limit (its 64 KiB output cap included) or the path cannot be
+    /// passed to it as an argument: the cause is then not known, and the label is kept.
     Attribute,
     /// No `diff` attribute applies: Git's own content check (a NUL byte) called it binary.
     Content,
@@ -249,7 +251,8 @@ pub enum DiffSuppression {
     /// NUL in every pair): Git's content check called it binary for the NULs of its encoding.
     Encoding,
     /// No attribute label covers the file and DDF could not read it again within its limits:
-    /// the second reading or `git check-attr` was cut off by the byte budget or the time limit.
+    /// `git check-attr` was cut off by the time limit, or the second reading was cut off by the
+    /// byte budget or the time limit, failed, or gave an answer that could not be used.
     Unread,
 }
 

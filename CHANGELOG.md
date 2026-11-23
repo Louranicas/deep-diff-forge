@@ -129,6 +129,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   forbids `check_suppressed` holds more changes (the new readings) and no longer holds one whose
   only `#[allow(` is in a comment or string (F2b.g).
 - `tool.scorer_sha256` moves (F2b).
+- `--help` names the values `--cluster --parallel` takes (`serial|auto|N`, as it took before);
+  the reference names `--allow-repo` for `mcp`, `rpc` and `daemon start`; the 0.10.0 release
+  notes gain an errata list (D1).
 
 ## [0.10.0] - 2026-11-23
 

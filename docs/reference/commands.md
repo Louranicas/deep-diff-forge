@@ -9,7 +9,7 @@ deep-diff-forge --stdin-patch [MODE] [--require-files] [--require-hunks] [--allo
 deep-diff-forge {--git-working-tree [--include-untracked] | --git-staged | --git-range A..B} [--repo PATH] [MODE | --acquisition-json]
 deep-diff-forge [--] <old> <new> [MODE] [--require-files] [--require-hunks]
 # MODE: --json | --jsonl | --rank [--fail-on LIST] | --diagnostics [--fail-on LIST]
-#       | --cluster [--parallel N] | --layout inline|side-by-side
+#       | --cluster [--parallel serial|auto|N] | --layout inline|side-by-side
 #       | --outline | --hunks [--address A]... [--path P]...   (both: [--max-bytes N] [--cursor C])
 ```
 
@@ -65,7 +65,9 @@ with `binary_change` and no new label: a change no attribute hides whose second 
 not UTF-8, a real binary most often (and whatever is made to look like one: the limit below). A
 second reading (or `git check-attr`) that the byte budget or the 120 s limit cuts off never
 leaves a binary change silent and never fails the review: the file stays `binary_changed`, and
-the attribute label stands, else it carries `"diff_suppressed": "unread"`. Paths are read again
+the attribute label stands, else it carries `"diff_suppressed": "unread"`. A `git check-attr`
+that fails in another way (its 64 KiB output cap included), or a path that cannot be passed to
+it, counts as an attribute (`"diff_suppressed": "attribute"`). Paths are read again
 in Git's order, each within the budget less every other section as it stands, so a large file
 that does not fit is `unread` and the files after it are still read; once the time limit has
 run out, every binary change not yet read again is `unread`. A binary by content whose text
@@ -162,11 +164,11 @@ text passes through a control-character sanitiser, so the only raw escapes are f
 deep-diff-forge envelope -- <command…>          # any command as one ddf.result.v1 object
 deep-diff-forge schema [result|exit-codes|signals|diagnostics]  # the envelope's JSON Schema, the registry, the signal vocabulary, or the JSON Schema of diagnostics.v0
 deep-diff-forge explain {<code> [--family engine|council] | signal <label> [--audience agent|person]} [--json]
-deep-diff-forge mcp                             # read-only MCP server over stdio
-deep-diff-forge rpc                             # the daemon's JSON-RPC over stdio, no daemon
+deep-diff-forge mcp [--allow-repo PATH]...      # read-only MCP server over stdio; --allow-repo lets review_change read those repositories
+deep-diff-forge rpc [--allow-repo PATH]...      # the daemon's JSON-RPC over stdio, no daemon; --allow-repo as for mcp
 deep-diff-forge agent check [--session ID | --base REV] [--range A..B] [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--require-pass] [--json]  # the units a stop judges, judged with its judge and policy (agent-hooks.md)
 deep-diff-forge agent verify-branch BASE..HEAD [--json]  # every commit of the range passed by a stop in the project's ledger, else exit 7 (agent-hooks.md)
-deep-diff-forge daemon {path|start [--foreground] [--log-format text|json]|health|status|metrics [--format json|prometheus] [--out PATH]|stop} [--socket PATH]
+deep-diff-forge daemon {path|start [--foreground] [--allow-repo PATH]... [--log-format text|json]|health|status|metrics [--format json|prometheus] [--out PATH]|stop} [--socket PATH]
 ```
 
 ## Learning, analysis, deployment and diagnostics

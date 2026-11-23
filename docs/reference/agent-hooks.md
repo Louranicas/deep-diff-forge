@@ -888,7 +888,7 @@ Stated limits, which the judge on the pull request covers:
   change can never be verified. Target: S3.25.b (0.11.0) for commits; never for what is not
   committed.
 - **Six ways the judged agent can make a stop say nothing it should, or judge nothing**,
-  each a deliberate act, measured on this release (0.10.0) with a stand-in judge. None is a
+  each a deliberate act, measured on 0.10.0 with a stand-in judge. None is a
   boundary: a person reading the working tree, and the judge on the pull request for what is
   committed, still see the work. Target: F12 and F13 (0.11.0), through the stop model F7.j.
   - A directory with mode 000 hides from Git what is in it: an untracked directory holding
@@ -904,7 +904,9 @@ Stated limits, which the judge on the pull request covers:
     stop does not see them.
   - A plain directory at a path the base or the index records as a submodule (a gitlink)
     is listed by no Git command when no repository is there: failing work only in it gives a
-    silent pass (measured on this release; 0.11.0 walks such a path like any other).
+    silent pass (measured on 0.10.0, and again on the 0.11.0 branch before F12 and F13, where
+    a Git selection of the working tree still finds no file there; walking such a path like any
+    other is planned for 0.11.0 and not built yet).
   - A very large sparse file (`truncate -s 400G`, no disk used) makes Git's staging run out
     of the hook's time: the stop is UNJUDGED ("`git add` did not finish in the time a hook
     has and was stopped", 41 seconds), with no run of the judge, at every stop while the file
