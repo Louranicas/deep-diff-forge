@@ -2456,6 +2456,9 @@ fn a_patch_that_cannot_be_made_is_unjudged_at_a_stop_and_told_once_as_advice() {
     };
 
     git(&root, &["update-index", "--skip-worktree", "a.rs"]);
+    // (F12: the marks hold the first stop once, then the stop is UNJUDGED as before)
+    let held = stop_from(&root, "skip", &script);
+    assert!(blocked(&held).contains("skip-worktree"), "{held}");
     let decision = stop_from(&root, "skip", &script);
     let said = allowed(&decision);
     assert!(
@@ -2473,6 +2476,8 @@ fn a_patch_that_cannot_be_made_is_unjudged_at_a_stop_and_told_once_as_advice() {
     std::fs::write(&secret, "x\n").unwrap();
     std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o000)).unwrap();
     if std::fs::read(&secret).is_err() {
+        let held = stop_from(&root, "unreadable", &script);
+        assert!(blocked(&held).contains("\"unreadable.txt\""), "{held}");
         let decision = stop_from(&root, "unreadable", &script);
         let said = allowed(&decision);
         assert!(
@@ -2678,13 +2683,14 @@ fn doctor_gate_checks_the_patch_and_the_settings_a_stop_depends_on() {
     let patch_fails = ["patch"];
     assert_eq!(gate().0, all(&[]));
 
-    // a path marked skip-worktree: a stop here is UNJUDGED
+    // a path marked skip-worktree: a stop here holds once, then is UNJUDGED (F12)
     git(&root, &["update-index", "--skip-worktree", "a.rs"]);
     let (found, doc) = gate();
     assert_eq!(found, all(&patch_fails));
     let why = detail(&doc, "patch");
     assert!(
-        why.contains("a stop here would be UNJUDGED") && why.contains("skip-worktree"),
+        why.contains("a stop here would hold once, then be UNJUDGED")
+            && why.contains("skip-worktree"),
         "{why}"
     );
     git(&root, &["update-index", "--no-skip-worktree", "a.rs"]);
@@ -2696,7 +2702,7 @@ fn doctor_gate_checks_the_patch_and_the_settings_a_stop_depends_on() {
         let (found, doc) = gate();
         assert_eq!(found, all(&patch_fails));
         assert!(
-            detail(&doc, "patch").contains("a stop here would be UNJUDGED"),
+            detail(&doc, "patch").contains("a stop here would hold once, then be UNJUDGED"),
             "{doc:#}"
         );
     }
@@ -9966,6 +9972,9 @@ fn a_stop_that_could_not_read_the_tree_forgets_nothing_of_it() {
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
     // (whoever may read every file, as root may, has no such file: that trigger is passed)
     if std::fs::read(&locked).is_err() {
+        // (F12: it holds the first stop once; then the stop is as before)
+        let held = stop_from(&root, "s", &script);
+        assert!(blocked(&held).contains("\"locked.bin\""), "{held}");
         not_read("an unreadable file", stop_from(&root, "s", &script));
         not_read("again", stop_from(&root, "s", &script));
     }
@@ -9975,6 +9984,8 @@ fn a_stop_that_could_not_read_the_tree_forgets_nothing_of_it() {
 
     // a path marked skip-worktree
     git(&root, &["update-index", "--skip-worktree", "a.rs"]);
+    let held = stop_from(&root, "s", &script);
+    assert!(blocked(&held).contains("skip-worktree"), "{held}");
     not_read("skip-worktree", stop_from(&root, "s", &script));
     git(&root, &["update-index", "--no-skip-worktree", "a.rs"]);
     stands("the mark is taken away; the index is as it was");
