@@ -43,6 +43,7 @@
 //! is made stay on the same file system and are removed again.
 
 use crate::emit;
+use crate::hook::reason::{ReasonClass, Why};
 use crate::hook::{
     self, Event, Finding, Holds, Input, Judged, StartBase, StopDecision, TreeJudged,
 };
@@ -325,15 +326,17 @@ pub(crate) fn run(args: &[String]) {
     if text.len() as u64 > INPUT_CAP {
         return did_not_run("its input is over 32 MiB");
     }
-    let said = hook::parse_input(event, &text).and_then(|input| match event {
-        Event::SessionStart => Ok(session_start(&input, args)),
-        Event::PostTool => Ok(post_tool(&input)),
-        Event::Stop => stop(&input, args),
-    });
+    let said = hook::parse_input(event, &text)
+        .map_err(|reason| Why::new(ReasonClass::InputRefused, reason))
+        .and_then(|input| match event {
+            Event::SessionStart => Ok(session_start(&input, args)),
+            Event::PostTool => Ok(post_tool(&input)),
+            Event::Stop => stop(&input, args),
+        });
     match said {
         Ok(Some(out)) => emitln!("{out}"),
         Ok(None) => {}
-        Err(reason) => did_not_run(&reason),
+        Err(why) => did_not_run(&why.text),
     }
 }
 
@@ -943,6 +946,17 @@ impl std::fmt::Display for StateRefusal {
 /// that hook is the session's first.
 const REMOVING_COSTS: &str = "removing it makes the next hook take the commit HEAD names as this session's base: what this session committed before would not be judged";
 
+impl StateRefusal {
+    /// The reason class of the refusal.
+    fn class(&self) -> ReasonClass {
+        match self {
+            Self::Damaged(_) => ReasonClass::StateDamaged,
+            Self::Older(_) => ReasonClass::StateOlder,
+            Self::Newer(_) => ReasonClass::StateNewer,
+        }
+    }
+}
+
 /// What a hook says of the session's state file `file` that it does not read. A newer one is
 /// never to be removed, so no removal is named for it.
 fn refused_text(file: &Path, refusal: &StateRefusal) -> String {
@@ -1456,19 +1470,23 @@ impl Session {
     /// directory a state could be kept in, when a link or a file stands where the directory
     /// should be, or when the session's file is there and cannot be read as a state: none of
     /// these is "no state".
-    fn open(id: &str) -> Result<Self, String> {
-        let dir = sessions_dir()?;
+    fn open(id: &str) -> Result<Self, Why> {
+        let dir = sessions_dir().map_err(|text| Why::new(ReasonClass::StateNoDirectory, text))?;
         match std::fs::symlink_metadata(&dir) {
             Ok(found) if !found.file_type().is_dir() => {
-                return Err(format!(
-                    "{} is not a directory of its own (a symbolic link or a file stands there)",
-                    shown(&dir)
+                return Err(Why::new(
+                    ReasonClass::StateNoDirectory,
+                    format!(
+                        "{} is not a directory of its own (a symbolic link or a file stands there)",
+                        shown(&dir)
+                    ),
                 ));
             }
             _ => {}
         }
         let file = state_file(&dir, id);
-        let read = load_read(&file).map_err(|refusal| refused_text(&file, &refusal))?;
+        let read = load_read(&file)
+            .map_err(|refusal| Why::new(refusal.class(), refused_text(&file, &refusal)))?;
         let (kept, upgrade) = read.map_or((None, false), |(state, before)| (Some(state), before));
         Ok(Self {
             dir,
@@ -1615,8 +1633,8 @@ impl Session {
     /// Why the state directory must not be used for the project at `top`: it lies inside that
     /// working tree. A state there would be an untracked file in every patch, and cleaning the
     /// tree would remove the session's base.
-    fn inside(&self, top: &Path) -> Option<String> {
-        inside_tree(&self.dir, top)
+    fn inside(&self, top: &Path) -> Option<Why> {
+        inside_tree(&self.dir, top).map(|text| Why::new(ReasonClass::StateInsideTree, text))
     }
 }
 
@@ -1660,7 +1678,7 @@ enum Located {
     /// directory, and the session has no project recorded.
     Nowhere,
     /// Something that must be said: the project could not be found, and why.
-    Trouble(String),
+    Trouble(Why),
     Here(Box<Work>),
 }
 
@@ -1674,23 +1692,29 @@ struct Work {
 
 /// Record the project at `place` for a session that has none: the commit `HEAD` names, which
 /// repository it is, and the commits that were there (the tips, returned beside it).
-fn record(place: &Place, deadline: Deadline) -> Result<(Project, Option<Vec<String>>), String> {
+fn record(place: &Place, deadline: Deadline) -> Result<(Project, Option<Vec<String>>), Why> {
+    let failed = |text: String| Why::new(ReasonClass::PlaceGitFailed, text);
     let Some(top) = place.top.to_str() else {
-        return Err("the project's path is not UTF-8".to_owned());
+        return Err(failed("the project's path is not UTF-8".to_owned()));
     };
     let base = match head_state(&place.top, &deadline.git()) {
         Ok(HeadState::Commit(id)) if is_commit_id(&id) => Base::Commit(id),
         Ok(HeadState::Commit(_)) => {
-            return Err("Git named the commit of HEAD in a form that cannot be read".to_owned());
+            return Err(failed(
+                "Git named the commit of HEAD in a form that cannot be read".to_owned(),
+            ));
         }
         Ok(HeadState::Unborn {
             repository_has_commits: false,
         }) => Base::NoCommit,
         Ok(HeadState::Unborn { .. }) => Base::Orphan,
         Err(error) => {
-            return Err(format!(
-                "the commit HEAD names could not be read: {}",
-                git_words(&error)
+            return Err(Why::new(
+                git_class(&error),
+                format!(
+                    "the commit HEAD names could not be read: {}",
+                    git_words(&error)
+                ),
             ));
         }
     };
@@ -1721,15 +1745,20 @@ fn record(place: &Place, deadline: Deadline) -> Result<(Project, Option<Vec<Stri
         // Anything else may pass (Git was slow, a file was being written): nothing is
         // recorded, and the next hook of the session tries again, as its first.
         Err(error) => {
-            return Err(format!(
-                "the commits that are there as the session begins could not be listed, so its own could not be told from them: {} (`{} agent doctor --gate` checks this as the link `commits`; when it is ready, start a new session)",
-                git_words(&error),
-                hook::this_binary()
+            return Err(Why::new(
+                git_class(&error),
+                format!(
+                    "the commits that are there as the session begins could not be listed, so its own could not be told from them: {} (`{} agent doctor --gate` checks this as the link `commits`; when it is ready, start a new session)",
+                    git_words(&error),
+                    hook::this_binary()
+                ),
             ));
         }
     };
     if !tips.iter().flatten().all(|tip| is_commit_id(tip)) {
-        return Err("Git named a commit in a form that cannot be read".to_owned());
+        return Err(failed(
+            "Git named a commit in a form that cannot be read".to_owned(),
+        ));
     }
     let listed = tips.as_deref().unwrap_or_default();
     let project = Project {
@@ -1766,8 +1795,12 @@ fn locate(input: &Input, session: &mut Session, deadline: Deadline) -> Located {
     let client = client_project_dir();
     let named = match client.as_deref().map(|dir| (find(dir, deadline), dir)) {
         Some((Found::Tree(found), _)) => Some(found),
-        Some((Found::Failed { reason, .. }, _)) => return Located::Trouble(reason),
-        Some((Found::Unpaired(unpaired), dir)) => return Located::Trouble(unpaired.reason(dir)),
+        Some((Found::Failed { reason, .. }, _)) => {
+            return Located::Trouble(Why::new(ReasonClass::PlaceGitFailed, reason));
+        }
+        Some((Found::Unpaired(unpaired), dir)) => {
+            return Located::Trouble(Why::new(ReasonClass::PlaceUnpaired, unpaired.reason(dir)));
+        }
         Some((Found::NotARepository | Found::AtBoundary { .. } | Found::Gone, _)) | None => None,
     };
     let Some(project) = session.state.project.clone() else {
@@ -1779,13 +1812,23 @@ fn locate(input: &Input, session: &mut Session, deadline: Deadline) -> Located {
                 Found::Tree(found) => found,
                 Found::NotARepository | Found::AtBoundary { .. } => return Located::Nowhere,
                 Found::Gone => {
-                    return Located::Trouble(format!(
-                        "the session's directory {} does not exist, and no project is recorded for this session",
-                        shown(cwd)
+                    return Located::Trouble(Why::new(
+                        ReasonClass::PlaceDirectoryGone,
+                        format!(
+                            "the session's directory {} does not exist, and no project is recorded for this session",
+                            shown(cwd)
+                        ),
                     ));
                 }
-                Found::Failed { reason, .. } => return Located::Trouble(reason),
-                Found::Unpaired(unpaired) => return Located::Trouble(unpaired.reason(cwd)),
+                Found::Failed { reason, .. } => {
+                    return Located::Trouble(Why::new(ReasonClass::PlaceGitFailed, reason));
+                }
+                Found::Unpaired(unpaired) => {
+                    return Located::Trouble(Why::new(
+                        ReasonClass::PlaceUnpaired,
+                        unpaired.reason(cwd),
+                    ));
+                }
             }
         };
         return match record(&place, deadline) {
@@ -1806,10 +1849,13 @@ fn locate(input: &Input, session: &mut Session, deadline: Deadline) -> Located {
     if let Some(place) = &named
         && place.top != recorded
     {
-        return Located::Trouble(format!(
-            "this session began in {}, and the project found now is {}; {NEW_SESSION}",
-            hook::shown_path(&project.top),
-            shown(&place.top)
+        return Located::Trouble(Why::new(
+            ReasonClass::PlaceClientDirDiffers,
+            format!(
+                "this session began in {}, and the project found now is {}; {NEW_SESSION}",
+                hook::shown_path(&project.top),
+                shown(&place.top)
+            ),
         ));
     }
     match find(recorded, deadline) {
@@ -1820,16 +1866,27 @@ fn locate(input: &Input, session: &mut Session, deadline: Deadline) -> Located {
                 fresh: false,
             }))
         }
-        Found::Tree(_) => Located::Trouble(format!(
-            "the repository at {} is not the one this session started in (another repository stands at that path now, or the project's Git directory was made anew); {NEW_SESSION}",
-            hook::shown_path(&project.top)
-        )),
-        Found::Failed { reason, .. } => Located::Trouble(reason),
-        Found::Unpaired(unpaired) => Located::Trouble(unpaired.reason(recorded)),
-        Found::NotARepository | Found::AtBoundary { .. } | Found::Gone => {
-            Located::Trouble(format!(
-                "the project this session began in, {}, is no longer a Git working tree; {NEW_SESSION}",
+        Found::Tree(_) => Located::Trouble(Why::new(
+            ReasonClass::PlaceReplaced,
+            format!(
+                "the repository at {} is not the one this session started in (another repository stands at that path now, or the project's Git directory was made anew); {NEW_SESSION}",
                 hook::shown_path(&project.top)
+            ),
+        )),
+        Found::Failed { reason, .. } => {
+            Located::Trouble(Why::new(ReasonClass::PlaceGitFailed, reason))
+        }
+        Found::Unpaired(unpaired) => Located::Trouble(Why::new(
+            ReasonClass::PlaceUnpaired,
+            unpaired.reason(recorded),
+        )),
+        Found::NotARepository | Found::AtBoundary { .. } | Found::Gone => {
+            Located::Trouble(Why::new(
+                ReasonClass::PlaceMoved,
+                format!(
+                    "the project this session began in, {}, is no longer a Git working tree; {NEW_SESSION}",
+                    hook::shown_path(&project.top)
+                ),
             ))
         }
     }
@@ -1841,7 +1898,7 @@ enum Subject {
     /// has none now.
     Nothing,
     /// Nothing, and that must be said.
-    Unjudged(String),
+    Unjudged(Why),
     /// The commit the session began from, with the words a message says it in.
     Range { base: String, words: String },
 }
@@ -1865,19 +1922,22 @@ fn subject(work: &Work, deadline: Deadline) -> Subject {
                 ),
             }
         }
-        Base::Orphan => Subject::Unjudged(ORPHAN.to_owned()),
+        Base::Orphan => Subject::Unjudged(Why::new(ReasonClass::PlaceOrphan, ORPHAN)),
         Base::NoCommit if work.fresh => Subject::Nothing,
         Base::NoCommit => match head_state(&work.place.top, &deadline.git()) {
             Ok(HeadState::Unborn {
                 repository_has_commits: false,
             }) => Subject::Nothing,
-            Ok(_) => Subject::Unjudged(
-                "the session began before the first commit of this repository, so there is no commit to measure its changes from"
-                    .to_owned(),
-            ),
-            Err(error) => Subject::Unjudged(format!(
-                "the commit HEAD names could not be read: {}",
-                git_words(&error)
+            Ok(_) => Subject::Unjudged(Why::new(
+                ReasonClass::PlaceBeforeFirstCommit,
+                "the session began before the first commit of this repository, so there is no commit to measure its changes from",
+            )),
+            Err(error) => Subject::Unjudged(Why::new(
+                ReasonClass::PlaceHeadUnreadable,
+                format!(
+                    "the commit HEAD names could not be read: {}",
+                    git_words(&error)
+                ),
             )),
         },
     }
@@ -1972,7 +2032,7 @@ struct Change {
 /// hook cannot tell whether the session made it, so it stays a note.)
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Refusal {
-    class: &'static str,
+    class: ReasonClass,
     paths: Vec<PathBuf>,
 }
 
@@ -2007,7 +2067,7 @@ fn refusal_paths(refusal: &Refusal) -> String {
 fn refusal_sentence(refusal: &Refusal) -> String {
     let undo = "If this session made it so, undo it; if not, tell a person.";
     match refusal.class {
-        "work.unreadable" => format!(
+        ReasonClass::WorkUnreadable => format!(
             "a file in it cannot be read: {}. {undo}",
             refusal_paths(refusal)
         ),
@@ -2071,7 +2131,7 @@ fn refusal_words(refusal: &Refusal) -> String {
     }
     format!(
         "\0{}\0{}",
-        refusal.class,
+        refusal.class.as_str(),
         deep_diff_forge_core::sha256_hex(&bytes)
     )
 }
@@ -2087,7 +2147,7 @@ fn change(
     called: &str,
     work: &Path,
     deadline: Deadline,
-) -> Result<Change, (String, Option<Refusal>)> {
+) -> Result<Change, (Why, Option<Refusal>)> {
     match judge_patch_probed(top, base, work, &deadline.git(), &opens) {
         Ok(patch) => Ok(Change {
             patch: Some(patch.bytes).filter(|bytes| !bytes.is_empty()),
@@ -2099,13 +2159,22 @@ fn change(
 
 /// Why [`change`] made no patch, and the cause that holds a stop once when the failure has one
 /// that is named whole (F12): a search for unreadable files that a bound cut names none.
-fn not_made(error: JudgePatchError, called: &str, base: &str) -> (String, Option<Refusal>) {
-    let read = |words: String| format!("the change could not be read from Git: {words}");
+fn not_made(error: JudgePatchError, called: &str, base: &str) -> (Why, Option<Refusal>) {
+    let class = patch_error_class(&error);
+    let read = |words: String| {
+        Why::new(
+            class,
+            format!("the change could not be read from Git: {words}"),
+        )
+    };
     match error {
         JudgePatchError::NoBase => (
-            format!(
-                "{called} ({}) can no longer be read from the repository",
-                base.chars().take(7).collect::<String>()
+            Why::new(
+                class,
+                format!(
+                    "{called} ({}) can no longer be read from the repository",
+                    base.chars().take(7).collect::<String>()
+                ),
             ),
             None,
         ),
@@ -2116,7 +2185,6 @@ fn not_made(error: JudgePatchError, called: &str, base: &str) -> (String, Option
             error,
         } => {
             if whole {
-                let class = "work.unreadable";
                 (read(git_words(&error)), Some(Refusal { class, paths }))
             } else {
                 let words = git_words(&error);
@@ -2131,11 +2199,38 @@ fn not_made(error: JudgePatchError, called: &str, base: &str) -> (String, Option
         error @ JudgePatchError::SkipWorktree => (
             read(error.to_string()),
             Some(Refusal {
-                class: "work.skip_worktree",
+                class,
                 paths: Vec::new(),
             }),
         ),
         error @ JudgePatchError::Unmerged => (read(error.to_string()), None),
+    }
+}
+
+/// The reason class of a patch that could not be made ([`JudgePatchError`]): the two causes
+/// F12 holds once by the evidence the patch maker has (a whole list of files this account
+/// cannot read; skip-worktree marks), and causes that never hold: Git's failure or time, a
+/// base that is gone, unmerged paths, and a search for unreadable files that a bound cut,
+/// which names no whole cause.
+fn patch_error_class(error: &JudgePatchError) -> ReasonClass {
+    match error {
+        JudgePatchError::NoBase => ReasonClass::PlaceBaseGone,
+        JudgePatchError::SkipWorktree => ReasonClass::WorkSkipWorktree,
+        JudgePatchError::Unmerged => ReasonClass::PlaceUnmerged,
+        JudgePatchError::Unreadable { whole: true, .. } => ReasonClass::WorkUnreadable,
+        JudgePatchError::Failed(error) | JudgePatchError::Unreadable { error, .. } => {
+            git_class(error)
+        }
+    }
+}
+
+/// The reason class of a Git command that failed: out of the hook's time, over the size a
+/// patch is made to, or any other failure.
+fn git_class(error: &GitAcquireError) -> ReasonClass {
+    match error {
+        GitAcquireError::TimedOut { .. } => ReasonClass::TimeGit,
+        GitAcquireError::BudgetExceeded { .. } => ReasonClass::ChainPatchTooLarge,
+        _ => ReasonClass::PlaceGitFailed,
     }
 }
 
@@ -2227,16 +2322,16 @@ fn post_tool(input: &Input) -> Option<String> {
             return said_beside(
                 own_without_state(input, deadline).as_deref(),
                 &input.session,
-                &why,
+                &why.text,
             );
         }
     };
     let (own, advice) = match locate(input, &mut session, deadline) {
         Located::Nowhere => return None,
-        Located::Trouble(reason) => (None, Err(reason)),
+        Located::Trouble(reason) => (None, Err(reason.text)),
         Located::Here(work) => {
             if let Some(why) = session.inside(&work.place.top) {
-                return said_beside(Some(&work.place.own), &input.session, &why);
+                return said_beside(Some(&work.place.own), &input.session, &why.text);
             }
             let advice = advice_for(
                 &work,
@@ -2275,7 +2370,7 @@ fn advice_for(
 ) -> Result<Option<String>, String> {
     let (base, range) = match subject(work, deadline) {
         Subject::Nothing => return Ok(None),
-        Subject::Unjudged(reason) => return Err(reason),
+        Subject::Unjudged(reason) => return Err(reason.text),
         Subject::Range { base, words } => (base, words),
     };
     let scratch = Scratch::new(&work.place.own)?;
@@ -2286,7 +2381,7 @@ fn advice_for(
         &scratch.sub("work")?,
         deadline,
     )
-    .map_err(|(reason, _)| reason)?;
+    .map_err(|(reason, _)| reason.text)?;
     let Some(patch) = changed.patch else {
         return Ok(None);
     };
@@ -2327,16 +2422,16 @@ fn session_start(input: &Input, args: &[String]) -> Option<String> {
     let turn = session_lock(&input.session, START_LOCK_WAIT);
     let mut session = match Session::open(&input.session) {
         Ok(session) => session,
-        Err(why) => return Some(hook::contract_trouble(&why)),
+        Err(why) => return Some(hook::contract_trouble(&why.text)),
     };
     let work = match locate(input, &mut session, deadline) {
         Located::Nowhere => return None,
-        Located::Trouble(reason) => return Some(hook::contract_trouble(&reason)),
+        Located::Trouble(reason) => return Some(hook::contract_trouble(&reason.text)),
         Located::Here(work) => work,
     };
     let deadline = deadline.with_project(&work.place);
     if let Some(why) = session.inside(&work.place.top) {
-        return Some(hook::contract_trouble(&why));
+        return Some(hook::contract_trouble(&why.text));
     }
     // A session that is resumed with its list of commits gone, or its list of judged commits,
     // is not one whose stops will be judged: say so now, not only at the stop (fifth
@@ -2417,11 +2512,17 @@ fn policy_name(args: &[String]) -> String {
 /// `agent setup --hooks` prints the judge it finds as an absolute `--judge`, so that the
 /// program is chosen once, by the person who installs the hooks, and not at every stop by
 /// `PATH`.
+pub(crate) fn judge_program(args: &[String], repository: &[&Path]) -> Result<PathBuf, String> {
+    judge_program_why(args, repository).map_err(|why| why.text)
+}
+
+/// [`judge_program`], with the class of why there is none: not found, or inside the
+/// repository.
 #[expect(
     clippy::disallowed_methods,
     reason = "the judge door: forge-warden is looked up on PATH when --judge names no file"
 )]
-pub(crate) fn judge_program(args: &[String], repository: &[&Path]) -> Result<PathBuf, String> {
+fn judge_program_why(args: &[String], repository: &[&Path]) -> Result<PathBuf, Why> {
     let found = match crate::flag_value(args, "--judge") {
         Some(named) => {
             let path = PathBuf::from(named);
@@ -2437,16 +2538,22 @@ pub(crate) fn judge_program(args: &[String], repository: &[&Path]) -> Result<Pat
     let program = found
         .and_then(|path| std::fs::canonicalize(path).ok())
         .ok_or_else(|| {
-            "forge-warden was not found (install it, or name it with --judge PATH)".to_owned()
+            Why::new(
+                ReasonClass::ChainJudgeMissing,
+                "forge-warden was not found (install it, or name it with --judge PATH)",
+            )
         })?;
     let inside = repository
         .iter()
         .filter_map(|root| std::fs::canonicalize(root).ok())
         .any(|root| program.starts_with(root));
     if inside {
-        return Err(format!(
-            "the judge {} is inside the repository it would judge, where a change can replace it",
-            hook::shown_path(&program.to_string_lossy())
+        return Err(Why::new(
+            ReasonClass::ChainJudgeInside,
+            format!(
+                "the judge {} is inside the repository it would judge, where a change can replace it",
+                hook::shown_path(&program.to_string_lossy())
+            ),
         ));
     }
     Ok(program)
@@ -2610,36 +2717,47 @@ impl<'a> Bench<'a> {
         args: &[String],
         writable: &[&Path],
         deadline: Deadline,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, Why> {
         // The policy is the one at the commit the session began from: a change cannot loosen
         // the policy it is judged by, by committing it either.
         let name = policy_name(args);
         let policy = match file_at_commit(top, base, &name, &deadline.git()) {
             Ok(Some(bytes)) => bytes,
             Ok(None) => {
-                return Err(format!(
-                    "the base commit has no policy file {}",
-                    hook::shown_path(&name)
+                return Err(Why::new(
+                    ReasonClass::ChainPolicyMissing,
+                    format!(
+                        "the base commit has no policy file {}",
+                        hook::shown_path(&name)
+                    ),
                 ));
             }
             Err(error) => {
-                return Err(format!(
-                    "the policy could not be read from Git: {}",
-                    git_words(&error)
+                return Err(Why::new(
+                    git_class(&error),
+                    format!(
+                        "the policy could not be read from Git: {}",
+                        git_words(&error)
+                    ),
                 ));
             }
         };
-        let program = judge_program(args, writable)?;
+        let program = judge_program_why(args, writable)?;
         let policy_file = scratch.0.join("policy.toml");
-        std::fs::write(&policy_file, &policy)
-            .map_err(|e| format!("the judge's input could not be written: {e}"))?;
+        std::fs::write(&policy_file, &policy).map_err(|e| {
+            Why::new(
+                ReasonClass::ChainInputUnwritable,
+                format!("the judge's input could not be written: {e}"),
+            )
+        })?;
         Ok(Self {
             scratch,
             program,
             policy_file,
             policy_sha256: deep_diff_forge_core::sha256_hex(&policy),
             probe: probe_patch(&name, &policy),
-            candidates: sealed_rankers(args, deadline)?,
+            candidates: sealed_rankers(args, deadline)
+                .map_err(|text| Why::new(ReasonClass::ChainRankersUnlisted, text))?,
             deadline,
             ranked_by: std::cell::RefCell::new(None),
             sealed: std::cell::RefCell::new(None),
@@ -2655,6 +2773,7 @@ impl<'a> Bench<'a> {
             return (
                 Judged::Unjudged {
                     reason: format!("the judge's input could not be written: {error}"),
+                    class: ReasonClass::ChainInputUnwritable,
                 },
                 false,
             );
@@ -2663,6 +2782,7 @@ impl<'a> Bench<'a> {
         let mut last = Judged::Unjudged {
             reason: "this binary's own path could not be found, so no ranker could be offered"
                 .to_owned(),
+            class: ReasonClass::ChainNoRanker,
         };
         let mut ran = false;
         for (ranker, digest) in &self.candidates {
@@ -2675,6 +2795,7 @@ impl<'a> Bench<'a> {
                             "the ranker {} {why}, so no verdict could be sealed to it",
                             shown(ranker)
                         ),
+                        class: ReasonClass::ChainRankerUnsealed,
                     };
                     continue;
                 }
@@ -2688,6 +2809,7 @@ impl<'a> Bench<'a> {
             let Some(time) = run_time(left, after) else {
                 last = Judged::Unjudged {
                     reason: NO_TIME.to_owned(),
+                    class: ReasonClass::TimeNoTimeLeft,
                 };
                 break;
             };
@@ -2707,7 +2829,7 @@ impl<'a> Bench<'a> {
             // hooks, HR8-L-2). Either the stop had little left, or the run had its part of
             // what was left and the rest is kept for what is judged after it.
             if code.is_none()
-                && let Judged::Unjudged { reason } = &mut last
+                && let Judged::Unjudged { reason, .. } = &mut last
             {
                 let had = time.min(JUDGE_TIME).as_secs_f32();
                 if time >= JUDGE_TIME {
@@ -3626,7 +3748,7 @@ struct Judge<'a> {
     stop: &'a Stopping<'a>,
     /// The working trees a change under judgement can write to: no judge is run from them.
     writable: Vec<PathBuf>,
-    bench: Option<Result<Bench<'a>, String>>,
+    bench: Option<Result<Bench<'a>, Why>>,
     /// What was said about each patch, by its SHA-256: the same patch is judged once.
     answers: std::collections::BTreeMap<String, Judged>,
     /// `Some(true)` once a patch, or the probe, has got a verdict at this stop: the chain works.
@@ -3644,7 +3766,7 @@ struct Judge<'a> {
 }
 
 impl<'a> Judge<'a> {
-    fn bench(&mut self) -> &Result<Bench<'a>, String> {
+    fn bench(&mut self) -> &Result<Bench<'a>, Why> {
         let stop = self.stop;
         let trees = &self.writable;
         self.bench.get_or_insert_with(|| {
@@ -3678,7 +3800,8 @@ impl<'a> Judge<'a> {
             Err(reason) => (
                 (
                     Judged::Unjudged {
-                        reason: reason.clone(),
+                        reason: reason.text.clone(),
+                        class: reason.class,
                     },
                     false,
                 ),
@@ -3730,7 +3853,7 @@ impl<'a> Judge<'a> {
     }
 
     /// Why no patch can be judged at this stop, when the judge could not be prepared.
-    fn broken(&self) -> Option<&str> {
+    fn broken(&self) -> Option<&Why> {
         match &self.bench {
             Some(Err(reason)) => Some(reason),
             _ => None,
@@ -3824,7 +3947,7 @@ enum Reading<T> {
     Found(T),
     /// It was not read, and why: nothing is known of it at this stop, so what is remembered
     /// of it stands and nothing of it is forgotten.
-    NotRead(String),
+    NotRead(Why),
 }
 
 /// What the index of a working tree holds against its `HEAD`, when it holds a change.
@@ -3850,10 +3973,13 @@ impl Uncommitted {
     /// A working tree that could not be read, and why. Its index was not read either: what
     /// stops the tree from being read stops the index too, and the reason is said once,
     /// with the tree.
-    fn not_read(reason: String) -> Self {
+    fn not_read(reason: Why) -> Self {
         Self {
-            staged: Reading::NotRead(format!(
-                "it was not looked at, because the working tree's change could not be read ({reason})"
+            staged: Reading::NotRead(Why::new(
+                reason.class,
+                format!(
+                    "it was not looked at, because the working tree's change could not be read ({reason})"
+                ),
             )),
             tree: Reading::NotRead(reason),
             refused: None,
@@ -3894,9 +4020,12 @@ fn uncommitted_by(
         // to measure from, so the tree is measured from the session's base.
         Ok(HeadState::Unborn { .. }) => stopping.base.to_owned(),
         Err(error) => {
-            return Ok(Uncommitted::not_read(format!(
-                "the commit HEAD names could not be read: {}",
-                git_words(&error)
+            return Ok(Uncommitted::not_read(Why::new(
+                git_class(&error),
+                format!(
+                    "the commit HEAD names could not be read: {}",
+                    git_words(&error)
+                ),
             )));
         }
     };
@@ -3929,11 +4058,17 @@ fn uncommitted_by(
         Ok(bytes) if bytes.is_empty() => Reading::Nothing,
         Ok(bytes) if Some(&bytes) == changed.patch.as_ref() => Reading::Found(Staged::Same),
         Ok(bytes) => Reading::Found(Staged::Other(bytes)),
-        Err(JudgePatchError::Failed(error)) => Reading::NotRead(format!(
-            "what is staged could not be read from Git: {}",
-            git_words(&error)
+        Err(JudgePatchError::Failed(error)) => Reading::NotRead(Why::new(
+            git_class(&error),
+            format!(
+                "what is staged could not be read from Git: {}",
+                git_words(&error)
+            ),
         )),
-        Err(other) => Reading::NotRead(format!("what is staged cannot be judged: {other}")),
+        Err(other) => Reading::NotRead(Why::new(
+            patch_error_class(&other),
+            format!("what is staged cannot be judged: {other}"),
+        )),
     };
     Ok(Uncommitted {
         tree: changed.patch.map_or(Reading::Nothing, Reading::Found),
@@ -3948,15 +4083,15 @@ fn uncommitted_by(
 /// named when the session began) leads to. A commit that only a remote-tracking ref names was
 /// fetched and is not the session's; one that was in the repository when the session began is
 /// not the session's either, whatever the session then does with it.
-fn session_commits(
-    stopping: &Stopping<'_>,
-    tips: &[String],
-) -> Result<Vec<CommitAndParent>, String> {
+fn session_commits(stopping: &Stopping<'_>, tips: &[String]) -> Result<Vec<CommitAndParent>, Why> {
     let top = &stopping.work.place.top;
     let words = |error: &GitAcquireError| {
-        format!(
-            "the commits made since the session began could not be listed: {}",
-            git_words(error)
+        Why::new(
+            git_class(error),
+            format!(
+                "the commits made since the session began could not be listed: {}",
+                git_words(error)
+            ),
         )
     };
     let sources =
@@ -4007,11 +4142,13 @@ fn judge_commit(
                     "the commit could not be read from Git: {}",
                     git_words(&error)
                 ),
+                class: git_class(&error),
             },
             matches!(error, GitAcquireError::BudgetExceeded { .. }),
         ),
         Err(other) => (
             Judged::Unjudged {
+                class: patch_error_class(&other),
                 reason: format!("the commit could not be read from Git: {other}"),
             },
             false,
@@ -4294,8 +4431,10 @@ fn sorted_commits(
 ) -> (Vec<Option<TreeJudged>>, Vec<Ask>) {
     let known: std::collections::BTreeMap<&str, Answer<'_>> =
         known.iter().filter_map(|entry| answer(entry)).collect();
+    // (a commit from before keeps the words of its reason, which say its class)
     let no_verdict = |reason: &str| Judged::Unjudged {
         reason: reason.to_owned(),
+        class: crate::hook::reason::class_of_words(reason),
     };
     let mut units: Vec<Option<TreeJudged>> = vec![None; listed.len()];
     let mut never: Vec<Ask> = Vec::new();
@@ -4383,12 +4522,13 @@ const NOT_ASKED: &str = "not asked at this stop for lack of time (it keeps its t
 /// Say of a commit's unit from before that this stop did not ask about it ([`NOT_ASKED`]).
 fn not_asked(unit: &mut Option<TreeJudged>) {
     if let Some(TreeJudged {
-        judged: Some(Judged::Unjudged { reason }),
+        judged: Some(Judged::Unjudged { reason, class }),
         ..
     }) = unit
         && !reason.starts_with(NOT_ASKED)
     {
         *reason = format!("{NOT_ASKED} {reason}");
+        *class = ReasonClass::TimeNotAsked;
     }
 }
 
@@ -4442,13 +4582,15 @@ fn judge_commits(
 ) -> Result<(), String> {
     let shallow = shallow_commits(&stopping.work.place.common);
     let no_shallow = BTreeSet::new();
-    let no_verdict = |reason: &str| Judged::Unjudged {
+    let no_verdict = |reason: &str, class: ReasonClass| Judged::Unjudged {
         reason: reason.to_owned(),
+        class,
     };
+    let not_yet = || Why::new(ReasonClass::TimeNotAsked, NOT_YET);
     let (mut units, asks) = sorted_commits(listed, known);
     let mut owed = u32::try_from(asks.iter().filter(|ask| ask.reserved).count()).unwrap_or(0);
     // Why the commits from here on wait, once one has to.
-    let mut waits: Option<String> = tribunal.broken().map(str::to_owned);
+    let mut waits: Option<Why> = tribunal.broken().cloned();
     let (mut waiting, mut failed) = (0_usize, 0_usize);
     // the stop's time is what makes the commits from here on wait
     let mut out_of_time = false;
@@ -4465,7 +4607,7 @@ fn judge_commits(
         owed = owed.saturating_sub(u32::from(ask.reserved));
         tribunal.after = After::Asks(owed);
         if waits.is_none() && stopping.deadline.left() < COMMIT_FLOOR {
-            waits = Some(NOT_YET.to_owned());
+            waits = Some(not_yet());
             out_of_time = true;
         }
         if waits.is_some() {
@@ -4487,7 +4629,10 @@ fn judge_commits(
         // (not known whether the clone is shallow: a commit with no parent has no verdict,
         // and is looked at again at every stop)
         if let (None, Err(why)) = (&commit.1, &shallow) {
-            units[at] = Some(from_before(id, no_verdict(why)));
+            units[at] = Some(from_before(
+                id,
+                no_verdict(why, ReasonClass::PlaceGitFailed),
+            ));
             continue;
         }
         if commit.1.is_none() && shallow.as_ref().unwrap_or(&no_shallow).contains(id) {
@@ -4495,6 +4640,7 @@ fn judge_commits(
                 id,
                 no_verdict(
                     "this clone is shallow and does not have the commit's parent, so the commit's own change cannot be read (`git fetch --unshallow` gets the history, and the commit is judged then)",
+                    ReasonClass::PlaceShallowParent,
                 ),
             ));
             continue;
@@ -4505,7 +4651,7 @@ fn judge_commits(
         let ran = tribunal.ran;
         sealed.extend(tribunal.last_seals().map(|seals| (at, seals)));
         if let Some(reason) = tribunal.broken() {
-            waits = Some(reason.to_owned());
+            waits = Some(reason.clone());
             waiting += usize::from(ask.attempts.is_none());
             waited.extend(ask.attempts.is_none().then(|| id.clone()));
             continue;
@@ -4516,7 +4662,7 @@ fn judge_commits(
             // (a hold for a label the judge does not know: a commit's is final, as a hold is)
             Judged::Refused { .. } => format!("h:{}", kept_reason(&[], &[], false)),
             Judged::Fail { rules, said } => format!("f:{}", kept_reason(rules, said, true)),
-            Judged::Unjudged { reason } if proven => format!("x:{}", one_line(reason)),
+            Judged::Unjudged { reason, .. } if proven => format!("x:{}", one_line(reason)),
             Judged::Unjudged { .. } if !ran && stopping.deadline.left() < COMMIT_FLOOR => {
                 // The stop's time ended the asking before the judge was run for this
                 // commit: not an attempt, and no turn is used. An ask the judge WAS run
@@ -4525,14 +4671,14 @@ fn judge_commits(
                 // wrote nothing and said "not asked"; a session whose stops all came to
                 // their commits like that asked about the same commit every time (ninth
                 // independent review of the hooks, HR9-L-2).
-                waits = Some(NOT_YET.to_owned());
+                waits = Some(not_yet());
                 out_of_time = true;
                 waiting += usize::from(ask.attempts.is_none());
                 waited.extend(ask.attempts.is_none().then(|| id.clone()));
                 not_asked(&mut units[at]);
                 continue;
             }
-            Judged::Unjudged { reason } if !ran => {
+            Judged::Unjudged { reason, class } if !ran => {
                 // The judge was not run for this commit, and not for lack of time: it is
                 // written down as asked at this stop, with the attempts it had.
                 failed += 1;
@@ -4541,27 +4687,30 @@ fn judge_commits(
                 units[at] = Some(commit_unit(
                     id,
                     if ask.in_turn() {
-                        no_verdict(&in_turn(attempts, reason))
+                        no_verdict(&in_turn(attempts, reason), *class)
                     } else {
                         judged
                     },
                 ));
                 continue;
             }
-            Judged::Unjudged { reason } if ask.in_turn() => {
+            Judged::Unjudged { reason, class } if ask.in_turn() => {
                 // asked in its turn: the ask counts, whatever the chain did, and the commit
                 // is said as what it is
                 let attempts = ask.attempts.unwrap_or(ATTEMPTS).saturating_add(1);
                 tried.push((at, attempts, true, reason.clone()));
-                units[at] = Some(commit_unit(id, no_verdict(&in_turn(attempts, reason))));
+                units[at] = Some(commit_unit(
+                    id,
+                    no_verdict(&in_turn(attempts, reason), *class),
+                ));
                 continue;
             }
-            Judged::Unjudged { reason } => {
+            Judged::Unjudged { reason, class } => {
                 failed += 1;
                 tried.push((at, ask.attempts.unwrap_or(0), false, reason.clone()));
                 if tribunal.chain != Some(true) && failed >= FIRST_ASKS && !tribunal.chain_answers()
                 {
-                    waits = Some(reason.clone());
+                    waits = Some(Why::new(*class, reason.clone()));
                 }
                 units[at] = Some(commit_unit(id, judged));
                 continue;
@@ -4612,8 +4761,12 @@ fn judge_commits(
         out.units.push(TreeJudged {
             tag: String::new(),
             what: commits_label(waiting),
-            judged: Some(Judged::Unjudged {
-                reason: waits.unwrap_or_else(|| NOT_YET.to_owned()),
+            judged: Some({
+                let waits = waits.unwrap_or_else(not_yet);
+                Judged::Unjudged {
+                    reason: waits.text,
+                    class: waits.class,
+                }
             }),
             holds: Holds::Now,
         });
@@ -5048,7 +5201,7 @@ fn other_tree(
         Ok(false) if !stands => OtherTree::Nothing,
         Ok(false) => match other_tree_read(stopping, &tree.path, n, within) {
             Reading::Nothing => OtherTree::Nothing,
-            Reading::NotRead(reason) => unknown(&reason),
+            Reading::NotRead(reason) => unknown(&reason.text),
             Reading::Found(()) => OtherTree::Named(
                 "",
                 format!(
@@ -5130,7 +5283,7 @@ fn other_tree_read(
     let name = format!("other-{n}");
     let read = match uncommitted_by(stopping, top, &name, deadline, &mut Vec::new()) {
         Ok(read) => read,
-        Err(reason) => return Reading::NotRead(reason),
+        Err(reason) => return Reading::NotRead(scratch_failed(reason)),
     };
     match (read.tree, read.staged) {
         (Reading::Nothing, Reading::Nothing) => Reading::Nothing,
@@ -5479,7 +5632,10 @@ fn seen(
     let tree = match tree {
         Reading::Nothing => None,
         Reading::Found(judged) => Some(judged),
-        Reading::NotRead(reason) => Some(Judged::Unjudged { reason }),
+        Reading::NotRead(reason) => Some(Judged::Unjudged {
+            reason: reason.text,
+            class: reason.class,
+        }),
     };
     // F12: a cause in the tree that holds once, under its own tag; what a stop that read the
     // tree finds no cause in keeps only how often each cause held
@@ -5487,8 +5643,13 @@ fn seen(
     let before = hook::remembered_as(blocked, &once_tag);
     let mut once: Option<Lines> = tree_read.then(|| held_counts(&before, None));
     let cause = refused.map(|refused| {
-        let (unit, memory) =
-            refused_unit(id, top, refused, (&before, active), not_read_why.as_ref());
+        let (unit, memory) = refused_unit(
+            id,
+            top,
+            refused,
+            (&before, active),
+            not_read_why.as_ref().map(|why| &why.text),
+        );
         once = Some(memory);
         unit
     });
@@ -5563,6 +5724,7 @@ fn seen(
                 told_apart = false;
                 Some(Judged::Unjudged {
                     reason: STAGED_NOT_APART.to_owned(),
+                    class: ReasonClass::StateNotApart,
                 })
             }
         }
@@ -5572,8 +5734,9 @@ fn seen(
         None => not_read
             .filter(|_| tree_read || !told.is_empty())
             .map(|reason| Judged::Unjudged {
+                class: reason.class,
                 reason: if told.is_empty() {
-                    reason
+                    reason.text
                 } else {
                     format!("{reason}; what has blocked of it before stands")
                 },
@@ -5777,7 +5940,7 @@ fn judge_units(
     let (count, asks) = (trees.len(), asks_kept(known));
     for (at, (top, id, scratch, unreadable)) in trees.into_iter().enumerate() {
         let found = match unreadable {
-            Some(reason) => Uncommitted::not_read(reason),
+            Some(reason) => Uncommitted::not_read(Why::new(ReasonClass::PlaceUnpaired, reason)),
             None => uncommitted(stopping, &top, scratch, &mut out.beside)?,
         };
         // What this tree's runs leave for the project's tree, which is judged after it:
@@ -5809,9 +5972,12 @@ fn judge_units(
         // of a reason ([`hook::REASON_CHARS`]): the cause stood first, and every stop of
         // such a session read "… cannot be told from them: they are not." (eleventh
         // independent review of the hooks, HR11-L-3).
-        Tips::Unavailable(why) => Err(format!(
-            "not in this session, whatever is committed (what is not committed is judged): the commits that were there when it began could not be listed ({})",
-            deep_diff_forge_core::display_safe(why)
+        Tips::Unavailable(why) => Err(Why::new(
+            ReasonClass::StateNoBaseline,
+            format!(
+                "not in this session, whatever is committed (what is not committed is judged): the commits that were there when it began could not be listed ({})",
+                deep_diff_forge_core::display_safe(why)
+            ),
         )),
     };
     match listed {
@@ -5819,7 +5985,10 @@ fn judge_units(
         Err(reason) => out.units.push(TreeJudged {
             tag: String::new(),
             what: "The commits of this session".to_owned(),
-            judged: Some(Judged::Unjudged { reason }),
+            judged: Some(Judged::Unjudged {
+                reason: reason.text,
+                class: reason.class,
+            }),
             holds: Holds::Now,
         }),
     }
@@ -6813,30 +6982,42 @@ fn no_commit_yet(work: &Work, deadline: Deadline) -> Option<Note> {
     })
 }
 
+/// A failure of the hook's own scratch directory as a reason ([`ReasonClass::PlaceScratch`]):
+/// the one way a stop that has its state and its project fails as a whole.
+fn scratch_failed(text: String) -> Why {
+    Why::new(ReasonClass::PlaceScratch, text)
+}
+
+/// What a stop says when another hook of its session holds the session's lock.
+static LOCK_BUSY: std::sync::LazyLock<Why> = std::sync::LazyLock::new(|| {
+    Why::new(
+        ReasonClass::StateLockBusy,
+        "another hook of this session is running and has not ended (a stop, or the session's start), so this stop judged nothing: when it was a stop, what that stop says is the answer",
+    )
+});
+
 /// When the agent wants to stop: have the session's work judged, unit by unit
 /// ([`judge_units`]), and block on a fail that holds this stop.
 #[expect(
     clippy::too_many_lines,
     reason = "one stop in its order: lock, place, judging, memory, state, ledger, output"
 )]
-fn stop(input: &Input, args: &[String]) -> Result<Option<String>, String> {
+fn stop(input: &Input, args: &[String]) -> Result<Option<String>, Why> {
     let deadline = Deadline::after(STOP_LIMIT);
     // one stop of a session at a time, from before its state is read until after it is written
     let turn = session_lock(&input.session, LOCK_WAIT.min(deadline.left()));
     if matches!(turn, Turn::Taken) {
-        return Ok(Some(hook::unjudged_output(
-            "another hook of this session is running and has not ended (a stop, or the session's start), so this stop judged nothing: when it was a stop, what that stop says is the answer",
-        )));
+        return Ok(Some(hook::unjudged_output(&LOCK_BUSY.text)));
     }
     let mut session = Session::open(&input.session)?;
     let work = match locate(input, &mut session, deadline) {
         Located::Nowhere => return Ok(None),
-        Located::Trouble(reason) => return Ok(Some(hook::unjudged_output(&reason))),
+        Located::Trouble(reason) => return Ok(Some(hook::unjudged_output(&reason.text))),
         Located::Here(work) => work,
     };
     let deadline = deadline.with_project(&work.place);
     if let Some(why) = session.inside(&work.place.top) {
-        return Ok(Some(hook::unjudged_output(&why)));
+        return Ok(Some(hook::unjudged_output(&why.text)));
     }
     // The project and the base are recorded before anything else can fail.
     let mut unsaved = session.keep().err();
@@ -6845,23 +7026,25 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, String> {
     // what the project's ledger records of this stop (F11): a stop that judged nothing is one
     // record of the stop's own
     let mut records: Vec<crate::ledger::Unit> = Vec::new();
-    let nothing_judged = || crate::ledger::Unit {
+    let nothing_judged = |class: ReasonClass| crate::ledger::Unit {
         name: crate::ledger::Name::Stop,
         outcome: "unjudged",
-        class: None,
+        class,
         seals: None,
         blocked: false,
     };
     let mut decision = match subject(&work, deadline) {
         Subject::Nothing => {
             beside.extend(no_commit_yet(&work, deadline));
-            records.extend((!beside.is_empty()).then(nothing_judged));
+            records.extend(
+                (!beside.is_empty()).then(|| nothing_judged(ReasonClass::PlaceNoCommitYet)),
+            );
             StopDecision::Allow { message: None }
         }
         Subject::Unjudged(reason) => {
-            records.push(nothing_judged());
+            records.push(nothing_judged(reason.class));
             StopDecision::Allow {
-                message: Some(hook::unjudged_message(&reason)),
+                message: Some(hook::unjudged_message(&reason.text)),
             }
         }
         Subject::Range { base, words } => {
@@ -6872,13 +7055,13 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, String> {
                 .and_then(|tips| Ok((tips, session.judged()?)));
             match lists {
                 Err(reason) => {
-                    records.push(nothing_judged());
+                    records.push(nothing_judged(ReasonClass::StateListsDamaged));
                     StopDecision::Allow {
                         message: Some(hook::unjudged_message(&reason)),
                     }
                 }
                 Ok((tips, mut known)) => {
-                    let scratch = Scratch::new(&work.place.own)?;
+                    let scratch = Scratch::new(&work.place.own).map_err(scratch_failed)?;
                     let number = session.state.stops.saturating_add(1);
                     let (judging, look) = stop_deadlines(&work.place, deadline);
                     let stopping = Stopping {
@@ -6893,7 +7076,8 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, String> {
                         recorded: &session.state.trees,
                         active: input.stop_hook_active,
                     };
-                    let judging = judge_units(&stopping, &tips, &known, &session.state.blocked)?;
+                    let judging = judge_units(&stopping, &tips, &known, &session.state.blocked)
+                        .map_err(scratch_failed)?;
                     // Decided by what had blocked before this stop; then this stop is
                     // remembered.
                     let decision =
@@ -6947,7 +7131,7 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, String> {
         {
             // (recorded as standing, with no blocked turn: F11)
             for unit in records.iter_mut().filter(|unit| unit.outcome == "fail") {
-                (unit.outcome, unit.class) = ("fail_stands", Some("fail.unsaved_continuing"));
+                (unit.outcome, unit.class) = ("fail_stands", ReasonClass::FailUnsavedContinuing);
                 unit.blocked = false;
             }
             decision = StopDecision::Allow {
@@ -6996,7 +7180,7 @@ fn ledger_units(judging: &Judging, blocks: &[bool]) -> Vec<crate::ledger::Unit> 
             None => passed.push(Unit {
                 name: name.clone(),
                 outcome: "pass",
-                class: Some("pass"),
+                class: ReasonClass::Pass,
                 seals: seals.clone(),
                 blocked: false,
             }),
@@ -7005,16 +7189,14 @@ fn ledger_units(judging: &Judging, blocks: &[bool]) -> Vec<crate::ledger::Unit> 
     let mut out = Vec::new();
     for ((unit, names), blocks) in judging.units.iter().zip(by_unit).zip(blocks) {
         let Some(judged) = &unit.judged else { continue };
-        let (outcome, class) = match judged {
-            Judged::Pass => ("pass", Some("pass")),
-            Judged::Fail { .. } if *blocks => ("fail", Some("fail.new")),
-            Judged::Fail { .. } => ("fail_stands", Some("fail.stands")),
-            Judged::Hold { rules, .. } => ("hold", (!rules.is_empty()).then_some("hold.rule")),
-            Judged::Unjudged { .. } => ("unjudged", None),
-            Judged::Refused { class, .. } if class.starts_with("work.") => {
-                ("unjudged", Some(*class))
-            }
-            Judged::Refused { class, .. } => ("hold", Some(*class)),
+        let class = hook::class_of(judged, *blocks);
+        let outcome = match judged {
+            Judged::Pass => "pass",
+            Judged::Fail { .. } if *blocks => "fail",
+            Judged::Fail { .. } => "fail_stands",
+            Judged::Unjudged { .. } => "unjudged",
+            Judged::Refused { class, .. } if class.is_work() => "unjudged",
+            Judged::Hold { .. } | Judged::Refused { .. } => "hold",
         };
         let names = if names.is_empty() {
             vec![(Name::Stop, None)]
@@ -7543,7 +7725,7 @@ pub(crate) fn check_units(
             None => session.clone().unwrap_or_default(),
         };
         let mut units = Vec::new();
-        let mut bench: Option<Result<Bench<'_>, String>> = None;
+        let mut bench: Option<Result<Bench<'_>, Why>> = None;
         let this = std::env::current_exe().and_then(std::fs::canonicalize).ok();
         let mut judge = |patch: &[u8]| {
             let writable = [place.top.as_path(), place.common.as_path()];
@@ -7566,13 +7748,22 @@ pub(crate) fn check_units(
                 }
                 Err(reason) => (
                     Judged::Unjudged {
-                        reason: reason.clone(),
+                        reason: reason.text.clone(),
+                        class: reason.class,
                     },
                     None,
                 ),
             }
         };
-        let unjudged = |reason: String| (Judged::Unjudged { reason }, None);
+        let unjudged = |reason: Why| {
+            (
+                Judged::Unjudged {
+                    reason: reason.text,
+                    class: reason.class,
+                },
+                None,
+            )
+        };
         match change(
             &place.top,
             &head,
@@ -7584,7 +7775,7 @@ pub(crate) fn check_units(
             Err((reason, Some(refusal))) => units.push((
                 "uncommitted",
                 None,
-                (refused_judged(&refusal, reason, Lines::new()), None),
+                (refused_judged(&refusal, reason.text, Lines::new()), None),
             )),
             Err((reason, None)) => units.push(("uncommitted", None, unjudged(reason))),
             Ok(Change { patch, .. }) => {
@@ -7597,7 +7788,10 @@ pub(crate) fn check_units(
                     Err(e) => units.push((
                         "staged",
                         None,
-                        unjudged(format!("what is staged cannot be judged: {e}")),
+                        unjudged(Why::new(
+                            patch_error_class(&e),
+                            format!("what is staged cannot be judged: {e}"),
+                        )),
                     )),
                 }
             }
@@ -7608,7 +7802,10 @@ pub(crate) fn check_units(
                 match commit_patch(&place.top, parent.as_deref(), id, &sub, &deadline.git()) {
                     Ok(bytes) if bytes.is_empty() => (Judged::Pass, None),
                     Ok(bytes) => judge(&bytes),
-                    Err(e) => unjudged(format!("the commit could not be read from Git: {e}")),
+                    Err(e) => unjudged(Why::new(
+                        patch_error_class(&e),
+                        format!("the commit could not be read from Git: {e}"),
+                    )),
                 };
             units.push(("commit", Some(id.clone()), judged));
         }
@@ -8240,7 +8437,7 @@ fn probe(
                 });
                 return Ok((ranker, code, read, unverified));
             }
-            (_, Judged::Unjudged { reason }) => {
+            (_, Judged::Unjudged { reason, .. }) => {
                 // version drift: a judge that writes a schema this build does not read
                 last = match verdict.filter(|d| {
                     d["schema"].is_string() && crate::verdict_v2::Version::named_by(d).is_none()
@@ -8265,6 +8462,216 @@ fn probe(
 mod tests {
     use super::*;
 
+    /// Each reason a unit of a stop can be UNJUDGED for carries the class its row names
+    /// (lane H2, the design's F7-W3a): a patch that could not be made (`not_made`,
+    /// `patch_error_class`: the two causes F12 holds once by the patch maker's evidence, and
+    /// the causes that never hold), Git's failures (`git_class`), and the reasons the file of
+    /// judged commits keeps in words (`class_of_words`), wrapped as a commit asked about in its
+    /// turn or not. The judge's own answers are `hook::every_answer_that_is_no_verdict_has_its_class`;
+    /// the judge's chain (judge, policy, rankers, input) and the stop's time are reached through
+    /// the binary (`every_reachable_class_is_in_the_ledger`).
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one table of every unit reason and the class its row names"
+    )]
+    fn every_unit_reason_has_its_class() {
+        let timed = || GitAcquireError::TimedOut {
+            command: "git add",
+            limit_ms: 1000,
+        };
+        let failed = || GitAcquireError::CommandFailed {
+            command: "git add",
+            code: Some(128),
+            stderr: "fatal: no".to_owned(),
+        };
+        let budget = || GitAcquireError::BudgetExceeded { limit_bytes: 8 };
+        assert_eq!(git_class(&timed()), ReasonClass::TimeGit);
+        assert_eq!(git_class(&failed()), ReasonClass::PlaceGitFailed);
+        assert_eq!(git_class(&budget()), ReasonClass::ChainPatchTooLarge);
+        let paths = vec![PathBuf::from("a.rs")];
+        for (error, class, holds) in [
+            (JudgePatchError::NoBase, ReasonClass::PlaceBaseGone, false),
+            (
+                JudgePatchError::SkipWorktree,
+                ReasonClass::WorkSkipWorktree,
+                true,
+            ),
+            (JudgePatchError::Unmerged, ReasonClass::PlaceUnmerged, false),
+            (
+                JudgePatchError::Failed(failed()),
+                ReasonClass::PlaceGitFailed,
+                false,
+            ),
+            (
+                JudgePatchError::Failed(timed()),
+                ReasonClass::TimeGit,
+                false,
+            ),
+            (
+                JudgePatchError::Unreadable {
+                    paths: paths.clone(),
+                    whole: true,
+                    error: failed(),
+                },
+                ReasonClass::WorkUnreadable,
+                true,
+            ),
+            (
+                JudgePatchError::Unreadable {
+                    paths: paths.clone(),
+                    whole: false,
+                    error: failed(),
+                },
+                ReasonClass::PlaceGitFailed,
+                false,
+            ),
+        ] {
+            let (why, refusal) = not_made(error, "the commit HEAD names", "0123456");
+            assert_eq!(why.class, class, "{why}");
+            // a cause that holds once is exactly one whose class is in the work
+            assert_eq!(refusal.as_ref().map(|r| r.class), holds.then_some(class));
+            assert_eq!(class.is_work(), holds);
+        }
+        for (words, class) in [
+            (NO_TIME.to_owned(), ReasonClass::TimeNoTimeLeft),
+            (NOT_YET.to_owned(), ReasonClass::TimeNotAsked),
+            (
+                "the judge refused the policy, the ranking or the ranker (exit 4): x".to_owned(),
+                ReasonClass::ChainJudgeRefused,
+            ),
+            (
+                in_turn(5, "the judge could not read its inputs or its environment (exit 3)"),
+                ReasonClass::ChainJudgeEnvironment,
+            ),
+            (
+                "the judge exited 9, which is not a verdict".to_owned(),
+                ReasonClass::ChainJudgeExit,
+            ),
+            (
+                "the judge exited 0 (pass) but that is not a verdict: x".to_owned(),
+                ReasonClass::ChainNotAVerdict,
+            ),
+            (
+                "the judge was stopped before it gave a verdict (this run had 30.0 seconds)"
+                    .to_owned(),
+                ReasonClass::TimeJudgeStopped,
+            ),
+            (
+                format!("the commit could not be read from Git: {}", git_words(&timed())),
+                ReasonClass::TimeGit,
+            ),
+            (
+                format!("the commit could not be read from Git: {}", git_words(&budget())),
+                ReasonClass::ChainPatchTooLarge,
+            ),
+            (
+                format!("the commit could not be read from Git: {}", git_words(&failed())),
+                ReasonClass::PlaceGitFailed,
+            ),
+            (
+                "forge-warden was not found (install it, or name it with --judge PATH)".to_owned(),
+                ReasonClass::ChainJudgeMissing,
+            ),
+            (
+                "the judge \"/r/j\" is inside the repository it would judge, where a change can replace it".to_owned(),
+                ReasonClass::ChainJudgeInside,
+            ),
+            (
+                "the base commit has no policy file \"warden.toml\"".to_owned(),
+                ReasonClass::ChainPolicyMissing,
+            ),
+            (
+                "the ranker \"/r\" could not be hashed, so no verdict could be sealed to it"
+                    .to_owned(),
+                ReasonClass::ChainRankerUnsealed,
+            ),
+            ("words no build wrote".to_owned(), ReasonClass::ChainJudgeExit),
+        ] {
+            assert_eq!(crate::hook::reason::class_of_words(&words), class, "{words}");
+        }
+    }
+
+    /// Each reason a stop can end on as a whole carries its class (lane H2, the design's
+    /// F7-W3b): a state that is not read (`StateRefusal::class`), a lock another hook holds
+    /// (`LOCK_BUSY`), a scratch directory that cannot be made (`scratch_failed`), a subject
+    /// with no commit to measure from (`subject`), and a session directory that is gone with
+    /// no project recorded (`locate`). The input a hook cannot read is said by `run` as
+    /// `input.refused`, and the classes of `locate` that need Git (`place.git_failed`,
+    /// `place.unpaired`, `place.replaced`, `place.moved`, `place.client_dir_differs`) are its
+    /// own constructors, read in place.
+    #[test]
+    fn every_stop_level_reason_has_its_class() {
+        assert_eq!(
+            StateRefusal::Damaged("x".to_owned()).class(),
+            ReasonClass::StateDamaged
+        );
+        assert_eq!(StateRefusal::Older(9).class(), ReasonClass::StateOlder);
+        assert_eq!(StateRefusal::Newer(12).class(), ReasonClass::StateNewer);
+        assert_eq!(LOCK_BUSY.class, ReasonClass::StateLockBusy);
+        assert_eq!(
+            scratch_failed("x".to_owned()).class,
+            ReasonClass::PlaceScratch
+        );
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-stop-level-classes");
+        let gone = scratch.join("gone");
+        let place = Place {
+            top: gone.clone(),
+            own: gone.join(".git/deep-diff-forge"),
+            common: gone.join(".git"),
+            git_dir: gone.join(".git"),
+            id: "1".to_owned(),
+        };
+        let project = |base: Base| Project {
+            top: gone.to_string_lossy().into_owned(),
+            id: "1".to_owned(),
+            base,
+            tips_sha256: String::new(),
+            tips_count: 0,
+            no_baseline: None,
+            by_start: true,
+        };
+        let deadline = Deadline::after(Duration::from_secs(5));
+        let subject_class = |base: Base| match subject(
+            &Work {
+                place: place.clone(),
+                project: project(base),
+                fresh: false,
+            },
+            deadline,
+        ) {
+            Subject::Unjudged(why) => why.class,
+            _ => panic!("no reason"),
+        };
+        assert_eq!(subject_class(Base::Orphan), ReasonClass::PlaceOrphan);
+        assert_eq!(
+            subject_class(Base::NoCommit),
+            ReasonClass::PlaceHeadUnreadable
+        );
+        let mut session = Session {
+            dir: scratch.join("hooks"),
+            file: scratch.join("hooks/session-x.json"),
+            state: State::default(),
+            kept: None,
+            upgrade: false,
+            tips: None,
+            judged: None,
+        };
+        let input = hook::Input {
+            session: "s".to_owned(),
+            cwd: gone.to_string_lossy().into_owned(),
+            stop_hook_active: false,
+        };
+        match locate(&input, &mut session, deadline) {
+            Located::Trouble(why) => assert_eq!(why.class, ReasonClass::PlaceDirectoryGone),
+            _ => panic!("the session's directory is gone"),
+        }
+        assert_eq!(
+            session.inside(scratch.path()).map(|why| why.class),
+            Some(ReasonClass::StateInsideTree)
+        );
+    }
+
     /// F12.a, the coordinator's condition 3: a search for unreadable files that a bound cut is
     /// no cause that holds once: the stop stays UNJUDGED as in 0.10.0 and says that not all
     /// names are known; a whole search is `work.unreadable` with its paths.
@@ -8284,8 +8691,10 @@ mod tests {
         let (reason, refusal) = not_made(cut, "the commit HEAD names", "0123456");
         assert!(refusal.is_none(), "{refusal:?}");
         assert!(
-            reason.starts_with("the change could not be read from Git: ")
-                && reason.contains("not all names are known"),
+            reason
+                .text
+                .starts_with("the change could not be read from Git: ")
+                && reason.text.contains("not all names are known"),
             "{reason}"
         );
         let whole = JudgePatchError::Unreadable {
@@ -8297,7 +8706,7 @@ mod tests {
         assert_eq!(
             refusal,
             Some(Refusal {
-                class: "work.unreadable",
+                class: ReasonClass::WorkUnreadable,
                 paths
             })
         );
@@ -8647,7 +9056,7 @@ mod tests {
         // each of the three that wait for their turn is a unit, and says so
         for (at, attempts) in [(0, 7), (1, 5), (3, 5)] {
             let said = match units[at].as_ref().and_then(|unit| unit.judged.as_ref()) {
-                Some(Judged::Unjudged { reason }) => reason.clone(),
+                Some(Judged::Unjudged { reason, .. }) => reason.clone(),
                 other => panic!("{at}: {other:?}"),
             };
             assert_eq!(
@@ -9815,6 +10224,7 @@ mod tests {
                 let no_verdict = || {
                     Some(Judged::Unjudged {
                         reason: "the judge did not answer".to_owned(),
+                        class: ReasonClass::ChainJudgeExit,
                     })
                 };
                 // Tenth independent review of the hooks, HR10-M-1: a stop that could not
@@ -9835,8 +10245,8 @@ mod tests {
                     seen(
                         &id,
                         "/p",
-                        Reading::NotRead(why()),
-                        Reading::NotRead(why()),
+                        Reading::NotRead(Why::new(ReasonClass::ChainJudgeExit, why())),
+                        Reading::NotRead(Why::new(ReasonClass::ChainJudgeExit, why())),
                         &state.blocked,
                         (None, false),
                     )
@@ -9848,9 +10258,12 @@ mod tests {
                         if tree_read {
                             judged(&place.tree).map_or(Reading::Nothing, Reading::Found)
                         } else {
-                            Reading::Found(Judged::Unjudged { reason: why() })
+                            Reading::Found(Judged::Unjudged {
+                                reason: why(),
+                                class: ReasonClass::ChainJudgeExit,
+                            })
                         },
-                        Reading::NotRead(why()),
+                        Reading::NotRead(Why::new(ReasonClass::ChainJudgeExit, why())),
                         &state.blocked,
                         (None, false),
                     )
@@ -9891,7 +10304,7 @@ mod tests {
                 );
                 // the one case in which the staged change is said to have no verdict
                 let apart = !unit('s').is_some_and(|unit| {
-                    matches!(&unit.judged, Some(Judged::Unjudged { reason }) if reason == STAGED_NOT_APART)
+                    matches!(&unit.judged, Some(Judged::Unjudged { reason, .. }) if reason == STAGED_NOT_APART)
                 });
                 let context = format!("session {session}, stop {stops}, tree {at}, cap {cap}");
 

@@ -1059,6 +1059,73 @@ Stated limits, which the judge on the pull request covers:
     `scripts/capture_hook_state.sh` and never edited; the test
     `every_schema_since_the_last_release_is_read` has the build under test read each.
 
+
+Reason classes (from 0.11.0). Every outcome a stop gives a unit, and every record of the
+project's ledger, carries one code: why the outcome is what it is. A code never decides
+whether a stop holds; the last column says what the stop's own rules decide for it ("once for
+each cause, at most three stops" is the rule of the causes that hold once, above). The rule of
+the codes: a code's meaning never changes; codes are added without a version change; a
+consumer treats an unknown code as not a PASS; removing one is a new ledger version. The codes
+`pass`, `fail.new`, `fail.stands`, `fail.unsaved_continuing`, `hold.rule`, `hold.version_gap`,
+`work.unreadable` and `work.skip_worktree` were written before this table and keep their
+spelling. Where the ledger wrote `"class": null` before (an unjudged unit, a hold with no rule,
+a stop that judged nothing), it writes the code now. The commits a stop says "from before" are
+recorded with the class their kept words say; a reason kept with no words this build wrote is
+`chain.judge_exit`.
+
+| Code | The stop prints | Holds a stop |
+|---|---|---|
+| `pass` | nothing, or a note | never |
+| `fail.new` | block | once for each failing line |
+| `fail.stands` | FAIL STANDS | never |
+| `fail.unsaved_continuing` | FAIL STANDS (the hook cannot keep its own record) | never |
+| `hold.rule` | HOLD | never |
+| `hold.claims_unverified` | HOLD | never |
+| `hold.notes` | HOLD | never |
+| `hold.version_gap` | block once, then HOLD | once for each cause, at most three stops |
+| `work.unreadable` | block once, then UNJUDGED | once for each cause, at most three stops |
+| `work.skip_worktree` | block once, then UNJUDGED | once for each cause, at most three stops |
+| `chain.judge_missing` | UNJUDGED | never |
+| `chain.judge_inside` | UNJUDGED | never |
+| `chain.policy_missing` | UNJUDGED | never |
+| `chain.input_unwritable` | UNJUDGED | never |
+| `chain.no_ranker` | UNJUDGED | never |
+| `chain.rankers_unlisted` | UNJUDGED | never |
+| `chain.ranker_unsealed` | UNJUDGED | never |
+| `chain.judge_refused` | UNJUDGED | never |
+| `chain.judge_environment` | UNJUDGED | never |
+| `chain.judge_exit` | UNJUDGED | never |
+| `chain.not_a_verdict` | UNJUDGED | never |
+| `chain.patch_too_large` | UNJUDGED | never |
+| `time.judge_stopped` | UNJUDGED | never |
+| `time.no_time_left` | UNJUDGED | never |
+| `time.not_asked` | UNJUDGED | never |
+| `time.git` | UNJUDGED | never |
+| `state.damaged` | UNJUDGED, did not run | never |
+| `state.older` | UNJUDGED, did not run | never |
+| `state.newer` | UNJUDGED, did not run | never |
+| `state.no_directory` | UNJUDGED, did not run | never |
+| `state.inside_tree` | UNJUDGED | never |
+| `state.lock_busy` | UNJUDGED | never |
+| `state.lists_damaged` | UNJUDGED | never |
+| `state.no_baseline` | UNJUDGED | never |
+| `state.not_apart` | UNJUDGED | never |
+| `place.git_failed` | UNJUDGED | never |
+| `place.unpaired` | UNJUDGED | never |
+| `place.directory_gone` | UNJUDGED | never |
+| `place.client_dir_differs` | UNJUDGED | never |
+| `place.replaced` | UNJUDGED | never |
+| `place.moved` | UNJUDGED | never |
+| `place.orphan` | UNJUDGED | never |
+| `place.before_first_commit` | UNJUDGED | never |
+| `place.no_commit_yet` | a note | never |
+| `place.head_unreadable` | UNJUDGED | never |
+| `place.base_gone` | UNJUDGED | never |
+| `place.unmerged` | UNJUDGED | never |
+| `place.shallow_parent` | UNJUDGED | never |
+| `place.scratch` | UNJUDGED, did not run | never |
+| `input.refused` | UNJUDGED, did not run | never |
+
 ---
 
 See also: [`API_AND_IPC`](../API_AND_IPC.md) · [`TESTING_GOLD_STANDARD`](../TESTING_GOLD_STANDARD.md).

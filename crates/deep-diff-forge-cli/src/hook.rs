@@ -21,6 +21,12 @@
 //! The hooks guard against an agent's honest mistakes and shortcuts. They are not a boundary
 //! against an agent that sets out to evade them: that is the judge on the pull request.
 
+use reason::ReasonClass;
+
+/// The reason classes of the hooks ([`reason::ReasonClass`]): a module of its own, kept beside
+/// this file so that what compiles this file (the fuzz targets too) has it.
+#[path = "reason.rs"]
+pub(crate) mod reason;
 use deep_diff_forge_core::display_safe;
 use deep_diff_forge_graph::{remedy, signal_named};
 use serde_json::{Value, json};
@@ -510,8 +516,11 @@ pub(crate) enum Judged {
         said: Vec<String>,
     },
     /// No verdict: the judge or the policy is missing, no ranker is admitted, the judge failed
-    /// or timed out. Never a pass.
-    Unjudged { reason: String },
+    /// or timed out. Never a pass. `class` says why, for the ledger; no decision reads it.
+    Unjudged {
+        reason: String,
+        class: reason::ReasonClass,
+    },
     /// A unit that cannot pass as it is (F12, owner decision OD-J): a cause the hook finds in
     /// the working tree (`work.*`: a file it cannot read, paths marked skip-worktree), or a
     /// hold whose only cause is a label the judge does not know
@@ -519,7 +528,7 @@ pub(crate) enum Judged {
     /// it is UNJUDGED, or HOLD, as before. Never a pass.
     Refused {
         /// Its reason class, as the ledger records it.
-        class: &'static str,
+        class: reason::ReasonClass,
         /// What the agent is told: a fixed sentence, DDF's own label names and escaped paths.
         sentence: String,
         /// What the user's display says when it does not block (Git's or the judge's words).
@@ -959,6 +968,7 @@ pub(crate) fn judged(
         None => judged(),
         Some(why) => Judged::Unjudged {
             reason: format!("the judge exited {code} ({outcome}) but that is not a verdict: {why}"),
+            class: ReasonClass::ChainNotAVerdict,
         },
     };
     match exit {
@@ -975,18 +985,45 @@ pub(crate) fn judged(
             reason: format!(
                 "the judge refused the policy, the ranking or the ranker (exit 4){said}"
             ),
+            class: ReasonClass::ChainJudgeRefused,
         },
         Some(3) => Judged::Unjudged {
             reason: format!(
                 "the judge could not read its inputs or its environment (exit 3){said}"
             ),
+            class: ReasonClass::ChainJudgeEnvironment,
         },
         Some(code) => Judged::Unjudged {
             reason: format!("the judge exited {code}, which is not a verdict{said}"),
+            class: ReasonClass::ChainJudgeExit,
         },
         None => Judged::Unjudged {
             reason: "the judge was stopped before it gave a verdict".to_owned(),
+            class: ReasonClass::TimeJudgeStopped,
         },
+    }
+}
+
+/// The reason class of `judged` as the ledger records it, given whether it `blocks` the stop:
+/// a pass, a failure that blocks now or stands, a hold by a rule, for claims the judge cannot
+/// verify or for its notes alone, and the class an unjudged or refused unit carries. It is
+/// read by no decision of the stop: whether a unit blocks is given, not derived from it.
+pub(crate) fn class_of(judged: &Judged, blocks: bool) -> ReasonClass {
+    match judged {
+        Judged::Pass => ReasonClass::Pass,
+        Judged::Fail { .. } if blocks => ReasonClass::FailNew,
+        Judged::Fail { .. } => ReasonClass::FailStands,
+        Judged::Hold { rules, .. } if !rules.is_empty() => ReasonClass::HoldRule,
+        Judged::Hold { said, .. }
+            if !said.is_empty()
+                && said
+                    .iter()
+                    .all(|words| words.starts_with("note claims_unverified")) =>
+        {
+            ReasonClass::HoldClaimsUnverified
+        }
+        Judged::Hold { .. } => ReasonClass::HoldNotes,
+        Judged::Unjudged { class, .. } | Judged::Refused { class, .. } => *class,
     }
 }
 
@@ -1004,7 +1041,7 @@ pub(crate) fn stop_judged(
     sealed: Sealed,
 ) -> Judged {
     match judged(exit, verdict, said, sealed) {
-        Judged::Unjudged { reason } if exit == Some(7) => Judged::Fail {
+        Judged::Unjudged { reason, .. } if exit == Some(7) => Judged::Fail {
             rules: Vec::new(),
             said: vec![
                 format!("exit 7 is the judge's fail, so the stop is held; its verdict could not be read, so which rules failed is not known: {reason}")
@@ -1073,7 +1110,7 @@ fn version_gap(verdict: Option<&Value>) -> Option<Judged> {
     };
     let said = said_beside_rules(verdict?, false);
     Some(Judged::Refused {
-        class: "hold.version_gap",
+        class: ReasonClass::HoldVersionGap,
         sentence: format!(
             "the judge does not know {}{more}: the paired forge-warden must be upgraded; tell a person.",
             named.join(", ")
@@ -1524,7 +1561,7 @@ fn unit_text(unit: &TreeJudged, outcome: &str, named: bool) -> (String, bool) {
             text.push_str(&said_text(said));
         }
         // With one unit this line is not used: its message says the reason itself.
-        Some(Judged::Unjudged { reason }) => {
+        Some(Judged::Unjudged { reason, .. }) => {
             let whole = display_safe(reason);
             let shown: String = whole.chars().take(REASON_CHARS).collect();
             let end = if shown.len() < whole.len() {
@@ -1544,12 +1581,12 @@ fn unit_text(unit: &TreeJudged, outcome: &str, named: bool) -> (String, bool) {
 /// UNJUDGED (`work.*`) or HOLD, with what the user's display is told.
 fn refused_text(
     unit: &TreeJudged,
-    (class, sentence, reason): (&str, &str, &str),
+    (class, sentence, reason): (ReasonClass, &str, &str),
     blocks: bool,
     many: bool,
 ) -> String {
     use std::fmt::Write as _;
-    let work = class.starts_with("work.");
+    let work = class.is_work();
     let outcome = match (blocks, work) {
         (true, _) => "CANNOT PASS AS IT IS",
         (false, true) => "UNJUDGED",
@@ -1589,7 +1626,7 @@ fn refused_texts(trees: &[TreeJudged], blocked: &[String], many: bool) -> String
         {
             text.push_str(&refused_text(
                 unit,
-                (class, sentence, reason),
+                (*class, sentence, reason),
                 blocks_now(unit, blocked),
                 many,
             ));
@@ -1970,7 +2007,7 @@ fn no_verdict_line(trees: &[TreeJudged]) -> String {
             .take(STANDING_NAMED)
             .map(|unit| {
                 let reason = match &unit.judged {
-                    Some(Judged::Unjudged { reason }) => reason.as_str(),
+                    Some(Judged::Unjudged { reason, .. }) => reason.as_str(),
                     _ => "",
                 };
                 let reason = display_safe(reason);
@@ -2265,7 +2302,7 @@ pub(crate) fn decide_stop_trees(
     }
     let unjudged = |judged: &Judged| match judged {
         Judged::Unjudged { .. } => true,
-        Judged::Refused { class, .. } => class.starts_with("work."),
+        Judged::Refused { class, .. } => class.is_work(),
         _ => false,
     };
     let message = if is(unjudged) {
@@ -2275,7 +2312,7 @@ pub(crate) fn decide_stop_trees(
             )
         } else {
             let reason = trees.iter().find_map(|tree| match &tree.judged {
-                Some(Judged::Unjudged { reason } | Judged::Refused { reason, .. }) => {
+                Some(Judged::Unjudged { reason, .. } | Judged::Refused { reason, .. }) => {
                     Some(reason.as_str())
                 }
                 _ => None,
@@ -2365,6 +2402,122 @@ pub(crate) const STOP_CUT: &str =
 mod tests {
     use super::*;
 
+    /// The design's rule for reason classes (N91, ruling 2 of lane H2): a class says why, and
+    /// no decision of a stop reads it. A unit with no verdict decides the same stop, block or
+    /// allow and the same words, whatever class it carries; a unit that holds once blocks or
+    /// not by its lines alone, whatever its class; and the class the ledger records for a
+    /// judged unit is the one its outcome and `blocks` give, never the other way round.
+    #[test]
+    fn no_stop_decision_reads_a_class() {
+        let unit = |judged: Judged, holds: Holds| TreeJudged {
+            what: "Uncommitted changes in \"/r\"".to_owned(),
+            tag: "m/u".to_owned(),
+            judged: Some(judged),
+            holds,
+        };
+        for holds in [Holds::Now, Holds::WhileNew, Holds::Never] {
+            let decided = |class: ReasonClass| {
+                let trees = [unit(
+                    Judged::Unjudged {
+                        reason: "a reason".to_owned(),
+                        class,
+                    },
+                    holds,
+                )];
+                (
+                    format!("{:?}", decide_stop_trees(&trees, &[], "range")),
+                    blocks_now(&trees[0], &[]),
+                )
+            };
+            let first = decided(ReasonClass::ALL[0]);
+            for class in ReasonClass::ALL {
+                assert_eq!(decided(class), first, "{holds:?} {}", class.as_str());
+            }
+            let refused = |class: ReasonClass, blocked: &[String]| {
+                let lines = BTreeMap::from([("wabc".to_owned(), 1)]);
+                let tree = unit(
+                    Judged::Refused {
+                        class,
+                        sentence: "a sentence".to_owned(),
+                        reason: "a reason".to_owned(),
+                        lines,
+                    },
+                    holds,
+                );
+                blocks_now(&tree, blocked)
+            };
+            let remembered = [remembered_line("m/u", "wabc", 1)];
+            for blocked in [&[][..], &remembered[..]] {
+                let first = refused(ReasonClass::ALL[0], blocked);
+                for class in ReasonClass::ALL {
+                    assert_eq!(
+                        refused(class, blocked),
+                        first,
+                        "{holds:?} {}",
+                        class.as_str()
+                    );
+                }
+            }
+        }
+        // the ledger's class follows the outcome and whether the unit blocks
+        let fail = Judged::Fail {
+            rules: Vec::new(),
+            said: Vec::new(),
+        };
+        assert_eq!(class_of(&fail, true), ReasonClass::FailNew);
+        assert_eq!(class_of(&fail, false), ReasonClass::FailStands);
+        assert_eq!(class_of(&Judged::Pass, false), ReasonClass::Pass);
+        let hold = |rules: Vec<RuleOutcome>, said: &[&str]| Judged::Hold {
+            rules,
+            said: said.iter().map(|words| (*words).to_owned()).collect(),
+        };
+        let rule = RuleOutcome {
+            id: "r".to_owned(),
+            why: String::new(),
+            held: true,
+            violations: Vec::new(),
+        };
+        assert_eq!(
+            class_of(&hold(vec![rule], &[]), false),
+            ReasonClass::HoldRule
+        );
+        assert_eq!(
+            class_of(
+                &hold(vec![], &["note claims_unverified at \"a.rs\": x"]),
+                false
+            ),
+            ReasonClass::HoldClaimsUnverified
+        );
+        assert_eq!(
+            class_of(&hold(vec![], &["note other at \"a.rs\": x"]), false),
+            ReasonClass::HoldNotes
+        );
+        assert_eq!(class_of(&hold(vec![], &[]), false), ReasonClass::HoldNotes);
+    }
+
+    /// Each answer of the judge that is no verdict carries the class its row names
+    /// (`judged`): exit 4, exit 3, another code, a run stopped, and a pass or hold whose
+    /// document is not a verdict.
+    #[test]
+    fn every_answer_that_is_no_verdict_has_its_class() {
+        let sealed = || Sealed {
+            policy: "p",
+            patch: "f",
+            ranker: "r",
+        };
+        let class = |exit: Option<i32>| match judged(exit, None, None, sealed()) {
+            Judged::Unjudged { class, .. } => class,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(class(Some(4)), ReasonClass::ChainJudgeRefused);
+        assert_eq!(class(Some(3)), ReasonClass::ChainJudgeEnvironment);
+        assert_eq!(class(Some(9)), ReasonClass::ChainJudgeExit);
+        assert_eq!(class(Some(1)), ReasonClass::ChainJudgeExit);
+        assert_eq!(class(None), ReasonClass::TimeJudgeStopped);
+        assert_eq!(class(Some(0)), ReasonClass::ChainNotAVerdict);
+        assert_eq!(class(Some(8)), ReasonClass::ChainNotAVerdict);
+    }
+
     /// F12: a cause holds when new, not again while its state stays, again when its state
     /// changes at a turn's first stop, at most [`ONCE_BOUND`] times, and never at a stop that
     /// follows a block.
@@ -2432,6 +2585,7 @@ mod tests {
                 "{n} {}",
                 "the ranker timed out and said a great deal ".repeat(20)
             ),
+            class: reason::ReasonClass::ChainJudgeExit,
         };
         let rules = |n: usize| -> Vec<(String, String, String)> {
             vec![
@@ -2628,6 +2782,7 @@ mod tests {
         };
         let none = |n: usize| Judged::Unjudged {
             reason: format!("{n} {}", "no verdict, for a long reason ".repeat(12)),
+            class: reason::ReasonClass::ChainJudgeExit,
         };
         for case in 0..400 {
             let mut units = Vec::new();
@@ -3038,6 +3193,7 @@ mod tests {
         // one unit with no verdict is said in one sentence, with its reason
         let no_verdict = Judged::Unjudged {
             reason: "forge-warden was not found".to_owned(),
+            class: reason::ReasonClass::ChainJudgeExit,
         };
         assert_eq!(
             text(&[uncommitted(&no_verdict)]),
@@ -3144,6 +3300,7 @@ mod tests {
         };
         let none = Judged::Unjudged {
             reason: "the ranker did not answer in time".to_owned(),
+            class: reason::ReasonClass::ChainJudgeExit,
         };
         let new = Holds::WhileNew;
         vec![
@@ -3197,6 +3354,7 @@ mod tests {
                 "no verdict, waiting for its turn",
                 Some(Judged::Unjudged {
                     reason: "no verdict in 7 attempts; it is asked about again in its turn, one such commit at each stop; the last reason: the ranker did not answer in time".to_owned(),
+                    class: reason::ReasonClass::ChainJudgeExit,
                 }),
                 Holds::Never,
                 false,
@@ -3794,6 +3952,7 @@ mod tests {
             what: commit_label(&id),
             judged: Some(Judged::Unjudged {
                 reason: reason.to_owned(),
+                class: reason::ReasonClass::ChainJudgeExit,
             }),
             holds: Holds::Now,
         };
@@ -4044,7 +4203,7 @@ mod tests {
             .into_iter()
             .map(
                 |exit| match judged(exit, Some(&document("pass")), None, SEALED) {
-                    Judged::Unjudged { reason } => reason,
+                    Judged::Unjudged { reason, .. } => reason,
                     other => panic!("{exit:?} gave {other:?}"),
                 },
             )
@@ -4064,7 +4223,7 @@ mod tests {
             ),
             (101, "the judge exited 101, which is not a verdict: "),
         ] {
-            let Judged::Unjudged { reason } = judged(
+            let Judged::Unjudged { reason, .. } = judged(
                 Some(exit),
                 None,
                 Some("io: no Git allowlist enrolled"),
@@ -4145,7 +4304,8 @@ mod tests {
             for (what, change) in spoil {
                 let mut spoiled = document(outcome);
                 change(&mut spoiled);
-                let Judged::Unjudged { reason } = judged(Some(exit), Some(&spoiled), None, SEALED)
+                let Judged::Unjudged { reason, .. } =
+                    judged(Some(exit), Some(&spoiled), None, SEALED)
                 else {
                     panic!("exit {exit} with {what} was believed")
                 };
@@ -4181,7 +4341,8 @@ mod tests {
             let mut contradicts = document(outcome);
             contradicts["rules"][0]["outcome"] = json!(worse);
             crate::verdict_v2::tests::recount(&mut contradicts);
-            let Judged::Unjudged { reason } = judged(Some(exit), Some(&contradicts), None, SEALED)
+            let Judged::Unjudged { reason, .. } =
+                judged(Some(exit), Some(&contradicts), None, SEALED)
             else {
                 panic!("a {outcome} with a rule that is {worse} was believed")
             };
@@ -4334,6 +4495,7 @@ mod tests {
 
         let unjudged = Judged::Unjudged {
             reason: "forge-warden was not found".to_owned(),
+            class: reason::ReasonClass::ChainJudgeExit,
         };
         let StopDecision::Allow {
             message: Some(message),
@@ -4448,6 +4610,7 @@ mod tests {
             Judged::Pass,
             Judged::Unjudged {
                 reason: "x".to_owned(),
+                class: reason::ReasonClass::ChainJudgeExit,
             },
         ] {
             assert_eq!(
@@ -4935,6 +5098,7 @@ mod tests {
         let failing = fail(&[("no-secrets", "secret_like", "lib/a.rs")]);
         let unjudged = Judged::Unjudged {
             reason: "forge-warden was not found".to_owned(),
+            class: reason::ReasonClass::ChainJudgeExit,
         };
         let hold = Judged::Hold {
             rules: Vec::new(),
@@ -5277,7 +5441,7 @@ mod tests {
             patch: demo["seals"]["patch_sha256"].as_str().unwrap(),
             ..SEALED
         };
-        let Judged::Unjudged { reason } = judged(Some(7), Some(&demo), None, sealed) else {
+        let Judged::Unjudged { reason, .. } = judged(Some(7), Some(&demo), None, sealed) else {
             panic!("an advisory verdict was believed")
         };
         assert!(
@@ -5342,7 +5506,7 @@ mod tests {
             ("a pass document", Some(document("pass"))),
         ];
         for (what, verdict) in &cases {
-            let Judged::Unjudged { reason } = judged(Some(7), verdict.as_ref(), None, SEALED)
+            let Judged::Unjudged { reason, .. } = judged(Some(7), verdict.as_ref(), None, SEALED)
             else {
                 panic!("{what} was a verdict")
             };
@@ -5420,7 +5584,10 @@ mod tests {
         let unit = |reason: String| TreeJudged {
             tag: String::new(),
             what: commit_label("0123456789ab"),
-            judged: Some(Judged::Unjudged { reason }),
+            judged: Some(Judged::Unjudged {
+                reason,
+                class: reason::ReasonClass::ChainJudgeExit,
+            }),
             holds: Holds::Never,
         };
         let whole = "r".repeat(REASON_CHARS);

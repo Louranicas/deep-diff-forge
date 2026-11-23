@@ -329,13 +329,11 @@ fn unit(kind: &str, commit: Option<&str>, judged: &Judged) -> Value {
         Judged::Pass => ("pass", json!([]), &[][..], None),
         Judged::Hold { rules: r, said } => ("hold", rules(r), &said[..], None),
         Judged::Fail { rules: r, said } => ("fail", rules(r), &said[..], None),
-        Judged::Unjudged { reason } => ("unjudged", json!([]), &[][..], Some(reason.as_str())),
+        Judged::Unjudged { reason, .. } => ("unjudged", json!([]), &[][..], Some(reason.as_str())),
         // (what a stop holds once for, F12: the stop's own sentence, no words of Git or the judge)
         Judged::Refused {
             class, sentence, ..
-        } if class.starts_with("work.") => {
-            ("unjudged", json!([]), &[][..], Some(sentence.as_str()))
-        }
+        } if class.is_work() => ("unjudged", json!([]), &[][..], Some(sentence.as_str())),
         Judged::Refused { sentence, .. } => ("hold", json!([]), &[][..], Some(sentence.as_str())),
     };
     json!({"unit": kind, "commit": commit, "ranker": null, "advice_only": null, "advice_unread": null, "outcome": outcome, "rules": rules, "judge_notes": said.len(),

@@ -2314,3 +2314,46 @@ fn a_closed_stdout_keeps_every_verdict_refusal() {
     }
     assert!(verdicts >= 4, "{verdicts} verdict classes");
 }
+
+/// The hooks' reason classes (`crates/deep-diff-forge-cli/src/reason.rs`, the rows of
+/// `ReasonClass::row` between its marks) and the table "Reason classes" of
+/// `docs/reference/agent-hooks.md` are the same rows in the same order: code, what the stop
+/// prints for it, whether it holds a stop. A class without a row cannot compile (the match is
+/// exhaustive); a row the document lacks, or a row it has that the code does not, fails here.
+#[test]
+fn reason_classes_match_the_document() {
+    let source = repo_text("crates/deep-diff-forge-cli/src/reason.rs");
+    let begin = source
+        .find("// TABLE BEGIN")
+        .expect("the table's first mark");
+    let end = source.find("// TABLE END").expect("the table's last mark");
+    // every string literal of the table, in order (none holds a quote): four to a row
+    let literals: Vec<&str> = source[begin..end].split('"').skip(1).step_by(2).collect();
+    assert_eq!(literals.len() % 4, 0, "{literals:?}");
+    let coded: Vec<Vec<String>> = literals
+        .chunks(4)
+        .map(|row| {
+            vec![
+                format!("`{}`", row[0]),
+                row[1].to_owned(),
+                row[2].to_owned(),
+            ]
+        })
+        .collect();
+    assert!(coded.len() >= 49, "{}", coded.len());
+    let doc = repo_text("docs/reference/agent-hooks.md");
+    let documented = table_rows(&doc, "| Code | The stop prints | Holds a stop |");
+    assert_eq!(
+        documented, coded,
+        "the table of agent-hooks.md and the rows of reason.rs"
+    );
+    let flat = doc.split_whitespace().collect::<Vec<_>>().join(" ");
+    for words in [
+        "a code's meaning never changes",
+        "codes are added without a version change",
+        "a consumer treats an unknown code as not a PASS",
+        "removing one is a new ledger version",
+    ] {
+        assert!(flat.contains(words), "agent-hooks.md: {words}");
+    }
+}

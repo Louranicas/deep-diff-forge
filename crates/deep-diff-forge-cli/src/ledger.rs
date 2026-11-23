@@ -55,12 +55,13 @@ pub(crate) struct Seals {
 }
 
 /// One record of a stop: a unit with its outcome (`pass`, `fail`, `fail_stands`, `hold`,
-/// `unjudged`), its reason class where the stop knows it, and whether it blocked the stop.
+/// `unjudged`), its reason class ([`crate::hook::reason::ReasonClass`]), and whether it
+/// blocked the stop.
 #[derive(Debug, Clone)]
 pub(crate) struct Unit {
     pub(crate) name: Name,
     pub(crate) outcome: &'static str,
-    pub(crate) class: Option<&'static str>,
+    pub(crate) class: crate::hook::reason::ReasonClass,
     pub(crate) seals: Option<Seals>,
     pub(crate) blocked: bool,
 }
@@ -117,7 +118,7 @@ pub(crate) fn append_stop(
                 });
                 json!({
                     "v": VERSION, "kind": "stop", "session": key, "worktree": worktree,
-                    "unit": name, "outcome": unit.outcome, "class": unit.class,
+                    "unit": name, "outcome": unit.outcome, "class": unit.class.as_str(),
                     "blocked_turns": u8::from(unit.blocked),
                     "agent_checks": {"runs": checks.0, "failed": checks.1},
                     "ignored_elsewhere": null, "seals": seals,

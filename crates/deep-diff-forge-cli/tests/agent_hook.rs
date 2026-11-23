@@ -12340,7 +12340,7 @@ fn every_stop_outcome_is_in_the_ledger() {
     let unjudged = outcome("unjudged", "0", &scratch.join("no-such-judge"));
     assert_eq!(
         unit(&unjudged, 0),
-        (json!("unjudged"), Value::Null, json!(0))
+        (json!("unjudged"), json!("chain.judge_missing"), json!(0))
     );
 
     // a commit of the session is recorded by its id, with the seals of its verdict
@@ -12990,4 +12990,214 @@ fn fail_stands_is_recorded() {
     );
     assert_eq!(turns_of(&root, "s", "fail.new", "fail"), [1]);
     assert_eq!(turns_of(&root, "s", "fail.stands", "fail_stands"), [0]);
+}
+
+/// The classes the project's ledger records for a stop of `session`, in order.
+fn classes_of(root: &Path, session: &str) -> Vec<String> {
+    stops_of(root, session)
+        .iter()
+        .map(|record| {
+            record["class"]
+                .as_str()
+                .unwrap_or_else(|| panic!("a record with no class: {record}"))
+                .to_owned()
+        })
+        .collect()
+}
+
+/// Lane H2 (the design's F7-W3a and F7-W3b): every reason class a stop reaches through the
+/// binary with a stand-in judge is the class of a ledger record, where the ledger wrote
+/// `"class": null` for the unjudged, the holds with no rule and the stops that judged nothing.
+/// One scenario a class: the judge missing, inside the repository, refusing (exit 4), unable to
+/// read its environment (exit 3), giving another code, or a document that is no verdict; the
+/// base with no policy; a hold for claims, for notes or for an unknown label; a file that cannot
+/// be read and skip-worktree marks; unmerged paths; a repository with no commit, an orphan
+/// branch, a session begun before the first commit; a list of commits beside the state that
+/// was cut. (Classes that need the stop's clock, a Git that fails or is slow, or a state that
+/// is not read, which ends a stop before the ledger, are listed in the lane's hand-back.)
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario a class, each a few lines, read against one ledger helper"
+)]
+fn every_reachable_class_is_in_the_ledger() {
+    let fresh = |name: &str| {
+        let scratch = Scratch::new(name);
+        let root = repository(&scratch);
+        (scratch, root)
+    };
+    let with_exit = |scratch: &Scratch, document: &Value, code: &str| {
+        let (script, _, exit_file) = judge(scratch, document);
+        std::fs::write(&exit_file, code).unwrap();
+        script
+    };
+    let fail = verdict("fail", "no-silent-suppression", "check_suppressed", "a.rs");
+    let stop_classes = |root: &Path, script: &Path| {
+        start(root, "s");
+        silence_a_lint(root);
+        let _ = stop_as(root, "s", script, false);
+        classes_of(root, "s")
+    };
+    let mut reached: Vec<String> = Vec::new();
+    // the judge and its answers
+    for (code, class) in [
+        ("4", "chain.judge_refused"),
+        ("3", "chain.judge_environment"),
+        ("9", "chain.judge_exit"),
+    ] {
+        let (scratch, root) = fresh("hook-class-exit");
+        let script = with_exit(&scratch, &fail, code);
+        let classes = stop_classes(&root, &script);
+        assert_eq!(classes, [class], "exit {code}");
+        reached.extend(classes);
+    }
+    let (scratch, root) = fresh("hook-class-missing");
+    let classes = stop_classes(&root, &scratch.join("no-such-judge"));
+    assert_eq!(classes, ["chain.judge_missing"]);
+    reached.extend(classes);
+    let (scratch, root) = fresh("hook-class-not-a-verdict");
+    let script = scratch.join("says-nothing");
+    write_program(&script, "#!/bin/sh\nprintf '{}'\nexit 0\n");
+    let classes = stop_classes(&root, &script);
+    assert_eq!(classes, ["chain.not_a_verdict"]);
+    reached.extend(classes);
+    let (scratch, root) = fresh("hook-class-inside");
+    let inside = root.join("judge");
+    write_program(
+        &inside,
+        &judge_script(&scratch.join("log"), &scratch.join("exit"), &fail),
+    );
+    let classes = stop_classes(&root, &inside);
+    assert_eq!(classes, ["chain.judge_inside"]);
+    reached.extend(classes);
+    // the policy
+    let (scratch, root) = fresh("hook-class-policy");
+    git(&root, &["rm", "--quiet", "warden.toml"]);
+    git(&root, &["commit", "--quiet", "-m", "no policy"]);
+    let script = with_exit(&scratch, &fail, "7");
+    let classes = stop_classes(&root, &script);
+    assert_eq!(classes, ["chain.policy_missing"]);
+    reached.extend(classes);
+    // holds with no rule held
+    for (code, class) in [
+        ("claims_unverified", "hold.claims_unverified"),
+        ("other_note", "hold.notes"),
+        ("unknown_signal", "hold.version_gap"),
+    ] {
+        let (scratch, root) = fresh("hook-class-hold");
+        let mut document = verdict_v3("hold", &["pass"], false);
+        document["notes"] = json!([{"code": code, "path": "a.rs",
+            "detail": "signal `diff_suppressed` is not in this forge-warden's vocabulary"}]);
+        let script = with_exit(&scratch, &document, "8");
+        let classes = stop_classes(&root, &script);
+        assert_eq!(classes, [class], "{code}");
+        reached.extend(classes);
+    }
+    // causes in the working tree that hold once
+    let (scratch, root) = fresh("hook-class-skip");
+    let script = with_exit(&scratch, &fail, "7");
+    start(&root, "s");
+    silence_a_lint(&root);
+    git(&root, &["update-index", "--skip-worktree", "a.rs"]);
+    let _ = stop_as(&root, "s", &script, false);
+    let classes = classes_of(&root, "s");
+    assert_eq!(classes, ["work.skip_worktree"]);
+    reached.extend(classes);
+    let (scratch, root) = fresh("hook-class-unreadable");
+    let script = with_exit(&scratch, &fail, "7");
+    start(&root, "s");
+    let secret = root.join("secret.rs");
+    std::fs::write(&secret, "x\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o000)).unwrap();
+    }
+    if std::fs::read(&secret).is_err() {
+        let _ = stop_as(&root, "s", &script, false);
+        let classes = classes_of(&root, "s");
+        assert_eq!(classes, ["work.unreadable"]);
+        reached.extend(classes);
+    }
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    // unmerged paths
+    let (scratch, root) = fresh("hook-class-unmerged");
+    let script = with_exit(&scratch, &fail, "7");
+    start(&root, "s");
+    git(&root, &["checkout", "--quiet", "-b", "other"]);
+    std::fs::write(root.join("a.rs"), "fn a() { 1 }\n").unwrap();
+    git(&root, &["commit", "--quiet", "-am", "theirs"]);
+    git(&root, &["checkout", "--quiet", "main"]);
+    std::fs::write(root.join("a.rs"), "fn a() { 2 }\n").unwrap();
+    git(&root, &["commit", "--quiet", "-am", "ours"]);
+    let merged = Command::new("git")
+        .current_dir(&root)
+        .envs(ISOLATE)
+        .args([
+            "-c",
+            "user.name=ddf",
+            "-c",
+            "user.email=ddf@example.invalid",
+        ])
+        .args(["merge", "--quiet", "other"])
+        .output()
+        .unwrap();
+    assert!(!merged.status.success(), "the merge should conflict");
+    let _ = stop_as(&root, "s", &script, false);
+    let classes = classes_of(&root, "s");
+    assert!(
+        classes.contains(&"place.unmerged".to_owned()),
+        "{classes:?}"
+    );
+    reached.extend(classes);
+    // where there is nothing to measure from
+    let scratch = Scratch::new("hook-class-no-commit");
+    home_in(&scratch);
+    let root = scratch.join("repo");
+    std::fs::create_dir(&root).unwrap();
+    git(&root, &["init", "--quiet"]);
+    std::fs::write(root.join("a.rs"), "fn a() {}\n").unwrap();
+    let script = with_exit(&scratch, &fail, "7");
+    start(&root, "s");
+    let _ = stop_as(&root, "s", &script, false);
+    let classes = classes_of(&root, "s");
+    assert_eq!(classes, ["place.no_commit_yet"]);
+    reached.extend(classes);
+    // ... and once a commit is made in a session that began with none
+    git(&root, &["add", "--all"]);
+    git(&root, &["commit", "--quiet", "-m", "first"]);
+    let _ = stop_as(&root, "s", &script, false);
+    let classes = classes_of(&root, "s");
+    assert_eq!(
+        classes.last().map(String::as_str),
+        Some("place.before_first_commit")
+    );
+    reached.extend(classes);
+    let (scratch, root) = fresh("hook-class-orphan");
+    let script = with_exit(&scratch, &fail, "7");
+    git(&root, &["checkout", "--quiet", "--orphan", "fresh"]);
+    let classes = stop_classes(&root, &script);
+    assert_eq!(classes, ["place.orphan"]);
+    reached.extend(classes);
+    // a list beside the state that is not the one it names
+    let (scratch, root) = fresh("hook-class-lists");
+    let script = with_exit(&scratch, &fail, "7");
+    start(&root, "s");
+    let tips: Vec<PathBuf> = std::fs::read_dir(sessions())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|kind| kind == "tips"))
+        .collect();
+    std::fs::write(&tips[0], "").unwrap();
+    silence_a_lint(&root);
+    let _ = stop_as(&root, "s", &script, false);
+    let classes = classes_of(&root, "s");
+    assert_eq!(classes, ["state.lists_damaged"]);
+    reached.extend(classes);
+    // the ledger writes no class it does not know, and no null
+    reached.sort();
+    reached.dedup();
+    assert!(reached.len() >= 18, "{reached:?}");
 }
