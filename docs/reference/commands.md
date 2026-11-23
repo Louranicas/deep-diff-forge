@@ -54,7 +54,9 @@ or names a driver for the path, `"encoding"` for a UTF-16 or UTF-32 file, `"unre
 could not be read again within the limits below, else `"content"`).
 A file hidden by a `diff` attribute carries the label also when its text cannot be read back
 (a byte that is not UTF-8, the byte budget): it then stays `binary_changed`. A UTF-16 or
-UTF-32 file is labelled and not decoded, so its code evidence is not found. No attribute is trusted or looked for first,
+UTF-32 file is labelled and not decoded, so its code evidence is not found; its byte order mark
+is seen only when the change shows line 1, so wide text outside Latin-1 edited elsewhere, with
+no mark in the change, is not labelled. No attribute is trusted or looked for first,
 and attributes keep every other effect (line endings, the user's filters). Still read as binary,
 with `binary_change` and no new label: a real binary (not UTF-8) that no attribute hides. A
 second reading (or `git check-attr`) that the byte budget or the 120 s limit cuts off never
