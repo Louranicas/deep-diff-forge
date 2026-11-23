@@ -55,13 +55,13 @@ pub(crate) struct Seals {
 }
 
 /// One record of a stop: a unit with its outcome (`pass`, `fail`, `fail_stands`, `hold`,
-/// `unjudged`), its reason class ([`crate::reason::ReasonClass`]), and whether it blocked the
-/// stop.
+/// `unjudged`), its reason class ([`crate::hook::reason::ReasonClass`]), and whether it
+/// blocked the stop.
 #[derive(Debug, Clone)]
 pub(crate) struct Unit {
     pub(crate) name: Name,
     pub(crate) outcome: &'static str,
-    pub(crate) class: crate::reason::ReasonClass,
+    pub(crate) class: crate::hook::reason::ReasonClass,
     pub(crate) seals: Option<Seals>,
     pub(crate) blocked: bool,
 }

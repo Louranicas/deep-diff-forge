@@ -21,7 +21,12 @@
 //! The hooks guard against an agent's honest mistakes and shortcuts. They are not a boundary
 //! against an agent that sets out to evade them: that is the judge on the pull request.
 
-use crate::reason::ReasonClass;
+use reason::ReasonClass;
+
+/// The reason classes of the hooks ([`reason::ReasonClass`]): a module of its own, kept beside
+/// this file so that what compiles this file (the fuzz targets too) has it.
+#[path = "reason.rs"]
+pub(crate) mod reason;
 use deep_diff_forge_core::display_safe;
 use deep_diff_forge_graph::{remedy, signal_named};
 use serde_json::{Value, json};
@@ -514,7 +519,7 @@ pub(crate) enum Judged {
     /// or timed out. Never a pass. `class` says why, for the ledger; no decision reads it.
     Unjudged {
         reason: String,
-        class: crate::reason::ReasonClass,
+        class: reason::ReasonClass,
     },
     /// A unit that cannot pass as it is (F12, owner decision OD-J): a cause the hook finds in
     /// the working tree (`work.*`: a file it cannot read, paths marked skip-worktree), or a
@@ -523,7 +528,7 @@ pub(crate) enum Judged {
     /// it is UNJUDGED, or HOLD, as before. Never a pass.
     Refused {
         /// Its reason class, as the ledger records it.
-        class: crate::reason::ReasonClass,
+        class: reason::ReasonClass,
         /// What the agent is told: a fixed sentence, DDF's own label names and escaped paths.
         sentence: String,
         /// What the user's display says when it does not block (Git's or the judge's words).
@@ -2580,7 +2585,7 @@ mod tests {
                 "{n} {}",
                 "the ranker timed out and said a great deal ".repeat(20)
             ),
-            class: crate::reason::ReasonClass::ChainJudgeExit,
+            class: reason::ReasonClass::ChainJudgeExit,
         };
         let rules = |n: usize| -> Vec<(String, String, String)> {
             vec![
@@ -2777,7 +2782,7 @@ mod tests {
         };
         let none = |n: usize| Judged::Unjudged {
             reason: format!("{n} {}", "no verdict, for a long reason ".repeat(12)),
-            class: crate::reason::ReasonClass::ChainJudgeExit,
+            class: reason::ReasonClass::ChainJudgeExit,
         };
         for case in 0..400 {
             let mut units = Vec::new();
@@ -3188,7 +3193,7 @@ mod tests {
         // one unit with no verdict is said in one sentence, with its reason
         let no_verdict = Judged::Unjudged {
             reason: "forge-warden was not found".to_owned(),
-            class: crate::reason::ReasonClass::ChainJudgeExit,
+            class: reason::ReasonClass::ChainJudgeExit,
         };
         assert_eq!(
             text(&[uncommitted(&no_verdict)]),
@@ -3295,7 +3300,7 @@ mod tests {
         };
         let none = Judged::Unjudged {
             reason: "the ranker did not answer in time".to_owned(),
-            class: crate::reason::ReasonClass::ChainJudgeExit,
+            class: reason::ReasonClass::ChainJudgeExit,
         };
         let new = Holds::WhileNew;
         vec![
@@ -3349,7 +3354,7 @@ mod tests {
                 "no verdict, waiting for its turn",
                 Some(Judged::Unjudged {
                     reason: "no verdict in 7 attempts; it is asked about again in its turn, one such commit at each stop; the last reason: the ranker did not answer in time".to_owned(),
-                    class: crate::reason::ReasonClass::ChainJudgeExit,
+                    class: reason::ReasonClass::ChainJudgeExit,
                 }),
                 Holds::Never,
                 false,
@@ -3947,7 +3952,7 @@ mod tests {
             what: commit_label(&id),
             judged: Some(Judged::Unjudged {
                 reason: reason.to_owned(),
-                class: crate::reason::ReasonClass::ChainJudgeExit,
+                class: reason::ReasonClass::ChainJudgeExit,
             }),
             holds: Holds::Now,
         };
@@ -4490,7 +4495,7 @@ mod tests {
 
         let unjudged = Judged::Unjudged {
             reason: "forge-warden was not found".to_owned(),
-            class: crate::reason::ReasonClass::ChainJudgeExit,
+            class: reason::ReasonClass::ChainJudgeExit,
         };
         let StopDecision::Allow {
             message: Some(message),
@@ -4605,7 +4610,7 @@ mod tests {
             Judged::Pass,
             Judged::Unjudged {
                 reason: "x".to_owned(),
-                class: crate::reason::ReasonClass::ChainJudgeExit,
+                class: reason::ReasonClass::ChainJudgeExit,
             },
         ] {
             assert_eq!(
@@ -5093,7 +5098,7 @@ mod tests {
         let failing = fail(&[("no-secrets", "secret_like", "lib/a.rs")]);
         let unjudged = Judged::Unjudged {
             reason: "forge-warden was not found".to_owned(),
-            class: crate::reason::ReasonClass::ChainJudgeExit,
+            class: reason::ReasonClass::ChainJudgeExit,
         };
         let hold = Judged::Hold {
             rules: Vec::new(),
@@ -5581,7 +5586,7 @@ mod tests {
             what: commit_label("0123456789ab"),
             judged: Some(Judged::Unjudged {
                 reason,
-                class: crate::reason::ReasonClass::ChainJudgeExit,
+                class: reason::ReasonClass::ChainJudgeExit,
             }),
             holds: Holds::Never,
         };

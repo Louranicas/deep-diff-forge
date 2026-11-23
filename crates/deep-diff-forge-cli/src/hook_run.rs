@@ -43,10 +43,10 @@
 //! is made stay on the same file system and are removed again.
 
 use crate::emit;
+use crate::hook::reason::{ReasonClass, Why};
 use crate::hook::{
     self, Event, Finding, Holds, Input, Judged, StartBase, StopDecision, TreeJudged,
 };
-use crate::reason::{ReasonClass, Why};
 use deep_diff_forge_core::PatchLineKind;
 use deep_diff_forge_core::process::{Limits, run_bounded};
 use deep_diff_forge_graph::Side;
@@ -4434,7 +4434,7 @@ fn sorted_commits(
     // (a commit from before keeps the words of its reason, which say its class)
     let no_verdict = |reason: &str| Judged::Unjudged {
         reason: reason.to_owned(),
-        class: crate::reason::class_of_words(reason),
+        class: crate::hook::reason::class_of_words(reason),
     };
     let mut units: Vec<Option<TreeJudged>> = vec![None; listed.len()];
     let mut never: Vec<Ask> = Vec::new();
@@ -8588,7 +8588,7 @@ mod tests {
             ),
             ("words no build wrote".to_owned(), ReasonClass::ChainJudgeExit),
         ] {
-            assert_eq!(crate::reason::class_of_words(&words), class, "{words}");
+            assert_eq!(crate::hook::reason::class_of_words(&words), class, "{words}");
         }
     }
 
