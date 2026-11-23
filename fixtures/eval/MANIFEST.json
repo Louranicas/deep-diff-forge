@@ -2440,6 +2440,68 @@
         }
       ],
       "sha256": "b1ef43ad77bbacd861209936b056c029b2cd319ab9d7269f2cf7369a25e4c27d"
+    },
+    {
+      "id": "evidence/cargo-lints-suppressed",
+      "kind": "evidence",
+      "patch": "evidence/cargo-lints-suppressed.patch",
+      "origin": "synthetic: F2b, 0.11.0: Cargo's files switch lints off: a [lints] key whose value is the string allow, in a basic and in a literal string and as an inline table's level, and -A in rustflags; a build script declared in the manifest is a build hook. Negatives: a lint at warn, an allowance in a comment. Declared miss: --cap-lints and allow as two strings of an array over lines (a line is read alone).",
+      "expect": [
+        {
+          "path": "Cargo.toml",
+          "signal": "build_hook",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "Cargo.toml",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 7
+        },
+        {
+          "path": "Cargo.toml",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 12
+        },
+        {
+          "path": ".cargo/config.toml",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "known_miss": [
+        {
+          "path": ".cargo/config.toml",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 6
+        }
+      ],
+      "sha256": "4c8b15722a7eb9a333a3b2dc53bc7f32dfc51bfd6bb200306b77c9e9b17e31c6"
+    },
+    {
+      "id": "evidence/rust-allow-in-comment-and-string",
+      "kind": "evidence",
+      "patch": "evidence/rust-allow-in-comment-and-string.patch",
+      "origin": "synthetic: F2b.g, owner decision OD-E, 0.11.0: #[allow( in a line comment, a string and a raw string switches nothing off and is no evidence (released 0.8.3 to 0.10.0 reported all three, a listed floor exception); the attribute in code is. r#unsafe is an identifier, not the keyword; an unsafe block is unsafe code.",
+      "expect": [
+        {
+          "path": "src/notes.rs",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 6
+        },
+        {
+          "path": "src/notes.rs",
+          "signal": "unsafe_added",
+          "side": "new",
+          "line": 8
+        }
+      ],
+      "sha256": "612e71f0a6765c3b3dd5950ec499bca36abb7089dd907511b56a499d23310d1e"
     }
   ]
 }

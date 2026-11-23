@@ -139,6 +139,10 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   it. `agent --help` lists each form with its own options (D1).
 - A test runs every full command line quoted in the release notes of the tree's version and of
   the newest release on the built binary, and fails naming the line of any usage error (D1).
+- The evaluation corpus has 61 cases (`evidence/cargo-lints-suppressed`,
+  `evidence/rust-allow-in-comment-and-string`): precision 195 of 220, recall 195 of 272, 105
+  declared misses; the floors stay. The risk-ranking reference states F2b's readings of
+  `check_suppressed`, `build_hook` and `unsafe_added` and what they do not read (D1).
 
 ## [0.10.0] - 2026-11-23
 

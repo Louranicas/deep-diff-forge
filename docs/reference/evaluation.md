@@ -136,23 +136,27 @@ deep-diff-forge eval                          # score the labelled corpus in fix
   catch them; the
   2026-10-31 measurement on 34 cases was precision 21 / 22 and recall 21 / 28:
   The case `evidence/rust-code-view-20261114`, added in 0.8.4 with seven expected items, is in this corpus with fourteen (the same patch, read by the integrity signals as well); the 0.8.4 measurement on 35 cases was precision 28 / 29 and recall 28 / 35, and before it, on 34 cases (2026-10-31), 21 / 22 and 21 / 28.
+  On 61 cases (0.11.0, 2026-11-23: `evidence/cargo-lints-suppressed` and
+  `evidence/rust-allow-in-comment-and-string` added for the readings of F2b) precision is
+  195 / 220 and recall 195 / 272, with 105 declared misses; the floors stay.
 
   | Metric | Right / total | Floor |
   | --- | ---: | ---: |
   | ranking pairs | 12 / 15 | 80.0% |
-  | evidence precision | 189 / 214 | 88.2% |
-  | evidence recall | 189 / 265 | 70.5% |
+  | evidence precision | 195 / 220 | 88.2% |
+  | evidence recall | 195 / 272 | 70.5% |
   | findings verdicts | 33 / 33 | 100% |
 
   The receipt (`--json`) also splits evidence precision and recall by signal (`by_signal`) and by
   the language of the item's file (`by_language`, the engine's own language reading, `none` where
   no language applies); each adds up to the two evidence rows above, and the text summary prints
-  the four metrics only. Measured 2026-11-23 on 59 cases:
+  the four metrics only. Measured 2026-11-23 on 61 cases:
 
   | Signal | Precision | Recall | Cases |
   | --- | ---: | ---: | ---: |
   | `assertions_removed` | 0 / 0 (-) | 0 / 1 (0.0%) | 1 |
-  | `check_suppressed` | 10 / 10 (100.0%) | 10 / 10 (100.0%) | 5 |
+  | `build_hook` | 1 / 1 (100.0%) | 1 / 1 (100.0%) | 1 |
+  | `check_suppressed` | 14 / 14 (100.0%) | 14 / 15 (93.3%) | 7 |
   | `ci_privilege` | 5 / 5 (100.0%) | 5 / 5 (100.0%) | 2 |
   | `dynamic_eval` | 7 / 7 (100.0%) | 7 / 11 (63.6%) | 7 |
   | `error_defaulted` | 0 / 0 (-) | 0 / 2 (0.0%) | 1 |
@@ -168,15 +172,15 @@ deep-diff-forge eval                          # score the labelled corpus in fix
   | `test_removed` | 6 / 6 (100.0%) | 6 / 6 (100.0%) | 4 |
   | `test_skipped` | 15 / 19 (78.9%) | 15 / 30 (50.0%) | 14 |
   | `trivial_assert` | 14 / 14 (100.0%) | 14 / 29 (48.3%) | 13 |
-  | `unsafe_added` | 7 / 8 (87.5%) | 7 / 7 (100.0%) | 4 |
+  | `unsafe_added` | 8 / 9 (88.9%) | 8 / 8 (100.0%) | 5 |
 
   | Language | Precision | Recall | Cases |
   | --- | ---: | ---: | ---: |
   | `go` | 4 / 4 (100.0%) | 4 / 8 (50.0%) | 5 |
   | `javascript` | 13 / 13 (100.0%) | 13 / 23 (56.5%) | 10 |
-  | `none` | 13 / 14 (92.9%) | 13 / 16 (81.2%) | 4 |
+  | `none` | 17 / 18 (94.4%) | 17 / 21 (81.0%) | 5 |
   | `python` | 12 / 13 (92.3%) | 12 / 29 (41.4%) | 14 |
-  | `rust` | 135 / 157 (86.0%) | 135 / 176 (76.7%) | 22 |
+  | `rust` | 137 / 159 (86.2%) | 137 / 178 (77.0%) | 23 |
   | `shell` | 6 / 7 (85.7%) | 6 / 7 (85.7%) | 6 |
   | `yaml` | 6 / 6 (100.0%) | 6 / 6 (100.0%) | 2 |
 

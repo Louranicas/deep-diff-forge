@@ -208,13 +208,13 @@ era) no longer holds. How the standard is enforced today:
   `campaign_local.sh` runs every listed target in turn and stops red, naming it, at the
   first that fails (`campaign_runs_every_listed_target_and_fails_on_one_crash`).
 - **Evaluation gate** (`cli/tests/eval.rs`, every PR): the labelled corpus in
-  `fixtures/eval` (59 cases, measured 2026-11-23 on the integrated tree) must score at least its floors,
-  which are the measured values: ranking pairs 12/15, evidence precision 189/214,
-  evidence recall 189/265, findings 33/33 (0.10.0; sections the parser refuses are in
+  `fixtures/eval` (61 cases, measured 2026-11-23 on the 0.11.0 branch) must score at least its floors
+  (the table of `docs/reference/evaluation.md`); it measures ranking pairs 12/15, evidence precision 195/220,
+  evidence recall 195/272, findings 33/33 (sections the parser refuses are in
   `fixtures/eval-refused-by-parser/`, held refused by a test). A test holds these figures, and the table in
   `docs/reference/evaluation.md`, to what the run measures; the receipt also gives precision and
   recall by signal and by language, and lists a case the parser refuses as `refused` without
-  stopping the run. Any undeclared miss fails. The 104
+  stopping the run. Any undeclared miss fails. The 105
   declared misses (`known_miss`, `known_false_positive`) count as wrong in their
   metric rather than being excluded, and each fails once the engine gets it
   right. Planted controls prove a wrong label fails with exit 7, a changed file,

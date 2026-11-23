@@ -1,0 +1,12 @@
+diff --git a/src/notes.rs b/src/notes.rs
+--- a/src/notes.rs
++++ b/src/notes.rs
+@@ -1,1 +1,8 @@
+ use std::fmt;
++// see #[allow(dead_code)] in the old module
++const HELP: &str = "write #[allow(unused)] above the item";
++const RAW: &str = r#"#![allow(clippy::all)]"#;
++let r#unsafe = 1;
++#[allow(dead_code)]
++fn unused() {}
++fn f() { unsafe { g() } }
