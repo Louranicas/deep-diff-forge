@@ -243,7 +243,11 @@ fn fail_on_takes_classes_and_labels_only() {
         let (code, stdout, stderr) = run(&args, &patch);
         assert_eq!(
             (code, stdout.as_str(), stderr.as_str()),
-            (Some(2), "", "error: --fail-on needs --rank\n"),
+            (
+                Some(2),
+                "",
+                "error: --fail-on needs --rank or --diagnostics\n"
+            ),
             "{args:?}"
         );
     }

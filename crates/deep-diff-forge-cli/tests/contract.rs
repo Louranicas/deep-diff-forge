@@ -173,7 +173,10 @@ fn schema_signals_and_explain_signal_answer_from_the_vocabulary() {
     assert_eq!(stderr, "error: --audience takes agent or person\n");
     let (code, _, stderr) = run(&["schema", "other"], "");
     assert_eq!(code, 2);
-    assert!(stderr.contains("(result|exit-codes|signals)"), "{stderr}");
+    assert!(
+        stderr.contains("(result|exit-codes|signals|diagnostics)"),
+        "{stderr}"
+    );
 }
 
 /// The two signal tables of `docs/reference/risk-ranking.md` (once the README's "Risk ranking")

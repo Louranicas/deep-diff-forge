@@ -743,7 +743,7 @@ mod tests {
         assert_eq!(v["codes"].as_array().unwrap().len(), EXIT_CODES.len());
         assert_eq!(
             schema(&args(&["other"])).unwrap_err(),
-            "unknown schema: other (result|exit-codes|signals)"
+            "unknown schema: other (result|exit-codes|signals|diagnostics)"
         );
     }
 
