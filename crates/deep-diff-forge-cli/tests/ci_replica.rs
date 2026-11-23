@@ -13,6 +13,14 @@ const GATE_JOBS: &[&str] = &["secrets", "msrv", "gate", "supply-chain"];
 /// CI steps that only install a tool the replica expects on the machine already.
 const SETUP_ONLY: &[&str] = &["install host cargo-deny", "install cargo-audit"];
 
+/// Steps only the local gate runs. GitHub is a mirror here and its workflow is not changed for
+/// them; each must be a label of `scripts/ci_local.sh` and no CI step's name (S3.17b.b).
+const LOCAL_ONLY: &[&str] = &[
+    "release-script self-test",
+    "comparison corpus manifest",
+    "contract matrix",
+];
+
 /// One step of a CI job: its name (if any) and whether it has a `run:` (else it `uses:` an action).
 #[derive(Debug, PartialEq)]
 struct CiStep {
@@ -70,6 +78,18 @@ fn ci_steps(workflow: &str) -> Vec<CiStep> {
     steps
 }
 
+/// The replica's labels that name neither a CI step in `ci` nor a member of `local_only`.
+fn unlisted<'a>(
+    labels: &'a BTreeSet<String>,
+    ci: &BTreeSet<String>,
+    local_only: &[&str],
+) -> Vec<&'a String> {
+    labels
+        .iter()
+        .filter(|label| !ci.contains(*label) && !local_only.contains(&label.as_str()))
+        .collect()
+}
+
 /// The CI step names the replica's `step "<label>"` calls claim, without any ` :: <part>`.
 fn replica_labels(script: &str) -> BTreeSet<String> {
     script
@@ -107,14 +127,48 @@ fn the_replica_runs_every_ci_gate_step_and_only_those() {
         .iter()
         .filter(|name| !labels.contains(*name) && !SETUP_ONLY.contains(&name.as_str()))
         .collect();
-    let orphaned: Vec<_> = labels.difference(&all).collect();
+    let orphaned = unlisted(&labels, &all, LOCAL_ONLY);
     let stale: Vec<_> = SETUP_ONLY
         .iter()
         .filter(|name| !runs.contains(**name))
         .collect();
     assert!(
         unreplicated.is_empty() && orphaned.is_empty() && stale.is_empty(),
-        "scripts/ci_local.sh and ci.yml disagree.\n  CI steps with no replica step: {unreplicated:?}\n  replica steps naming no CI step: {orphaned:?}\n  setup-only names no CI step has: {stale:?}"
+        "scripts/ci_local.sh and ci.yml disagree.\n  CI steps with no replica step: {unreplicated:?}\n  replica steps naming no CI step and not in LOCAL_ONLY: {orphaned:?}\n  setup-only names no CI step has: {stale:?}"
+    );
+}
+
+/// S3.17b.b: a step only the local gate runs is listed in [`LOCAL_ONLY`], not added to GitHub's
+/// workflow. Every member is a label of the script and no CI step's name, so the list cannot
+/// rot; a label in neither ci.yml nor the list is refused.
+#[test]
+fn a_local_only_gate_step_is_listed_and_named() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    let workflow = std::fs::read_to_string(format!("{root}/.github/workflows/ci.yml")).unwrap();
+    let script = std::fs::read_to_string(format!("{root}/scripts/ci_local.sh")).unwrap();
+    let labels = replica_labels(&script);
+    let ci: BTreeSet<String> = ci_steps(&workflow)
+        .into_iter()
+        .filter_map(|step| step.name)
+        .collect();
+    let unlabelled: Vec<_> = LOCAL_ONLY
+        .iter()
+        .filter(|name| !labels.contains(**name))
+        .collect();
+    let in_ci: Vec<_> = LOCAL_ONLY
+        .iter()
+        .filter(|name| ci.contains(**name))
+        .collect();
+    assert!(
+        unlabelled.is_empty() && in_ci.is_empty(),
+        "LOCAL_ONLY has names that are no label of scripts/ci_local.sh: {unlabelled:?}; names of CI steps: {in_ci:?}"
+    );
+    let planted = replica_labels("step \"one\" true\nstep \"local\" true\nstep \"neither\" true\n");
+    let ci_one = BTreeSet::from(["one".to_owned()]);
+    assert_eq!(
+        unlisted(&planted, &ci_one, &["local"]),
+        ["neither"],
+        "a label in neither ci.yml nor LOCAL_ONLY must be refused, and only that one"
     );
 }
 

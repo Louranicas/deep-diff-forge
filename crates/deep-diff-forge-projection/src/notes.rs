@@ -150,9 +150,9 @@ mod tests {
         let parse = |text: &str| deep_diff_forge_patch::parse(text).unwrap();
         let small = parse("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n");
         assert_eq!(gutter_width(&small[0]), 4);
-        let edge = parse("--- a/x\n+++ b/x\n@@ -9999 +9999 @@\n-a\n+b\n");
+        let edge = parse("--- a/x\n+++ b/x\n@@ -9998,2 +9998,2 @@\n ctx\n-a\n+b\n");
         assert_eq!(gutter_width(&edge[0]), 4);
-        let over = parse("--- a/x\n+++ b/x\n@@ -9999,2 +9999,1 @@\n-a\n-b\n+c\n");
+        let over = parse("--- a/x\n+++ b/x\n@@ -9998,3 +9998,2 @@\n ctx\n-a\n-b\n+c\n");
         assert_eq!(gutter_width(&over[0]), 5, "the old side reaches 10000");
         let new_side = parse("--- a/x\n+++ b/x\n@@ -1 +99999,2 @@\n-a\n+b\n+c\n");
         assert_eq!(gutter_width(&new_side[0]), 6, "the new side reaches 100000");

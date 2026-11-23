@@ -1,0 +1,192 @@
+{
+  "schema": "forge-warden.verdict.v3",
+  "tool": {
+    "name": "forge-warden",
+    "version": "0.2.1"
+  },
+  "evaluated_on": "2026-11-05",
+  "seals": {
+    "policy_sha256": "aef395eedbe677976df399a6ac7c0724e3458a7c06ff8a2fb892a12a5c95c071",
+    "rank_sha256": "9a183a4197f417f49cf70999e14c6015ea12913ef59af3924204230d2e3379b5",
+    "patch_sha256": "bbf580931c6739af491bb5e2258550631327ca07f1078135cb008797e22b836e",
+    "patch_facts_sha256": "c20420b7dac6c82e4f8a7758bb50422b046833514047fd647bd06465f81e8075",
+    "provenance": "supplied",
+    "ranked_by": {
+      "version": "0.7.0",
+      "sha256": null
+    },
+    "git": {
+      "path": "/usr/bin/git",
+      "version": "<git --version>",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "admission": "unpinned",
+      "allowlist_sha256": null
+    }
+  },
+  "verdict": "fail",
+  "exit": {
+    "code": 7,
+    "name": "policy_fail",
+    "action": "change_input"
+  },
+  "summary": {
+    "files": 4,
+    "rules": 10,
+    "passed": 5,
+    "waived": 0,
+    "held": 4,
+    "failed": 1
+  },
+  "rules": [
+    {
+      "id": "no-secrets",
+      "kind": "forbid_signal",
+      "severity": "fail",
+      "outcome": "pass",
+      "why": "A credential committed once is compromised forever, even after a revert.",
+      "violations": []
+    },
+    {
+      "id": "no-hidden-text",
+      "kind": "forbid_signal",
+      "severity": "fail",
+      "outcome": "pass",
+      "why": "Bidi controls, invisible characters and traversing paths make code read differently than it runs.",
+      "violations": []
+    },
+    {
+      "id": "no-ci-privilege",
+      "kind": "forbid_signal",
+      "severity": "fail",
+      "outcome": "fail",
+      "why": "pull_request_target, write-all and secret inheritance hand untrusted code the keys to the repository.",
+      "violations": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "message": "carries forbidden signal `ci_privilege`",
+          "signal": "ci_privilege",
+          "evidence": [
+            {
+              "address": "210b042e087371f9b773ac460f511aaa431cf4ec0f2005cf4c58b5723ea1aaef",
+              "side": "new",
+              "line": 2
+            },
+            {
+              "address": "210b042e087371f9b773ac460f511aaa431cf4ec0f2005cf4c58b5723ea1aaef",
+              "side": "new",
+              "line": 3
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "unsafe-needs-review",
+      "kind": "forbid_signal",
+      "severity": "hold",
+      "outcome": "hold",
+      "why": "Every new unsafe block needs a reviewer who checks its safety argument.",
+      "violations": [
+        {
+          "path": "src/lib.rs",
+          "message": "carries forbidden signal `unsafe_added`",
+          "signal": "unsafe_added",
+          "evidence": [
+            {
+              "address": "063a52daefc55ed67277eb09d90dea3671b6d2d27bde69a683a50a7462a438a7",
+              "side": "new",
+              "line": 3
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "no-silent-suppression",
+      "kind": "forbid_signal",
+      "severity": "hold",
+      "outcome": "hold",
+      "why": "A silenced check hides the next real bug; fix the cause or justify it in review.",
+      "violations": [
+        {
+          "path": "src/lib.rs",
+          "message": "carries forbidden signal `check_suppressed`",
+          "signal": "check_suppressed",
+          "evidence": [
+            {
+              "address": "063a52daefc55ed67277eb09d90dea3671b6d2d27bde69a683a50a7462a438a7",
+              "side": "new",
+              "line": 2
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "keep-the-tests",
+      "kind": "forbid_signal",
+      "severity": "hold",
+      "outcome": "hold",
+      "why": "Deleting a test removes a guarantee someone relied on; that deserves a second pair of eyes.",
+      "violations": [
+        {
+          "path": "tests/it.rs",
+          "message": "carries forbidden signal `test_removed`",
+          "signal": "test_removed",
+          "evidence": [
+            {
+              "address": "dd29cef50a30e4b55bca2f745d04887c9002380dcc36e24a94de01643c382c3e",
+              "side": "old",
+              "line": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "binary-text-is-hidden-text",
+      "kind": "forbid_signal",
+      "severity": "hold",
+      "outcome": "pass",
+      "why": "A text file sent as a binary section hides its lines from every signal rule; a person reads it.",
+      "violations": []
+    },
+    {
+      "id": "tests-travel-with-code",
+      "kind": "require_companion",
+      "severity": "fail",
+      "outcome": "pass",
+      "why": "Behaviour that changes without a test change is behaviour nobody pinned down.",
+      "violations": []
+    },
+    {
+      "id": "ci-is-owned",
+      "kind": "protect_paths",
+      "severity": "hold",
+      "outcome": "hold",
+      "why": "CI and supply-chain configuration decide what every other check means.",
+      "violations": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "message": "protected path changed (modified)"
+        }
+      ]
+    },
+    {
+      "id": "reviewable-size",
+      "kind": "max_score",
+      "severity": "hold",
+      "outcome": "pass",
+      "why": "A change too risky to hold in one head gets rubber-stamped; split it.",
+      "violations": []
+    }
+  ],
+  "expired_waivers": [],
+  "unused_waivers": [],
+  "notes": [
+    {
+      "code": "rank_unverified",
+      "detail": "the ranking was supplied, not produced by forge-warden; it can inform, never approve; Git is unpinned: no owner allowlist enrolled; its recorded executable digest is not approved"
+    }
+  ]
+}

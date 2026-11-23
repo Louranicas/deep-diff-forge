@@ -1,0 +1,18 @@
+# Sections of eval cases that release 0.10.0's parser refuses (HunkPlacedElsewhere); see ruling 1 of the 0.10.0 integration.
+# patch	exit	reason	case
+independent-review-6-20261114--src-deep.rs.patch	4	it follows a hunk with no trailing context, which Git places at the end	evidence/independent-review-6-20261114
+independent-review-6-20261114--src-end.rs.patch	4	it follows a hunk with no trailing context, which Git places at the end	evidence/independent-review-6-20261114
+independent-review-6-20261114--src-glob.rs.patch	4	it follows a hunk with no trailing context, which Git places at the end	evidence/independent-review-6-20261114
+independent-review-6-20261114--src-split.rs.patch	4	it follows a hunk with no trailing context, which Git places at the end	evidence/independent-review-6-20261114
+independent-review-7-20261115--src-m.rs.patch	4	it has no context, so Git places it at the end of the file	evidence/independent-review-7-20261115
+independent-review-7-20261115--src-n.rs.patch	4	it has no context, so Git places it at the end of the file	evidence/independent-review-7-20261115
+independent-review-8-20261115--src-between.rs.patch	4	it has no context, so Git places it at the end of the file	evidence/independent-review-8-20261115
+independent-review-8-20261115--src-claimed.rs.patch	4	it follows a hunk with no trailing context, which Git places at the end	evidence/independent-review-8-20261115
+independent-review-8-20261115--src-decoy.rs.patch	4	it has no context, so Git places it at the end of the file	evidence/independent-review-8-20261115
+independent-review-8-20261115--src-first.rs.patch	4	it has no context, so Git places it at the end of the file	evidence/independent-review-8-20261115
+independent-review-8-20261115--src-inside.rs.patch	4	it has no context, so Git places it at the end of the file	evidence/independent-review-8-20261115
+independent-review-9-20261115--src-far.js.patch	4	it has no context, so Git places it at the end of the file	evidence/independent-review-9-20261115
+independent-review-9-20261115--src-far.rs.patch	4	it has no context, so Git places it at the end of the file	evidence/independent-review-9-20261115
+independent-review-9-20261115--src-topcomment.rs.patch	4	it follows a hunk with no trailing context, which Git places at the end	evidence/independent-review-9-20261115
+independent-review-9-20261115--src-topone.rs.patch	4	it follows a hunk with no trailing context, which Git places at the end	evidence/independent-review-9-20261115
+integrated-review-1-20261118--n.rs.patch	4	it has no context, so Git places it at the end of the file	evidence/integrated-review-1-20261118

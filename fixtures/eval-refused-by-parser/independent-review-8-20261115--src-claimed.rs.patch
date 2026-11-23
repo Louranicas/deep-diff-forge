@@ -1,0 +1,16 @@
+diff --git a/src/claimed.rs b/src/claimed.rs
+--- a/src/claimed.rs
++++ b/src/claimed.rs
+@@ -3,2 +60,2 @@
+ fn other() {}
+-gone();
++here();
+@@ -3,2 +3,2 @@
+-    let d = c * 2;
++    let d = c * 3;
+     debug_assert!(
+@@ -5,3 +30,3 @@
+-        a < b,
++        true,
+         "a must be below b");
+     let e = d + 1;

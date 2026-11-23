@@ -1,6 +1,6 @@
 // Review council: Actual CLI process lifecycle with fake providers and tools, plus timeout/owned-child cleanup and zero-work refusals.
 // Design/status: docs/REVIEW_COUNCIL.md#cli-controls
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-cli--tests--council
+// Module index: docs/REVIEW_COUNCIL.md#cratesdeep-diff-forge-clitestscouncilrs
 //! Actual CLI/driver lifecycle against deterministic fake providers; no model/API calls.
 #![expect(
     clippy::disallowed_methods,

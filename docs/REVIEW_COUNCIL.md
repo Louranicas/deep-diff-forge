@@ -11,7 +11,7 @@
 
 **Current at 0.3.0** (checked against the code and the binary):
 
-- The council is a CLI subcommand of the main binary: `deep-diff-forge council <example|prepare|review|gate|status|import|export-tuicr|import-tuicr>` (`deep-diff-forge --help`). Its exit codes are their own family: 0 completed, 4 refused, 7 hold (`deep-diff-forge schema exit-codes`).
+- The council is a CLI subcommand of the main binary: `deep-diff-forge council <example|prepare|review|gate|status|import|export-tuicr|import-tuicr>` (`deep-diff-forge --help`). Its exit codes are their own family: 0 completed, 3 recorded but incomplete (`import-tuicr --execute` only), 4 refused, 7 hold (`deep-diff-forge schema exit-codes`).
 - The eight gates are `format`, `check`, `clippy`, `pedantic`, `tests`, `antipatterns`, `fuzz` and `mutation` (`crates/deep-diff-forge-review/src/model.rs`).
 - Gates run only in the rootless Podman sandbox described in [Gate sandbox](#gate-sandbox). CI builds the gate image and runs the 12-probe planted-breach suite on `ubuntu-26.04` (`.github/workflows/ci.yml`).
 
@@ -20,13 +20,12 @@
 - **Gate uid:gid.** Gate containers run as the controller's effective uid and gid, taken from the kernel with `geteuid`/`getegid` (`operator()` in `crates/deep-diff-forge-review/src/sandbox.rs`). Before PR #21 (`7a2f5ae`), the controller read `/proc/self` and fell back to `0:0`. On a host without `/proc`, such as macOS, every gate container therefore ran as root. The first macOS test run found it (CI run 40618280385). The test now takes the expected `--user` from POSIX `id`, which is independent of the code under test (`crates/deep-diff-forge-cli/tests/council.rs`). The [Podman invocation](#podman-invocation) table is updated to match.
 - **Releases and evidence.** Release dry runs and fuzz numbers for 2026-10-28 are in [`EVIDENCE.md`](../EVIDENCE.md#release-dry-runs-and-fuzzing-2026-10-28).
 - **Paths in examples.** `ddf-integration-20261025` and `ddf-council-20261025` are helpers on the operator workstation. Anyone else runs `deep-diff-forge council …` from a build of `deep-diff-forge-cli`.
-- **Links.** Every `obsidian://` link in this document opens the owner's local vault. These links do not resolve on GitHub.
 
 Related current docs: [release and publication](RELEASE_AND_PUBLICATION.md), [operations and daemon](OPERATIONS_AND_DAEMON.md), [testing standard](TESTING_GOLD_STANDARD.md).
 
 This is the local implementation of the requested Claude Code/Codex review roster and expert circle. It connects the existing analysis.v1 artifact to captured review context, independent provider rounds, explicit counter-review and measured quality gates. It makes unsupported, missing, failed and stale results visible. The final state is **ready_for_human_review**, never automatic approval.
 
-[Vault hub](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FReview%20Council) (owner's local vault) · [Implementation ledger](RECOMMENDATION_INTEGRATION.md) · [Quality workflow](../.github/workflows/ci.yml) · [HDD reference provenance](../review-policy/provenance.json)
+[Implementation ledger](RECOMMENDATION_INTEGRATION.md) · [Quality workflow](../.github/workflows/ci.yml) · [HDD reference provenance](../review-policy/provenance.json)
 
 ## Scope and maturity
 
@@ -162,13 +161,13 @@ ddf-integration-20261025 council status /absolute/new-run-directory
 
 The output directory's parent must exist, and the new run must be outside the reviewed repository. A relative run directory is resolved once, against the controller's working directory, and used absolutely from then on, so the sealed snapshot and its mutation scope name the same files however the run is spelled. Existing runs/jobs/reports are never overwritten. `council import <run> <report.json>` admits external structured reports but explicitly labels manual import unverified; it cannot satisfy a missing measured provider invocation. The run's `manifest.json` and captured artifacts are reviewable before `--execute`. Preparation/status do not launch a hosted model. No execution occurs merely because a reviewer requested a check.
 
-Exit 0 means the requested operation completed under its contract; status exit 0 specifically means ready for human review. Exit 7 is HOLD/failed/inconclusive execution. Exit 4 is malformed input, stale admission, existing artifact or protocol/IO failure. No command implies acceptance, merge, release or deployment.
+Exit 0 means the requested operation completed under its contract; status exit 0 specifically means ready for human review. Exit 7 is HOLD/failed/inconclusive execution. Exit 4 is malformed input, stale admission, existing artifact or protocol/IO failure. Exit 3 is an I/O failure after `import-tuicr --execute` recorded its decisions (below). No command implies acceptance, merge, release or deployment.
 
 <a id="tuicr-export"></a>
 
 ### Exporting admitted findings to tuicr (DDF-R54)
 
-`council export-tuicr` files admitted council findings into a local tuicr (0.27.0) review session as *local draft notes*. It is a read-only analysis adapter in the sense of the vault plan: it never submits to a forge, marks a file or hunk reviewed, resolves or deletes a comment, or turns a model claim into an approval.
+`council export-tuicr` files admitted council findings into a local tuicr (0.27.0) review session as *local draft notes*. It is a read-only analysis adapter: it never submits to a forge, marks a file or hunk reviewed, resolves or deletes a comment, or turns a model claim into an approval.
 
 ```sh
 # Dry run (default): every identity check, then the planned notes as JSON. Never invokes tuicr, never writes.
@@ -204,7 +203,7 @@ ddf-integration-20261025 council import-tuicr /absolute/run-directory --session 
 ddf-integration-20261025 council import-tuicr /absolute/run-directory --session <session.json> --execute
 ```
 
-Exit 0 means the import completed. Exit 7 means the events include a conflict; they are still appended in `--execute` mode. Exit 4 is a refusal, and nothing is appended. Rules, each covered by [the journal tests](../crates/deep-diff-forge-cli/tests/council_tuicr.rs):
+Exit 0 means the import completed. Exit 7 means the events include a conflict; they are still appended in `--execute` mode. Exit 4 is a refusal, and nothing is appended. Exit 3 (`recorded_incomplete`) means the events were recorded but a later write failed (or the journal's own sync failed, so whether they are durable is unknown): the message names the events' sequence numbers and the file, and running the same import again completes it. Rules, each covered by [the journal tests](../crates/deep-diff-forge-cli/tests/council_tuicr.rs):
 
 - **Event schema** (`deep-diff-forge.decision.v1`, one JSON object per line):
   - Identity: `seq`, `prev`, `run_id`, `session_id`, `revision` (`diff_source`, `base_commit`, `new_side`), `comment_id`, and `content_sha256` of the comment text.
@@ -232,9 +231,18 @@ Exit 0 means the import completed. Exit 7 means the events include a conflict; t
 - **Chain and tamper evidence.**
   - `prev` chains every event to the one before it. The first event's `prev` is 64 zeros.
   - Each import that appends also writes a create-new checkpoint `<run>/decisions.checkpoints/<seq>.json` holding the head hash.
+  - The commit point is the synced append. Before it, the checkpoint for the new head is written and synced under a temporary name (`.ddf-tmp.` and a suffix); after it, the checkpoint is linked into place and the directory synced. A failure before the append is exit 4 and leaves the journal as it was; a failure after it is exit 3. A failed write of the journal itself is cut back to the verified length; if that cut cannot be made durable, the outcome is exit 3.
   - Before planning, the whole journal is verified: each line must be the event's own canonical serialization, `seq` must be consecutive, every `prev` and `hash` must recompute, and `run_id` must match. Every checkpoint must still name an event the journal holds.
   - An edited, reordered, partially written or truncated journal is refused. This includes a deleted journal whose checkpoints remain.
-  - Appends use `O_APPEND` after checking that the file length still equals the verified length, under a create-new `decisions.lock`.
+  - Appends use `O_APPEND` after checking that the file length still equals the verified length, under an advisory `flock` on `decisions.lock` held for the life of the executing import. A lock file whose process is gone does not block; the file is removed by its holder. A dry run takes no lock. The lock is new in 0.10.0: an import by 0.9.0 or earlier takes none, so it can append beside a running 0.10.0 import of the same run, guarded only by the length check. Do not run imports of one run with different versions at the same time. A held lock is refused with what to do before the lock's path, so the remedy is inside the 200 bytes the command line shows of an error.
+  - The journal is opened for the append with `O_NOFOLLOW`: a link at `decisions.jsonl`, even one that points nowhere (which reads as no journal), is refused and nothing is written through it.
+- **Recovery.** Every executing import, under the lock, after the journal has verified and after every planning-time check (so a session that is refused changes nothing, G-S313-2b), reconciles before it appends. Each step is one line of the result's `repairs` (added in 0.10.0, additive to `deep-diff-forge.tuicr-import.v1`), which the command line also prints on standard error (`note: tuicr import repair: …`); a dry run lists it as `would repair` and writes nothing. An import that repairs and then fails (exit 3 or 4) names its failure, not its repairs.
+  - If the journal's head is beyond the newest checkpoint, the head's checkpoint is written, even when the import then plans no events. This also heals a run left so by 0.8.3 to 0.9.0 ([DDF-2026-004](advisories/DDF-2026-004.md)).
+  - A zero-length checkpoint file (what 0.8.3 to 0.9.0 leave when a checkpoint write fails) whose sequence the journal holds is replaced. A checkpoint with any other malformed content stays a refusal.
+  - A torn last record (bytes after the last newline) whose sequence no checkpoint names is cut off; its bytes are kept beside the journal in `decisions.torn-<seq>-<digest>` and never deleted. A torn record a checkpoint names stays a refusal: that is truncation of committed data.
+  - Temporary files left in `decisions.checkpoints/` by a killed import are removed. Readers that list a directory (checkpoints, the export ledger) skip a temporary name, so a leftover never refuses an import.
+  - A temporary file left in the session's export ledger, in `reports/` or in a job directory is removed when the number in its name (its writer's process id) names no running process: by an executing import for the ledger (listed in `repairs`; a dry run lists it as one it would make), and by every reader of the reports and the jobs (`status`, `review`, `gate`). One whose number names a running process may be a write in progress (an export takes no lock) and is kept; the import names it in `repairs`.
+  - Every run artefact written create-new (checkpoints, the export ledger, reports, `execution.json`, `qualification.json`) is written all or nothing: written and synced under a temporary name in the same directory, then linked to its name, which fails if the name exists. An I/O error names the file. When the directory cannot be synced after the link, the name is removed again and the write fails, so the writer can write it again; the content was synced before the link, so a name a crash brings back holds all of it (decided in 0.10.0, G-S313-1b). For a checkpoint the events are already in the journal: the import says so (exit 3), and the next import writes the checkpoint. An incomplete import keeps the I/O error as the `source` of `TuicrImportError::Incomplete`.
   - These are local consistency checks, not signatures. A same-uid process that rewrites the journal, its checkpoints and all hashes together is not detected.
 - **Stale revision refusal.** All refusals reject the whole import, and nothing is appended.
   - The session must pass the export's identity checks: version, no forge session, and the same repository.
@@ -356,7 +364,7 @@ Council r6 (run `1381e8c5…`, 12/12 reports admitted, all gates but mutation pa
 | Mutation gate could never pass (r6 gate outcome, not a model finding) | cargo-mutants 27.1.0 times its baseline on the mutated package's own tests but runs each mutant against the workspace suite. The fixed `--timeout 30` was below the 71 s suite, so all 929 mutants timed out and the gate hit the 900 s request timeout. The per-mutant timeout is now 300 s with 4 workers. An optional request field `mutation_base` (a full lowercase commit ID, never a revision expression) makes `prepare` seal `git diff <base>` of tracked files as `<run>/mutation.diff`, with its digest in the manifest (`mutation_diff_sha256`). The mutation gate re-verifies that digest before any job slot, stages the diff into `/work` and passes `--in-diff`. On this tree that is 65 mutants instead of 957. Both fields are omitted from the sealed JSON when unset, so earlier run IDs still verify. Untracked files are not in the diff, so their mutants are not measured | **Measured, fake:** `a_mutation_base_scopes_mutation_to_a_sealed_diff_and_a_changed_diff_is_refused` (argv, staged bytes and a tampered diff refused with an empty jobs dir); `mutation_base_is_a_full_commit_id_never_a_revision_expression`. **Measured:** the r6 gate log (`TIMEOUT … 0s build + 30s test` for every mutant). The real gate on `:20261025c` is measured by the next council run |
 | Seal walk unbounded in directories | Directories count against the seal's 100,000-entry budget, and each listing is read lazily up to the remaining budget, so an output of empty directories is refused rather than collected | **Measured, fake:** the `vendor_dirs` case (100,001 empty directories) of `vendoring_output_is_sealed_and_planted_links_or_fifos_are_never_mounted` |
 
-Not changed, and why (model claims, triaged by the operator; see the vault note `Reviews/Council r6 Triage 2026-10-25.md`):
+Not changed, and why (model claims, triaged by the operator; the triage note, `Reviews/Council r6 Triage 2026-10-25.md`, is in the maintainer's private vault and not published):
 - **Mutation-gate Cargo config in `/work`** (architecture, security; concurred, but how cargo-mutants 27.1.0 behaves is unmeasured): cargo-mutants builds under `/work/tmp`, so `/work/.cargo/config.toml`, which candidate tests can write during the baseline, is a Cargo config ancestor of the mutated builds. The `/src` ancestor argument in row 1 of the r4 table applies to the top-level gate commands only. This is recorded as a residual, below.
 - **Image identity per invocation, not per run; candidate-writable witnesses; `Option<&GateLaunch>`; duplicate tree passes** were rebutted in the challenge round as policy additions without a stated requirement.
 - **Recording the launched argv in the receipt** and **dropping fsyncs on disposable job copies** are accepted as improvements, not defects, and left for a later slice.
@@ -454,7 +462,7 @@ Council r10 (run `ebf5d834…`) reviewed `2cd4568..bec1a49`. Every evidence gate
 
 > Steps 2 and 3 below (HIR spans) were superseded in [r13](#lexer-retired-r13) by differential compilation, after council r12 showed that an enclosing-module macro defeats span containment.
 
-The decision record is in the project vault (`Strategy/Decision Record Exemption Control 2026-10-26.md`). Rehearsing it showed that the skip attribute was one of six ways cargo-mutants 27.1.0 leaves an item unmutated. `src/visit.rs` also skips any attribute whose path *ends in* `test`, `#[cfg(test)]`, every `unsafe fn`, any method named `new`, and empty bodies. Each route below compiles as production code and gets zero mutants from stock cargo-mutants (measured on a planted workspace). The r8–r11 lexer looked for none of the first four:
+The decision record (`Strategy/Decision Record Exemption Control 2026-10-26.md`) is in the maintainer's private vault and not published; this section states its outcome. Rehearsing it showed that the skip attribute was one of six ways cargo-mutants 27.1.0 leaves an item unmutated. `src/visit.rs` also skips any attribute whose path *ends in* `test`, `#[cfg(test)]`, every `unsafe fn`, any method named `new`, and empty bodies. Each route below compiles as production code and gets zero mutants from stock cargo-mutants (measured on a planted workspace). The r8–r11 lexer looked for none of the first four:
 
 | Route | Spelling |
 | --- | --- |
@@ -835,7 +843,8 @@ Only `crates-io` is replaced. A candidate with git or alternative-registry depen
   - The CI step that builds the image and runs the planted-breach test on GitHub-hosted runners. *Superseded 2026-10-26: measured passing on `main` at run 40274253094; see [`EVIDENCE.md`](../EVIDENCE.md#review-council-and-ci-2026-10-26).*
   - Container or kernel escape attempts beyond the planted probes, and forging parsed tool output (see residual risks).
 
-  For test results, see the vault verification receipt.
+  The verification receipt with the test results is in the maintainer's private vault and not
+  published; the published measurements are in [`EVIDENCE.md`](../EVIDENCE.md).
 
 ## Provider contracts
 
@@ -847,7 +856,7 @@ Primary protocol references: [OpenAI non-interactive Codex](https://learn.chatgp
 
 ## Verification and remaining work
 
-The current verification receipt and exact scope live in the vault's **Implementation/Review Council Verification 2026-10-25**. Historical first-increment evidence remains separate. Tests include policy refusals, actual CLI processes with two deterministic provider substitutes, phase ordering, missing gates, stale workspace/report rejection, protocol failure, timeouts, owned child cleanup, explicit transcript limits and zero-work tool refusals. The short local report fuzz campaign and scoped mutation campaign are bounded measurements, not full-codebase qualification. The gate sandbox change is covered by its own evidence status in [Gate sandbox](#gate-sandbox); this document does not assert that its tests pass.
+The verification receipt of 2026-10-25 and its exact scope are in the maintainer's private vault (**Implementation/Review Council Verification 2026-10-25**), which is not published. Historical first-increment evidence remains separate. Tests include policy refusals, actual CLI processes with two deterministic provider substitutes, phase ordering, missing gates, stale workspace/report rejection, protocol failure, timeouts, owned child cleanup, explicit transcript limits and zero-work tool refusals. The short local report fuzz campaign and scoped mutation campaign are bounded measurements, not full-codebase qualification. The gate sandbox change is covered by its own evidence status in [Gate sandbox](#gate-sandbox); this document does not assert that its tests pass.
 
 Remaining work includes live provider/account qualification, observed actual model identity, held-out review-quality evaluation, adversarially robust work witnesses (test/fuzz/mutation counts that candidate code cannot fabricate), signature-verified or reproducible gate images, CPU/disk quotas for gate containers, protection against same-uid processes outside the sandbox (separate uid or signed receipts), git/alternative-registry dependency vendoring, broader or crate-specific antipattern detectors with planted controls, complete mutation/fuzz campaigns, durable human finding dispositions/exception handling, cancellation/recovery UX, and migration into daemon/TUI consumers. No automatic approval mechanism has been added.
 
@@ -859,7 +868,7 @@ Remaining work includes live provider/account qualification, observed actual mod
 
 Public API boundary; separate typed review claims from controller-owned execution and human authority.
 
-[Exact crate/module](../crates/deep-diff-forge-review/src/lib.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--src--lib)
+[Exact crate/module](../crates/deep-diff-forge-review/src/lib.rs)
 
 <a id="typed-protocol"></a>
 
@@ -867,7 +876,7 @@ Public API boundary; separate typed review claims from controller-owned executio
 
 Typed providers, personas, phases, findings, citations, execution outcomes and final qualification.
 
-[Exact crate/module](../crates/deep-diff-forge-review/src/model.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--src--model)
+[Exact crate/module](../crates/deep-diff-forge-review/src/model.rs)
 
 <a id="admission-and-synthesis"></a>
 
@@ -875,7 +884,7 @@ Typed providers, personas, phases, findings, citations, execution outcomes and f
 
 Fail-closed request/report admission and synthesis: no missing quorum, stale evidence or vote-based approval.
 
-[Exact crate/module](../crates/deep-diff-forge-review/src/policy.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--src--policy)
+[Exact crate/module](../crates/deep-diff-forge-review/src/policy.rs)
 
 <a id="capture-and-storage"></a>
 
@@ -883,7 +892,7 @@ Fail-closed request/report admission and synthesis: no missing quorum, stale evi
 
 Bounded private context capture, canonical candidate snapshot verification, source inventory and identity, sealed source snapshot export, and immutable qualified artifacts in which refusal markers win.
 
-[Exact crate/module](../crates/deep-diff-forge-review/src/storage.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--src--storage)
+[Exact crate/module](../crates/deep-diff-forge-review/src/storage.rs)
 
 <a id="execution-controller"></a>
 
@@ -891,7 +900,7 @@ Bounded private context capture, canonical candidate snapshot verification, sour
 
 Fixed provider/gate argv, admission before any job slot, sandboxed gate jobs on read-only per-job snapshot copies, candidate toolchain-config refusal, one networked vendoring job whose output is sealed before use, the embedded policy checker, deadlines, owned process groups, output limits and non-vacuous work qualification.
 
-[Exact crate/module](../crates/deep-diff-forge-review/src/execution.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--src--execution)
+[Exact crate/module](../crates/deep-diff-forge-review/src/execution.rs)
 
 <a id="gate-sandbox-module"></a>
 
@@ -922,7 +931,7 @@ an array, and each result in it carries the field); `prepare` prints the manifes
 `deep-diff-forge.tuicr-export.v1` and `deep-diff-forge.tuicr-import.v1`. `example` prints a
 request template for `prepare`, which refuses unknown fields, so it has none.
 
-[Exact crate/module](../crates/deep-diff-forge-review/src/cli.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--src--cli)
+[Exact crate/module](../crates/deep-diff-forge-review/src/cli.rs)
 
 <a id="policy-controls"></a>
 
@@ -930,7 +939,7 @@ request template for `prepare`, which refuses unknown fields, so it has none.
 
 Planted negative controls for authority, phase, freshness, citations, missing evidence and budgets.
 
-[Exact crate/module](../crates/deep-diff-forge-review/tests/contracts.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--tests--contracts)
+[Exact crate/module](../crates/deep-diff-forge-review/tests/contracts.rs)
 
 <a id="cli-controls"></a>
 
@@ -938,7 +947,7 @@ Planted negative controls for authority, phase, freshness, citations, missing ev
 
 Actual CLI process lifecycle with fake providers and tools, plus timeout/owned-child cleanup and zero-work refusals.
 
-[Exact crate/module](../crates/deep-diff-forge-cli/tests/council.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-cli--tests--council)
+[Exact crate/module](../crates/deep-diff-forge-cli/tests/council.rs)
 
 <a id="tuicr-export-module"></a>
 
@@ -970,7 +979,7 @@ Export and decision-journal import through the actual CLI with fake providers an
 
 One canonical changed-source digest reused by analysis and council; explicit absence and framed paths/bytes.
 
-[Exact crate/module](../crates/deep-diff-forge-core/src/snapshot.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-core--src--snapshot)
+[Exact crate/module](../crates/deep-diff-forge-core/src/snapshot.rs)
 
 <a id="parsed-antipattern-guard"></a>
 
@@ -978,7 +987,7 @@ One canonical changed-source digest reused by analysis and council; explicit abs
 
 Canonical, pinned checker: parse workspace TOML and provenance JSON; check lint inheritance and source labels without pretending to detect all semantic antipatterns. The controller embeds this file and runs it inside the gate sandbox with the snapshot copy as working directory. `scripts/security/review_policy_check.py` is a compatibility wrapper for CI and humans that runs it against the repository root; council gates never execute the wrapper.
 
-[Exact crate/module](../crates/deep-diff-forge-review/policy/review_policy_check.py) · [compatibility wrapper](../scripts/security/review_policy_check.py) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--scripts--security--review_policy_check)
+[Exact crate/module](../crates/deep-diff-forge-review/policy/review_policy_check.py) · [compatibility wrapper](../scripts/security/review_policy_check.py)
 
 ### crates/deep-diff-forge-review/policy/exemption_oracle.py
 
@@ -992,7 +1001,7 @@ Mutation-exemption oracle: list the mutation scope with the gate's cargo-mutants
 
 Bounded untrusted report parsing, validation and accepted-output serialization stability.
 
-[Exact crate/module](../fuzz/fuzz_targets/council_report.rs) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--fuzz--fuzz_targets--council_report)
+[Exact crate/module](../fuzz/fuzz_targets/council_report.rs)
 
 <a id="reference-provenance"></a>
 
@@ -1000,7 +1009,7 @@ Bounded untrusted report parsing, validation and accepted-output serialization s
 
 Exact HDD paths, source commits and checksums; copied references retain their original qualification and license.
 
-[Exact crate/module](../review-policy/provenance.json) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--review-policy--provenance)
+[Exact crate/module](../review-policy/provenance.json)
 
 <a id="advisory-catalogue"></a>
 
@@ -1008,7 +1017,7 @@ Exact HDD paths, source commits and checksums; copied references retain their or
 
 All 50 imported AP rows are byte-preserved advisory reference data, not automatic findings or qualified detectors.
 
-[Exact crate/module](../crates/deep-diff-forge-review/policy/antipatterns.json) ↔ [module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--policy--antipatterns)
+[Exact crate/module](../crates/deep-diff-forge-review/policy/antipatterns.json)
 
 
 ## Local execution environment

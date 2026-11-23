@@ -1,6 +1,6 @@
 // DDF integration: R08, R10, R11. Never turn a failed analysis into formatting-only or behavioral safety; parser time cancellation is cooperative, node limits are post-parse.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#syntax-availability
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-syntax--lib
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#syntax-availability
 //! Tree-sitter semantic layer for Deep-Diff-Forge (L4).
 //!
 //! Given a file's language and source bytes, this crate parses with tree-sitter

@@ -1,6 +1,6 @@
 // Review council: Explicit preparation/status/import and opt-in execution commands; manual reports cannot mint provider evidence.
 // Design/status: docs/REVIEW_COUNCIL.md#council-cli
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--src--cli
+// Module index: docs/REVIEW_COUNCIL.md#cratesdeep-diff-forge-reviewsrcclirs
 //! Small explicit CLI: preparation/status are local; execution requires --execute.
 use crate::{
     Gate, Outcome, Persona, Profile, Provider, Report, Request, Result, ReviewFailure, Reviewer,
@@ -197,7 +197,8 @@ fn export_tuicr(args: &[String]) -> Result<(String, i32)> {
     )
 }
 /// Parse `import-tuicr <run-dir> --session <path> [--execute]`; dry run by default. Exit 7 when the
-/// planned or appended events include a conflict.
+/// planned or appended events include a conflict; exit 3 when they were recorded but a later
+/// write failed.
 fn import_tuicr(args: &[String]) -> Result<(String, i32)> {
     let usage = || {
         ReviewFailure(
@@ -217,7 +218,28 @@ fn import_tuicr(args: &[String]) -> Result<(String, i32)> {
         }
     }
     let session = session.ok_or_else(usage)?;
-    let result = crate::import_tuicr(Path::new(run), Path::new(session), options)?;
+    let result = match crate::import_tuicr(Path::new(run), Path::new(session), options) {
+        // Not a refusal: the decision is recorded and the same import completes it.
+        Err(incomplete @ crate::TuicrImportError::Incomplete { .. }) => {
+            eprintln!(
+                "error: {}",
+                deep_diff_forge_core::display_safe_bounded(&incomplete.to_string(), 1024)
+            );
+            return Ok((String::new(), exit::COUNCIL_RECORDED_INCOMPLETE));
+        }
+        other => other?,
+    };
+    let verb = if result.executed {
+        "repair"
+    } else {
+        "would repair"
+    };
+    for what in &result.repairs {
+        eprintln!(
+            "note: tuicr import {verb}: {}",
+            deep_diff_forge_core::display_safe(what)
+        );
+    }
     // Names its own schema (`deep-diff-forge.tuicr-import.v1`).
     output(&result, result.conflicts == 0)
 }

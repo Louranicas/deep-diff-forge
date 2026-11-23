@@ -1,0 +1,8 @@
+diff --git a/src/far.rs b/src/far.rs
+--- a/src/far.rs
++++ b/src/far.rs
+@@ -10 +10 @@
+-    debug_assert!(
++    assert!(
+@@ -40,0 +41 @@
++        true,

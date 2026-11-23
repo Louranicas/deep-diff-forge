@@ -39,25 +39,32 @@ diff --git a/src/kw.rs b/src/kw.rs
 diff --git a/src/macro.rs b/src/macro.rs
 --- a/src/macro.rs
 +++ b/src/macro.rs
-@@ -7 +7 @@ fn main() {
+@@ -6,3 +6,3 @@ fn main() {
+ 
 -        value.other::
 +        value.unwrap::
+ 
 diff --git a/src/macro2.rs b/src/macro2.rs
 --- a/src/macro2.rs
 +++ b/src/macro2.rs
-@@ -7 +7 @@ fn main() {
+@@ -6,3 +6,3 @@ fn main() {
+ 
 -        value.other::<
 +        value.expect::<
+ 
 diff --git a/src/range.rs b/src/range.rs
 --- a/src/range.rs
 +++ b/src/range.rs
-@@ -5 +5 @@ fn main() {
+@@ -4,3 +4,3 @@ fn main() {
+ 
 -    let r = 1..unwrap::
 +    let r = 0..unwrap::
+ 
 diff --git a/tests/slow.rs b/tests/slow.rs
 --- a/tests/slow.rs
 +++ b/tests/slow.rs
-@@ -2,2 +2,8 @@
+@@ -1,4 +1,10 @@
+ 
 -#[should_panic(
 -    expected = "a very long expected panic message that makes rustfmt wrap the attribute over lines"
 +#[cfg_attr(
@@ -68,6 +75,7 @@ diff --git a/tests/slow.rs b/tests/slow.rs
 +        target_env = "musl"
 +    ),
 +    ignore
+ 
 diff --git a/src/newtwotop.rs b/src/newtwotop.rs
 new file mode 100644
 --- /dev/null

@@ -1,6 +1,6 @@
 // DDF integration: R35, R36, R37. Reject nonfinite metrics and policy tolerances before comparing promotion thresholds; receipt existence still does not prove causal improvement.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#learning-gate
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-learning--promote
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#learning-gate
 //! Promotion gate.
 //!
 //! The learning loop never silently changes behaviour. A learned candidate

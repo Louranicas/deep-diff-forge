@@ -1,4 +1,4 @@
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--contract
+// Module index: docs/ARCHITECTURE.md#crates-as-built-030
 // DDF slice A: the machine contract (`ddf.result.v1`, the exit-code registry, `schema`, `explain`,
 // `envelope`). Design/status: docs/ROADMAP.md#status-2026-10-26 and
 // docs/reference/output-and-exit-codes.md "Machine contract".

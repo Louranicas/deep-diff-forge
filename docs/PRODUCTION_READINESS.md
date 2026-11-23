@@ -641,7 +641,7 @@ change were fixed.
 | 18: `EVIDENCE.md` does not record #82 to #84 | **Accepted.** | Recorded ([EVIDENCE](../EVIDENCE.md#bug-hunt-merges-docs-sync-and-required-codeql-2026-11-02)). |
 | 12: no complete arm64 or launchd CI evidence | **Partly disputed.** Both jobs passed on #83 and #84 (measured, now in EVIDENCE). They are still not required, and no release dry run exists for this commit. | The dry run comes with the next release. |
 | 10: the GitHub Release is not behind the approval | **Accepted.** Only crates.io `publish` names the `release` environment. | Open, for the owner: gating the release job puts every release on hold for the owner's approval. |
-| 9, 11: unsigned tags; a long-lived crates.io token | **Accepted.** | Open, for the owner (a signing key; trusted publishing is an account step). crates.io is on hold. |
+| 9, 11: unsigned tags; a long-lived crates.io token | **Accepted.** | Open, for the owner (a signing key; trusted publishing is an account step). crates.io is on hold (lifted 2026-11-23: 0.9.0's crates were published on 2026-11-23, and from 0.10.0 publishing is a step of the release). |
 | 13: no control path at saturation; a signal stop does not drain | **Accepted.** SIGTERM has no handler (`OPERATIONS_AND_DAEMON.md`, launchd notes); the systemd unit drains through `daemon stop`. | Open: DDF-HUNT-DAEMON-7 below. |
 | 2: `diff --git a/x b/y` with no rename header | **Accepted.** | Open: DDF-HUNT-PATCH-6 below. |
 | 1: the tree is not a released version | **Accepted.** | The next release. |
@@ -699,7 +699,7 @@ Added after the 89/100 reconciliation; it does not rescore.
   only crates.io. Codex's facet-3 gap "the GitHub Release is not behind the approval" is
   accepted, not open.
 - **[Owner decision]** crates.io stays on hold until the owner reopens it, so trusted
-  publishing is deferred with it.
+  publishing is deferred with it. (The owner reopened it on 2026-11-23: 0.9.0's crates were published on 2026-11-23, and from 0.10.0 publishing is a step of the release.)
 - **[Measured]** GitHub reports the v0.6.0 tag signature as `verified: false`,
   `reason: unknown_key`: the signing key is not registered on the account. Registering it
   as a signing key on GitHub and GitLab is an account action for the owner. The

@@ -1,6 +1,6 @@
 // DDF review route: DDF-R16. Status and remaining work are recorded in the linked ledger; this comment does not claim delivery.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-agent--src--anchor
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
 use deep_diff_forge_core::{AnnotationAnchor, ReviewFile};
 
 /// The file path an anchor refers to.
@@ -80,7 +80,7 @@ mod tests {
         use deep_diff_forge_core::{ParseStatus, SemanticSpan, SemanticSpanId, SemanticTwin};
         let mut files = parse(
             "--- a/src/x.rs\n+++ b/src/x.rs\n@@ -1,1 +1,1 @@\n-a\n+b\n\
-             --- a/src/x.rs\n+++ b/src/x.rs\n@@ -10,1 +10,1 @@\n-c\n+d\n",
+             --- a/src/x.rs\n+++ b/src/x.rs\n@@ -9,3 +9,3 @@\n p\n-c\n+d\n q\n",
         )
         .unwrap();
         let later = files[1].patch_twin.hunks[0].id;

@@ -1,6 +1,6 @@
 // DDF review route: DDF-R23. Status and remaining work are recorded in the linked ledger; this comment does not claim delivery.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-cluster--src--cluster
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
 use crate::scheduler::{resolve_workers, run_lane};
 use deep_diff_forge_core::{ExecutionDimension, JoinPolicy, Parallelism, ReviewFile};
 use deep_diff_forge_graph::{CarriedShares, RankedFile, sort_ranked};

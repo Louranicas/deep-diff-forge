@@ -1,6 +1,6 @@
 // DDF review route: DDF-R20. Status and remaining work are recorded in the linked ledger; this comment does not claim delivery.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-pipeline--src--jsonl
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
 use deep_diff_forge_core::{PatchLineKind, ReviewFile};
 use std::fmt::Write as _;
 
@@ -154,7 +154,8 @@ mod tests {
 
     #[test]
     fn multi_hunk_file_reports_two_hunks() {
-        let input = "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-a\n+A\n@@ -9,1 +9,1 @@\n-b\n+B\n";
+        let input =
+            "--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n+A\n ctx\n@@ -9,2 +9,2 @@\n-b\n+B\n ctx\n";
         let files = parse(input).unwrap();
         assert!(jsonl_events(&files).contains("\"hunks\":2"));
     }

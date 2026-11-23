@@ -1,0 +1,10 @@
+diff --git a/src/topone.rs b/src/topone.rs
+--- a/src/topone.rs
++++ b/src/topone.rs
+@@ -0,0 +1,2 @@
++pub fn boom(opt: Option<u8>) -> u8 {
++    opt.unwrap
+@@ -1,1 +3,3 @@
++    ()
++}
+ fn main() {

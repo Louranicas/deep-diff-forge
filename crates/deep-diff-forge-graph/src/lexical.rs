@@ -1,6 +1,6 @@
 // DDF integration: line-lexical code view for evidence signals (plan 2026-10-30, Feature A).
 // Design/status: docs/PLAN_AGENT_EVIDENCE_AND_OBSERVABILITY.md#feature-a-code-evidence-risk-signals
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-graph--src--lexical
+// Module index: docs/ARCHITECTURE.md#crates-as-built-030
 //! A line-lexical view of source code: what is left of a line once its comments and string
 //! contents are blanked. Evidence rules match tokens in that view, so a keyword in a comment or
 //! a string is not read as code. Code that runs inside a string is kept: `$(…)`, `${…}` and
@@ -1096,6 +1096,56 @@ pub fn has_token(text: &str, token: &str) -> bool {
             !ends_in_ident || bytes.get(start + token.len()).is_none_or(|b| !is_ident(*b));
         before_ok && after_ok
     })
+}
+
+/// A YAML line's code view as YAML reads a key and its value: a quoted scalar is its content
+/// (`contents: 'write'` and `"contents": "write"` read `contents: write`), and the blanks
+/// around the `:` that ends a key are one space after it (`contents : write`). `None` when it
+/// reads as the view does. The bytes of the line say it; nothing is parsed: a quote opens a
+/// scalar at the line's start, after a blank, `[`, `{` or `,`, or right after a quoted key's
+/// `:` (JSON: `{"contents":"write"}`), and the scalar is read when it closes on the line before
+/// a byte that can end one and holds no escape (a `\`, or a doubled `''`: such a scalar is
+/// left as written). One pass; no byte is looked at more than twice. Before 2026-11-22 a
+/// privilege grant written with quotes was not read (S3.18).
+#[must_use]
+pub fn scalar_reading(view: &str) -> Option<String> {
+    let bytes = view.as_bytes();
+    let blank = |b: &u8| matches!(b, b' ' | b'\t');
+    let mut out = Vec::with_capacity(bytes.len());
+    let (mut i, mut after_key) = (0, false);
+    while let Some(&byte) = bytes.get(i) {
+        let begins = after_key || i == 0 || b" \t[{,".contains(&bytes[i - 1]);
+        after_key = false;
+        let rest = &bytes[i + 1..];
+        if matches!(byte, b'\'' | b'"')
+            && begins
+            && let Some(len) = rest.iter().position(|b| *b == byte || *b == b'\\')
+            && rest[len] == byte
+            && rest.get(len + 1).is_none_or(|b| b" \t:,]}".contains(b))
+        {
+            out.extend_from_slice(&rest[..len]);
+            i += len + 2;
+            if bytes.get(i) == Some(&b':') {
+                after_key = true;
+                out.extend_from_slice(b": ");
+                i += 1 + bytes[i + 1..].iter().take_while(|b| blank(b)).count();
+            }
+            continue;
+        }
+        let colon = i + bytes[i..].iter().take_while(|b| blank(b)).count();
+        if bytes.get(colon) == Some(&b':') && bytes.get(colon + 1).is_none_or(blank) {
+            let after = bytes[colon + 1..].iter().take_while(|b| blank(b)).count();
+            out.extend_from_slice(if after > 0 { b": " } else { b":" });
+            i = colon + 1 + after;
+        } else if colon > i {
+            out.extend_from_slice(&bytes[i..colon]);
+            i = colon;
+        } else {
+            out.push(byte);
+            i += 1;
+        }
+    }
+    (out != bytes).then(|| String::from_utf8(out).unwrap_or_default())
 }
 
 /// Where one side of a Rust hunk starts: what [`rust_views`] is told about the lines above it.
@@ -2490,6 +2540,49 @@ mod tests {
             r#"run: "curl x" "#
         );
         assert_eq!(view(Language::Go, "a // b"), "a ");
+    }
+
+    /// S3.18: a YAML key and value as YAML reads them, by the bytes of the line.
+    #[test]
+    fn a_quoted_scalar_reads_as_its_content() {
+        for (line, read) in [
+            ("  contents: 'write'", "  contents: write"),
+            (r#"  "contents": "write""#, "  contents: write"),
+            ("  'id-token':write", "  id-token: write"),
+            (
+                r#"permissions: {"contents":"write", 'a': 'b'}"#,
+                "permissions: {contents: write, a: b}",
+            ),
+            (
+                "on: ['pull_request_target', \"push\"]",
+                "on: [pull_request_target, push]",
+            ),
+            ("  contents : write", "  contents: write"),
+            ("  contents:\t  write  ", "  contents: write  "),
+            ("  x : ", "  x: "),
+            ("  contents: 'write'  ", "  contents: write  "),
+        ] {
+            assert_eq!(scalar_reading(line).as_deref(), Some(read), "{line}");
+        }
+        for line in [
+            "  contents: write",
+            "  contents: 'write'x",
+            "  contents: x'write'",
+            r#"  contents: "wr\"ite""#,
+            r#"  contents: "\x77rite""#,
+            "  contents: 'it''s'",
+            "  contents: 'open",
+            "  run: a:b",
+            "  key:",
+            "",
+        ] {
+            assert_eq!(scalar_reading(line), None, "{line}");
+        }
+        // Linear: a line of quotes, blanks and colons of 2 MiB reads in one pass.
+        for unit in ["'", "' ", "'a'x ", " :", ": ", "\"\\"] {
+            let line = unit.repeat(2 * 1024 * 1024 / unit.len());
+            let _ = scalar_reading(&line);
+        }
     }
 
     #[test]

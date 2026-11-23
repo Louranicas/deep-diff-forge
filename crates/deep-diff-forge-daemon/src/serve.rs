@@ -1,6 +1,6 @@
 // DDF integration: R25, R28, R40, R59. Preserve bounded connection admission on Rust 1.88 using compare-exchange; this does not solve the separate global-lock recommendation.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#runtime
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-daemon--serve
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#runtime
 use crate::handler::{Engine, dispatch, request_weight};
 use crate::protocol::{
     INTERNAL_ERROR, INVALID_REQUEST, PARSE_ERROR, RESOURCE_EXHAUSTED, RpcError, error_response,
@@ -257,8 +257,8 @@ impl BoundListener {
 /// service).
 pub const MAX_REQUEST_BYTES: usize = 80 * 1024 * 1024;
 
-/// Maximum bytes of one response line, newline excluded: the server never sends more (see
-/// [`bounded_response`]) and the client helper never accepts more.
+/// Maximum bytes of one response line, its newline included, as for a request: the server never
+/// sends more (see [`bounded_response`]) and the client helper never accepts more.
 const MAX_RESPONSE_BYTES: usize = MAX_REQUEST_BYTES;
 
 /// Maximum number of connection worker threads alive at once.
@@ -281,6 +281,9 @@ const CONTROL_REQUEST_BYTES: usize = 4096;
 /// How long a control connection waits for its request: short, so a client that sends nothing
 /// gives its control slot back soon.
 const CONTROL_READ_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a connection that comes when every data and control slot is held has to send
+/// `daemon.shutdown`, the one request answered then: short, since the accept loop itself waits.
+const FULL_READ_TIMEOUT: Duration = Duration::from_millis(250);
 /// How long a stop waits for the answers in progress: a client's own read deadline, after which
 /// nobody is reading them.
 const DRAIN_WAIT: Duration = Duration::from_secs(30);
@@ -345,9 +348,11 @@ fn write_line_within(
 #[must_use]
 struct Written(());
 
-/// Write all of `bytes` to the non-blocking `writer` by `deadline`.
-fn write_all_by(
-    writer: &mut UnixStream,
+/// Write all of `bytes` to the non-blocking `writer` by `deadline`. As std's `write_all`, a write
+/// a signal interrupted is retried and one that takes no bytes is `WriteZero`; before, the first
+/// failed the response and the second spun to the deadline (G-DAEMON-1b).
+fn write_all_by<W: std::io::Write + std::os::fd::AsFd>(
+    writer: &mut W,
     mut bytes: &[u8],
     deadline: Instant,
 ) -> std::io::Result<Written> {
@@ -355,10 +360,12 @@ fn write_all_by(
     while let [_, ..] = bytes {
         let left = time_left(deadline)?;
         match writer.write(bytes) {
+            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
             Ok(n) => bytes = &bytes[n..],
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 wait_writable(writer, left)?;
             }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(e) => return Err(e),
         }
     }
@@ -379,7 +386,7 @@ fn time_left(deadline: Instant) -> std::io::Result<Duration> {
 
 /// Wait until `writer` has buffer space, or `left` has passed. A wait that ends early (a signal,
 /// or space that another wake-up took) is fine: the caller checks the deadline before writing.
-fn wait_writable(writer: &UnixStream, left: Duration) -> std::io::Result<()> {
+fn wait_writable(writer: &impl std::os::fd::AsFd, left: Duration) -> std::io::Result<()> {
     use rustix::event::{PollFd, PollFlags, Timespec, poll};
     let timeout = Timespec::try_from(left).map_err(std::io::Error::other)?;
     let mut fds = [PollFd::new(writer, PollFlags::OUT)];
@@ -534,25 +541,28 @@ pub fn read_capped_line<R: BufRead>(
 }
 
 /// `response` as it is written ([`json_line_safe`] applied), or a `RESOURCE_EXHAUSTED` error for
-/// `id` when that is longer than `cap`; when that error is over the cap too, it drops the id if
-/// that makes it shorter (an id that alone would put it over).
+/// `id` when that and its newline are longer than `cap`; when that error is over the cap too, it
+/// drops the id if that makes it shorter (an id that alone would put it over). Before, the newline
+/// was not counted, so an answer of exactly `cap` bytes went out one byte over the cap every
+/// client holds.
 /// Before, the server sent any size and the client refused lines over the cap, so a large
 /// `diff.compute` succeeded on the server and failed at the client with no error a caller could
 /// act on. The size is measured after `json_line_safe`, which writes each line separator in six
 /// bytes rather than three: measured before it, a line could pass the check and be sent at twice
 /// the cap (bug hunt 2026-11-01).
 fn bounded_response(id: &Value, response: String, cap: usize) -> String {
+    // Below the cap, so that the line with its newline is at most the cap.
     let response = line_safe_owned(response);
-    if response.len() <= cap {
+    if response.len() < cap {
         return response;
     }
     let message = format!(
-        "the response is {} bytes, over the {cap}-byte line cap; request less (a smaller patch, or diff.plan)",
-        response.len()
+        "the response is {} bytes with its newline, over the {cap}-byte line cap; request less (a smaller patch, or diff.plan)",
+        response.len() + 1
     );
     let refusal = RpcError::new(RESOURCE_EXHAUSTED, message);
     let answer = line_safe_owned(error_response(id, &refusal));
-    if answer.len() <= cap {
+    if answer.len() < cap {
         return answer;
     }
     let anonymous = error_response(&Value::Null, &refusal);
@@ -599,9 +609,20 @@ fn settle_write_timeout(armed: std::io::Result<()>) -> std::io::Result<()> {
     }
 }
 
+/// A stream whose reads take a deadline: the daemon's socket, or a test's reader.
+trait ReadDeadline: std::io::Read {
+    fn set_read_deadline(&self, timeout: Duration) -> std::io::Result<()>;
+}
+
+impl ReadDeadline for UnixStream {
+    fn set_read_deadline(&self, timeout: Duration) -> std::io::Result<()> {
+        self.set_read_timeout(Some(timeout))
+    }
+}
+
 /// Read one bounded line from a socket under an absolute deadline.
 fn read_capped_line_deadline(
-    reader: &mut BufReader<UnixStream>,
+    reader: &mut BufReader<impl ReadDeadline>,
     buf: &mut Vec<u8>,
     cap: usize,
     timeout: Duration,
@@ -616,7 +637,7 @@ fn read_capped_line_deadline(
     reason = "the socket read deadline: bounds a slow client in wall-clock time"
 )]
 fn read_capped_line_deadline_noting(
-    reader: &mut BufReader<UnixStream>,
+    reader: &mut BufReader<impl ReadDeadline>,
     buf: &mut Vec<u8>,
     cap: usize,
     timeout: Duration,
@@ -633,10 +654,13 @@ fn read_capped_line_deadline_noting(
             .ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::TimedOut, "line read deadline exceeded")
             })?;
-        settle_read_timeout(reader.get_ref().set_read_timeout(Some(remaining)))?;
+        settle_read_timeout(reader.get_ref().set_read_deadline(remaining))?;
 
         let available = match reader.fill_buf() {
             Ok(available) => available,
+            // A read a signal interrupted (EINTR, as a SIGTERM's can be) is tried again under
+            // the same deadline; before, it ended the request (G-DAEMON-1a).
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(err)
                 if matches!(
                     err.kind(),
@@ -789,11 +813,9 @@ pub fn handle_connection(stream: UnixStream, engine: &Engine) -> std::io::Result
         // written, so a client that reads slowly holds only its own slot, not the budget every
         // other request needs to be read.
         drop(held);
-        let Sent(()) = write_line_within(
-            &mut writer,
-            &json_line_safe(&response),
-            engine.write_limit(),
-        )?;
+        // `process_line` answers with `json_line_safe` applied (`bounded_response`), so the
+        // answer is not scanned again (G-DAEMON-1c).
+        let Sent(()) = write_line_within(&mut writer, &response, engine.write_limit())?;
         drop(answer);
         if !engine.is_running() {
             break;
@@ -811,6 +833,18 @@ pub fn handle_connection(stream: UnixStream, engine: &Engine) -> std::io::Result
 ///
 /// Returns any underlying stream I/O error.
 pub fn handle_control_connection(stream: UnixStream, engine: &Engine) -> std::io::Result<()> {
+    serve_one_request(stream, engine, CONTROL_READ_TIMEOUT, &CONTROL_METHODS)
+}
+
+/// Read one request line within `timeout` and answer it if it calls one of `methods`. Any other
+/// is refused busy on a control slot (all of [`CONTROL_METHODS`]) and closed unanswered beyond
+/// every slot (`daemon.shutdown` alone).
+fn serve_one_request(
+    stream: UnixStream,
+    engine: &Engine,
+    timeout: Duration,
+    methods: &[&str],
+) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = stream;
     let mut buf = Vec::new();
@@ -820,7 +854,7 @@ pub fn handle_control_connection(stream: UnixStream, engine: &Engine) -> std::io
         &mut reader,
         &mut buf,
         CONTROL_REQUEST_BYTES,
-        CONTROL_READ_TIMEOUT,
+        timeout,
         &mut || answer = Some(engine.answering().start()),
         // At most 4 KiB, and it must get in when the data connections fill the read budget.
         &mut |_| true,
@@ -833,11 +867,11 @@ pub fn handle_control_connection(stream: UnixStream, engine: &Engine) -> std::io
         .filter(|_| buf.len() <= CONTROL_REQUEST_BYTES)
         .map(str::trim)
         .filter(|line| {
-            parse_request(line)
-                .is_ok_and(|request| CONTROL_METHODS.contains(&request.method.as_str()))
+            parse_request(line).is_ok_and(|request| methods.contains(&request.method.as_str()))
         });
     let response = match control {
         Some(line) => process_line(line, engine),
+        None if methods.len() < CONTROL_METHODS.len() => return Ok(()),
         None => refusal(
             engine,
             RESOURCE_EXHAUSTED,
@@ -1223,9 +1257,10 @@ fn admit(
         (Arc::clone(control_connections), true)
     } else {
         engine.metrics().refused_at_limit();
-        // Dropping the accepted stream applies backpressure without
-        // allocating another stack or worker thread.
-        drop(stream);
+        // Backpressure without another stack or worker thread: the accept loop itself answers
+        // a `daemon.shutdown` sent at once and closes anything else. Before, the connection was
+        // closed at once, and idle clients on every slot kept `daemon stop` out (S3.8.a).
+        let _ = serve_one_request(stream, engine, FULL_READ_TIMEOUT, &["daemon.shutdown"]);
         return;
     };
     engine.metrics().accepted();
@@ -1365,10 +1400,15 @@ pub fn request(location: &SocketLocation, line: &str) -> std::io::Result<String>
     settle_write_timeout(stream.set_write_timeout(Some(WRITE_TIMEOUT)))?;
     // A daemon that refuses a line early (its read budget is full) answers and closes before the
     // rest arrives, so the write breaks with the answer already waiting: read it, and report the
-    // broken pipe only when there is none.
+    // broken write only when there is none. It breaks as a broken pipe, or as a reset when it was
+    // waiting with nothing sent as the daemon closed with bytes unread (Linux); before, a reset
+    // lost the answer (G-DAEMON-2).
     let sent = writeln!(stream, "{line}").and_then(|()| stream.flush());
     if let Err(err) = &sent
-        && err.kind() != std::io::ErrorKind::BrokenPipe
+        && !matches!(
+            err.kind(),
+            std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+        )
     {
         return Err(sent.unwrap_err());
     }
@@ -2278,6 +2318,33 @@ mod tests {
         drop(idle);
     }
 
+    /// S3.8.a: ten idle clients hold every data and control slot, and `daemon.shutdown` is still
+    /// answered and the daemon gone within a second. Before, the connection was closed
+    /// unanswered, and a stop got in only once a control slot's client timed out (5 s).
+    #[test]
+    fn ten_idle_connections_do_not_delay_a_stop_past_one_second() {
+        let (_scratch, sock) = scratch_socket_with_parent("full-stop", 0o700);
+        let server_loc = SocketLocation::at(sock.clone());
+        let server = thread::spawn(move || run_server(&server_loc));
+        wait_for_socket(&sock);
+        // Accepted in order, so they hold every slot before the stop is accepted.
+        let idle: Vec<UnixStream> = (0..MAX_CONNECTIONS + CONTROL_CONNECTIONS)
+            .map(|_| UnixStream::connect(&sock).expect("idle connection"))
+            .collect();
+        let started = crate::metrics::now();
+        let stop = request(
+            &SocketLocation::at(sock.clone()),
+            r#"{"id":1,"method":"daemon.shutdown"}"#,
+        );
+        let stop = stop.expect("the stop is answered with every slot held");
+        assert!(stop.contains("\"stopping\":true"), "{stop}");
+        assert!(joined(server).is_ok(), "the daemon did not stop");
+        let took = started.elapsed();
+        assert!(took < Duration::from_secs(1), "the stop took {took:?}");
+        assert!(!sock.exists(), "the socket was left behind");
+        drop(idle);
+    }
+
     /// A control slot holds one small request: a silent client loses it at the control deadline,
     /// and an oversized line is refused, so the slots cannot be held as the data slots can.
     #[test]
@@ -2856,12 +2923,13 @@ mod tests {
     // Size caps, error-kind guards, and accept-loop error handling
     // -------------------------------------------------------------------------
 
-    /// A response at the cap is sent as it is; one byte over becomes an error for the same id.
+    /// A response at the cap with its newline is sent as it is; one byte over becomes an error
+    /// for the same id.
     #[test]
     fn the_server_never_sends_a_response_over_the_cap() {
         let id = Value::from(9);
         let response = success_response(&id, Value::from("x".repeat(100)));
-        let cap = response.len();
+        let cap = response.len() + 1;
         assert_eq!(bounded_response(&id, response.clone(), cap), response);
         let refused: Value =
             serde_json::from_str(&bounded_response(&id, response.clone(), cap - 1)).unwrap();
@@ -2882,8 +2950,8 @@ mod tests {
     fn the_cap_holds_after_line_separators_are_escaped() {
         let id = Value::from(9);
         let response = success_response(&id, Value::from("\u{2028}".repeat(100)));
-        let written = json_line_safe(&response).len();
-        assert_eq!(written, response.len() + 300);
+        let written = json_line_safe(&response).len() + 1;
+        assert_eq!(written, response.len() + 301);
         assert_eq!(
             bounded_response(&id, response.clone(), written),
             json_line_safe(&response)
@@ -2897,7 +2965,7 @@ mod tests {
         // An id of line separators larger than the cap: the refusal carries a null id instead.
         let huge = Value::from("\u{2028}".repeat(200));
         let answer = bounded_response(&huge, success_response(&huge, Value::Null), 400);
-        assert!(answer.len() <= 400, "{}", answer.len());
+        assert!(answer.len() < 400, "{}", answer.len());
         let refused: Value = serde_json::from_str(&answer).unwrap();
         assert_eq!(
             (&refused["id"], &refused["error"]["code"]),
@@ -3170,10 +3238,60 @@ mod tests {
 
     #[test]
     fn client_rejects_response_over_cap() {
-        let (_parent, location, daemon) =
-            fake_daemon("resp-over", vec![b'x'; MAX_RESPONSE_BYTES + 1]);
-        let err = request(&location, r#"{"method":"daemon.health"}"#).unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        // One byte over the cap with the newline counted (the cap rule of
+        // docs/reference/mcp-sdk-daemon.md), and a line with no newline at all.
+        let mut framed = vec![b'x'; MAX_RESPONSE_BYTES];
+        framed.push(b'\n');
+        for response in [framed, vec![b'x'; MAX_RESPONSE_BYTES + 1]] {
+            let (_parent, location, daemon) = fake_daemon("resp-over", response);
+            let err = request(&location, r#"{"method":"daemon.health"}"#).unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+            joined(daemon).unwrap();
+        }
+    }
+
+    /// The one line cap is stated once in the daemon reference, with the number and the meaning
+    /// the server's framing and the clients use.
+    #[test]
+    fn the_reference_states_the_one_line_cap() {
+        let reference = include_str!("../../../docs/reference/mcp-sdk-daemon.md");
+        let flat = reference.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert_eq!(MAX_REQUEST_BYTES, 83_886_080);
+        assert!(flat.contains(
+            "A line, request or answer, is at most 80 MiB (83,886,080 bytes, `MAX_REQUEST_BYTES`) counting its newline."
+        ));
+    }
+
+    /// G-DAEMON-2: a daemon that takes 16 bytes of a request, answers and closes with the rest
+    /// unread resets the connection. The line fills the client's send buffer, so the newline's
+    /// write waits with nothing sent and breaks as a reset (Linux), not a broken pipe; the answer
+    /// already waiting is still read. Before, only a broken pipe was tolerated and the call failed
+    /// with `ConnectionReset`.
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test: lets the client fill its send buffer and wait before the daemon closes"
+    )]
+    fn client_reads_the_answer_after_a_connection_reset() {
+        use std::io::Read as _;
+        let answer = r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"busy"}}"#;
+        let (_parent, sock) = explicit_scratch("reset", 0o700);
+        let listener = UnixListener::bind(&sock).expect("bind fake daemon");
+        let daemon = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            // Time for the client to fill its send buffer and wait on the newline's write.
+            thread::sleep(Duration::from_millis(200));
+            let mut first = [0_u8; 16];
+            stream
+                .read_exact(&mut first)
+                .expect("the request's first bytes");
+            let _ = writeln!(stream, "{answer}");
+        });
+        let (probe, _) = UnixStream::pair().expect("socketpair");
+        let fill = rustix::net::sockopt::socket_send_buffer_size(&probe).expect("send buffer");
+        let got = request(&SocketLocation::at(sock), &"x".repeat(fill))
+            .expect("the answer waiting after the reset is read");
+        assert_eq!(got, answer);
         joined(daemon).unwrap();
     }
 
@@ -3357,5 +3475,72 @@ mod tests {
         let status = status.expect("run_server kept looping on a persistent accept error");
         assert!(status.success(), "child test failed: {status}");
         assert!(ran, "the child half never ran");
+    }
+
+    /// G-DAEMON-1a: a read a signal interrupts (EINTR) is tried again; before, the line reader
+    /// returned the error and the request failed.
+    #[test]
+    fn the_line_reader_retries_an_interrupted_read() {
+        struct Interrupting(bool, &'static [u8]);
+        impl std::io::Read for Interrupting {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if std::mem::take(&mut self.0) {
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                let n = self.1.len().min(buf.len());
+                buf[..n].copy_from_slice(&self.1[..n]);
+                self.1 = &self.1[n..];
+                Ok(n)
+            }
+        }
+        impl ReadDeadline for Interrupting {
+            fn set_read_deadline(&self, _: Duration) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let line = b"{\"id\":1,\"method\":\"daemon.health\"}\n";
+        let mut reader = BufReader::new(Interrupting(true, line));
+        let mut buf = Vec::new();
+        let read = read_capped_line_deadline(&mut reader, &mut buf, 4096, Duration::from_secs(5));
+        assert_eq!(read.map_err(|err| err.kind()), Ok(line.len()));
+        assert_eq!(buf, line);
+    }
+
+    /// G-DAEMON-1b: a write that takes no bytes ends the response as `WriteZero` at once; before,
+    /// the loop wrote nothing until its deadline. An interrupted write is tried again.
+    #[test]
+    fn write_all_by_treats_zero_as_write_zero() {
+        /// A writer that gives the scripted answers, then takes no bytes.
+        struct Scripted(
+            UnixStream,
+            std::collections::VecDeque<std::io::Result<usize>>,
+        );
+        impl std::io::Write for Scripted {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                self.1.pop_front().unwrap_or(Ok(0))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl std::os::fd::AsFd for Scripted {
+            fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+                self.0.as_fd()
+            }
+        }
+        let (socket, _peer) = UnixStream::pair().expect("socketpair");
+        let deadline = crate::metrics::now() + Duration::from_secs(2);
+        let interrupted: [std::io::Result<usize>; 2] =
+            [Err(std::io::ErrorKind::Interrupted.into()), Ok(3)];
+        let mut retried = Scripted(socket.try_clone().unwrap(), interrupted.into());
+        let written = write_all_by(&mut retried, b"abc", deadline);
+        assert!(written.is_ok(), "{:?}", written.err());
+        let one: [std::io::Result<usize>; 1] = [Ok(1)];
+        let mut zero = Scripted(socket, one.into());
+        let written = write_all_by(&mut zero, b"abc", deadline);
+        assert_eq!(
+            written.err().map(|err| err.kind()),
+            Some(std::io::ErrorKind::WriteZero)
+        );
     }
 }

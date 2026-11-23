@@ -8,7 +8,7 @@
 
 - The newest evidence is at the end of this file: [v0.5.0 release readiness (2026-10-31)](#v050-release-readiness-2026-10-31); before it, [v0.4.0 release readiness (2026-10-30)](#v040-release-readiness-2026-10-30), then [daemon metrics overhead](#daemon-metrics-overhead-2026-10-30) and [findings verification by address](#findings-verification-by-address-2026-10-30). The fuzz numbers in [v0.3.0 release readiness (2026-10-29)](#v030-release-readiness-2026-10-29) supersede the 2026-10-28 ones, which predate the last parser change.
 - Published GitHub releases are `v0.1.0`, `v0.2.0`, `v0.3.0` (2026-10-29), `v0.4.0` (2026-10-30) and `v0.5.0` (2026-10-31), each by owner decision. `v0.2.1` was never tagged.
-- crates.io is on hold by owner decision until the codebase is production-hardened. This replaces the older "token-gated" wording in the L8 and L9 sections. A configured token alone publishes nothing: the publish job in `.github/workflows/release.yml` runs only on a `v*` tag **and** when the repository variable `DDF_CRATES_IO` is `open`. `deep-diff-forge deploy release` reports `crates.io blocked` (measured with the binary).
+- crates.io was on hold by owner decision until 2026-11-23, when the owner lifted the hold: 0.9.0's crates were published on 2026-11-23, and from 0.10.0 publishing is a step of the release ([release document](docs/RELEASE_AND_PUBLICATION.md)). That wording replaced the older "token-gated" wording in the L8 and L9 sections. A configured token alone publishes nothing: the publish job in `.github/workflows/release.yml` runs only on a `v*` tag **and** when the repository variable `DDF_CRATES_IO` is `open`. `deep-diff-forge deploy release` reported `crates.io blocked` up to 0.9.0 (measured with the binary); from 0.10.0 it reports every target `published`.
 - The 2026-10-26 section ends with "Nothing is tagged or published". That refers to the council stack only. The `v0.1.0` and `v0.2.0` GitHub releases already existed.
 - Test counts in older sections (568, 765, 794) are counts at that time and are not current.
 
@@ -590,7 +590,7 @@ commits, each after all five required checks passed. Since 2026-10-26, `main` is
 protected by ruleset 25868121: pull requests only, every required check, an
 up-to-date branch, no force push, and no bypass.
 Nothing is tagged or published; crates.io publication is on hold until the
-codebase is production-ready.
+codebase is production-ready. (Lifted 2026-11-23: 0.9.0's crates were published on 2026-11-23, and from 0.10.0 publishing is a step of the release.)
 
 ## Release dry runs and fuzzing (2026-10-28)
 
@@ -1472,3 +1472,71 @@ as the signed tag `v0.8.4` (2026-11-17, its commit `76572ec` on GitLab `main`; b
 - **Not measured here.** 0.9.0 has had no independent rescore. The mutation run of the
   integrated tree had not finished. No binary was built for `aarch64-unknown-linux-gnu`,
   `x86_64-apple-darwin` or `aarch64-apple-darwin`.
+
+## 0.10.0 release commit (2026-11-23)
+
+Dates here are UTC. 0.10.0 is built and published as 0.9.0 was
+([local release](docs/RELEASE_AND_PUBLICATION.md#local-release-from-084)), with two additions: GitHub
+mirrors the tag and the release page again, and the crates are published on crates.io from the tag.
+
+- **Inputs.** `integrate/0.10.0` holds the tasks of the release on 0.9.0 (the journal recovery,
+  quoted CI scalars, the `trivial_assert` narrowing, verdict v3, Git attributes and
+  `diff_suppressed`, the 42-shape header table of the patch parser, process groups and bounded
+  joins, the daemon's bounds, one canonical rank form, the forge tokens, the evaluation corpus by
+  signal and language, the release receipt and the contract matrix). The defects of released
+  versions it fixes are DDF-2026-004 to DDF-2026-008 and DDF-2026-010
+  (`docs/advisories/`).
+- **Review.** Two reviewers, Astra (a Codex model) and a fresh Claude reviewer each round, read
+  the whole tree at `b20b7b6c` (2026-11-23): NO-GO and GO-WITH-FIXES, on one medium finding both
+  made independently (a text reading dropped at the 1,000,000-line budget lost its
+  `diff_suppressed` label). One fix round (`319799d1`); on its re-read one reviewer said GO and
+  the other NO-GO, because the fix stated a rule for every fallback and held it on one path; a
+  delta fix (`e7ecdccc`: a binary change stays unlabelled only when Git's second reading of it
+  succeeded and is not valid UTF-8) and a commit of wording (`567435cd`) followed. **Both
+  reviewers say GO on `567435cd`.** The release preparation after it changes the version, the
+  documents and the `deploy release` snapshot; its binary gives, with the version member
+  normalised, the same stdout, stderr and exit code as the reviewed code on all 7,421 corpus
+  patches.
+- **Gate.** `scripts/ci_local.sh` passed its 35 steps on `2343eef1` (the version, the notes and
+  the statements; 2026-11-23): `steps failed: 0`. It is run again on this commit before the
+  commit is pushed, and the release tool runs it on the tag's commit. The contract matrix step
+  ran against a real forge-warden binary (hub main `db4c580e`) and the released 0.9.0 ranker.
+- **Evaluation.** 59 cases: precision 186 of 211, recall 186 of 264, findings 33 of 33, ranking
+  12 of 15, 106 declared, no failure, none refused (the release binary `df8359c4…`).
+- **Comparison.** The corpus is named by its manifest (`fixtures/corpus/compare-v1.sha256`,
+  7,421 patches and 45 planted Git repositories). The release binary against itself: nothing
+  lost or gained; against the 0.9.0 code (`5ba0a366…`): 54 patches with a lost item, all
+  `trivial_assert` on Python lines the narrowing of this release no longer labels, and 242 with
+  a gained item; 1,377 patches differ in refusal, the header shapes and `-U0` hunks this release
+  refuses; against 0.8.4 (`0c93b3ed…`) and v0.8.3: one patch each, the pairing artifact of the
+  tool (two sections of one path that rank in the other order since 0.9.0). Git selections
+  against the 0.9.0 code: 7 lost items per mode in the planted repositories and 2 in the history
+  ranges, each `binary_change` on a file that gains `diff_suppressed`; no file lost a label
+  without gaining one.
+- **Fuzzing.** `scripts/campaign_local.sh 300` on `2343eef1`: 18 targets, 300 s each from the
+  committed seeds, all clean (02:30Z to 04:03Z, toolchain nightly-2026-10-25;
+  the receipt names the commit, the toolchain and one line per target). The commits after
+  `2343eef1` change documents and one fixture comment.
+- **Release build, dry run.** `scripts/release_local.sh build` on `2343eef1`: two builds from
+  two exports, one SHA-256 (`121503a8…`), glibc floor 2.34, the receipt
+  (`deep-diff-forge.release-receipt.v0`) written with the gate's result. Not built:
+  `aarch64-unknown-linux-gnu`, macOS. The build of the tag is the owner's step.
+- **Live tools.** The two tests that drive a real tuicr (0.27.0) were run with `--ignored` and
+  passed (2026-11-23). The test that drives a real Podman sandbox was not run for this release
+  (no Podman and gate image where the tests run); its last measurement is the one
+  `docs/REVIEW_COUNCIL.md` records.
+- **Compatibility, against 0.9.0.** The contract changes are the table of
+  `docs/release-notes/0.10.0.md`, each with its test. On purpose: input with no patch on
+  `--stdin-patch` exits 4; `-U0` hunks without context and header shapes Git does not write are
+  refused; `rank.v0` has one byte form with `tool.scorer_sha256`; a Git file name that is not
+  UTF-8 exits 4. The Rust API breaks for exhaustive matches on `RiskSignal` and struct literals
+  of `GitChange` and `PatchTwin`.
+- **Pending (the owner's steps).** The merge, the signed tag `v0.10.0` on GitLab, Gitea and
+  Forgejo, the release build of the tag, the signature of its `SHA256SUMS`, and publishing the
+  files. None had happened when this section was written.
+- **Not measured here.** 0.10.0 has had no independent rescore. The mutation run over what this
+  release changed had not finished (729 mutants over the
+  crates' sources changed since 0.9.0; the run pauses while any gate runs and had judged few of
+  them when this was written). forge-warden 0.2.1 and 0.3.0 were not run against
+  this build (hub main `db4c580e` was). No binary was built for `aarch64-unknown-linux-gnu`,
+  `x86_64-apple-darwin` or `aarch64-apple-darwin`. The known issues are in the release notes.

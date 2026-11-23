@@ -1,0 +1,14 @@
+diff --git a/src/n.rs b/src/n.rs
+new file mode 100644
+--- /dev/null
++++ b/src/n.rs
+@@ -0,0 +1,2 @@
++pub fn f(opt: Option<u32>) -> u32 {
++    let v = opt.unwrap
+diff --git a/src/n.rs b/src/n.rs
+--- a/src/n.rs
++++ b/src/n.rs
+@@ -9,0 +3,3 @@
++    ();
++    v
++}

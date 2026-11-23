@@ -78,6 +78,27 @@ fn setup_refuses_an_unknown_client_or_a_missing_root() {
     assert_eq!(run(&["agent", "teleport"]).0, 2);
 }
 
+/// S3.15.d: the doctor's rank parity is a byte comparison that includes the command line's bytes,
+/// not a value comparison of the daemon with MCP (a surface that re-spaces or reorders the
+/// document would pass that).
+#[test]
+fn doctor_rank_parity_compares_the_cli_bytes() {
+    let (code, json, stderr) = run(&["agent", "doctor", "--json"]);
+    assert_eq!(code, 0, "{stderr}");
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let rank = value["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "rank_parity")
+        .unwrap();
+    assert_eq!(rank["ok"], true, "{rank}");
+    assert_eq!(
+        rank["detail"],
+        "CLI --rank --json bytes equal daemon diff.rank canonical_json and MCP rank_patch text"
+    );
+}
+
 #[test]
 fn doctor_reports_every_check_passing() {
     let (code, json, stderr) = run(&["agent", "doctor", "--json"]);

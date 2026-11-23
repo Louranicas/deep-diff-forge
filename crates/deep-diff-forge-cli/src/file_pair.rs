@@ -1,6 +1,6 @@
 // DDF integration: R02, R03, R07. Direct two-file review: Git produces the patch from two regular files, and the exact bytes are sealed and fed to the same outputs as `--stdin-patch`.
 // Design/status: docs/reference/commands.md "Compare two files"; docs/ROADMAP.md
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--file_pair
+// Module index: docs/ARCHITECTURE.md#crates-as-built-030
 //! `deep-diff-forge [--] <old> <new>`: review two regular files directly.
 //!
 //! [`deep_diff_forge_patch::diff_files`] runs `git diff --no-index` with the acquisition's
@@ -22,7 +22,8 @@ use deep_diff_forge_core::{display_safe, display_safe_bounded, exit};
 use deep_diff_forge_patch::{GitAcquireOptions, diff_files};
 
 /// The `--help` line for the direct comparison, whose `COMMANDS` key is `<old>`.
-pub(crate) const USAGE: &str = "deep-diff-forge <old> <new> [<--stdin-patch output flags>]";
+pub(crate) const USAGE: &str =
+    "deep-diff-forge <old> <new> [<--stdin-patch output flags but --allow-empty>]";
 
 /// Whether the arguments after an unrecognised first word ask for a direct comparison: a second
 /// path follows it. A lone unknown word stays an unknown command.

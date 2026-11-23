@@ -1,6 +1,6 @@
 // Review council: Planted negative controls for authority, phase, freshness, citations, missing evidence and budgets.
 // Design/status: docs/REVIEW_COUNCIL.md#policy-controls
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--tests--contracts
+// Module index: docs/REVIEW_COUNCIL.md#cratesdeep-diff-forge-reviewtestscontractsrs
 //! Negative controls for review authority, freshness, blind phases and non-vacuous gates.
 use deep_diff_forge_review::{
     Artifact, Assessment, AssessmentState, Citation, Disposition, Execution, Finding, Gate,

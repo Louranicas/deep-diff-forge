@@ -179,14 +179,30 @@ use std::process::Command;
 /// section's old number is read in the coordinates of one file, and a created file followed by
 /// a section that adds a line above its context. The precision floor fell, on purpose: what was
 /// found is declared, not new to this round.
+/// Measured again 2026-11-18 for release 0.10.0, whose parser refuses a hunk that plain `git
+/// apply` places elsewhere than its header says (ruling 1 of the integration): 29 sections of
+/// nine evidence cases gained a blank line of context, with their items unchanged; 18 sections
+/// (creations in several hunks, hunks that touch, and readings only such hunks give) moved with
+/// their 16 expectations (9 expected, 4 declared misses, 3 declared false positives) to
+/// `fixtures/eval-refused-by-parser/`: precision 170 of 195, recall 170 of 247, the same 56
+/// cases. The recall floor fell by what left, not by a reading that changed.
+/// Measured again 2026-11-22 on 58 cases (S3.18, S3.16): `evidence/workflow-privilege-quoted`
+/// (four grants written with quotes, which 0.9.0 missed, and three near misses) and
+/// `evidence/python-trivial-assert-ends` (four ended `assert True` forms; the seventeen rows that
+/// 0.9.0 labelled though they can fail, as hard negatives; `assert True or ready` a declared
+/// miss): precision 178 of 203, recall 178 of 256, 106 declared. Both floors rose.
+/// Measured again 2026-11-23 on 59 cases (S3.24): `evidence/secret-forge-tokens` (eight token
+/// forms that releases 0.5.0 to 0.9.0 missed, six GitLab prefixes, the routable GitLab form and a
+/// fine-grained GitHub token, and five near misses): precision 186 of 211, recall 186 of 264,
+/// 106 declared. Both floors rose.
 const RANKING_PAIRS_FLOOR: u64 = 800_000;
-const EVIDENCE_PRECISION_FLOOR: u64 = 864_734;
-const EVIDENCE_RECALL_FLOOR: u64 = 688_461;
+const EVIDENCE_PRECISION_FLOOR: u64 = 881_516;
+const EVIDENCE_RECALL_FLOOR: u64 = 704_545;
 const FINDINGS_FLOOR: u64 = 1_000_000;
 /// Declared misses (plan N4): each counts as wrong in its metric above. The receipt's
 /// `known_misses` keeps its first meaning, the evidence `known_miss` items; `declared` lists all.
-const DECLARED: u64 = 112;
-const EVIDENCE_KNOWN_MISSES: u64 = 81;
+const DECLARED: u64 = 106;
+const EVIDENCE_KNOWN_MISSES: u64 = 78;
 /// The smallest corpus the gate accepts, and the fewest cases of each kind.
 const MIN_CASES: usize = 30;
 const MIN_CASES_PER_KIND: usize = 3;
@@ -261,6 +277,39 @@ fn the_corpus_meets_its_floors() {
     }
 }
 
+/// S3.35.b: the receipt splits evidence precision and recall by signal (`by_signal`) and by
+/// the language of the item's file (`by_language`), and each split adds up to the aggregate the
+/// floors hold. The `trivial_assert` pair (precision and recall; S3.16 narrowed it) and
+/// the Python case count are held exactly, so a change to them shows here by name.
+#[test]
+fn eval_receipt_carries_per_signal_tallies() {
+    let (code, receipt, stderr) = eval(&corpus());
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(
+        receipt["by_signal"]["trivial_assert"],
+        serde_json::json!({
+            "precision": {"right": 14, "total": 14, "ppm": 1_000_000},
+            "recall": {"right": 14, "total": 29, "ppm": 482_758},
+            "cases": 13
+        }),
+        "the trivial_assert pair in {receipt:#}"
+    );
+    assert_eq!(receipt["by_language"]["python"]["cases"], 14, "{receipt:#}");
+    let m = &receipt["metrics"];
+    for member in ["by_signal", "by_language"] {
+        let split = receipt[member].as_object().unwrap();
+        for (metric, part) in [
+            ("evidence_precision", "precision"),
+            ("evidence_recall", "recall"),
+        ] {
+            for key in ["right", "total"] {
+                let sum: u64 = split.values().map(|s| s[part][key].as_u64().unwrap()).sum();
+                assert_eq!(sum, m[metric][key], "{member}: the sum of {part} {key}");
+            }
+        }
+    }
+}
+
 /// A copy of the corpus inside a scratch directory, removed when the test ends.
 struct Copy(
     PathBuf,
@@ -306,14 +355,14 @@ fn the_summary_names_each_metric_and_each_failure() {
     let (code, text) = run(&corpus());
     assert_eq!(code, Some(0), "{text}");
     assert!(
-        text.starts_with("deep-diff-forge eval: 56 cases\n"),
+        text.starts_with("deep-diff-forge eval: 59 cases\n"),
         "{text}"
     );
     for line in [
         "  ranking_pairs        12/15",
-        "  evidence_precision   179/207",
-        "  evidence_recall      179/260",
-        "  declared             112",
+        "  evidence_precision   186/211",
+        "  evidence_recall      186/264",
+        "  declared             106",
         "  KNOWN ranking/auth-check-removed: src/handlers/delete.rs ranks below docs/CHANGES.md",
         "  KNOWN evidence/shell-heredoc: reports (\"scripts/docs.sh\", \"network_fetch\", \"new\", 3)",
     ] {
@@ -411,6 +460,51 @@ fn the_gate_fails_for_the_reason_it_names() {
     let missing = Copy::new("missing");
     std::fs::remove_file(missing.0.join("findings/mixed.jsonl")).unwrap();
     assert_eq!(eval(&missing.0).0, 3);
+}
+
+/// S3.35.c: a case whose patch the parser refuses (here a hunk with no context, which plain
+/// `git apply` places at the end of the file) is reported in `refused` with the parser's reason
+/// and is a failure (exit 7), and every other case is still scored: before, the first refusal
+/// ended the run with exit 4 and no figures.
+#[test]
+fn a_refused_case_is_reported_and_the_batch_continues() {
+    let (_, whole, _) = eval(&corpus());
+    let copy = Copy::new("refused");
+    let file = copy.0.join("evidence/bash-dev-tcp.patch");
+    let original = std::fs::read_to_string(&file).unwrap();
+    let patch = original.replace("@@ -1,1 +1,3 @@\n set -eu\n", "@@ -5 +5,2 @@\n-set -eu\n");
+    assert_ne!(patch, original);
+    std::fs::write(&file, &patch).unwrap();
+    let mut items = 0;
+    edit_case(&copy, "evidence/bash-dev-tcp", |c| {
+        c["sha256"] = deep_diff_forge_core::sha256_hex(patch.as_bytes()).into();
+        items = c["expect"].as_array().unwrap().len() + c["known_miss"].as_array().unwrap().len();
+    });
+    let (code, receipt, stderr) = eval(&copy.0);
+    assert_eq!(
+        code, 7,
+        "the run ends with a failure and a receipt: {stderr}"
+    );
+    let reason = receipt["refused"][0]["reason"].as_str().unwrap_or_default();
+    assert_eq!(
+        receipt["refused"],
+        serde_json::json!([{"case": "evidence/bash-dev-tcp", "reason": reason}])
+    );
+    assert!(
+        reason.contains("it has no context, so Git places it at the end of the file"),
+        "{reason}"
+    );
+    assert_eq!(
+        receipt["failures"],
+        serde_json::json!([format!("evidence/bash-dev-tcp: refused: {reason}")])
+    );
+    // The other cases are scored: only the refused case's items leave the totals.
+    let (m, all) = (&receipt["metrics"], &whole["metrics"]);
+    assert_eq!(receipt["cases"], whole["cases"]);
+    assert_eq!(m["ranking_pairs"], all["ranking_pairs"]);
+    assert_eq!(m["findings_verdicts"], all["findings_verdicts"]);
+    let recall = |m: &Value| m["evidence_recall"]["total"].as_u64().unwrap();
+    assert_eq!(recall(m) + u64::try_from(items).unwrap(), recall(all));
 }
 
 /// The manifest of `copy` after `edit` changes the case `case`.
@@ -664,7 +758,7 @@ fn a_declared_miss_must_still_be_a_miss() {
     );
     assert_eq!(
         metrics["evidence_recall"],
-        serde_json::json!({"right": 179, "total": 259, "ppm": 691_119})
+        serde_json::json!({"right": 186, "total": 263, "ppm": 707_224})
     );
 
     // A declared false positive the engine does not report.
@@ -682,7 +776,7 @@ fn a_declared_miss_must_still_be_a_miss() {
     );
     assert_eq!(
         metrics["evidence_precision"],
-        serde_json::json!({"right": 179, "total": 207, "ppm": 864_734})
+        serde_json::json!({"right": 186, "total": 211, "ppm": 881_516})
     );
 
     // A declared false positive that is also expected.
@@ -698,7 +792,7 @@ fn a_declared_miss_must_still_be_a_miss() {
             .unwrap()
             .ends_with("is not reported, or is expected: remove it")
     );
-    assert_eq!(metrics["evidence_precision"]["right"], 180);
+    assert_eq!(metrics["evidence_precision"]["right"], 187);
     assert_eq!(known, usize::try_from(DECLARED).unwrap() - 1);
 }
 
@@ -803,4 +897,114 @@ fn every_item_of_the_corpus_has_a_basis_the_vocabulary_lists() {
         }
     }
     assert_eq!(rungs.into_iter().collect::<Vec<_>>(), ["hunk", "lexical"]);
+}
+
+/// Release 0.10.0 (ruling 1 of its integration): the sections of evaluation cases that the
+/// parser refuses for the place of a hunk left the corpus with their expectations and are kept
+/// in `fixtures/eval-refused-by-parser/`. Each is listed in its `REASONS.tsv` and is refused
+/// whole (exit 4) with the reason listed there, so none of them can come back unread.
+#[test]
+fn every_section_that_left_the_corpus_is_refused_for_its_reason() {
+    let dir = corpus().join("../eval-refused-by-parser");
+    let reasons = std::fs::read_to_string(dir.join("REASONS.tsv")).unwrap();
+    let rows: Vec<Vec<&str>> = reasons
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .map(|line| line.split('\t').collect())
+        .collect();
+    let mut patches: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|e| e == "patch"))
+        .map(|path| path.file_name().unwrap().to_str().unwrap().to_owned())
+        .collect();
+    patches.sort();
+    let listed: Vec<String> = rows.iter().map(|row| row[0].to_owned()).collect();
+    assert_eq!(patches, listed, "every patch there is listed once");
+    for row in &rows {
+        let out = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+            .args(["--stdin-patch", "--outline"])
+            .stdin(std::fs::File::open(dir.join(row[0])).unwrap())
+            .output()
+            .expect("run");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!((out.status.code(), row[1]), (Some(4), "4"), "{}", row[0]);
+        assert!(stderr.contains(row[2]), "{}: {stderr}", row[0]);
+        assert!(
+            stderr.contains("would be placed elsewhere by git apply"),
+            "{stderr}"
+        );
+    }
+    assert_eq!(rows.len(), 16);
+}
+
+/// The `right/total` written after `label` in `text` (spaces and a table's `|` allowed around
+/// it), or `None` when the label or the figure is not there.
+fn figure_after(text: &str, label: &str) -> Option<(u64, u64)> {
+    let rest = &text[text.find(label)? + label.len()..];
+    let (right, rest) = rest.trim_start_matches([' ', '|']).split_once('/')?;
+    let total: String = rest
+        .trim_start()
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    Some((right.trim().parse().ok()?, total.parse().ok()?))
+}
+
+/// S3.35.e: the figures the documents write are the ones the corpus measures. The four metric
+/// rows of the table in `docs/reference/evaluation.md`, and the case count and the four
+/// figures of the evaluation gate in `docs/TESTING_GOLD_STANDARD.md`, equal the receipt; until
+/// now both were carried by hand.
+#[test]
+fn the_figures_in_the_documents_are_the_measured_ones() {
+    let (code, receipt, stderr) = eval(&corpus());
+    assert_eq!(code, 0, "{stderr}");
+    let m = &receipt["metrics"];
+    let measured = |metric: &str| {
+        let (right, total) = (&m[metric]["right"], &m[metric]["total"]);
+        Some((right.as_u64().unwrap(), total.as_u64().unwrap()))
+    };
+    let doc = |rel: &str| {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(rel);
+        std::fs::read_to_string(path).unwrap()
+    };
+    let table = doc("docs/reference/evaluation.md");
+    let gold = doc("docs/TESTING_GOLD_STANDARD.md");
+    let gate = &gold[gold
+        .find("**Evaluation gate**")
+        .expect("the evaluation gate")..];
+    let gate = gate[..gate.find("\n- ").unwrap_or(gate.len())]
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    for (metric, row, sentence) in [
+        ("ranking_pairs", "| ranking pairs |", "ranking pairs "),
+        (
+            "evidence_precision",
+            "| evidence precision |",
+            "evidence precision ",
+        ),
+        ("evidence_recall", "| evidence recall |", "evidence recall "),
+        ("findings_verdicts", "| findings verdicts |", "findings "),
+    ] {
+        assert_eq!(
+            table.matches(row).count(),
+            1,
+            "one row {row} in evaluation.md"
+        );
+        assert_eq!(
+            figure_after(&table, row),
+            measured(metric),
+            "evaluation.md, the row {row}"
+        );
+        assert_eq!(
+            figure_after(&gate, sentence),
+            measured(metric),
+            "TESTING_GOLD_STANDARD.md, {sentence}in: {gate}"
+        );
+    }
+    let cases = format!("`fixtures/eval` ({} cases,", receipt["cases"]);
+    assert!(gate.contains(&cases), "{cases} in: {gate}");
 }

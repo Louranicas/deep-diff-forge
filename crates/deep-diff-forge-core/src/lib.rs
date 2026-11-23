@@ -1,6 +1,6 @@
 // DDF integration: R02, R03, R04, R05, R06, R07, R44, R46. Preserve source bytes and exact original input independently of normalized display; use Git as the application oracle.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-core--lib
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
 mod deploy;
 pub mod exit;
 pub mod git;
@@ -211,6 +211,59 @@ pub struct PatchTwin {
     /// Patch lines of this file that were not UTF-8 and were decoded lossily (U+FFFD). 0 means
     /// every line is the exact input text; the input seal always covers the exact bytes.
     pub lossy_lines: u32,
+    /// Git first gave this file's change as binary, and the hunks are its text read again with
+    /// `--text`: why Git called the file binary. Only a Git acquisition sets it; a patch read
+    /// from input never does.
+    pub diff_suppressed: Option<DiffSuppression>,
+}
+
+/// A recorded header line that makes its section binary to Git: `GIT binary patch`,
+/// `Binary files … differ`, or `Files … differ` (the parser's reading, kept here once so the
+/// ranking reads it too).
+#[must_use]
+pub fn is_binary_marker(meta: &str) -> bool {
+    meta.starts_with("GIT binary patch")
+        || meta.starts_with("Binary files ")
+        || (meta.starts_with("Files ") && meta.ends_with(" differ"))
+}
+
+impl PatchTwin {
+    /// The section's content is a binary blob to Git: a marker among its headers. The status
+    /// says what Git does to the path (a binary creation is `added`, as `git apply --summary`
+    /// has it); this stays true for it (S3.4).
+    #[must_use]
+    pub fn is_binary(&self) -> bool {
+        self.metadata.iter().any(|m| is_binary_marker(m))
+    }
+}
+
+/// Why Git gave a text file's change as binary ([`PatchTwin::diff_suppressed`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffSuppression {
+    /// The path's `diff` attribute is unset (`-diff`, the `binary` macro) or names a diff
+    /// driver, from any attributes file Git reads.
+    Attribute,
+    /// No `diff` attribute applies: Git's own content check (a NUL byte) called it binary.
+    Content,
+    /// No `diff` attribute applies and the file is UTF-16 or UTF-32 (a byte order mark, or one
+    /// NUL in every pair): Git's content check called it binary for the NULs of its encoding.
+    Encoding,
+    /// No attribute label covers the file and DDF could not read it again within its limits:
+    /// the second reading or `git check-attr` was cut off by the byte budget or the time limit.
+    Unread,
+}
+
+impl DiffSuppression {
+    /// Stable label for machine output.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Attribute => "attribute",
+            Self::Content => "content",
+            Self::Encoding => "encoding",
+            Self::Unread => "unread",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -241,6 +294,25 @@ impl PatchHunk {
             }
         }
         (old, new)
+    }
+
+    /// Where plain `git apply` anchors the hunk, which its lines decide and its header's line
+    /// does not: a hunk at old line 0 or 1 at the start of the file, one with no trailing context
+    /// at its end, one with both on the whole file. `None` for any other hunk, which Git places
+    /// where its context and removed lines are found nearest the line its header names.
+    #[must_use]
+    pub fn git_anchor(&self) -> Option<&'static str> {
+        let start = self.old_start.unwrap_or(0) <= 1;
+        let end = self
+            .lines
+            .last()
+            .is_none_or(|l| l.kind != PatchLineKind::Context);
+        match (start, end) {
+            (true, true) => Some("Git places this hunk on the whole file"),
+            (true, false) => Some("Git places this hunk at the start of the file"),
+            (false, true) => Some("Git places this hunk at the end of the file"),
+            (false, false) => None,
+        }
     }
 
     /// SHA-256 of the hunk's body: each line as its prefix (` `, `-`, `+`), text and LF, with
@@ -340,6 +412,34 @@ mod hunk_tests {
             ..hunk()
         };
         assert_eq!(only_removed.counts(), (2, 0));
+    }
+
+    #[test]
+    fn git_anchor_follows_the_start_line_and_the_trailing_context() {
+        let end = "Git places this hunk at the end of the file";
+        assert_eq!(hunk().git_anchor(), Some(end));
+        let mut lines = hunk().lines;
+        lines.push(line(PatchLineKind::Context, "e", false));
+        let inner = PatchHunk { lines, ..hunk() };
+        assert_eq!(inner.git_anchor(), None);
+        for (start, said) in [(0, "on the whole file"), (1, "on the whole file")] {
+            let h = PatchHunk {
+                old_start: Some(start),
+                ..hunk()
+            };
+            assert_eq!(
+                h.git_anchor(),
+                Some(&*format!("Git places this hunk {said}"))
+            );
+        }
+        let first = PatchHunk {
+            old_start: Some(1),
+            ..inner
+        };
+        assert_eq!(
+            first.git_anchor(),
+            Some("Git places this hunk at the start of the file")
+        );
     }
 
     // The expected digests are `sha256sum` over the bytes the doc comments define, written out

@@ -1499,8 +1499,9 @@ fn record(place: &Place, deadline: Deadline) -> Result<(Project, Option<Vec<Stri
         // recorded, and the next hook of the session tries again, as its first.
         Err(error) => {
             return Err(format!(
-                "the commits that are there as the session begins could not be listed, so its own could not be told from them: {} (`deep-diff-forge agent doctor --gate` checks this as the link `commits`; when it is ready, start a new session)",
-                git_words(&error)
+                "the commits that are there as the session begins could not be listed, so its own could not be told from them: {} (`{} agent doctor --gate` checks this as the link `commits`; when it is ready, start a new session)",
+                git_words(&error),
+                hook::this_binary()
             ));
         }
     };
@@ -1659,8 +1660,13 @@ fn subject(work: &Work, deadline: Deadline) -> Subject {
     }
 }
 
-/// Every piece of evidence in `patch`, files in ranking order, each with the key that names it.
+/// Every piece of evidence in `patch`, files in ranking order, each with the key that names it;
+/// before each file's rows, one finding of the file as a whole for each signal that has no row of
+/// evidence: `hazardous_text`, `executable_bit`, `symlink_change` and `diff_suppressed`, which
+/// read no line a ranking points at, and a code signal the cap on a file's rows left without one
+/// (`evidence_truncated`). The advice read the rows only, so it never named these (S3.17a.i).
 fn findings(patch: &[u8]) -> Result<Vec<Finding>, String> {
+    use deep_diff_forge_graph::RiskSignal;
     let review = SealedReview::new(
         patch,
         InputGuards {
@@ -1676,6 +1682,27 @@ fn findings(patch: &[u8]) -> Result<Vec<Finding>, String> {
         let Some(file) = files.iter().find(|f| f.path == ranked.path) else {
             continue;
         };
+        // first, so that the cap on what one advice lists does not cut them after the rows
+        for signal in &ranked.signals {
+            let unrowed = match signal {
+                RiskSignal::HazardousText
+                | RiskSignal::ExecutableBit
+                | RiskSignal::SymlinkChange
+                | RiskSignal::DiffSuppressed => true,
+                RiskSignal::Code(code) => !ranked.evidence.iter().any(|e| e.signal == *code),
+                _ => false,
+            };
+            if unrowed {
+                out.push(Finding {
+                    label: signal.label().to_owned(),
+                    path: ranked.path.clone(),
+                    side: String::new(),
+                    line: 0,
+                    basis: deep_diff_forge_graph::facts(*signal).basis().join(" or "),
+                    key: hook::finding_key(&ranked.path, signal.label(), ""),
+                });
+            }
+        }
         for evidence in &ranked.evidence {
             let line = file
                 .patch_twin
@@ -1698,7 +1725,9 @@ fn findings(patch: &[u8]) -> Result<Vec<Finding>, String> {
                 path: ranked.path.clone(),
                 side: evidence.side.label().to_owned(),
                 line: evidence.line,
-                basis: deep_diff_forge_graph::EVIDENCE_BASIS.to_owned(),
+                // the rung that found the item, as the ranking gives it: an item read across
+                // the lines of a hunk was said to be "read as lexical" (S3.17a.f)
+                basis: evidence.basis.label().to_owned(),
                 key: hook::finding_key(&ranked.path, evidence.signal.label(), line),
             });
         }
@@ -2135,7 +2164,9 @@ fn judge_words(stderr: &[u8]) -> Option<String> {
 
 /// Run the judge once: its exit code, its verdict document and what it said on its error
 /// stream, when it gave any of them. It gets the time the hook has left, at most
-/// [`JUDGE_TIME`].
+/// [`JUDGE_TIME`]. The judge runs in a process group of its own (`core::process::run_bounded`);
+/// its group is killed when it exits or is stopped, so nothing it leaves in the group can
+/// stretch the stop.
 #[expect(
     clippy::disallowed_methods,
     reason = "the judge door: the stop hook starts forge-warden, under a deadline and output caps"
@@ -2281,7 +2312,8 @@ impl<'a> Bench<'a> {
             ran = true;
             let (code, verdict, said) =
                 run_judge(&self.program, &self.policy_file, &patch_file, ranker, time);
-            last = hook::judged(code, verdict.as_ref(), said.as_deref(), sealed);
+            // (exit 7 holds the stop even when its document is no verdict: S3.21)
+            last = hook::stop_judged(code, verdict.as_ref(), said.as_deref(), sealed);
             // A run that was stopped says what time it had, and why it was no more: "the
             // judge was stopped" did not name the cause (eighth independent review of the
             // hooks, HR8-L-2). Either the stop had little left, or the run had its part of
@@ -3640,13 +3672,17 @@ const SAID_KEPT_CHARS: usize = 100;
 /// of the hooks, HR6-M-2). Then the names were kept and what the judge says beside its rules
 /// was not: a commit held for a note, or failed by an expired waiver, kept no reason at all
 /// (seventh, HR7-L-6).
+///
+/// A `:` in a name is kept: the line is read up to its second `:` and the rest is the reason,
+/// so only `,`, `;` and `|` separate. A built-in rule of forge-warden, `builtin:<name>`, was
+/// named `builtin_<name>` at the later stops, a rule the judge does not have (S3.21.d).
 fn kept_reason(rules: &[hook::RuleOutcome], said: &[String], failed: bool) -> String {
     use std::fmt::Write as _;
     let plain = |text: &str, most: usize| -> String {
         text.chars()
             .take(most)
             .map(|c| {
-                if c.is_control() || ",;:|".contains(c) {
+                if c.is_control() || ",;|".contains(c) {
                     '_'
                 } else {
                     c
@@ -5934,7 +5970,7 @@ fn notes_of(state: &mut State, mut beside: Vec<Note>, room: usize) -> Vec<String
             0,
             Note {
                 name: "what was committed before this session's first hook".to_owned(),
-                text: hook::FIRST_STOP.to_owned(),
+                text: hook::first_stop(),
                 standing: 0,
             },
         );
@@ -6388,13 +6424,17 @@ fn companion(
     let this = std::env::current_exe().and_then(std::fs::canonicalize).ok();
     let this = this.as_deref().and_then(Path::to_str);
     let mut close: Option<String> = None;
+    let not_printed = format!(
+        "is not the command `{} agent setup --client claude --hooks` prints",
+        hook::this_binary()
+    );
     for file in settings_files(&place.top) {
         let Some(settings) = settings(&file) else {
             continue;
         };
         for hook in event_hooks(&settings, event) {
             let why = match hook::hook_command(&hook.command, word) {
-                None => "is not the command `agent setup --hooks` prints",
+                None => not_printed.as_str(),
                 Some(read) if this != Some(read.program.as_str()) => {
                     "does not run this program by its own absolute path"
                 }
@@ -6412,7 +6452,8 @@ fn companion(
     }
     Err(close.unwrap_or_else(|| {
         format!(
-            "no Claude Code settings file registers a {event} hook of this program: {READ_HERE} (agent setup --client claude --hooks prints the block)"
+            "no Claude Code settings file registers a {event} hook of this program: {READ_HERE} (`{} agent setup --client claude --hooks` prints the block)",
+            hook::this_binary()
         )
     }))
 }
@@ -6460,10 +6501,10 @@ fn not_this_chain(
     args: &[String],
 ) -> Option<String> {
     let Some(read) = hook::stop_command(command) else {
-        return Some(
-            "is not the command `agent setup --hooks` prints (one program, `agent hook stop --client claude`, then only --judge, --policy and --ranker-dir)"
-                .to_owned(),
-        );
+        return Some(format!(
+            "is not the command `{} agent setup --client claude --hooks` prints (this program by its absolute path with the event stop and --client claude, then only --judge, --policy and --ranker-dir)",
+            hook::this_binary()
+        ));
     };
     // The word itself, not what it leads to: a shell runs `A=ddf agent …` as the program
     // `agent` with a variable set, and a link that leads to this binary today can lead
@@ -6526,7 +6567,8 @@ fn registered(
     }
     Err(close.unwrap_or_else(|| {
         format!(
-            "no Claude Code settings file registers a stop hook: {READ_HERE} (agent setup --client claude --hooks prints the block)"
+            "no Claude Code settings file registers a stop hook: {READ_HERE} (`{} agent setup --client claude --hooks` prints the block)",
+            hook::this_binary()
         )
     }))
 }
@@ -6606,30 +6648,54 @@ fn not_checked(why: &str) -> String {
     format!("{NOT_CHECKED}{why}")
 }
 
-/// The links `chain` and `policy_protects_itself`: the judge's verdict on the probe, or why it
-/// gave none.
-fn chain_checks(name: &str, verdict: &Result<(PathBuf, i32), String>) -> [GateCheck; 2] {
+/// What the judge's verdict on the probe says, when it gave one: the ranker it admitted, its
+/// exit code, the schema and version its document names, and whether it holds the probe for
+/// claims it could not verify (a note `claims_unverified`).
+type ProbeVerdict = (PathBuf, i32, String, bool);
+
+/// The links `chain`, `policy_protects_itself` and `claims_verified`: the judge's verdict on
+/// the probe, or why it gave none.
+///
+/// `claims_verified` is read from the verdict's notes, not from the policy: a policy that
+/// requires verified claims (`[claims] require_verified`, which `forge-warden init` writes
+/// from 0.3.0) holds every change this build gives it, and the gate called that chain ready
+/// (S3.25.a).
+fn chain_checks(name: &str, verdict: &Result<ProbeVerdict, String>) -> [GateCheck; 3] {
     [
         check(
             "chain",
             verdict.is_ok(),
             match verdict {
-                Ok((ranker, code)) => format!(
-                    "the judge gave a verdict (exit {code}) with ranker {}",
-                    ranker.display()
+                Ok((ranker, code, read, _)) => format!(
+                    "the judge gave a verdict (exit {code}) with ranker {}: {read}, read by this build, which reads {}",
+                    ranker.display(),
+                    crate::verdict_v2::READS
                 ),
                 Err(why) => why.clone(),
             },
         ),
         check(
             hook::PROTECTS_ITSELF,
-            verdict.as_ref().is_ok_and(|(_, code)| *code != 0),
+            verdict.as_ref().is_ok_and(|(_, code, _, _)| *code != 0),
             match verdict {
-                Ok((_, 0)) => format!(
+                Ok((_, 0, _, _)) => format!(
                     "a change to {} passes: any change could loosen the policy it is judged by",
                     hook::shown_path(name)
                 ),
                 Ok(_) => format!("a change to {} is held or fails", hook::shown_path(name)),
+                Err(_) => not_checked("the judge gave no verdict"),
+            },
+        ),
+        check(
+            hook::CLAIMS_VERIFIED,
+            verdict
+                .as_ref()
+                .is_ok_and(|(_, _, _, unverified)| !unverified),
+            match verdict {
+                Ok((_, _, _, true)) => hook::CLAIMS_HOLD.to_owned(),
+                Ok(_) => {
+                    "the judge's verdict on the probe has no note claims_unverified".to_owned()
+                }
                 Err(_) => not_checked("the judge gave no verdict"),
             },
         ),
@@ -6915,8 +6981,20 @@ fn commits_check(place: Option<&Place>, deadline: Deadline) -> GateCheck {
     )
 }
 
-/// Have the judge judge the probe. `Ok` with the ranker it admitted and its exit code when it
-/// gave a verdict; otherwise why not.
+/// The version of forge-warden that a judge's document says wrote it, bounded and safe to show.
+fn judge_version(document: &Value) -> String {
+    let version: String = document["tool"]["version"]
+        .as_str()
+        .unwrap_or("of no stated version")
+        .chars()
+        .take(hook::SCHEMA_SHOWN)
+        .collect();
+    deep_diff_forge_core::display_safe(&version).into_owned()
+}
+
+/// Have the judge judge the probe. `Ok` with what its verdict says ([`ProbeVerdict`]) when it
+/// gave one; otherwise why not, with the
+/// version its document names when the document names a schema this build does not read.
 fn probe(
     scratch: &Scratch,
     name: &str,
@@ -6924,7 +7002,7 @@ fn probe(
     program: &Path,
     args: &[String],
     deadline: Deadline,
-) -> Result<(PathBuf, i32), String> {
+) -> Result<ProbeVerdict, String> {
     let patch = probe_patch(name, policy).ok_or_else(|| {
         "the policy is empty, or its name cannot stand in a patch header".to_owned()
     })?;
@@ -6964,9 +7042,30 @@ fn probe(
             hook::judged(code, verdict.as_ref(), said.as_deref(), sealed),
         ) {
             (Some(code), Judged::Pass | Judged::Hold { .. } | Judged::Fail { .. }) => {
-                return Ok((ranker, code));
+                let document = verdict.unwrap_or_default();
+                let read = format!(
+                    "{} of forge-warden {}",
+                    document["schema"].as_str().unwrap_or_default(),
+                    judge_version(&document)
+                );
+                // a member of the verdict document, the one place the judge says it
+                let unverified = document["notes"].as_array().is_some_and(|notes| {
+                    notes.iter().any(|note| note["code"] == "claims_unverified")
+                });
+                return Ok((ranker, code, read, unverified));
             }
-            (_, Judged::Unjudged { reason }) => last = reason,
+            (_, Judged::Unjudged { reason }) => {
+                // version drift: a judge that writes a schema this build does not read
+                last = match verdict.filter(|d| {
+                    d["schema"].is_string() && crate::verdict_v2::Version::named_by(d).is_none()
+                }) {
+                    Some(document) => format!(
+                        "{reason}; the document says forge-warden {} wrote it",
+                        judge_version(&document)
+                    ),
+                    None => reason,
+                };
+            }
             (None, _) => {}
         }
         if code != Some(4) {
@@ -7470,7 +7569,7 @@ mod tests {
             }),
             ..State::default()
         };
-        assert_eq!(notes_of(&mut late, Vec::new(), ROOM), [hook::FIRST_STOP]);
+        assert_eq!(notes_of(&mut late, Vec::new(), ROOM), [hook::first_stop()]);
         for _ in 2..=3 {
             assert_eq!(
                 notes_of(&mut late, Vec::new(), ROOM),
@@ -7779,7 +7878,7 @@ mod tests {
             rule("a:b,c;d|e\n", false),
             rule("quiet", true),
         ];
-        assert_eq!(kept_reason(&both, &[], true), "no-secrets,a_b_c_d_e_;quiet");
+        assert_eq!(kept_reason(&both, &[], true), "no-secrets,a:b_c_d_e_;quiet");
         assert_eq!(kept_reason(&both[2..], &[], false), "quiet");
         assert_eq!(kept_reason(&[], &[], true), "");
         let names = |kept: &str, all_held: bool| -> Vec<(String, bool)> {
@@ -7790,10 +7889,10 @@ mod tests {
                 .collect()
         };
         assert_eq!(
-            names("no-secrets,a_b_c_d_e_;quiet", false),
+            names("no-secrets,a:b_c_d_e_;quiet", false),
             [
                 ("no-secrets".to_owned(), false),
-                ("a_b_c_d_e_".to_owned(), false),
+                ("a:b_c_d_e_".to_owned(), false),
                 ("quiet".to_owned(), true)
             ]
         );
@@ -9479,7 +9578,10 @@ mod tests {
         let long = long
             .join("g".repeat(250))
             .join("h".repeat(250))
+            .join("i".repeat(250))
             .join("tree");
+        // Six segments of 250 bytes pass 1,300 whatever the temporary directory is
+        // (five did so only under a directory of 41 bytes or more).
         assert!(long.as_os_str().len() > 1_300);
         let pointer = scratch.write("gitdir", format!("{}/.git\n", long.display()));
         assert_eq!(pointed_path(&pointer, b"", &root), Some(long.join(".git")));
@@ -9545,6 +9647,56 @@ mod tests {
             kept_reason(&rules(1), &["a\tb\u{1b}c|d\n".to_owned()], true),
             "r0|a b c/d"
         );
+    }
+
+    /// S3.21.d: forge-warden names a built-in rule `builtin:<name>`. Its name is what a later
+    /// stop of the session says the commit failed or is held for, read back from the line
+    /// of the judged file: the `:` was kept as `_`, a rule the judge does not have.
+    #[test]
+    fn a_builtin_rule_keeps_its_name_at_a_later_stop() {
+        let rule = |id: &str, held: bool| hook::RuleOutcome {
+            id: id.to_owned(),
+            why: "w".to_owned(),
+            held,
+            violations: Vec::new(),
+        };
+        let id = "0123456789abcdef0123456789abcdef01234567";
+        let both = [
+            rule("builtin:no-secrets", false),
+            rule("builtin:quiet", true),
+        ];
+        for (line, failed) in [
+            (format!("{id}:f:{}", kept_reason(&both, &[], true)), true),
+            (
+                format!("{id}:h:{}", kept_reason(&both[1..], &[], false)),
+                false,
+            ),
+        ] {
+            assert!(is_judged_entry(&line), "{line}");
+            let kept = match answer(&line) {
+                Some((_, Answer::Fail(kept))) if failed => kept,
+                Some((_, Answer::Hold(kept))) if !failed => kept,
+                other => panic!("{line} read as {other:?}"),
+            };
+            let names: Vec<(String, bool)> = reason_kept(kept, !failed)
+                .0
+                .into_iter()
+                .map(|rule| (rule.id, rule.held))
+                .collect();
+            let expected: &[(&str, bool)] = if failed {
+                &[("builtin:no-secrets", false), ("builtin:quiet", true)]
+            } else {
+                &[("builtin:quiet", true)]
+            };
+            let expected: Vec<(String, bool)> = expected
+                .iter()
+                .map(|(name, held)| ((*name).to_owned(), *held))
+                .collect();
+            assert_eq!(
+                names, expected,
+                "the rule names a later stop reads back from the line {line}"
+            );
+        }
     }
 
     /// Mutation run on `07df120`: what says the things a stop does not judge had mutants no
@@ -10820,5 +10972,24 @@ mod tests {
         }
         drop(made);
         assert!(!mine.exists());
+    }
+
+    /// Mutation run on the 0.9.0 code (S3.34.b), `trees_from`: a state's member `trees` with
+    /// [`BLOCKED_CAP`] trees is read, and one with more is not (`>=` and `==` for `>` moved
+    /// the bound by one).
+    #[test]
+    fn a_state_reads_as_many_trees_as_its_bound_and_no_more() {
+        let trees = |count: usize| -> Value {
+            Value::Object(
+                (0..count)
+                    .map(|n| (format!("{n:016x}"), Value::from("/r")))
+                    .collect(),
+            )
+        };
+        assert_eq!(
+            trees_from(&trees(BLOCKED_CAP)).map(|read| read.len()),
+            Some(BLOCKED_CAP)
+        );
+        assert_eq!(trees_from(&trees(BLOCKED_CAP + 1)), None);
     }
 }

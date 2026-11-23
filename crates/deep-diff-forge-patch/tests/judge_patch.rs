@@ -97,63 +97,37 @@ fn changed_repository(scratch: &Scratch) -> PathBuf {
     root
 }
 
-/// What forge-warden's `scripts/make_patch.sh <base> <head>` writes: the diff of two commits in a
-/// new, empty bare repository that only borrows the object store, with its options.
+/// forge-warden's own patch maker, `scripts/make_patch.sh` of its main at `fbd621e0`, recorded
+/// byte for byte beside the hook's other forge-warden fixtures, and its SHA-256.
+const MAKE_PATCH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../deep-diff-forge-cli/tests/fixtures/forge-warden-main-fbd621e0/make_patch.sh"
+);
+const MAKE_PATCH_SHA256: &str = "f53c440c2bae2aab26261ec01535a9083c72e67591176ec6d64b3c5093b5d7f3";
+
+/// What forge-warden's `scripts/make_patch.sh <base> <head> <repository>` writes, from the
+/// recorded copy of the script itself. This was a hand copy of the maker's options, older than
+/// the maker: it passed while the judge's patch had short index lines and no
+/// `--submodule=short` or `--ignore-submodules=none` (S3.17a.h).
 fn patch_maker(root: &Path, scratch: &Scratch, base: &str, head: &str) -> Vec<u8> {
-    let empty_repository = scratch.join("maker.git");
-    git(
-        scratch.path(),
-        &[
-            "init",
-            "--quiet",
-            "--bare",
-            empty_repository.to_str().unwrap(),
-        ],
+    let script = std::fs::read(MAKE_PATCH).unwrap();
+    assert_eq!(
+        deep_diff_forge_core::sha256_hex(&script),
+        MAKE_PATCH_SHA256,
+        "{MAKE_PATCH} is not the copy recorded from forge-warden's main fbd621e0"
     );
-    let objects = text(git(
-        root,
-        &[
-            "rev-parse",
-            "--path-format=absolute",
-            "--git-path",
-            "objects",
-        ],
+    let temporary = scratch.join(format!(
+        "maker-tmp-{}",
+        text(git(root, &["rev-parse", head]))
     ));
-    std::fs::write(
-        empty_repository.join("objects/info/alternates"),
-        format!("{objects}\n"),
-    )
-    .unwrap();
-    let empty = text(git(root, &["hash-object", "-t", "tree", "/dev/null"]));
-    // The patch maker resolves both names in the repository first: the empty one has no refs.
-    let base = text(git(root, &["rev-parse", "--verify", base]));
-    let head = text(git(root, &["rev-parse", "--verify", head]));
-    let out = Command::new("git")
+    std::fs::create_dir_all(&temporary).unwrap();
+    let out = Command::new("bash")
+        .arg(MAKE_PATCH)
+        .arg(base)
+        .arg(head)
+        .arg(root)
         .current_dir(scratch.path())
-        .env_clear()
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_ATTR_NOSYSTEM", "1")
-        .env("GIT_NO_REPLACE_OBJECTS", "1")
-        .arg(format!("--git-dir={}", empty_repository.display()))
-        .arg(format!("--attr-source={empty}"))
-        .args([
-            "-c",
-            "core.attributesFile=/dev/null",
-            "-c",
-            "core.quotePath=true",
-            "diff",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--no-color",
-            "--no-relative",
-            "--binary",
-            "--no-renames",
-            "--src-prefix=a/",
-            "--dst-prefix=b/",
-        ])
-        .arg(format!("{base}...{head}"))
+        .env("TMPDIR", &temporary)
         .output()
         .unwrap();
     assert!(
@@ -245,6 +219,83 @@ fn a_working_tree_gives_the_bytes_the_patch_maker_gives_for_the_commit() {
         shown,
         String::from_utf8_lossy(&expected)
     );
+}
+
+/// S3.17a.h: the patch the hook gives the judge is the bytes forge-warden's own patch maker
+/// writes for the same change, run from the recorded copy of its script: a text file, a
+/// binary file and a submodule's commit changed. The hook's options lacked `--full-index`,
+/// `--submodule=short` and `--ignore-submodules=none`, so every index line differed from the
+/// maker's (`index 7898192..6178079` against forty hexadecimal digits each).
+#[test]
+fn the_patch_is_the_bytes_forge_wardens_make_patch_writes() {
+    use deep_diff_forge_patch::commit_patch;
+    let scratch = Scratch::new("judge-patch-maker-parity");
+    let root = fresh(&scratch, "repo");
+    git(&root, &["init", "--quiet"]);
+    std::fs::write(root.join("src.rs"), "fn a() {}\n").unwrap();
+    std::fs::write(root.join("data.bin"), b"bin\0ary\n").unwrap();
+    git(&root, &["add", "src.rs", "data.bin"]);
+    git(&root, &["commit", "--quiet", "-m", "first"]);
+    let first = text(git(&root, &["rev-parse", "HEAD"]));
+    // A submodule as the index holds it: a gitlink, at a commit of its own.
+    let gitlink = |at: &str| {
+        git(
+            &root,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{at},vendor/lib"),
+            ],
+        );
+    };
+    gitlink(&first);
+    git(&root, &["commit", "--quiet", "-m", "base"]);
+    let base = text(git(&root, &["rev-parse", "HEAD"]));
+    std::fs::write(root.join("src.rs"), "fn a() { b(); }\n").unwrap();
+    std::fs::write(root.join("data.bin"), b"bin\0ary2\n").unwrap();
+    git(&root, &["add", "src.rs", "data.bin"]);
+    gitlink(&base);
+    git(&root, &["commit", "--quiet", "-m", "change"]);
+    let head = text(git(&root, &["rev-parse", "HEAD"]));
+
+    let theirs = patch_maker(&root, &scratch, &base, &head);
+    let shown = String::from_utf8_lossy(&theirs).into_owned();
+    let blob = |at: &str, path: &str| text(git(&root, &["rev-parse", &format!("{at}:{path}")]));
+    for line in [
+        format!(
+            "index {}..{} 100644\n",
+            blob(&base, "src.rs"),
+            blob(&head, "src.rs")
+        ),
+        format!(
+            "index {}..{} 100644\n",
+            blob(&base, "data.bin"),
+            blob(&head, "data.bin")
+        ),
+        format!("index {first}..{base} 160000\n"),
+        "GIT binary patch\n".to_owned(),
+        format!("+Subproject commit {base}\n"),
+    ] {
+        assert!(
+            shown.contains(&line),
+            "the maker wrote no {line:?}:\n{shown}"
+        );
+    }
+    let ours = commit_patch(
+        &root,
+        Some(&base),
+        &head,
+        &fresh(&scratch, "ours"),
+        &options(),
+    )
+    .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&ours),
+        shown,
+        "the judge's patch is not the bytes forge-warden's make_patch.sh writes"
+    );
+    assert_eq!(ours, theirs);
 }
 
 #[test]

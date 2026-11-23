@@ -1,6 +1,6 @@
 // DDF review route: DDF-R12, DDF-R13. Status and remaining work are recorded in the linked ledger; this comment does not claim delivery.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-graph--src--risk
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
 use crate::evidence::{CarriedShares, Evidence, EvidenceSignal, Share, file_evidence_marked};
 use deep_diff_forge_core::{FileStatus, PatchLineKind, ReviewFile};
 
@@ -15,6 +15,9 @@ pub enum RiskSignal {
     DeletedFile,
     /// A binary change (no reviewable text).
     BinaryChange,
+    /// Git gave a text file's change as binary (an attribute such as `-diff`, or a NUL byte),
+    /// and the acquisition read it again as text ([`deep_diff_forge_core::PatchTwin::diff_suppressed`]).
+    DiffSuppressed,
     /// A large change by added+removed line count.
     LargeChange,
     /// Many hunks in one file.
@@ -47,6 +50,7 @@ impl RiskSignal {
             Self::NewFile => "new_file",
             Self::DeletedFile => "deleted_file",
             Self::BinaryChange => "binary_change",
+            Self::DiffSuppressed => "diff_suppressed",
             Self::LargeChange => "large_change",
             Self::ManyHunks => "many_hunks",
             Self::ConfigOrLockfile => "config_or_lockfile",
@@ -66,7 +70,7 @@ impl RiskSignal {
     #[must_use]
     pub const fn weight(self) -> u32 {
         match self {
-            Self::PublicApiSurface => 5,
+            Self::PublicApiSurface | Self::DiffSuppressed => 5,
             Self::DeletedFile | Self::LargeChange | Self::HazardousText | Self::SymlinkChange => 3,
             Self::NewFile | Self::ManyHunks | Self::ExecutableBit => 2,
             Self::BinaryChange | Self::ConfigOrLockfile => 1,
@@ -167,6 +171,7 @@ fn score_path_and_shape(file: &ReviewFile) -> (u32, Vec<RiskSignal>) {
     if is_generated_or_vendored(path) {
         signals.push(RiskSignal::GeneratedOrVendored);
         score += status_weight(file, &mut signals);
+        score += suppressed_weight(file, &mut signals);
         score += hazard_weight(file, &mut signals);
         score += mode_weight(file, &mut signals);
         return (score, signals);
@@ -192,6 +197,7 @@ fn score_path_and_shape(file: &ReviewFile) -> (u32, Vec<RiskSignal>) {
     }
 
     score += status_weight(file, &mut signals);
+    score += suppressed_weight(file, &mut signals);
     score += hazard_weight(file, &mut signals);
     score += mode_weight(file, &mut signals);
 
@@ -276,17 +282,19 @@ fn mode_weight(file: &ReviewFile, signals: &mut Vec<RiskSignal>) -> u32 {
 /// The weight of a file's status (added, deleted, binary), recording its signal.
 ///
 /// A binary section with a `new file mode` header also carries `new_file`, and one with a
-/// `deleted file mode` header `deleted_file`, with the weights of a text file; its status stays
-/// `binary_changed`. These are the headers Git acts on: with one, `git apply` creates or deletes
-/// the file, or refuses when the path's state disagrees. The names on the binary line are not
-/// read: Git does not read them either (review of 0.8.4, R84B-L-1, VR84B-M-1). 0.8.3 read
-/// `Files /dev/null and b/x differ` under `new file mode` as `added`, and without this such a
-/// creation ranked below 0.8.3 once the line became a binary marker (R84-M-1).
+/// `deleted file mode` header `deleted_file`, with the weights of a text file. These are the
+/// headers Git acts on: with one, `git apply` creates or deletes the file, or refuses when the
+/// path's state disagrees. The names on the binary line are not read: Git does not read them
+/// either (review of 0.8.4, R84B-L-1, VR84B-M-1). 0.8.3 read `Files /dev/null and b/x differ`
+/// under `new file mode` as `added`, and without this such a creation ranked below 0.8.3 once
+/// the line became a binary marker (R84-M-1). The binary reading comes from the marker, not the
+/// status: since 0.10.0 a binary creation, deletion or rename has Git's status (S3.4).
 fn status_weight(file: &ReviewFile, signals: &mut Vec<RiskSignal>) -> u32 {
+    let binary = file.patch_twin.is_binary();
     let signal = match file.status {
-        FileStatus::Added => RiskSignal::NewFile,
-        FileStatus::Deleted => RiskSignal::DeletedFile,
-        FileStatus::BinaryChanged => {
+        FileStatus::Added if !binary => RiskSignal::NewFile,
+        FileStatus::Deleted if !binary => RiskSignal::DeletedFile,
+        _ if binary => {
             let says = |header: &str| {
                 file.patch_twin
                     .metadata
@@ -309,6 +317,16 @@ fn status_weight(file: &ReviewFile, signals: &mut Vec<RiskSignal>) -> u32 {
     };
     signals.push(signal);
     signal.weight()
+}
+
+/// +5 when Git was told not to show this text file's changes, recording the signal: the act
+/// itself is evidence, whatever the text then shows (S3.20).
+fn suppressed_weight(file: &ReviewFile, signals: &mut Vec<RiskSignal>) -> u32 {
+    if file.patch_twin.diff_suppressed.is_none() {
+        return 0;
+    }
+    signals.push(RiskSignal::DiffSuppressed);
+    RiskSignal::DiffSuppressed.weight()
 }
 
 /// Count added and removed lines across a file's hunks.
@@ -406,7 +424,7 @@ mod evidence_score_tests {
         assert_eq!(score("src/lib.rs", &[], &lines), 7 + 3, "large change 3");
         let mut text = "--- a/src/lib.rs\n+++ b/src/lib.rs\n".to_owned();
         for hunk in 0..MANY_HUNKS {
-            let _ = write!(text, "@@ -{0},1 +{0},2 @@\n x\n+y\n", hunk * 10 + 1);
+            let _ = write!(text, "@@ -{0},1 +{0},2 @@\n+y\n x\n", hunk * 10 + 1);
         }
         let many = parse(&text).unwrap().remove(0);
         assert_eq!(assess_file(&many).score, 7 + 2, "many hunks 2");
@@ -512,6 +530,32 @@ mod tests {
 
     fn file(input: &str) -> ReviewFile {
         parse(input).unwrap().into_iter().next().unwrap()
+    }
+
+    /// The binary section `text`. 0.10.0 (ruling 1 of the integration, class C): the parser
+    /// refuses a section whose headers are no shape Git writes (`Files … differ`; an `index` line
+    /// with no mode where Git writes one), with the reason asserted here; its score is then taken
+    /// of the section as built without the parser: an in-place binary change of the path that
+    /// carries the refused section's header lines.
+    fn binary_section(text: &str) -> ReviewFile {
+        match parse(text) {
+            Ok(mut files) => files.remove(0),
+            Err(deep_diff_forge_patch::PatchParseError::HeaderNotWrittenByGit {
+                reason, ..
+            }) => {
+                let why = "no section Git writes has this header after the ones before it";
+                assert_eq!(reason, why, "{text}");
+                let first = text.lines().next().unwrap();
+                let path = &first[first.rfind(" b/").unwrap() + 3..];
+                let mut f = file(&format!(
+                    "{first}\nindex 1111111..2222222 100644\nBinary files a/{path} and b/{path} differ\n"
+                ));
+                let skip = usize::from(!f.patch_twin.metadata[0].starts_with("diff --git "));
+                f.patch_twin.metadata = text.lines().skip(skip).map(str::to_owned).collect();
+                f
+            }
+            Err(error) => panic!("{text}: {error}"),
+        }
     }
 
     fn modify(path: &str, body_lines: usize) -> ReviewFile {
@@ -632,7 +676,7 @@ mod tests {
         let mut s = String::from("--- a/src/x.rs\n+++ b/src/x.rs\n");
         for i in 0..6 {
             let n = i * 10 + 1;
-            let _ = write!(s, "@@ -{n},1 +{n},1 @@\n-a\n+b\n");
+            let _ = write!(s, "@@ -{n},2 +{n},2 @@\n-a\n+b\n ctx\n");
         }
         let (_, signals) = score_file(&file(&s));
         assert!(signals.contains(&RiskSignal::ManyHunks));
@@ -794,8 +838,8 @@ mod tests {
     /// deletion written with it ranked as `added` or `deleted`. Read as a binary marker (G1), it
     /// lost `new_file`/`deleted_file` and scored below 0.8.3 (6 to 5, 4 to 3, 4 to 2). A binary
     /// section with a `new file mode` or `deleted file mode` header keeps that signal and its
-    /// weight; its status stays `binary_changed`. The scores of the published v0.8.3 binary are
-    /// beside each case.
+    /// weight; it stays binary (since 0.10.0 its status is Git's: S3.4). The scores of the
+    /// published v0.8.3 binary are beside each case.
     #[test]
     fn a_binary_creation_or_deletion_keeps_new_file_or_deleted_file() {
         use RiskSignal::{
@@ -804,7 +848,7 @@ mod tests {
         const NULL: &str = "0000000000000000000000000000000000000000";
         const BLOB: &str = "545a1639dc6dea3534198996319dd2847b002e4a";
         let section = |path: &str, headers: &str, marker: &str| {
-            file(&format!(
+            binary_section(&format!(
                 "diff --git a/{path} b/{path}\n{headers}\n{marker}\n"
             ))
         };
@@ -854,12 +898,7 @@ mod tests {
                 (5, vec![TestOnly, DeletedFile, BinaryChange]),
             ),
         ] {
-            assert_eq!(
-                f.status,
-                FileStatus::BinaryChanged,
-                "{:?}",
-                f.patch_twin.metadata
-            );
+            assert!(f.patch_twin.is_binary(), "{:?}", f.patch_twin.metadata);
             let scored = score_file(&f);
             assert!(scored.0 >= v083, "{:?}", f.patch_twin.metadata);
             assert_eq!(scored, expected, "{:?}", f.patch_twin.metadata);
@@ -882,6 +921,44 @@ mod tests {
         );
     }
 
+    /// S3.4: a binary creation, deletion or rename has Git's status (`added`, `deleted`,
+    /// `renamed`), and keeps every signal and the score 0.9.0 gave it as `binary_changed`
+    /// (measured on the frozen 0.8.4 and 0.9.0 binaries, beside each case); the `binary_change`
+    /// signal comes from the marker, not the status.
+    #[test]
+    fn a_binary_status_change_keeps_every_signal_and_score() {
+        use RiskSignal::{BinaryChange, DeletedFile, ExecutableBit, NewFile, TestOnly};
+        const NULL: &str = "0000000000000000000000000000000000000000";
+        const BLOB: &str = "545a1639dc6dea3534198996319dd2847b002e4a";
+        let cases = [
+            (
+                format!("diff --git a/x b/x\nnew file mode 100644\nindex {NULL}..{BLOB}\nBinary files /dev/null and b/x differ\n"),
+                FileStatus::Added,
+                (5, vec![NewFile, BinaryChange]),
+            ),
+            (
+                format!("diff --git a/x b/x\nnew file mode 100755\nindex {NULL}..{BLOB}\nGIT binary patch\nliteral 0\nHcmV?d00001\n\nliteral 0\nHcmV?d00001\n\n"),
+                FileStatus::Added,
+                (7, vec![NewFile, BinaryChange, ExecutableBit]),
+            ),
+            (
+                format!("diff --git a/tests/a.rs b/tests/a.rs\ndeleted file mode 100644\nindex {BLOB}..{NULL}\nBinary files a/tests/a.rs and /dev/null differ\n"),
+                FileStatus::Deleted,
+                (5, vec![TestOnly, DeletedFile, BinaryChange]),
+            ),
+            (
+                "diff --git a/x b/r\nsimilarity index 60%\nrename from x\nrename to r\nindex 1111111..2222222 100644\nBinary files a/x and b/r differ\n".to_owned(),
+                FileStatus::Renamed,
+                (3, vec![BinaryChange]),
+            ),
+        ];
+        for (text, status, expected) in cases {
+            let f = file(&text);
+            assert_eq!(f.status, status, "{text}");
+            assert_eq!(score_file(&f), expected, "{text}");
+        }
+    }
+
     /// Review of 0.8.4, R84B-L-1 and VR84B-M-1: the names on the binary line are not read, as
     /// Git does not read them. With no mode header, `/dev/null` among those names, which an
     /// in-place change of a path named `foo and /dev/null` or a crafted line can show, carries
@@ -893,7 +970,7 @@ mod tests {
         const NULL: &str = "0000000000000000000000000000000000000000";
         const BLOB: &str = "545a1639dc6dea3534198996319dd2847b002e4a";
         let section = |path: &str, headers: &str, marker: &str| {
-            file(&format!(
+            binary_section(&format!(
                 "diff --git a/{path} b/{path}\n{headers}\n{marker}\n"
             ))
         };
@@ -1056,10 +1133,12 @@ mod tests {
             ),
         );
         assert_eq!(scored(&submodule), (4, vec![NewFile]));
+        // Modes with another execute bit, which Git reads but never writes, are refused by the
+        // parser since its accept-list (`deep-diff-forge-patch/CONFORMANCE.md`), so no review
+        // carries one.
         for x in ["100100", "100010", "100001"] {
-            assert_eq!(
-                scored(&new_file("run.sh", x)).1,
-                vec![NewFile, ExecutableBit],
+            assert!(
+                deep_diff_forge_patch::parse(&new_file("run.sh", x)).is_err(),
                 "{x}"
             );
         }

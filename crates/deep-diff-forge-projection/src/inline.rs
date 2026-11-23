@@ -95,7 +95,8 @@ fn pairs(lines: &[PatchLine]) -> Vec<Option<usize>> {
     paired
 }
 
-/// Render every file inline: a status/path header, per-hunk separators, and
+/// Render every file inline: a status/path header, per-hunk separators (with where Git anchors a
+/// hunk at the start or the end of the file), and
 /// `old new marker text` rows, each followed by a `\` note for what its text cannot show (a
 /// lossy line, a missing final newline, an added line that shows exactly as its removed pair).
 /// Tabs are printed raw, so "shows exactly as" assumes the terminal's default 8-column tab stops.
@@ -114,7 +115,12 @@ pub fn render_inline(files: &[ReviewFile]) -> String {
         for hunk in &file.patch_twin.hunks {
             let old_start = hunk.old_start.unwrap_or(0);
             let new_start = hunk.new_start.unwrap_or(0);
-            let _ = writeln!(out, "  @@ -{old_start} +{new_start} @@");
+            // The header's lines are the patch's claim; where Git anchors the hunk is said.
+            let anchor = hunk
+                .git_anchor()
+                .map(|a| format!(" ({a})"))
+                .unwrap_or_default();
+            let _ = writeln!(out, "  @@ -{old_start} +{new_start} @@{anchor}");
             let paired = pairs(&hunk.lines);
             for (line, pair) in hunk.lines.iter().zip(paired) {
                 let _ = writeln!(
@@ -148,6 +154,22 @@ mod tests {
     fn rows(input: &str) -> Vec<InlineRow> {
         let files = parse(input).unwrap();
         inline_rows(&files[0])
+    }
+
+    /// A hunk with no trailing context is placed by Git at the end of the file, whatever line
+    /// its header names (`CONFORMANCE.md`, row `hunk-anchor`): the review says so.
+    #[test]
+    fn a_hunk_git_anchors_at_the_end_says_so() {
+        let files = parse("--- a/f\n+++ b/f\n@@ -2,2 +2,2 @@\n a\n-b\n+B\n").unwrap();
+        assert!(
+            render_inline(&files)
+                .contains("  @@ -2 +2 @@ (Git places this hunk at the end of the file)\n"),
+            "{}",
+            render_inline(&files)
+        );
+        let inner = parse("--- a/f\n+++ b/f\n@@ -2,3 +2,3 @@\n a\n-b\n+B\n c\n").unwrap();
+        let shown = render_inline(&inner);
+        assert!(!shown.contains("Git places"), "{shown}");
     }
 
     #[test]
@@ -250,9 +272,11 @@ mod tests {
 
     #[test]
     fn multi_hunk_rows_concatenate() {
-        let input = "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-a\n+A\n@@ -9,1 +9,1 @@\n-b\n+B\n";
+        let input =
+            "--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n+A\n ctx\n@@ -9,2 +9,2 @@\n-b\n+B\n ctx\n";
         let files = parse(input).unwrap();
-        assert_eq!(inline_rows(&files[0]).len(), 4);
+        // Two changed lines and one line of context in each hunk.
+        assert_eq!(inline_rows(&files[0]).len(), 6);
     }
 
     #[test]
@@ -289,7 +313,7 @@ mod tests {
         let out = render_inline(&parse(nonl).unwrap());
         assert_eq!(
             out,
-            "modified  x.sh\n  @@ -1 +1 @@\n     1      - rm -rf /tmp/cache\n            \\ No newline at end of file\n          1 + rm -rf /tmp/cache\n"
+            "modified  x.sh\n  @@ -1 +1 @@ (Git places this hunk on the whole file)\n     1      - rm -rf /tmp/cache\n            \\ No newline at end of file\n          1 + rm -rf /tmp/cache\n"
         );
         let lossy = b"--- a/x.txt\n+++ b/x.txt\n@@ -1 +1 @@\n-key=\xff\n+key=\xfe\n";
         let decoded = deep_diff_forge_patch::decode(lossy);
@@ -354,7 +378,8 @@ mod tests {
         assert!(!noted("a", "b"));
         // Past line 9999 the text starts at column 16, where a tab is eight spaces wide.
         let at = |old: &str, new: &str| {
-            let input = format!("--- a/x\n+++ b/x\n@@ -10000 +10000 @@\n-{old}\n+{new}\n");
+            let input =
+                format!("--- a/x\n+++ b/x\n@@ -10000,2 +10000,2 @@\n-{old}\n+{new}\n ctx\n");
             render_inline(&parse(&input).unwrap()).contains(crate::notes::RENDERS_ALIKE)
         };
         assert!(at("\techo", "        echo"));

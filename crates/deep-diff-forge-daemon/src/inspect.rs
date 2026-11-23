@@ -1,6 +1,6 @@
 // DDF integration: read-only inspection of a daemon location for `deploy doctor` (2026-10-30).
 // Design/status: docs/OPERATIONS_AND_DAEMON.md#deploy-doctor
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-daemon--src--inspect
+// Module index: docs/ARCHITECTURE.md#crates-as-built-030
 //! What is at a daemon location, read without changing anything: the socket, its start lock and
 //! the directory they live in. Each answer applies the same rule the daemon applies when it
 //! starts (`serve.rs`), so a refusal here is a start or a connect that would be refused.

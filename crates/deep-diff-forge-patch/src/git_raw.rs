@@ -1,6 +1,6 @@
 // DDF integration: R02, R03, R07. Take path/status/mode/blob identity from Git's NUL-delimited raw records, pair each record with its patch block and refuse on any count or identity mismatch; the patch bytes stay the authoritative artifact.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--git_raw
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
 //! Pure (no I/O) parser for one `git diff --raw -z --patch` byte stream.
 //!
 //! Approach adapted from tuicr's `src/vcs/git/raw.rs` (MIT license, pinned peer
@@ -152,6 +152,9 @@ pub struct GitChange {
     pub patch_range: Range<usize>,
     /// Number of `diff --git` blocks this change owns (2 for a type change).
     pub block_count: usize,
+    /// Git first gave this change as binary and its block is the text read again
+    /// ([`deep_diff_forge_core::PatchTwin::diff_suppressed`]); `None` for a first reading.
+    pub diff_suppressed: Option<deep_diff_forge_core::DiffSuppression>,
 }
 
 impl GitChange {
@@ -403,6 +406,19 @@ impl StructuredDiff {
         &self.changes
     }
 
+    /// Change `at` replaced by `change`, whose block(s) are `bytes`: the other changes keep
+    /// their bytes, and the ranges after `at` move by the difference in length.
+    pub(crate) fn replace_section(&mut self, at: usize, mut change: GitChange, bytes: &[u8]) {
+        let old = self.changes[at].patch_range.clone();
+        self.patch.splice(old.clone(), bytes.iter().copied());
+        let moved = |n: usize| n - old.len() + bytes.len();
+        for later in &mut self.changes[at + 1..] {
+            later.patch_range = moved(later.patch_range.start)..moved(later.patch_range.end);
+        }
+        change.patch_range = old.start..old.start + bytes.len();
+        self.changes[at] = change;
+    }
+
     /// The exact patch bytes owned by `change`.
     #[must_use]
     pub fn change_patch(&self, change: &GitChange) -> &[u8] {
@@ -472,6 +488,7 @@ impl StructuredDiff {
                 .ok_or(GitAcquireError::NonUtf8Path { record })?;
             for file in slots.by_ref().take(change.block_count) {
                 path.clone_into(&mut file.path);
+                file.patch_twin.diff_suppressed = change.diff_suppressed;
             }
         }
         Ok(files)
@@ -769,6 +786,7 @@ fn pair(
         binary,
         patch_range,
         block_count: roles.len(),
+        diff_suppressed: None,
     })
 }
 

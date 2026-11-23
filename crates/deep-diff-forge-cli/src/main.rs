@@ -1,6 +1,18 @@
 // DDF integration: R02, R09, R19, R21. Validate that a patch transforms the captured base into the captured candidate before attaching semantics; export explicit coverage and snapshot scope.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#shared-service
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--main
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#shared-service
+
+/// `eprintln!` for this crate: a diagnostic that cannot be written is dropped, so the exit code
+/// chosen after it still reaches the caller. std's `eprintln!` panics when stderr cannot be
+/// written (`2>/dev/full`), and that panic exited 101 whatever the error was (S3.17a.g). Declared
+/// before every module, so it stands in for std's in the whole binary crate.
+macro_rules! eprintln {
+    ($($arg:tt)*) => {{
+        use ::std::io::Write as _;
+        let _ = ::std::writeln!(::std::io::stderr(), $($arg)*);
+    }};
+}
+
 mod analysis;
 mod args;
 mod bench;
@@ -31,12 +43,31 @@ fn emit(s: &str) {
     // (`trusted`, `session_id`) as cleartext logging on PR #83. Output is single-threaded.
     let mut stdout = std::io::stdout();
     if let Err(err) = stdout.write_all(s.as_bytes()).and_then(|()| stdout.flush()) {
+        // A refusal decided before the output wins over any write error: a gone reader or a
+        // full disk (F3 of the 0.10.0 tree review).
+        if let Some(reason) = PENDING_REFUSAL.get() {
+            refuse_now(reason);
+        }
         if err.kind() == std::io::ErrorKind::BrokenPipe {
             std::process::exit(exit::SUCCESS);
         }
         eprintln!("error: write failed: {err}");
         std::process::exit(exit::IO);
     }
+}
+
+/// A refusal decided before its command writes its output, with its stderr line (empty for
+/// none). A reader that closes stdout then still gets exit 7, not the clean exit of a broken pipe:
+/// `findings verify --require-findings` exited 0 with an empty stderr when its reader had gone
+/// (S3.17a.g2, DDF-2026-010).
+static PENDING_REFUSAL: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
+/// Exit 7 with `reason` on stderr (nothing when it is empty).
+fn refuse_now(reason: &str) -> ! {
+    if !reason.is_empty() {
+        eprintln!("{reason}");
+    }
+    std::process::exit(EXIT_REFUSED);
 }
 
 /// `println!`-shaped wrapper over [`emit`] for broken-pipe-tolerant line output.
@@ -248,12 +279,24 @@ const REVIEW_VALUED: [&str; 6] = [
     "--max-bytes",
     "--cursor",
 ];
+/// `--stdin-patch`'s flags: the shared ones and Git's `--allow-empty`, admitted nowhere else.
+const STDIN_PATCH_FLAGS: [&str; 9] = [
+    "--json",
+    "--jsonl",
+    "--rank",
+    "--cluster",
+    "--outline",
+    "--hunks",
+    "--require-files",
+    "--require-hunks",
+    "--allow-empty",
+];
 const STDIN_PATCH: args::Spec = args::Spec {
-    flags: &REVIEW_FLAGS,
+    flags: &STDIN_PATCH_FLAGS,
     valued: &REVIEW_VALUED,
     positionals: 0,
 };
-const STDIN_PATCH_USAGE: &str = "deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side | --outline | --hunks [--address A]... [--path P]...] [--max-bytes N] [--cursor C] [--require-files] [--require-hunks]";
+const STDIN_PATCH_USAGE: &str = "deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side | --outline | --hunks [--address A]... [--path P]...] [--max-bytes N] [--cursor C] [--require-files] [--require-hunks] [--allow-empty]";
 const SCHEMA: args::Spec = args::Spec {
     flags: &[],
     valued: &[],
@@ -337,8 +380,8 @@ fn seal_of(input: &[u8]) -> InputSeal {
 /// summary (default).
 ///
 /// Exit codes follow the CLI contract: 2 = usage error, 3 = input read failure,
-/// 4 = patch parse failure, 7 = `--require-files` / `--require-hunks` refused
-/// a patch with nothing to review.
+/// 4 = patch parse failure or no patch in the input, 7 = `--require-files` / `--require-hunks`
+/// refused a patch with nothing to review.
 fn stdin_patch(opts: &[String]) {
     git_input::reject_with_stdin(opts);
     args::admit_or_exit(opts, &STDIN_PATCH, STDIN_PATCH_USAGE);
@@ -346,6 +389,7 @@ fn stdin_patch(opts: &[String]) {
     let bytes = read_capped_bytes_or_exit(std::io::stdin().lock(), "stdin");
     let decoded = deep_diff_forge_patch::decode(&bytes);
     let guards = InputGuards::from_opts(opts);
+    let allow_empty = opts.iter().any(|a| a == "--allow-empty");
     // --jsonl streams one event per file through the real pipeline runner.
     if opts.iter().any(|a| a == "--jsonl") {
         if !decoded.is_exact() {
@@ -353,20 +397,38 @@ fn stdin_patch(opts: &[String]) {
             // the marked files instead.
             let files = parse_decoded_or_exit(&decoded);
             guards.enforce(&files);
+            refuse_no_patch(&files, allow_empty);
             emit(&deep_diff_forge_pipeline::jsonl_events(&files));
             return;
         }
-        if guards.any() {
+        if guards.any() || !allow_empty {
             // The pipeline parses internally; the gate needs the counts
             // before anything is streamed, so pre-flight the parse here.
-            guards.enforce(&parse_or_exit(decoded.text()));
+            let files = parse_or_exit(decoded.text());
+            guards.enforce(&files);
+            refuse_no_patch(&files, allow_empty);
         }
         run_jsonl_pipeline(decoded.text().to_owned());
         return;
     }
 
     let review = sealed_review_or_exit(&bytes, guards);
+    refuse_no_patch(review.files(), allow_empty);
     emit_review(&review, opts);
+}
+
+/// Input in which Git finds no patch (no file section, and nothing refused before: zero bytes,
+/// whitespace, prose, a commit message alone) is refused as `git apply` refuses it ("No valid
+/// patches in input"), with exit 4 and nothing on stdout. 0.9.0 read it as a clean review of
+/// zero files, so a mis-piped diff passed. `--allow-empty`, Git's flag with Git's meaning, says
+/// an empty change is meant (S3.5). After `--require-files`/`--require-hunks`, which keep exit 7.
+fn refuse_no_patch(files: &[deep_diff_forge_core::ReviewFile], allow_empty: bool) {
+    if files.is_empty() && !allow_empty {
+        eprintln!(
+            "error: no_patch_in_input: no patch in the input, as git apply says: No valid patches in input (an empty change is allowed with --allow-empty)"
+        );
+        std::process::exit(exit::INVALID_INPUT);
+    }
 }
 
 /// Validate cross-option contracts before acquiring or reading a patch. A recognized option that
@@ -590,6 +652,13 @@ fn daemon_cmd(opts: &[String]) {
         eprintln!("       set XDG_RUNTIME_DIR, or pass an explicit --socket PATH.");
         std::process::exit(exit::USAGE);
     };
+    // Linux holds a socket path and its NUL in 108 bytes (`sun_path`), so a longer one can be
+    // neither bound nor reached: refused up front (S3.8.c). Before, `path` printed it, exit 0.
+    let length = location.path().as_os_str().len();
+    if matches!(sub, Some("path" | "start")) && length >= 108 {
+        eprintln!("error: the socket path is {length} bytes; a Unix socket path is at most 107");
+        std::process::exit(exit::USAGE);
+    }
     match sub {
         Some("path") => emitln!("{}", location.path().display()),
         Some("start") => {
@@ -1499,15 +1568,23 @@ fn findings_cmd(opts: &[String]) {
         &deep_diff_forge_core::sha256_hex(text.as_bytes()),
         &seal.tool_version,
     );
-    emit_pretty_json(&doc);
     let required = |flag: &str| opts.iter().any(|a| a == flag);
-    if required("--require-findings") && verdict.total() == 0 {
-        eprintln!("refused: 0 findings in the findings file (--require-findings)");
-        std::process::exit(EXIT_REFUSED);
-    }
     let all_accepted = verdict.refused.is_empty() && verdict.over_limit == 0;
-    if required("--require-all") && !all_accepted {
-        std::process::exit(EXIT_REFUSED);
+    // Decided before the verdict is written, so a reader that closes stdout cannot turn the
+    // refusal into a clean exit (S3.17a.g2).
+    let refusal = if required("--require-findings") && verdict.total() == 0 {
+        Some("refused: 0 findings in the findings file (--require-findings)")
+    } else if required("--require-all") && !all_accepted {
+        Some("")
+    } else {
+        None
+    };
+    if let Some(reason) = refusal {
+        let _ = PENDING_REFUSAL.set(reason);
+    }
+    emit_pretty_json(&doc);
+    if let Some(reason) = refusal {
+        refuse_now(reason);
     }
 }
 
@@ -1596,20 +1673,20 @@ fn deploy_doctor(json: bool, socket: Option<&std::path::Path>) {
 /// Report the release publication posture for the current version.
 ///
 /// This is a declared snapshot (like `deploy status`): the actual release acts are the
-/// owner's signed tag, `scripts/release_local.sh` and `cargo publish`. From 0.8.4 the source
-/// is on GitLab, Gitea and Forgejo, so those are `published`, and nothing goes to GitHub:
-/// `github` and `github-release` are `skipped` (the members and the target names stay, so
-/// the `release.v0` schema is unchanged), and a skipped target is not listed as `pending`.
-/// crates.io is `blocked`: publication is on hold by owner decision.
+/// owner's signed tag, `scripts/release_local.sh` and `cargo publish`. From 0.10.0 every
+/// target is `published`: the signed tag and its release on GitLab (the place of release),
+/// Gitea and Forgejo; GitHub as a mirror of the source and of the release page; the crates on
+/// crates.io from the tag. 0.8.4 and 0.9.0 declared `github` and `github-release` `skipped`
+/// and crates.io `blocked`. A skipped target is not listed as `pending`.
 fn deploy_release(json: bool) {
     use deep_diff_forge_core::{ReleasePlan, TargetState};
     let plan = ReleasePlan::new(env!("CARGO_PKG_VERSION"))
-        .with_target("github", TargetState::Skipped)
+        .with_target("github", TargetState::Published)
         .with_target("gitlab", TargetState::Published)
         .with_target("gitea", TargetState::Published)
         .with_target("forgejo", TargetState::Published)
-        .with_target("github-release", TargetState::Skipped)
-        .with_target("crates.io", TargetState::Blocked);
+        .with_target("github-release", TargetState::Published)
+        .with_target("crates.io", TargetState::Published);
     let pending: Vec<&str> = plan
         .pending()
         .into_iter()
@@ -1782,32 +1859,22 @@ fn run_cluster(files: &[deep_diff_forge_core::ReviewFile], opts: &[String], seal
 fn print_cluster_json(run: &deep_diff_forge_cluster::ClusterRun, seal: &InputSeal) {
     use deep_diff_forge_cluster::{dimension_label, join_label, parallelism_label};
     use deep_diff_forge_core::json_escape;
-    use std::fmt::Write as _;
     let dims: Vec<String> = run
         .receipt
         .dimensions
         .iter()
         .map(|d| json_escape(dimension_label(*d)))
         .collect();
-    let mut ranked = String::new();
-    for (i, rf) in run.ranked.iter().enumerate() {
-        if i > 0 {
-            ranked.push_str(",\n");
-        }
-        let signals: Vec<String> = rf.signals.iter().map(|s| json_escape(s.label())).collect();
-        let _ = write!(
-            ranked,
-            "    {{\"path\": {}, \"status\": {}, \"score\": {}, \"signals\": [{}]}}",
-            json_escape(&rf.path),
-            json_escape(rf.status.label()),
-            rf.score,
-            signals.join(", ")
-        );
-    }
+    // rank.v0's entry renderer, without the members a cluster list has never carried.
+    let ranked: Vec<String> = run
+        .ranked
+        .iter()
+        .map(|rf| deep_diff_forge_graph::entry_json(rf, false))
+        .collect();
     let body = if ranked.is_empty() {
         String::new()
     } else {
-        format!("\n{ranked}\n  ")
+        format!("\n    {}\n  ", ranked.join(",\n    "))
     };
     emitln!(
         "{{\n  \"schema\": \"deep-diff-forge.cluster.v0\",\n{}  \"receipt\": {{\"dimensions\": [{}], \"parallelism\": {}, \"workers\": {}, \"join_policy\": {}, \"file_count\": {}}},\n  \"ranked\": [{}]\n}}",
@@ -1835,62 +1902,14 @@ fn print_rank_human(ranked: &[deep_diff_forge_graph::RankedFile]) {
     emitln!("{} file(s) ranked", ranked.len());
 }
 
+/// The bytes `--rank --json` prints: the one `rank.v0` renderer's, which the daemon's `diff.rank`,
+/// `rpc` and MCP carry too (`agent doctor`'s `rank_parity` compares them byte for byte).
+pub(crate) fn rank_json(ranked: &[deep_diff_forge_graph::RankedFile], seal: &InputSeal) -> String {
+    deep_diff_forge_graph::RankDocument { seal, ranked }.to_json()
+}
+
 fn print_rank_json(ranked: &[deep_diff_forge_graph::RankedFile], seal: &InputSeal) {
-    use deep_diff_forge_core::json_escape;
-    use std::fmt::Write as _;
-    let mut items = String::new();
-    for (i, rf) in ranked.iter().enumerate() {
-        if i > 0 {
-            items.push_str(",\n");
-        }
-        let signals: Vec<String> = rf.signals.iter().map(|s| json_escape(s.label())).collect();
-        let _ = write!(
-            items,
-            "    {{\"path\": {}, \"status\": {}, \"score\": {}, \"signals\": [{}]",
-            json_escape(&rf.path),
-            json_escape(rf.status.label()),
-            rf.score,
-            signals.join(", ")
-        );
-        // Present only when found, as `hazards` is (the daemon's `diff.rank` is the same
-        // document: cli/tests/daemon_parity.rs).
-        if !rf.evidence.is_empty() {
-            let evidence: Vec<String> = rf
-                .evidence
-                .iter()
-                .map(|e| {
-                    format!(
-                        "{{\"signal\": {}, \"address\": {}, \"side\": {}, \"line\": {}, \"basis\": {}{}}}",
-                        json_escape(e.signal.label()),
-                        json_escape(&e.address),
-                        json_escape(e.side.label()),
-                        e.line,
-                        json_escape(e.basis.label()),
-                        // Present only when true, as in the daemon's document.
-                        if e.test_likely {
-                            ", \"test_likely\": true"
-                        } else {
-                            ""
-                        }
-                    )
-                })
-                .collect();
-            let _ = write!(items, ", \"evidence\": [{}]", evidence.join(", "));
-        }
-        if rf.evidence_truncated {
-            items.push_str(", \"evidence_truncated\": true");
-        }
-        items.push('}');
-    }
-    let body = if items.is_empty() {
-        String::new()
-    } else {
-        format!("\n{items}\n  ")
-    };
-    emitln!(
-        "{{\n  \"schema\": \"deep-diff-forge.rank.v0\",\n{}  \"ranked\": [{body}]\n}}",
-        seal.json_members()
-    );
+    emit(&rank_json(ranked, seal));
 }
 
 /// `--max-bytes` and `--cursor` for `--outline` / `--hunks` (the daemon's view budget and page).
@@ -2070,7 +2089,7 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "--stdin-patch",
-        "deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side | --outline | --hunks [--address A]... [--path P]...] [--max-bytes N] [--cursor C] [--require-files] [--require-hunks]",
+        STDIN_PATCH_USAGE,
         "Review a unified or Git patch read from stdin.",
     ),
     (
@@ -2173,11 +2192,10 @@ MATURITY:
   records local-only strategy receipts (learn status|record) and scores them,
   reporting whether a learned default would be trusted; no engine default reads
   the scores yet. It never uploads source and never mutates patch truth.
-  From 0.8.4 a release is a signed tag on GitLab, Gitea and Forgejo and a local
-  release (binary + checksums, scripts/release_local.sh); nothing goes to GitHub
-  (deploy release --json reports the per-target posture).
-  crates.io publication is on hold until the codebase is production-ready; a
-  configured registry token does not lift the hold.
+  A release is a signed tag on GitLab (the place of release), Gitea and Forgejo
+  and a local release (binary + checksums, scripts/release_local.sh); GitHub
+  mirrors the source and the release page, and the crates are published on
+  crates.io from the tag (deploy release --json reports the per-target posture).
 
 MACHINE CONTRACT:
   envelope -- <command…> wraps any command's result in one ddf.result.v1 JSON

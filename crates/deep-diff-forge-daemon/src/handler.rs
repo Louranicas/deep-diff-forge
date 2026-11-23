@@ -1,6 +1,6 @@
 // DDF review route: DDF-R26, DDF-R27, DDF-R29. Status and remaining work are recorded in the linked ledger; this comment does not claim delivery.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-daemon--src--handler
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
 use crate::admission::{Admission, Answering};
 use crate::metrics::Metrics;
 use crate::protocol::{
@@ -553,35 +553,35 @@ pub const METHODS: &[MethodSpec] = &[
     method(
         "diff.compute",
         "patch: string, require_files?: boolean, require_hunks?: boolean",
-        "the deep-diff-forge.review.v0 document `deep-diff-forge --stdin-patch --json` prints for the same patch",
+        "the deep-diff-forge.review.v0 document `deep-diff-forge --stdin-patch --json` prints for the same patch; hunk line ranges are the patch's own claim; Git places a hunk at old line 0 or 1 at the start of the file, and one whose last line is not context at the end of the file",
         1,
         Work::Request,
     ),
     method(
         "diff.rank",
         "patch: string, require_files?: boolean, require_hunks?: boolean",
-        "the deep-diff-forge.rank.v0 document `deep-diff-forge --stdin-patch --rank --json` prints for the same patch",
+        "the deep-diff-forge.rank.v0 document `deep-diff-forge --stdin-patch --rank --json` prints for the same patch, with canonical_json: its exact bytes",
         1,
         Work::Request,
     ),
     method(
         "review.outline",
         "patch: string, require_files?: boolean, require_hunks?: boolean, max_bytes?: integer, cursor?: string",
-        "deep-diff-forge.review-outline.v0: files in review-risk order with their hunks' addresses, headings and counts, no line text; next_cursor continues",
+        "deep-diff-forge.review-outline.v0: files in review-risk order with their hunks' addresses, ranges, headings and counts, no line text; next_cursor continues; hunk line ranges are the patch's own claim; Git places a hunk at old line 0 or 1 at the start of the file, and one whose last line is not context at the end of the file",
         1,
         Work::Request,
     ),
     method(
         "review.hunks",
         "patch: string, require_files?: boolean, require_hunks?: boolean, addresses?: [string], paths?: [string], max_bytes?: integer, cursor?: string",
-        "deep-diff-forge.review-hunks.v0: the chosen hunks verbatim (all, by address or by path), within max_bytes; next_cursor continues",
+        "deep-diff-forge.review-hunks.v0: the chosen hunks verbatim (all, by address or by path), within max_bytes; a hunk split across pages carries complete: false until its last page; next_cursor continues; hunk line ranges are the patch's own claim; Git places a hunk at old line 0 or 1 at the start of the file, and one whose last line is not context at the end of the file",
         1,
         Work::Request,
     ),
     method(
         "review.change",
         "repo: string, selection: \"staged\"|\"working_tree\"|\"range\", range?: \"A..B\", include_untracked?: boolean, view?: \"outline\"|\"hunks\"|\"review\"|\"rank\", require_files?: boolean, require_hunks?: boolean, addresses?: [string], paths?: [string], max_bytes?: integer, cursor?: string",
-        "the chosen view of the change Git returns for the selection, sealed over Git's exact bytes, with an acquisition member; only for a repository at or under a root the operator allowed (--allow-repo), and Git is stopped after 30 s",
+        "the chosen view of the change Git returns for the selection, sealed over Git's exact bytes, with an acquisition member; only for a repository at or under a root the operator allowed (--allow-repo), and Git is stopped after 30 s; hunk line ranges are the patch's own claim; Git places a hunk at old line 0 or 1 at the start of the file, and one whose last line is not context at the end of the file",
         1,
         Work::GitAcquisition,
     ),
@@ -874,6 +874,27 @@ fn parse_patch_param(request: &Request) -> Result<Vec<ReviewFile>, RpcError> {
 /// characters, and the MCP server, which does not go through `error_response`, sent it whole.
 const ECHO_BYTES: usize = 1024;
 
+/// A `review.change` acquisition error as the daemon answers it.
+fn acquire_error(e: deep_diff_forge_patch::GitAcquireError) -> RpcError {
+    match e {
+        deep_diff_forge_patch::GitAcquireError::InvalidSelection { .. } => {
+            RpcError::invalid_params(e.to_string())
+        }
+        // A header Git wrote that is not UTF-8 (a file name) is the change's own: the command
+        // line's exit 4 (`change_input`), not 3 (`io`, retry) (S3.27.f).
+        deep_diff_forge_patch::GitAcquireError::Parse(
+            deep_diff_forge_patch::PatchParseError::LossyHeader { .. },
+        ) => RpcError::new(
+            PATCH_PARSE_FAILED,
+            format!("refused (a file name that is not UTF-8): {e}"),
+        ),
+        deep_diff_forge_patch::GitAcquireError::Parse(ref parse) => {
+            RpcError::new(i64::from(parse.exit_code()), e.to_string())
+        }
+        other => RpcError::new(crate::protocol::GIT_FAILED, other.to_string()),
+    }
+}
+
 /// `review.change`: acquire a change from Git in an allowed repository, seal it, and answer with
 /// the chosen view. Git runs with the acquisition crate's fixed argv and a 30 s limit; nothing
 /// is written. A repository outside every allowed root is refused before Git runs.
@@ -915,16 +936,7 @@ fn review_change(params: &Value, allowed: &[std::path::PathBuf]) -> Result<Value
             )));
         }
     };
-    let git = |e: deep_diff_forge_patch::GitAcquireError| match e {
-        deep_diff_forge_patch::GitAcquireError::InvalidSelection { .. } => {
-            RpcError::invalid_params(e.to_string())
-        }
-        deep_diff_forge_patch::GitAcquireError::Parse(ref parse) => {
-            RpcError::new(i64::from(parse.exit_code()), e.to_string())
-        }
-        other => RpcError::new(crate::protocol::GIT_FAILED, other.to_string()),
-    };
-    let acquisition = acquire_git(&canonical, &selection, &options).map_err(git)?;
+    let acquisition = acquire_git(&canonical, &selection, &options).map_err(acquire_error)?;
     crate::deadline::check()?;
     // The repository is Git's top level, which can lie above the path asked for: a subdirectory
     // of a larger repository would otherwise expose the whole outer repository's change.
@@ -936,11 +948,11 @@ fn review_change(params: &Value, allowed: &[std::path::PathBuf]) -> Result<Value
             deep_diff_forge_core::display_safe_bounded(&top.to_string_lossy(), ECHO_BYTES)
         )));
     }
-    let captured = acquisition.diff().capture().map_err(git)?;
+    let captured = acquisition.diff().capture().map_err(acquire_error)?;
     let review = acquisition
         .diff()
         .sealed_review(&captured, env!("CARGO_PKG_VERSION"))
-        .map_err(git)?;
+        .map_err(acquire_error)?;
     crate::deadline::check()?;
     let guards = deep_diff_forge_patch::InputGuards {
         files: bool_param(params, "require_files")?,
@@ -1110,56 +1122,31 @@ fn str_param(params: &Value, key: &str) -> Result<String, RpcError> {
 
 /// `diff.rank`: the `deep-diff-forge.rank.v0` document the CLI's `--stdin-patch --rank --json`
 /// prints for the same patch, sealed like it. `diff.plan` returns only the bare ranking, which
-/// cannot say which bytes it ranked; MCP's `rank_patch` answered with that unsealed array.
+/// cannot say which bytes it ranked; MCP's `rank_patch` answered with that unsealed array. The
+/// value is the one renderer's bytes parsed ([`deep_diff_forge_graph::RankDocument`]), so it
+/// cannot differ from what the CLI prints; the additive member `canonical_json` holds those exact
+/// bytes, newline included, for a client that seals or compares bytes (S3.15).
 fn rank_document(review: &deep_diff_forge_patch::SealedReview) -> Value {
+    let ranked = rank(review.files());
     let seal = review.seal();
-    json!({
-        "schema": "deep-diff-forge.rank.v0",
-        "input_sha256": seal.input_sha256,
-        "tool": {"name": deep_diff_forge_core::InputSeal::TOOL_NAME, "version": seal.tool_version},
-        "ranked": ranked_json(&rank(review.files())),
-    })
+    let bytes = deep_diff_forge_graph::RankDocument {
+        seal,
+        ranked: &ranked,
+    }
+    .to_json();
+    let mut document = parsed(&bytes);
+    document["canonical_json"] = Value::String(bytes);
+    document
 }
 
+/// The bare ranking of `diff.plan` and `session.snapshot`: the document's entries, parsed.
 fn ranked_json(ranked: &[RankedFile]) -> Value {
-    Value::Array(
-        ranked
-            .iter()
-            .map(|rf| {
-                let mut entry = json!({
-                    "path": rf.path,
-                    "status": rf.status.label(),
-                    "score": rf.score,
-                    "signals": rf.signals.iter().map(|s| s.label()).collect::<Vec<_>>(),
-                });
-                // Present only when found, as `hazards` is: most files carry none.
-                if !rf.evidence.is_empty() {
-                    entry["evidence"] = rf
-                        .evidence
-                        .iter()
-                        .map(|e| {
-                            let mut item = json!({
-                                "signal": e.signal.label(),
-                                "address": e.address,
-                                "side": e.side.label(),
-                                "line": e.line,
-                                "basis": e.basis.label(),
-                            });
-                            // Present only when true, as `evidence_truncated` is.
-                            if e.test_likely {
-                                item["test_likely"] = json!(true);
-                            }
-                            item
-                        })
-                        .collect();
-                }
-                if rf.evidence_truncated {
-                    entry["evidence_truncated"] = json!(true);
-                }
-                entry
-            })
-            .collect(),
-    )
+    parsed(&deep_diff_forge_graph::ranked_array_json(ranked))
+}
+
+/// The value of JSON the one renderer wrote (it always parses; `null` if it ever did not).
+fn parsed(rendered: &str) -> Value {
+    serde_json::from_str(rendered).unwrap_or(Value::Null)
 }
 
 #[cfg(test)]
@@ -1207,6 +1194,42 @@ mod tests {
             (RESOURCE_EXHAUSTED, true),
             "{}",
             stopped.message
+        );
+    }
+
+    /// S3.27.f parity (handed over by lane A of W1): a changed file whose name is not UTF-8 is
+    /// refused as the change's own input, code 4 as the command line's exit 4, not 3 (retry).
+    #[test]
+    #[expect(clippy::disallowed_methods, reason = "test: makes a Git repository")]
+    fn a_non_utf8_file_name_is_a_change_input_refusal() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let scratch = deep_diff_forge_testkit::Scratch::new("change-latin");
+        let root = std::fs::canonicalize(scratch.path()).unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t.invalid"])
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{args:?}");
+        };
+        let name = root.join(std::ffi::OsStr::from_bytes(b"caf\xe9.rs"));
+        git(&["init", "-q"]);
+        std::fs::write(&name, b"fn a() {}\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "--no-gpg-sign", "-m", "base"]);
+        std::fs::write(&name, b"fn b() {}\n").unwrap();
+        let params =
+            serde_json::json!({"repo": root.to_str().unwrap(), "selection": "working_tree"});
+        let refused = review_change(&params, std::slice::from_ref(&root)).unwrap_err();
+        assert_eq!(refused.code, PATCH_PARSE_FAILED, "{}", refused.message);
+        assert!(
+            refused.message.contains("a file name that is not UTF-8"),
+            "{}",
+            refused.message
         );
     }
 

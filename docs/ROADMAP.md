@@ -24,19 +24,25 @@ hardware are under [open items for maintainers](#open-items-for-maintainers).
 
 Release and publication:
 
-- **0.9.0 is prepared** (the five integrity signals, the agent hooks, and the fixes of
-  [DDF-2026-003](advisories/DDF-2026-003.md)); it is a release once the signed tag `v0.9.0`
-  exists, with no GitHub release: it is published as a signed tag on GitLab, Gitea and Forgejo;
-  binaries built locally for Linux x86_64.
+- **0.10.0 is released** (the signed tag `v0.10.0`): Git's header shapes as a list, six fixes
+  for released versions and the cutover with forge-warden, in its
+  [release notes](release-notes/0.10.0.md); published on GitLab, Gitea and Forgejo with a
+  binary built locally for Linux x86_64, its release page mirrored on GitHub and its crates on
+  crates.io.
+- **0.9.0 is released** (the signed tag `v0.9.0`, 2026-11-18; the five integrity signals, the
+  agent hooks, and the fixes of [DDF-2026-003](advisories/DDF-2026-003.md)), published on
+  GitLab, Gitea and Forgejo with a binary built locally for Linux x86_64; its release page is
+  mirrored on GitHub (2026-11-22) and its crates are on crates.io (2026-11-23).
 - **0.8.4 is released** (the signed tag `v0.8.4`, 2026-11-17; the v0.8.3 rescore's G1 and G2 fix
-  and the fix for Rust code the code view hid), published on GitLab, Gitea and Forgejo with no
-  GitHub release; binaries built locally for Linux x86_64.
+  and the fix for Rust code the code view hid), published on GitLab, Gitea and Forgejo;
+  binaries built locally for Linux x86_64; its release page is mirrored on GitHub since
+  2026-11-22.
 - **0.8.3 is tagged** (`v0.8.3`, 2026-11-11 UTC, signed, owner decision; the v0.8.2 rescore's F3 and F2
   fix, the submodule-mode fix and three dependency updates); 0.8.2 is `v0.8.2` (2026-11-10).
   Any later `v*` tag is the owner's decision. Published GitHub releases are v0.1.0, v0.2.0, v0.3.0, v0.4.0, v0.5.0, v0.6.0, v0.7.0, v0.8.0, v0.8.1, v0.8.2 and v0.8.3; v0.2.1 was never tagged.
-- **crates.io is on hold** by owner decision until the codebase is production-hardened.
-  `release.yml` publishes only when the repository variable `DDF_CRATES_IO` is `open`; a
-  configured token does not lift the hold.
+- **crates.io:** the owner lifted the hold on 2026-11-23: 0.9.0's crates were published on 2026-11-23, and from 0.10.0 publishing is a step of the release.
+  `release.yml`'s publish job, which runs only when the repository variable `DDF_CRATES_IO` is
+  `open` (a configured token does not open it), is not used.
 
 Production readiness (2026-10-28 verdict): ready for its declared scope, a local single-user
 review tool (CLI, daemon, `rpc`, `mcp`, SDKs) on Linux and macOS, released as GitHub binaries.
@@ -224,9 +230,8 @@ Remaining, in order:
    24.04, and all 12 sandbox probes were refused. The Linux release binary is
    still built on `ubuntu-24.04` for glibc compatibility.
 4. **crates.io:** on hold until the codebase is production-ready and the
-   repository documentation is current.
+   repository documentation is current. (Lifted 2026-11-23: 0.9.0's crates were published on 2026-11-23, and from 0.10.0 publishing is a step of the release.)
 
-Open work after the anchor list: see the vault note [Strategy/Remaining Work 2026-10-28](obsidian://open?vault=deep-diff-forge.vault&file=Strategy%2FRemaining%20Work%202026-10-28) (owner's local vault).
 
 ## Deployment Link
 
@@ -235,4 +240,4 @@ Open work after the anchor list: see the vault note [Strategy/Remaining Work 202
 
 ## Review integration route
 
-[Implementation status and delivery gates](RECOMMENDATION_INTEGRATION.md#remaining-module-routes) ↔ [Module vault note](obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdocs--ROADMAP) (owner's local vault). This route records planned and evaluation-dependent work without claiming it is implemented.
+[Implementation status and delivery gates](RECOMMENDATION_INTEGRATION.md#remaining-module-routes). This route records planned and evaluation-dependent work without claiming it is implemented.

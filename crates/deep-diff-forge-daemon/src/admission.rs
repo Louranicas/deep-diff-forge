@@ -1,6 +1,6 @@
 // DDF integration: the daemon serves requests in parallel under a byte budget (2026-10-30), closing the one-engine residual risk.
 // Design/status: docs/OPERATIONS_AND_DAEMON.md#concurrency
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-daemon--src--admission
+// Module index: docs/ARCHITECTURE.md#crates-as-built-030
 //! Request admission: how many request bytes the daemon works on at once.
 //!
 //! Requests run in parallel, one per connection thread, so their working memory adds up. Each
