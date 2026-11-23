@@ -8198,6 +8198,12 @@ mod tests {
                 .collect();
             assert_eq!(lines, [2], "check_suppressed not on line 2 for {line:?}");
         }
+        // over two lines, which the reader of tokens reads (the spaced row reads one line)
+        let file = added("src/x.rs", &["#[", "expect(dead_code)]"]);
+        assert!(
+            signals(&file).contains(&S::CheckSuppressed),
+            "`#[` and `expect(dead_code)]` over two lines is no suppression"
+        );
         for line in [
             "let v = x.expect(\"present\");",
             "#[should_panic(expected = \"x\")]",
