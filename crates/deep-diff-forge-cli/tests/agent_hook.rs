@@ -12340,7 +12340,7 @@ fn every_stop_outcome_is_in_the_ledger() {
     let unjudged = outcome("unjudged", "0", &scratch.join("no-such-judge"));
     assert_eq!(
         unit(&unjudged, 0),
-        (json!("unjudged"), Value::Null, json!(0))
+        (json!("unjudged"), json!("chain.judge_missing"), json!(0))
     );
 
     // a commit of the session is recorded by its id, with the seals of its verdict
@@ -12991,3 +12991,4 @@ fn fail_stands_is_recorded() {
     assert_eq!(turns_of(&root, "s", "fail.new", "fail"), [1]);
     assert_eq!(turns_of(&root, "s", "fail.stands", "fail_stands"), [0]);
 }
+
