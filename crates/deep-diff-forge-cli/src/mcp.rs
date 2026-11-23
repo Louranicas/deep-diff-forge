@@ -1581,7 +1581,7 @@ mod tests {
         let v = server
             .handle_line(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#)
             .unwrap();
-        assert_eq!(v["result"]["tools"].as_array().unwrap().len(), 8);
+        assert_eq!(v["result"]["tools"].as_array().unwrap().len(), 9);
         assert!(
             v["result"].get("resultType").is_none(),
             "legacy results keep the legacy shape"
@@ -1886,6 +1886,7 @@ mod tests {
                 "rank_patch",
                 "review_outline",
                 "review_hunks",
+                "diagnose_patch",
                 "review_change",
                 "verify_findings",
                 "explain_exit_code",
