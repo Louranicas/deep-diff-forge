@@ -58,7 +58,8 @@ UTF-32 file is labelled and not decoded, so its code evidence is not found; its 
 is seen only when the change shows line 1, so wide text outside Latin-1 edited elsewhere, with
 no mark in the change, is not labelled. No attribute is trusted or looked for first,
 and attributes keep every other effect (line endings, the user's filters). Still read as binary,
-with `binary_change` and no new label: a real binary (not UTF-8) that no attribute hides. A
+with `binary_change` and no new label: a change no attribute hides whose second reading is
+not UTF-8, a real binary most often (and whatever is made to look like one: the limit below). A
 second reading (or `git check-attr`) that the byte budget or the 120 s limit cuts off never
 leaves a binary change silent and never fails the review: the file stays `binary_changed`, and
 the attribute label stands, else it carries `"diff_suppressed": "unread"`. Paths are read again
@@ -67,7 +68,11 @@ that does not fit is `unread` and the files after it are still read; once the ti
 run out, every binary change not yet read again is `unread`. A binary by content whose text
 form passes the 64 MiB budget is therefore labelled `unread`. A binary section stays
 unlabelled only when no attribute covers it and Git's second reading of it succeeded and is
-not valid UTF-8 (nor UTF-16 or UTF-32): positive evidence that it is not text. Every other
+not valid UTF-8 (nor UTF-16 or UTF-32). That is decided on the whole reading, so it is no
+proof of a real binary: one byte that is not UTF-8 on either side of the change, or in a
+change Git pairs with it as a copy, is enough (a script with a NUL byte and such a byte, a
+real binary replaced by a script), and the file then carries `binary_change` only, its lines
+unread: a stated limit. Every other
 outcome that does not end in a used text section keeps a known cause or is `unread`: a reading
 Git failed or cut, and a valid UTF-8 reading not used for any reason (the parser refused it
 alone, more than 1,000,000 lines say; Git answered it as more than one change, a copy under

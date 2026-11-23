@@ -491,7 +491,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   as the command line exits 4 (S3.27.f); it was code 3, which reads as "may be transient".
 
 - **A file hidden from `git diff` by an attribute is never both blind and unlabelled, and one
-  hidden by its content is unlabelled only when Git's second reading says it is not text** (S3.27,
+  hidden by its content is unlabelled only when Git's second reading of the change is not valid
+  UTF-8** (S3.27,
   [DDF-2026-006](docs/advisories/DDF-2026-006.md)). The first fix of this release read such a
   file again as text and labelled it; it left the file silent when that reading failed. Now a
   path whose `diff` attribute is unset or names a driver carries `diff_suppressed` whatever the
@@ -509,10 +510,12 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   second reading Git failed or cut, and a valid UTF-8 reading not used for any reason (more than
   1,000,000 lines alone, a copy Git answers as two changes under the repository's
   `diff.renames=copies`, a whole patch that does not parse) (A0100-M1 = F1 and N1, found by the
-  reviewers of the 0.10.0 tree). **A stated limit:** a text file with no attribute that holds a
-  NUL byte and a byte that is not UTF-8 is not told apart from a real binary: it carries
-  `binary_change` and no `diff_suppressed`, and text hidden that way is not read (measured on
-  this build; 0.9.0 the same). A changed file whose name is not UTF-8 exits 4 (`change_input`), not 3, in every
+  reviewers of the 0.10.0 tree). **A stated limit:** that is decided on Git's whole second
+  reading, so a change with no attribute whose reading holds one byte that is not UTF-8, on
+  either side or in a change Git pairs with it as a copy, is not told apart from a real binary
+  (a script with a NUL byte and such a byte; a real binary replaced by a plain script): it
+  carries `binary_change` and no `diff_suppressed`, and its lines are not read (measured on this
+  build; 0.9.0 the same). A changed file whose name is not UTF-8 exits 4 (`change_input`), not 3, in every
   Git selection and in the daemon's `review.change`; a file pair given such a name as an argument
   exits 3 (an argument error), as before. A byte order mark is seen when the change shows line 1:
   wide text outside Latin-1 that is edited elsewhere is not labelled (a stated limit). A Git
