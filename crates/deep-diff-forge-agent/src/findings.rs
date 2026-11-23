@@ -1,6 +1,6 @@
 // DDF integration: verified agent findings (plan 2026-10-30, Feature B).
 // Design/status: docs/PLAN_AGENT_EVIDENCE_AND_OBSERVABILITY.md#feature-b-verified-agent-findings
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-agent--src--findings
+// Module index: docs/ARCHITECTURE.md#crates-as-built-030
 //! Verified agent findings: what an agent says it found, checked against patch truth before
 //! anyone reads it.
 //!
@@ -711,7 +711,7 @@ mod tests {
     fn a_path_named_twice_resolves_lines_in_every_section() {
         let files = parse(
             "--- a/x.rs\n+++ b/x.rs\n@@ -1,1 +1,1 @@\n-a\n+b\n\
-             --- a/x.rs\n+++ b/x.rs\n@@ -10,1 +10,1 @@\n-c\n+d\n",
+             --- a/x.rs\n+++ b/x.rs\n@@ -9,3 +9,3 @@\n p\n-c\n+d\n q\n",
         )
         .unwrap();
         assert_eq!(files.len(), 2);

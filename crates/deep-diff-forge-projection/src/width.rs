@@ -1,6 +1,6 @@
 // DDF integration: R31, R32. Measure displayed cells and preserve grapheme boundaries after terminal-safety escaping; keep remaining chrome/wrap geometry visible as work.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#terminal-geometry
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-projection--width
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#terminal-geometry
 //! Shared terminal-cell geometry (R31), not UTF-8 bytes or Unicode scalar counts.
 //! See `docs/RECOMMENDATION_INTEGRATION.md#terminal-geometry` and its vault backlink.
 use std::borrow::Cow;

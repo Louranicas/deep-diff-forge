@@ -6,15 +6,31 @@ an exceptional one. This policy documents the maintained security boundary,
 the controls enforced by the repository, and the limits operators must account
 for.
 
-## Status 2026-11-18 (0.9.0 prepared)
+## Status of 0.10.0 and the releases before it
 
+- 0.10.0 reads a `diff --git` section only if its headers are a shape Git's own diff writes, and
+  fixes six misses of 0.9.0 and earlier, each with an advisory:
+  [DDF-2026-004](docs/advisories/DDF-2026-004.md) (one fault during `council import-tuicr
+  --execute` could block a run's decision journal for good),
+  [DDF-2026-005](docs/advisories/DDF-2026-005.md) (a CI privilege grant written with quotes),
+  [DDF-2026-006](docs/advisories/DDF-2026-006.md) (one attribute line made a reviewed source
+  change unreadable), [DDF-2026-007](docs/advisories/DDF-2026-007.md) (GitLab tokens and
+  fine-grained GitHub tokens), [DDF-2026-008](docs/advisories/DDF-2026-008.md) (a judge's
+  leftover process stretched an agent's stop) and
+  [DDF-2026-010](docs/advisories/DDF-2026-010.md) (a findings gate passed when the reader of its
+  output had gone); the number DDF-2026-009 was not used. The advisories are published with the
+  release: as files in `docs/advisories/` of the signed tag `v0.10.0`, which is published on
+  GitLab (the place of release), Gitea and Forgejo with a binary built locally for Linux x86_64,
+  mirrored on GitHub with its release page, and with its crates on crates.io. Its known issues,
+  its contract changes and the order of the cutover with forge-warden are in its
+  [release notes](docs/release-notes/0.10.0.md).
 - 0.9.0 adds five integrity signals and the agent hooks, and fixes two defects of 0.8.4 and
   earlier ([DDF-2026-003](docs/advisories/DDF-2026-003.md)): a process spawn cut across two
   sections of one path that Git applies in order was not found, and one long JavaScript word or
-  run of secret prefixes cost ranking time quadratic in its length. 0.9.0 is a release once the
-  signed tag `v0.9.0` exists; until then `v0.8.4` is the latest. It has no GitHub release: once
-  tagged it is published as a signed tag on GitLab, Gitea and Forgejo; binaries built locally
-  for Linux x86_64. A forge-warden that does not know the five new signals reads each as an
+  run of secret prefixes cost ranking time quadratic in its length. 0.9.0 was released as the
+  signed tag `v0.9.0` (2026-11-18), published on GitLab, Gitea and Forgejo with a binary built
+  locally for Linux x86_64; GitHub mirrors its release page (since 2026-11-22), and its crates
+  are on crates.io (since 2026-11-23). A forge-warden that does not know the five new signals reads each as an
   unknown signal and holds.
 - 0.8.4 (the signed tag `v0.8.4`, 2026-11-17; published on GitLab, Gitea and Forgejo on
   2026-11-18), the release before 0.9.0, is a security release: v0.8.3 and earlier can review a patch otherwise than `git apply`
@@ -22,9 +38,10 @@ for.
   its object store) and for one path in several sections (Git applies them as a set): G1 and G2
   of the v0.8.3 rescore. They also hide Rust code after a nested block comment, a character
   literal with a long escape, or a comment an earlier hunk of a created file opened from the
-  Rust rules. It has no GitHub release: it is published on GitLab
+  Rust rules. It is published on GitLab
   (`https://gitlab.com/lukeomahoney/deep-diff-forge`), with mirrors on Gitea and Forgejo, as the
-  signed tag and a Linux x86_64 binary built on the owner's machine
+  signed tag and a Linux x86_64 binary built on the owner's machine; GitHub mirrors its release
+  page since 2026-11-22
   ([local release](docs/RELEASE_AND_PUBLICATION.md#local-release-from-084)). Advisories:
   [DDF-2026-001](docs/advisories/DDF-2026-001.md) (G1, G2) and
   [DDF-2026-002](docs/advisories/DDF-2026-002.md) (the Rust code view).
@@ -50,8 +67,9 @@ for.
   Every shipped binary is run in the release smoke test, the x86_64 macOS one under
   Rosetta 2. From 0.8.4 a release ships only `x86_64-unknown-linux-gnu`, built and smoke-tested on the owner's
   machine (Fedora 44 toolbox) by `scripts/release_local.sh`; the other three targets are not
-  built for 0.8.4 or 0.9.0. Not claimed: musl, Windows, other architectures, crates.io packages,
-  or a daemon shared between users on one host
+  built for this release. From 0.9.0 the crates are also published on crates.io, as source that
+  whoever installs them builds. Not claimed: musl,
+  Windows, other architectures, or a daemon shared between users on one host
   ([supported platforms](README.md#supported-platforms)).
 - Known limits are listed under [Residual risks](#residual-risks-and-non-goals).
 
@@ -81,8 +99,10 @@ Fixes land on `main` first and reach users in the next tagged release.
 
 | Version | State | Security fixes |
 | --- | --- | --- |
-| `main` | 0.9.0 (a release once `v0.9.0` is tagged) | Land here first. |
-| `v0.8.4` (2026-11-17) | Published; superseded once `v0.9.0` is tagged | No. A process spawn cut across two sections of one path, and the cost of one long word or run of secret prefixes ([DDF-2026-003](docs/advisories/DDF-2026-003.md)); 0.9.0 fixes them. |
+| `main` | Unreleased work after the newest tag | Land here first. |
+| `v0.10.0` (2026-11-23) | Published | While it is the newest released minor line. |
+| `v0.9.0` (2026-11-18) | Published, superseded | No. A journal one fault could block ([DDF-2026-004](docs/advisories/DDF-2026-004.md)), a quoted CI privilege grant ([DDF-2026-005](docs/advisories/DDF-2026-005.md)), a source change an attribute made unreadable ([DDF-2026-006](docs/advisories/DDF-2026-006.md)), GitLab and fine-grained GitHub tokens ([DDF-2026-007](docs/advisories/DDF-2026-007.md)), a judge's leftover process ([DDF-2026-008](docs/advisories/DDF-2026-008.md)) and a findings gate with its reader gone ([DDF-2026-010](docs/advisories/DDF-2026-010.md)); 0.10.0 fixes them. |
+| `v0.8.4` (2026-11-17) | Published, superseded | No. A process spawn cut across two sections of one path, and the cost of one long word or run of secret prefixes ([DDF-2026-003](docs/advisories/DDF-2026-003.md)); 0.9.0 fixes them. |
 | `v0.8.3` (2026-11-11 UTC) | Published, superseded | No. G1/G2 ([DDF-2026-001](docs/advisories/DDF-2026-001.md)) and the Rust code view ([DDF-2026-002](docs/advisories/DDF-2026-002.md)); 0.8.4 fixes them. |
 | `v0.8.2` (2026-11-10) | Published, superseded | No. It can show a change on a different file, or with a different mode or type, than `git apply` writes: a name left by a bare `diff --git` line before a binary line, a new file's mode overridden by `new mode`, or content under a mode Git reads as a submodule ([GHSA-rq5r-p3g9-phff](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-rq5r-p3g9-phff)); 0.8.3 fixes them. |
 | `v0.8.1` (2026-11-08) | Published, superseded | No. It can review a different file or mode than `git apply` writes: a copy, a `---`/`+++` name with nothing after its first component, repeated mode headers, a header after a binary line, or a carriage return in a move name (N1-N3 of the v0.8.1 rescore and F1-F2 of the rescore before the v0.8.2 tag, [GHSA-gp5v-m67f-gmgp](https://github.com/Louranicas/deep-diff-forge/security/advisories/GHSA-gp5v-m67f-gmgp)); 0.8.2 fixes them. |
@@ -125,6 +145,30 @@ exposed through TCP forwarding, a shared container mount, or a socket directory
 writable by another account. Windows named-pipe support and TCP listeners are
 not implemented security boundaries.
 
+### Git settings that change what `git apply` writes
+
+DDF's promise about a patch is made for a plain `git apply` in Git's default configuration
+([`CONFORMANCE.md`](crates/deep-diff-forge-patch/CONFORMANCE.md#what-is-promised)): Git
+either refuses the whole patch and writes nothing, or writes what the review shows. A patch
+does not carry the configuration or the options of the `git apply` that will apply it, so DDF
+cannot read them. Each setting below is either `tested` (a test shows Git still writes the
+reviewed tree or nothing with it) or `declared` (Git writes otherwise, and DDF does not model
+it). The test `a_setting_that_changes_the_write_is_declared`
+(`crates/deep-diff-forge-patch/tests/conformance.rs`) reads this table and runs a real
+`git apply` with each measured value: a value that writes another tree than the default needs a
+`declared` row, a value a row says keeps the promise must keep it, and every test a row names
+must exist. Measured with Git 2.56 on Linux, 2026-11-23.
+
+| Setting | State | What DDF does not model |
+| --- | --- | --- |
+| `apply.whitespace` (`--whitespace`) | declared; measured by `a_setting_that_changes_the_write_is_declared` | With `fix` or `strip`, Git removes the trailing whitespace of the lines it adds, so it writes other bytes than the review shows. `nowarn` and `warn` (the default) write the reviewed lines; `error` and `error-all` refuse a patch with a whitespace error and write nothing. |
+| `core.autocrlf` | declared; measured by `a_setting_that_changes_the_write_is_declared` | With `true`, Git writes the lines of a text file with CRLF where the review shows LF; `input` writes the reviewed bytes. Attributes in the target tree (`eol`, `ident`, `working-tree-encoding`) change the bytes written as well (`CONFORMANCE.md`, "Attributes in the target tree"). |
+| `-p<n>` | declared; measured by `a_setting_that_changes_the_write_is_declared` | DDF strips one leading component from each name, as Git's default `-p1` does. With another `-p`, Git applies the hunks to other paths (`-p2` writes `x` for `a/d/x`) or refuses. |
+| `--directory=<root>` | declared; measured by `a_setting_that_changes_the_write_is_declared` | Git writes every path under `<root>`; the review shows the paths without it. |
+| `--3way` | declared; measured by `a_setting_that_changes_the_write_is_declared` | Where plain `git apply` refuses a hunk, Git merges with the blob the `index` line names and writes the result, with conflict markers when the merge conflicts, while it exits non-zero. DDF promises only the outcomes of a plain apply. |
+| `core.fileMode` | declared; measured by `a_setting_that_changes_the_write_is_declared` | With `false`, Git does not trust the executable bit: an edit of an executable file that names no mode is written as `100644`, and the mode an `index` line names is the one written (`CONFORMANCE.md`, "A non-default configuration"). |
+| A case-insensitive file system (`core.ignorecase`) | declared; not measured (it needs a file system that folds case) | DDF compares paths byte for byte. Where the file system folds case, two paths that differ only in case name one file, so what Git writes for one can land on the other. |
+
 ## Enforced controls
 
 ### First-party memory safety
@@ -152,6 +196,20 @@ selection.
   still applied it (`is_binary_body_line` and the regression test
   `a_text_change_after_a_binary_body_is_never_hidden_in_it` in
   `crates/deep-diff-forge-patch/src/parser.rs`).
+- Since 0.10.0 the body is also held to the hunk structure of Git's
+  `parse_binary` (S3.6): a `literal`/`delta` hunk needs at least one data line
+  and the empty line that ends it, a second (reverse) hunk is optional and held
+  to the same rules, and every base85 group must decode to at most 0xffffffff
+  (Git's `decode_85`). A body Git calls corrupt is refused with exit 4, where
+  0.9.0 reviewed it as a binary change. Lines after the two hunks, which Git
+  skips, are admitted as before. Deflate corruption is not detected: DDF does not
+  inflate the data, so a body whose structure is sound but whose data does not
+  inflate, or inflates to another size than its `literal N`/`delta N` says, is
+  reviewed as a binary change while `git apply` refuses it (after other sections,
+  Git stops there and applies only those: see the residual risk "A corrupt binary
+  body"). That is a stated
+  limit (the patch crate depends on the core crate alone and adds no inflate
+  code); the review shows such a section as binary and never shows text from it.
 - Human-facing terminal output passes through `core::display_safe`, which
   exposes ANSI/CSI/OSC controls, C0/C1 controls, carriage returns, DEL, bidi
   overrides/isolates, directional marks, zero-width characters, BOM and every
@@ -173,6 +231,13 @@ selection.
   verify` printed a finding's patch path with the raw CSI. A
   downstream program that decodes those JSON strings must apply its own
   terminal-safe rendering before displaying them.
+- A gate flag's refusal does not depend on who reads stdout. Every `--require-*` refusal
+  (`--require-files`, `--require-hunks`, `--require-findings`, `--require-all`) is decided
+  before the output is written, and exits 7 with its reason when the reader of stdout has gone;
+  a diagnostic that cannot be written (`2>/dev/full`) leaves the exit code as it was. Before
+  0.10.0 `findings verify --require-findings` and `--require-all` exited 0 when the reader had
+  gone ([DDF-2026-010](docs/advisories/DDF-2026-010.md)), and an unwritable stderr turned any
+  exit into 101.
 - Annotation provenance is fail-closed: a claimed `source` is not trusted until
   evidence grounds it.
 
@@ -204,6 +269,8 @@ flowchart LR
   by the effective user with mode `0700`; its socket is mode `0600`
   (`SECURE_DIR_MODE`, `SECURE_SOCKET_MODE` in `security.rs`). There is no `/tmp`
   fallback when `$XDG_RUNTIME_DIR` is unset: the CLI exits 2.
+- A socket path of 108 bytes or more (Linux's `sun_path`, its NUL included) is refused by
+  `daemon path` and `daemon start` with exit 2 before anything is created (since 0.10.0).
 - Explicit `--socket PATH` locations require an owner-private parent. A missing
   parent is created at `0700`; an existing parent is validated and never
   chmodded, so a `0755` parent is refused. Symlinks, wrong-owner directories,
@@ -221,7 +288,7 @@ flowchart LR
 - JSON-RPC envelopes are shape-checked, including protocol version, method,
   identifier, and parameter types.
 - Request and response lines are capped at 80 MiB (`MAX_REQUEST_BYTES`,
-  `MAX_RESPONSE_BYTES`). An oversized request gets one `INVALID_REQUEST` error
+  `MAX_RESPONSE_BYTES`), the newline counted (the answer bound counts it since 0.10.0). An oversized request gets one `INVALID_REQUEST` error
   and the connection closes. A response over the cap is replaced by a
   `RESOURCE_EXHAUSTED` (8) error naming its size (`bounded_response`); before
   2026-10-28 the server sent it and the client failed. Since 2026-11-01 an error
@@ -237,8 +304,11 @@ flowchart LR
   control slots (`CONTROL_CONNECTIONS`) take one request each, of at most 4 KiB read within
   5 s, and answer only `daemon.health`, `daemon.status`, `daemon.metrics` and
   `daemon.shutdown` (anything else is refused `RESOURCE_EXHAUSTED`). A connection beyond those
-  is accepted and closed at once, with no response; the CLI reports that as no answer (exit 6),
-  not as no daemon. SIGTERM and SIGINT stop the daemon as `daemon stop` does. Workers share one
+  has 250 ms (`FULL_READ_TIMEOUT`) to send `daemon.shutdown`, which the accept loop answers
+  itself, so `daemon stop` answers within a second with every slot held by idle clients (since
+  0.10.0; before, the stop was closed unanswered until a control slot's client timed out after
+  5 s). Anything else beyond the slots is closed with no response; the CLI reports that as no
+  answer (exit 6), not as no daemon. SIGTERM and SIGINT stop the daemon as `daemon stop` does. Workers share one
   engine and their requests run in parallel. Only the session table is locked, and
   only for bookkeeping; parsing, ranking and Git run outside it. The request bytes
   in flight are capped at 128 MiB (`MAX_IN_FLIGHT_BYTES`, `admission.rs`), first
@@ -277,6 +347,11 @@ The container runs as the controller's own `uid:gid`, taken from
 read from `/proc/self` and fell back to `0:0`, so on a host without `/proc`
 every gate ran as root inside the container. Gates refuse to run unless
 `DDF_COUNCIL_GATE_IMAGE` names a local image.
+
+The import lock (`decisions.lock`) is new in 0.10.0: an import by 0.9.0 or earlier takes
+none and can append beside a running 0.10.0 import of the same run, guarded only by the
+journal's length check. Do not run imports of one run with different versions at once. A host
+path to mount that is not UTF-8 or holds `:` or `,` is refused before the sandbox starts.
 
 ### Local learning store
 
@@ -736,11 +811,40 @@ bounded form.** What it holds to:
   --gate` fails a registered timeout under 50. Each step is given the time that is left.
   Before, the steps' own limits added up to several minutes, and a client that ended the
   hook dropped its answer, which reads as a pass.
+- **Every child DDF waits for runs in a process group of its own.** The judge, the helper
+  that hashes the rankers, and the council's Git and tuicr calls are each the leader of their
+  own group, and the whole group is killed when the call ends, however it ends (time limit,
+  output cap, normal exit); the call returns by its time limit even when something holds its
+  output (0.9.0 let a judge's leftover child stretch a stop to 75 s:
+  [DDF-2026-008](docs/advisories/DDF-2026-008.md)). A process that leaves the group (`setsid`,
+  or a double fork into its own group) is not killed by DDF and runs on. Under Claude Code
+  2.1.330 the client ends a timed-out hook's descendants, including those in their own group
+  or session (measured 2026-11-22); a process that detaches from them is ended by no one.
+  A judge that exits while a process it detached from its group still holds its output is not
+  read: the stop is UNJUDGED when the limit passes, whatever the judge's exit code was;
+  forge-warden starts no such process.
 - **Text from the judge is data.** When a verdict fails or holds for something that is not a
   rule (an expired waiver, a note), the message repeats the judge's own words for it: at
   most twelve, each cut at 400 characters, escaped like every other text the hook did not
   write, and marked as the judge's words and not instructions. A note's path is shown as
   every path is.
+- **What the judged agent is told names the accepted repair only.** Advice after a tool call
+  and the rules of a stop's message say, for each label, the change that answers it, never a
+  substitute that does not count (0.9.0 named the first of them, and some no label raises: a
+  list of what the tool will not catch), and the agent is not pointed at `explain signal`.
+  Every command a hook names is this binary's own absolute path, quoted for the shell.
+- **The gate reads the notes of the judge's verdict on its probe.** A note `claims_unverified`
+  (a policy that requires verified claims) fails the link `claims_verified` of `agent doctor
+  --gate`: the hook gives the judge no `--repo`, `--base` or `--head`, so every stop there
+  holds and none passes; an uncommitted or staged change can never be verified.
+- **The patch given to the judge has forge-warden's patch-maker options** (full index lines,
+  `--submodule=short`, `--ignore-submodules=none`, the store's commit-graph and multi-pack
+  index not read), held byte for byte by a test that runs a recorded copy of `make_patch.sh`.
+- **Not a boundary: work hidden with Git's own rules.** A judged agent can hide work from the
+  hooks with a directory of mode 000, an untracked `.gitignore` that ignores itself, or a
+  directory named `.git` below the top, whose content Git never lists (the stop is then silent), or make staging run out of time with a very large sparse file (UNJUDGED,
+  with no run of the judge). These are stated limits of 0.10.0: the working tree and the merge
+  request still show the work, and release 0.11.0 targets them (F12, F13).
 - **`agent doctor --gate` reads a registered stop hook only in the form `agent setup --hooks`
   prints.** One program and its arguments, written with plain characters and single quotes:
   no comment, second command, pipe, redirection or substitution. The program word must be
@@ -756,8 +860,9 @@ bounded form.** What it holds to:
   Settings an administrator manages are not read.
 - **The judge decides, by its exit code and its document together.** DDF starts
   `forge-warden` under a deadline and output caps. Exit 0, 7 or 8 is a verdict only with a
-  whole `forge-warden.verdict.v2` document, checked member by member against the schema
-  forge-warden ships (`cli/src/verdict_v2.rs`): every required member and nested member, its
+  whole `forge-warden.verdict.v2` or `forge-warden.verdict.v3` document, checked member by
+  member against the schema forge-warden ships for that version (`cli/src/verdict_v2.rs`;
+  v3's bound claims and `builtin:` rules in their schema's form only): every required member and nested member, its
   pattern or closed set of values, lists the schema says are never empty, the `exit` triple
   that belongs to the `verdict`, a `summary` that counts the `rules`; no key given twice at
   any depth. It must agree with the process exit, hold no rule stricter than the verdict,
@@ -766,7 +871,8 @@ bounded form.** What it holds to:
   members a later forge-warden adds, and a rule `kind` or note `code` this version does not
   know. A member the schema makes optional is checked when it is present. Not checked: the
   date the judge evaluated on (a verdict for the same policy, patch and ranker is the same
-  verdict tomorrow).
+  verdict tomorrow). Exit 7 with a document that is no verdict holds the stop once all the
+  same, saying that the verdict could not be read and why: a fail is never taken for silence.
 - **A ranker is hashed under bounds.** To seal a verdict to the ranker it gave, the hook
   hashes each candidate in pieces: a regular file of at most 256 MiB. Listing the ranker
   directory and hashing are done by a helper the hook starts as a child (`agent hook
@@ -837,10 +943,13 @@ bounded form.** What it holds to:
   GitLab, Gitea and Forgejo. There is no build-provenance attestation and no CI run on the
   release commit; `scripts/ci_local.sh` passes on it instead. Only `x86_64-unknown-linux-gnu`
   is built ([local release](docs/RELEASE_AND_PUBLICATION.md#local-release-from-084)).
-- crates.io publication is on hold by owner decision until the codebase is
-  production-hardened. The `publish` job runs only on a tag and only when the
-  repository variable `DDF_CRATES_IO` is `open`; a configured
-  `CARGO_REGISTRY_TOKEN` alone does not lift the hold. It runs in the `release`
+- crates.io: the owner lifted the hold, and 0.9.0's fourteen crates were published on
+  2026-11-23 from the tag's commit on the owner's machine (`cargo publish --workspace --exclude
+  deep-diff-forge-testkit --locked`, after a dry run, with the token `cargo login` stored there);
+  the twelve names published at 0.2.0 keep that version as yanked. From 0.10.0 publishing is a
+  step of the local release. `release.yml`'s `publish` job is not used for it. That job runs
+  only on a tag and only when the repository variable `DDF_CRATES_IO` is `open`; a configured
+  `CARGO_REGISTRY_TOKEN` alone does not open it. It runs in the `release`
   environment, which only `v*` tags can deploy to, and an open gate without a
   token fails the job instead of passing without publishing. It would publish
   with that token; crates.io trusted publishing remains an account-level
@@ -849,9 +958,7 @@ bounded form.** What it holds to:
   waits for the owner's approval, and its deployment policy admits only `v*`
   tags (measured with `gh api .../environments`). Only the `publish` job uses
   that environment; the build, attestation and GitHub Release upload do not
-  wait for it. No crates.io release is recorded in
-  [`EVIDENCE.md`](EVIDENCE.md) (not re-checked against crates.io in this
-  refresh).
+  wait for it.
 - **Secret scanning (owner decision, 2026-11-01).** GitHub secret scanning is on
   with push protection and the provider patterns. Non-provider patterns and
   validity checks are not available for this user-owned repository: the API
@@ -925,6 +1032,26 @@ CI verifies the committed SBOM against a fresh dependency-graph regeneration.
 The release workflow repeats the supply-chain gate, regenerates the release
 SBOM, and attests it before irreversible publication.
 
+### Readers of hostile bytes and their fuzz targets
+
+Eighteen fuzz targets cover the readers of bytes a patch, a peer or a judge controls; release
+0.10.0 added three for readers it added or changed: `verdict_reader` (forge-warden verdict
+documents v2 and v3 as the stop hook judges them), `journal_recover` (the decision journal's
+reading and torn-record repair) and `git_raw_stream` (Git's `--raw -z --patch` stream). Two
+readers have no target of their own, on purpose:
+
+- The tuicr session reader (`review tuicr import`, `open_session` in
+  `crates/deep-diff-forge-review/src/tuicr.rs`): the session is a file the reviewer's own tuicr
+  writes on the reviewer's machine and is read only from a path the reviewer names, so it is the
+  reviewer's input, not a patch's; the file names a reviewed repository can put in it are refused
+  when they leave the repository, the file is read through a 32 MiB cap, and the target
+  `journal_recover` runs the whole import, session reading included, on a fixed session.
+- The learning store reader (`load_receipts` in `crates/deep-diff-forge-learning/src/store.rs`):
+  it reads only receipts this program appended to its own state directory (a regular file of
+  mode 0600, refused when it is a link), not bytes from a patch or a peer; whoever can write that
+  file already runs as the user, and the reader still caps the file at 64 MiB, a record at 1 MiB
+  and the count at 100,000, and refuses a corrupt line instead of skipping it.
+
 ## Residual risks and non-goals
 
 Known limits, first listed at 0.3.0 (production-readiness review, 2026-10-28); each closed item
@@ -945,7 +1072,10 @@ says when it closed:
   bounds every Git call of an acquisition: 120 s for the CLI's Git selections and
   30 s for `review.change`. A Git still running at the deadline is killed, and the
   acquisition fails with `TimedOut` (CLI exit 3). Before, `child.wait()` waited
-  forever on a stalled filesystem or hook.
+  forever on a stalled filesystem or hook. Git's output readers are joined against the
+  acquisition's deadline, so a helper Git leaves running cannot hold the review past the
+  limit; the helper itself is not killed by the acquisition (process groups are the general
+  runner's).
 - **Hidden text is flagged, not filtered.** Lines and paths carrying bidi controls, invisible
   or control characters, and paths that traverse or name `.git`, get `hazards` in `review.v0`
   and the views, and the `hazardous_text` risk signal. The patch text itself is never rewritten.
@@ -1042,6 +1172,8 @@ says when it closed:
   Git stops at a `GIT binary patch` body that does not inflate and exits 0, applying only the
   sections before it, while DDF, which checks the body's line grammar only, shows every section
   as changed: nothing unreviewed is written, but reviewed changes do not land.
+  Since 0.10.0 a body Git calls corrupt for its hunk structure or its base85 is refused (exit
+  4, S3.6); one whose data does not inflate is still read, the stated deflate limit.
 - **The review council trial is undesigned.** The council is used on this
   repository; no controlled trial of its review quality exists.
 

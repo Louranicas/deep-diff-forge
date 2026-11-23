@@ -59,11 +59,12 @@ impl SignalKind {
 pub const PATH_BASIS: &str = "path";
 
 /// The path and shape signals, in the order a ranking lists them.
-pub const PATH_SIGNALS: [RiskSignal; 12] = [
+pub const PATH_SIGNALS: [RiskSignal; 13] = [
     RiskSignal::PublicApiSurface,
     RiskSignal::NewFile,
     RiskSignal::DeletedFile,
     RiskSignal::BinaryChange,
+    RiskSignal::DiffSuppressed,
     RiskSignal::LargeChange,
     RiskSignal::ManyHunks,
     RiskSignal::ConfigOrLockfile,
@@ -151,6 +152,11 @@ pub const fn facts(signal: RiskSignal) -> SignalFacts {
             Shape,
             "0.1.0",
             "The change is binary: there is no text to review.",
+        ),
+        R::DiffSuppressed => (
+            Security,
+            "0.10.0",
+            "Git was told not to show this file's changes as text (an attribute such as -diff, a NUL byte, or a UTF-16 or UTF-32 encoding); DDF read them as text where it could, and says unread where its limits stopped it.",
         ),
         R::LargeChange => (
             Shape,
@@ -334,6 +340,18 @@ pub const fn remedy(signal: RiskSignal) -> Remedy {
             why: "A binary change cannot be read in a review.",
             accept: &["Say where the binary comes from and how to rebuild or verify it."],
             not_accepted: &[],
+            native_lints: &[],
+        },
+        R::DiffSuppressed => Remedy {
+            why: "An attribute or a byte that makes Git show a text file as binary hides its changes from every reviewer who reads `git diff`.",
+            accept: &[
+                "Remove the `-diff`, `binary` or `diff=` attribute that covers the source file, wherever it is set.",
+                "Remove the NUL byte from the file, or say why a text file must hold one.",
+            ],
+            not_accepted: &[NotAccepted {
+                substitute: "Storing the same code compressed or encoded, so that it is a real binary.",
+                raises: Some("binary_change"),
+            }],
             native_lints: &[],
         },
         R::LargeChange => Remedy {
@@ -616,6 +634,7 @@ mod tests {
                 "new_file",
                 "deleted_file",
                 "binary_change",
+                "diff_suppressed",
                 "large_change",
                 "many_hunks",
                 "config_or_lockfile",
@@ -709,6 +728,7 @@ mod tests {
         };
         assert_eq!(class("large_change"), SignalClass::Shape);
         assert_eq!(class("hazardous_text"), SignalClass::Security);
+        assert_eq!(class("diff_suppressed"), SignalClass::Security);
         assert_eq!(class("secret_like"), SignalClass::Security);
         assert_eq!(class("check_suppressed"), SignalClass::Integrity);
         assert_eq!(class("test_removed"), SignalClass::Integrity);
@@ -746,7 +766,8 @@ mod tests {
             assert!(!facts.summary.trim().is_empty(), "{label}: summary");
             assert!(
                 // 0.9.0: the five integrity labels, merged with the hooks in that release
-                ["0.1.0", "0.3.0", "0.5.0", "0.9.0"].contains(&facts.since),
+                // 0.10.0: `diff_suppressed` (S3.20)
+                ["0.1.0", "0.3.0", "0.5.0", "0.9.0", "0.10.0"].contains(&facts.since),
                 "{label}: since {}",
                 facts.since
             );

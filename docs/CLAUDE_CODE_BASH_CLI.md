@@ -138,7 +138,7 @@ The shipped codes are one registry in the binary
 | 7 | `input_contract_refused` | `--require-files` refused a patch with 0 files (`refused: 0 files in input (--require-files)`), or `--require-hunks` refused one with 0 hunks or 0 added+removed lines (`refused: 0 hunks in input (--require-hunks)`). stdout is empty. A gate should pass both flags. | `change_input` |
 | 101 | `panic` | Internal error (a panic). | `report_bug` |
 
-The `council` subcommands use their own family: 0 completed, 4 refused, 7 hold.
+The `council` subcommands use their own family: 0 completed, 3 recorded incomplete, 4 refused, 7 hold.
 
 Not emitted (original design only): 1 (diff found with `--exit-code`), 5 (Git
 workspace failure; a Git failure is 3 or 4 today), 8 (fallback reached a hard

@@ -1,0 +1,9 @@
+diff --git a/src/end.rs b/src/end.rs
+--- a/src/end.rs
++++ b/src/end.rs
+@@ -2,2 +2,3 @@
+ pub fn b() {}
+ pub fn c() {}
++pub fn cut(x: Option<u32>) -> u32 { x.unwrap
+@@ -3,0 +5,1 @@
++() }

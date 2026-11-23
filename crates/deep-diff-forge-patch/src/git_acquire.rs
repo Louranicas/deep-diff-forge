@@ -1,6 +1,6 @@
 // DDF integration: R02, R03, R07. Native structured Git acquisition: run Git with a fixed argv (no shell), bind the selection to resolved object IDs, capture untracked files without touching the index, and keep the exact patch bytes authoritative.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--git_acquire
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
 //! Structured Git acquisition port.
 //!
 //! Every Git invocation is a fixed argument vector (never a shell string) with
@@ -17,6 +17,13 @@
 //! never runs Git inside a submodule: that Git would read the submodule's own configuration and
 //! attributes and run its filters. A submodule's uncommitted changes are therefore not captured
 //! (the superproject never stores them).
+//!
+//! # Changes Git gives as binary
+//!
+//! The repository decides which files Git calls binary (`-diff` in any attributes file Git
+//! reads, a driver with `binary = true`, or a NUL byte), so every change Git gives as binary is
+//! read once more with `--text` and kept as text when it is the same change and DDF can read it
+//! ([`read_binary_again`], S3.20). Attributes keep their other effects (line endings).
 //!
 //! # Untracked files
 //!
@@ -60,7 +67,10 @@
 //! diff, textconv or a transport: those are overridden on the command line,
 //! which takes precedence over every file.
 
-use crate::git_raw::{GitAcquireError, GitChangeKind, GitChangeOrigin, GitPath, StructuredDiff};
+use crate::git_raw::{
+    GitAcquireError, GitChange, GitChangeKind, GitChangeOrigin, GitPath, StructuredDiff,
+};
+use deep_diff_forge_core::DiffSuppression;
 use std::ffi::{OsStr, OsString};
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -222,6 +232,9 @@ const DIFF_ARGS: &[&str] = &[
     "--raw",
     "-z",
     "--patch",
+    // Three lines of context whatever `diff.context` says: a hunk with none is placed by `git
+    // apply` at the end of the file, and the parser refuses it (S3B-H-1).
+    "-U3",
     "--binary",
     "--full-index",
     "--no-abbrev",
@@ -468,6 +481,10 @@ impl Runner<'_> {
         clippy::disallowed_methods,
         reason = "the git-acquisition door: patch acquisition spawns git only here, hardened by core::git"
     )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one poll loop bounds the child, its byte budget and its readers by one deadline"
+    )]
     fn output_reading(
         &self,
         command: &'static str,
@@ -546,7 +563,12 @@ impl Runner<'_> {
                     limit_bytes: budget,
                 });
             }
-            if let Some(status) = child.try_wait().map_err(spawn_err)? {
+            // Git has exited, but a process it started can still hold its pipes open: the
+            // readers are waited for against the same deadline (S3.17a.b).
+            if let Some(status) = child.try_wait().map_err(spawn_err)?
+                && stdout_reader.is_finished()
+                && stderr_reader.is_finished()
+            {
                 break status;
             }
             if std::time::Instant::now() >= self.deadline {
@@ -818,6 +840,7 @@ pub fn acquire(
     } else {
         Vec::new()
     };
+    let diff = read_binary_again(&runner, &diff, &selection_args);
     Ok(GitAcquisition {
         root,
         selection: selection.clone(),
@@ -826,6 +849,258 @@ pub fn acquire(
         diff,
         omitted_untracked,
     })
+}
+
+/// The second reading (S3.20): every change Git gave as binary is asked for once more with
+/// `--text`, the same selection and flags, limited to its own path(s). When that answer is the
+/// same change (same status, paths, modes and object IDs), as text, valid UTF-8 (NUL bytes
+/// included: one NUL byte is all Git's content check needs), within what is left of the byte
+/// budget, and DDF's parser takes it, it replaces the binary block, marked with why Git called
+/// the file binary. Otherwise, and whenever Git fails, the binary block stands. No attribute is
+/// trusted to clear a file: an attributes file in the tree, the index, `info/attributes`,
+/// `core.attributesFile`, a driver with `binary = true`, or the content alone all end here. A
+/// text block and a binary block of one change are two spellings of one result, so the patch
+/// still applies to the same bytes.
+///
+/// The label does not wait for the text reading (S3.27.a, N55): when `git check-attr` says the
+/// path's `diff` is unset or names a driver, the change carries `diff_suppressed` (cause
+/// attribute) where its binary block stands too: a byte that is not UTF-8, a reading over the
+/// budget, a refusal. The text reading only adds evidence.
+///
+/// A second reading or a `git check-attr` cut off by the byte budget or the time limit is no
+/// answer and fails nothing (S3.27.g): the change keeps its binary block and is labelled, by its
+/// attribute when check-attr answered, else `unread`. Paths are read again in Git's order, each
+/// within the budget less every other section as it stands; one that does not fit is `unread`
+/// and the next is tried. Once the limit has run out, every binary change left is `unread`.
+///
+/// Labels are monotonic across every fallback (A0100-M1, N1): a binary section leaves here
+/// unlabelled only when no attribute covers it, Git's second reading succeeded, and the reading
+/// is not valid UTF-8 and shows no wide encoding. Most often a real binary, and no proof of one:
+/// a byte that is not UTF-8 anywhere in the reading does it (a stated limit, DDF-2026-006). Any
+/// other outcome with no used text section keeps the known cause or is `unread`: a reading Git
+/// failed or cut, and a valid UTF-8 reading not used for any reason (the parser refused it alone,
+/// it is not one change, it still says binary, or the whole patch with the readings did not parse).
+fn read_binary_again(
+    runner: &Runner<'_>,
+    first: &StructuredDiff,
+    selection: &[OsString],
+) -> StructuredDiff {
+    let mut read = first.clone();
+    let mut labelled = first.clone();
+    let (mut replaced, mut out_of_time) = (false, false);
+    for at in 0..first.changes().len() {
+        let change = read.changes()[at].clone();
+        if !change.binary {
+            continue;
+        }
+        let unread = (DiffSuppression::Unread, None);
+        let (cause, out) =
+            if let Some(Ok(cause)) = (!out_of_time).then(|| suppression(runner, &change)) {
+                match second_reading(runner, &read, &change, selection) {
+                    Ok(Some(out)) => (cause, Some(out)),
+                    no => {
+                        out_of_time = matches!(no, Err(GitAcquireError::TimedOut { .. }));
+                        match cause {
+                            DiffSuppression::Content => unread,
+                            told => (told, None),
+                        }
+                    }
+                }
+            } else {
+                out_of_time = true;
+                unread
+            };
+        let utf8 = matches!(&out, Some(out) if std::str::from_utf8(out).is_ok());
+        let again = out.and_then(|out| {
+            let mut again = StructuredDiff::default();
+            again.append_stream(&out, change.origin).ok()?;
+            Some(again)
+        });
+        // A UTF-16 or UTF-32 file is binary to Git for the NULs of its encoding (S3.27.c): its
+        // new side reads so, or its old side does and the change cannot be read as text.
+        let text = again.as_ref().and_then(|again| text_of(&change, again));
+        let cause = match again.map(|again| wide_encoding(again.patch_bytes())) {
+            Some([old, new])
+                if cause == DiffSuppression::Content && (new || (old && text.is_none())) =>
+            {
+                DiffSuppression::Encoding
+            }
+            _ => cause,
+        };
+        let told = cause != DiffSuppression::Content;
+        let fallback = if told { cause } else { DiffSuppression::Unread };
+        if told || text.is_some() || utf8 {
+            mark(&mut labelled, at, fallback);
+        }
+        match text {
+            Some((text, bytes)) => {
+                let text = GitChange {
+                    diff_suppressed: Some(cause),
+                    ..text
+                };
+                read.replace_section(at, text, &bytes);
+                replaced = true;
+            }
+            None if told || utf8 => mark(&mut read, at, fallback),
+            None => {}
+        }
+    }
+    // Patch truth first: the whole patch must still parse to one file per block.
+    if replaced && read.capture().is_ok() {
+        read
+    } else {
+        labelled
+    }
+}
+
+/// Change `at` of `diff`, its block unchanged, marked `diff_suppressed` with `cause`.
+fn mark(diff: &mut StructuredDiff, at: usize, cause: DiffSuppression) {
+    let change = GitChange {
+        diff_suppressed: Some(cause),
+        ..diff.changes()[at].clone()
+    };
+    let bytes = diff.change_patch(&change).to_vec();
+    diff.replace_section(at, change, &bytes);
+}
+
+/// Git's output for `change` (binary in `diff`) read again with `--text`; `None` when Git
+/// cannot be asked or fails. A reading cut off by the time limit or the budget is an error
+/// (S3.27.d): the caller must not take it for an answer.
+fn second_reading(
+    runner: &Runner<'_>,
+    diff: &StructuredDiff,
+    change: &GitChange,
+    selection: &[OsString],
+) -> Result<Option<Vec<u8>>, GitAcquireError> {
+    let others = diff.patch_bytes().len() - change.patch_range.len();
+    let budget = runner.options.byte_budget.saturating_sub(others);
+    let mut paths = Vec::new();
+    let old = change
+        .old_path
+        .as_ref()
+        .filter(|old| Some(*old) != change.new_path.as_ref());
+    for path in change.review_path().into_iter().chain(old) {
+        let Ok(path) = os_arg(path) else {
+            return Ok(None);
+        };
+        paths.push(path);
+    }
+    if paths.is_empty() {
+        return Ok(None);
+    }
+    let mut args: Vec<&OsStr> = Vec::new();
+    let out = if change.origin == GitChangeOrigin::Untracked {
+        args.extend(DIFF_ARGS.iter().map(OsStr::new));
+        args.extend(["--text", "--no-index", "--", "/dev/null"].map(OsStr::new));
+        args.push(&paths[0]);
+        runner.run("git diff --no-index --text", &args, &[0, 1], budget)
+    } else {
+        // Paths, not patterns: `--literal-pathspecs` is a global option, ahead of `diff`.
+        args.push(OsStr::new("--literal-pathspecs"));
+        args.extend(DIFF_ARGS.iter().map(OsStr::new));
+        args.push(OsStr::new("--text"));
+        args.extend(selection.iter().map(OsString::as_os_str));
+        args.extend(paths.iter().map(OsString::as_os_str));
+        runner.run("git diff --text", &args, &[0], budget)
+    };
+    match out {
+        Ok(out) => Ok(Some(out)),
+        Err(cut @ (GitAcquireError::TimedOut { .. } | GitAcquireError::BudgetExceeded { .. })) => {
+            Err(cut)
+        }
+        Err(_) => Ok(None),
+    }
+}
+
+/// The text block in `again`, the second reading of `change`, when it is the same change as
+/// text DDF can read; see [`read_binary_again`].
+fn text_of(change: &GitChange, again: &StructuredDiff) -> Option<(GitChange, Vec<u8>)> {
+    let [text] = again.changes() else {
+        return None;
+    };
+    let same = GitChange {
+        binary: true,
+        patch_range: change.patch_range.clone(),
+        ..text.clone()
+    } == *change;
+    let readable = std::str::from_utf8(again.patch_bytes()).is_ok() && again.capture().is_ok();
+    (same && !text.binary && readable).then(|| (text.clone(), again.patch_bytes().to_vec()))
+}
+
+/// Whether the old and the new side of `patch`, a second reading as text, read as UTF-16 or
+/// UTF-32 (S3.27.c): the side's line 1 opens with a byte order mark, or at least as many of its
+/// lines of four bytes or more as not have one byte that is not NUL in every 2 (or every 4) and
+/// NULs between. One pass over the lines; it can only add a label, never take evidence away.
+/// Decoding for the token readers is parked.
+fn wide_encoding(patch: &[u8]) -> [bool; 2] {
+    const MARKS: [&[u8]; 3] = [b"\xff\xfe", b"\xfe\xff", b"\0\0\xfe\xff"];
+    let alternate = |body: &[u8], period: usize| {
+        (0..period).any(|phase| {
+            (body.iter().enumerate()).all(|(at, &byte)| (byte != 0) == (at % period == phase))
+        })
+    };
+    // Per side, old then new: the next line is line 1, a mark opened line 1, wide and other lines.
+    let (mut first_line, mut marked, mut in_hunk) = ([false; 2], [false; 2], false);
+    let (mut wide, mut narrow) = ([0_usize; 2], [0_usize; 2]);
+    for line in patch.split(|&byte| byte == b'\n') {
+        if let Some(old) = line.strip_prefix(b"@@ -") {
+            in_hunk = true;
+            let new = old.split(|&byte| byte == b'+').nth(1).unwrap_or_default();
+            first_line = [old, new].map(|at| at.starts_with(b"1,") || at.starts_with(b"1 "));
+            continue;
+        }
+        if line.starts_with(b"diff --git ") {
+            in_hunk = false;
+            continue;
+        }
+        let Some((&kind @ (b' ' | b'+' | b'-'), body)) = line.split_first().filter(|_| in_hunk)
+        else {
+            continue;
+        };
+        for side in [0, 1]
+            .into_iter()
+            .filter(|&side| kind == b' ' || kind == b"-+"[side])
+        {
+            let opens = MARKS.iter().any(|mark| body.starts_with(mark));
+            marked[side] |= std::mem::take(&mut first_line[side]) && opens;
+            if body.len() >= 4 {
+                if alternate(body, 2) || alternate(body, 4) {
+                    wide[side] += 1;
+                } else {
+                    narrow[side] += 1;
+                }
+            }
+        }
+    }
+    let [old, new] =
+        [0, 1].map(|side| marked[side] || (wide[side] > 0 && wide[side] >= narrow[side]));
+    // A new side with no line to judge (a deletion) reads as the old side does.
+    [old, new || (old && wide[1] + narrow[1] == 0)]
+}
+
+/// Why Git called `change`'s file binary: [`DiffSuppression::Content`] when `git check-attr`
+/// says the path's `diff` attribute is unspecified (or set), else
+/// [`DiffSuppression::Attribute`]. Attribute raises the label whatever the text reading gives;
+/// content raises it only beside a text reading. A question cut off by the time limit is an
+/// error, not an answer (S3.27.d).
+fn suppression(
+    runner: &Runner<'_>,
+    change: &GitChange,
+) -> Result<DiffSuppression, GitAcquireError> {
+    let Some(path) = change.review_path().and_then(|path| os_arg(path).ok()) else {
+        return Ok(DiffSuppression::Attribute);
+    };
+    let args = ["check-attr", "-z", "diff", "--"].map(OsStr::new);
+    let mut args = args.to_vec();
+    args.push(&path);
+    // `-z` output: `<path> NUL diff NUL <value> NUL`.
+    match runner.run("git check-attr", &args, &[0], 64 * 1024) {
+        Ok(out) if matches!(out.split(|&b| b == 0).nth(2), Some(b"unspecified" | b"set")) => {
+            Ok(DiffSuppression::Content)
+        }
+        Err(cut @ GitAcquireError::TimedOut { .. }) => Err(cut),
+        _ => Ok(DiffSuppression::Attribute),
+    }
 }
 
 /// Global options for [`diff_files`], ahead of the subcommand: no attributes file, so no filter,
@@ -845,6 +1120,7 @@ const FILE_PAIR_DIFF_ARGS: &[&str] = &[
     "--no-ext-diff",
     "--no-color",
     "--patch",
+    "-U3",
     "--binary",
     "--full-index",
     "--no-textconv",

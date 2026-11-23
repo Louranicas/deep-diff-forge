@@ -1,6 +1,6 @@
 // DDF integration: R02, R03, R07. CLI contract for structured Git selections, exercised through the compiled binary against a real temporary repository.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--tests--git_input
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
 //! `--git-working-tree`, `--git-staged`, `--git-range`: flag conflicts are
 //! usage errors, outputs reuse the `--stdin-patch` documents, and paths come
 //! from raw records.
@@ -304,13 +304,13 @@ fn a_second_mode_or_a_repeated_repo_is_a_usage_error() {
     }
 }
 
-/// Production readiness 2026-11-04: a changed file whose name is not UTF-8 is refused as an
-/// encoding failure, exit 3, as before; it is now refused when its `diff --git` header is read
-/// (`LossyHeader`), so the exit code comes from the parse error (`PatchParseError::exit_code`).
+/// Production readiness 2026-11-04: a changed file whose name is not UTF-8 is refused when its
+/// `diff --git` header is read (`LossyHeader`). The exit code was 3 then; 0.10.0 makes it 4
+/// (`change_input`, S3.27.f), for 3 says "may be transient, retry" and a retry never helps.
 /// Linux only: macOS file systems refuse a name that is not UTF-8.
 #[cfg(target_os = "linux")]
 #[test]
-fn a_changed_file_whose_name_is_not_utf8_exits_3() {
+fn a_changed_file_whose_name_is_not_utf8_exits_4() {
     use std::os::unix::ffi::OsStrExt as _;
     let scratch = Scratch::new("cli-git-latin1");
     let r = Repo(scratch.path().to_owned(), scratch);
@@ -321,7 +321,7 @@ fn a_changed_file_whose_name_is_not_utf8_exits_3() {
     git(&r.0, &["commit", "-q", "-m", "base"]);
     std::fs::write(&name, b"new\n").unwrap();
     let (code, stdout, stderr) = ddf(&["--git-working-tree", "--repo", r.arg(), "--json"]);
-    assert_eq!(code, 3, "{stderr}");
+    assert_eq!(code, 4, "{stderr}");
     assert!(stdout.is_empty(), "{stdout}");
     assert!(stderr.contains("is not UTF-8"), "{stderr}");
 }

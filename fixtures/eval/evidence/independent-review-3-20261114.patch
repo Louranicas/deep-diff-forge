@@ -88,12 +88,14 @@ diff --git a/src/at1ctl.rs b/src/at1ctl.rs
 diff --git a/src/tr1.rs b/src/tr1.rs
 --- a/src/tr1.rs
 +++ b/src/tr1.rs
-@@ -10,4 +10,1 @@
+@@ -9,6 +9,3 @@
+ 
 -#[tokio::test(flavor = "multi_thread")]
 -async fn checks_the_ledger() {
 -    assert_eq!(ledger_total().await, 4);
 -}
 +// removed
+ 
 diff --git a/src/un1.rs b/src/un1.rs
 --- a/src/un1.rs
 +++ b/src/un1.rs

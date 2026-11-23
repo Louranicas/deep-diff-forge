@@ -1,0 +1,26 @@
+# The comparison corpus that the "nothing a release found is lost" claims of 0.10.0 cite.
+# The corpus is not in this repository (7,421 patches, 45 planted Git repositories, the frozen
+# release binaries); it is named here by the SHA-256 of its manifest. The local gate's step
+# "comparison corpus manifest" verifies the corpus where it exists.
+#
+# Whole-tree record for the release-prepared commit 2343eef1 (version 0.10.0; binary sha256
+# df8359c42d99a957c5266825b1d8e87c84b7b7d6aaeb30753527454b321c3e6f), run 2026-11-23T02:31Z,
+# record runs/20261123T023136Z-df8359c42d99 of the corpus:
+#   identity control                 lost 0   gained 0
+#   against v0.8.3 (4cafd0ad…)       lost 1   gained 2063   (see note 1)
+#   against v0.8.4 (0c93b3ed…)       lost 1   gained 2025   (see note 1)
+#   against v0.9.0 code (5ba0a366…)  lost 54  gained 242    (see note 2)
+#   against the binary both reviewers first read (7ffb5c33…, commit 1b1d4a49): lost 0, gained 0,
+#   and with the tool's version member normalised the same stdout, stderr and exit code on
+#   every patch.
+#   Git selections, 45 planted repositories and 8 history ranges, against v0.9.0 code and against
+#   the first fix of this release: every lost item is binary_change on a file that gains
+#   diff_suppressed; no file lost a label without gaining one.
+# Note 1: one patch holds two sections for one path; both releases and this tree report new_file
+#   on it. Since 0.9.0 the two entries come out in the other order (the entry with process_spawn
+#   ranks first), so the comparison, which keys an entry by path and position, pairs them
+#   differently. No label is missing.
+# Note 2: all 54 are trivial_assert on Python lines where "assert True" is followed by more
+#   (for example "assert True == False"), which 0.9.0 labelled though they can fail: the narrowing
+#   of task S3.16, a recorded exception to the floor.
+a6e6baff0360a41860ce9c1d24a7bdc3a58b0989c2cd3f6c8f1e57adb0674ec2  MANIFEST.sha256

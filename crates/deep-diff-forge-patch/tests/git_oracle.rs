@@ -1,6 +1,6 @@
 // DDF integration: R02, R03, R04, R05, R06, R07, R44, R46. Preserve source bytes and exact original input independently of normalized display; use Git as the application oracle.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--git_oracle
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
 //! Independent oracle: Git must apply our rendered patch to the exact base bytes.
 #![expect(
     clippy::disallowed_methods,
@@ -432,23 +432,24 @@ fn half_moves_and_unchanged_modes_are_judged_as_git_judges_them() {
             "diff --git a/x b/y\nsimilarity index 100%\nrename from x\nrename to y\n",
             FileStatus::Renamed,
         ),
-        (
-            "diff --git a/x b/x\nrename to y\n--- a/x\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n",
-            FileStatus::Renamed,
-        ),
-        (
-            "diff --git a/x b/x\ncopy to y\n--- a/x\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n",
-            FileStatus::Copied,
-        ),
-        (
-            "diff --git a/x b/x\nold mode 100644\nnew mode 100744\n",
-            FileStatus::ModeChanged,
-        ),
-        (
-            "diff --git a/x b/x\nold mode 100644\nnew mode 100664\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n",
-            FileStatus::Modified,
-        ),
     ];
+    // Git reads these, and its diff writes none of them (a move header alone, a mode it
+    // canonicalises): refused (`CONFORMANCE.md`); 0.8.4 read them.
+    for patch in [
+        "diff --git a/x b/x\nrename to y\n--- a/x\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n",
+        "diff --git a/x b/x\ncopy to y\n--- a/x\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n",
+        "diff --git a/x b/x\nold mode 100644\nnew mode 100744\n",
+        "diff --git a/x b/x\nold mode 100644\nnew mode 100664\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n",
+    ] {
+        assert!(git_accepts(&root, patch), "git refuses {patch:?}");
+        assert!(
+            matches!(
+                parse(patch),
+                Err(deep_diff_forge_patch::PatchParseError::HeaderNotWrittenByGit { .. })
+            ),
+            "ddf: {patch:?}"
+        );
+    }
     for (patch, status) in accepted {
         assert!(git_accepts(&root, patch), "git refuses {patch:?}");
         let files = parse(patch).unwrap();

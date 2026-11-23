@@ -114,7 +114,10 @@ impl From<GitAcquireError> for JudgePatchError {
 /// The most bytes of `git ls-files -t` that are read to look for skip-worktree marks.
 const INDEX_LISTING_CAP: usize = 64 * 1024 * 1024;
 
-/// The diff options of forge-warden's patch maker (`scripts/make_patch.sh`), in its order.
+/// The diff options of forge-warden's patch maker (`scripts/make_patch.sh` of forge-warden's
+/// main at `fbd621e0`), in its order. The test `judge_patch` runs a recorded copy of that
+/// script and holds the bytes equal; a hand copy of older options held them equal while the
+/// index lines were short and a submodule could be left out (S3.17a.h).
 const DIFF_ARGS: &[&str] = &[
     "diff",
     "--no-ext-diff",
@@ -123,8 +126,20 @@ const DIFF_ARGS: &[&str] = &[
     "--no-relative",
     "--binary",
     "--no-renames",
+    "--full-index",
     "--src-prefix=a/",
     "--dst-prefix=b/",
+    "--submodule=short",
+    "--ignore-submodules=none",
+];
+
+/// The Git options the patch maker gives before `diff`: the commit-graph and multi-pack index
+/// of the borrowed object store are not read (they can lie about a commit's tree and parents).
+const NO_GRAPH: &[&str] = &[
+    "-c",
+    "core.commitGraph=false",
+    "-c",
+    "core.multiPackIndex=false",
 ];
 
 /// The environment of what runs outside the reviewed repository (making the scratch repository,
@@ -629,14 +644,15 @@ fn diff_outside(
         4096,
     )?)?;
     let attr_source = OsString::from(format!("--attr-source={empty_tree}"));
-    let mut args: Vec<&OsStr> = vec![
-        git_dir.as_os_str(),
+    let mut args: Vec<&OsStr> = vec![git_dir.as_os_str()];
+    args.extend(NO_GRAPH.iter().map(OsStr::new));
+    args.extend([
         attr_source.as_os_str(),
         OsStr::new("-c"),
         OsStr::new("core.attributesFile=/dev/null"),
         OsStr::new("-c"),
         OsStr::new("core.quotePath=true"),
-    ];
+    ]);
     args.extend(DIFF_ARGS.iter().map(OsStr::new));
     // The empty tree stands for "no commit to compare with".
     args.push(OsStr::new(if base.is_empty() {

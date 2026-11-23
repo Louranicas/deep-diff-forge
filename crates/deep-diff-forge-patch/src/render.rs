@@ -1,6 +1,6 @@
 // DDF integration: R02, R03, R04, R05, R06, R07, R44, R46. Preserve source bytes and exact original input independently of normalized display; use Git as the application oracle.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--render
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
 use deep_diff_forge_core::{FileStatus, PatchHunk, PatchLineKind, ReviewFile};
 use std::fmt::Write as _;
 
@@ -134,7 +134,10 @@ pub fn old_path(file: &ReviewFile) -> Option<String> {
         let from = meta
             .strip_prefix("rename from ")
             .or_else(|| meta.strip_prefix("copy from "))?;
-        Some(super::paths::decode_path(from).unwrap_or_else(|| from.to_string()))
+        // Squashed as Git squashes a moved path (`find_name`), so `rename from d//x` names
+        // `d/x`, the file Git removes (independent review of S3a, S3A-L-1).
+        let from = super::paths::decode_path(from).unwrap_or_else(|| from.to_string());
+        Some(super::parser::squash_slashes(&from))
     })
 }
 
@@ -243,7 +246,8 @@ mod tests {
 
     #[test]
     fn multi_hunk_render_has_two_headers() {
-        let input = "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-a\n+A\n@@ -9,1 +9,1 @@\n-b\n+B\n";
+        let input =
+            "--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-a\n+A\n ctx\n@@ -9,2 +9,2 @@\n-b\n+B\n ctx\n";
         let files = parse(input).unwrap();
         let out = render_unified(&files);
         assert_eq!(out.matches("@@ -").count(), 2);

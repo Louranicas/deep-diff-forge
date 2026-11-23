@@ -22,41 +22,53 @@ diff --git a/src/turbo.rs b/src/turbo.rs
 diff --git a/src/x.rs b/src/x.rs
 --- a/src/x.rs
 +++ b/src/x.rs
-@@ -7 +7 @@ impl Command { const VERSION: u8 = 1; }
+@@ -6,3 +6,3 @@ impl Command { const VERSION: u8 = 1; }
+ 
 -const X: u8 = Other::
 +const X: u8 = Command::
+ 
 diff --git a/src/g.rs b/src/g.rs
 --- a/src/g.rs
 +++ b/src/g.rs
-@@ -2,2 +2,2 @@ pub fn check(limit: usize) {
+@@ -1,4 +1,4 @@ pub fn check(limit: usize) {
+ 
 -    debug_assert!(
 -        cfg!(debug_assertions)
 +    assert!(
 +        true
+ 
 diff --git a/src/prose.rs b/src/prose.rs
 --- a/src/prose.rs
 +++ b/src/prose.rs
-@@ -12 +12 @@
+@@ -11,3 +11,3 @@
+ 
 - * The fast path is not written yet.
 + * The fast path is still a todo!
+ 
 diff --git a/src/attr.rs b/src/attr.rs
 --- a/src/attr.rs
 +++ b/src/attr.rs
-@@ -5 +5 @@
+@@ -4,3 +4,3 @@
+ 
 -#[rstest
 +#[tokio
+ 
 diff --git a/src/alias.rs b/src/alias.rs
 --- a/src/alias.rs
 +++ b/src/alias.rs
-@@ -9 +9 @@
+@@ -8,3 +8,3 @@
+ 
 -#[cfg_attr(miri, skip
 +#[cfg_attr(miri, ignore
+ 
 diff --git a/src/lint.rs b/src/lint.rs
 --- a/src/lint.rs
 +++ b/src/lint.rs
-@@ -3 +3 @@
+@@ -2,3 +2,3 @@
+ 
 -#[deny
 +#[allow
+ 
 diff --git a/src/cutskip.rs b/src/cutskip.rs
 --- a/src/cutskip.rs
 +++ b/src/cutskip.rs
@@ -87,25 +99,6 @@ diff --git a/src/twotop.rs b/src/twotop.rs
 @@ -0,0 +1,2 @@
 +pub fn boom(opt: Option<u8>) -> u8 {
 +    opt.unwrap
-diff --git a/src/topone.rs b/src/topone.rs
---- a/src/topone.rs
-+++ b/src/topone.rs
-@@ -0,0 +1,2 @@
-+pub fn boom(opt: Option<u8>) -> u8 {
-+    opt.unwrap
-@@ -1,1 +3,3 @@
-+    ()
-+}
- fn main() {
-diff --git a/src/topcomment.rs b/src/topcomment.rs
---- a/src/topcomment.rs
-+++ b/src/topcomment.rs
-@@ -0,0 +1,2 @@
-+pub fn a() {}
-+/*
-@@ -1,1 +3,2 @@
-+// */ pub fn f() { std::process::Command::new("sh").status().ok(); } /*
- // notes */
 diff --git a/src/mirror.rs b/src/mirror.rs
 --- a/src/mirror.rs
 +++ b/src/mirror.rs
@@ -121,21 +114,3 @@ diff --git a/src/mirror.rs b/src/mirror.rs
 -        a < b,
 +        true,
          "a must be below b"
-diff --git a/src/far.rs b/src/far.rs
---- a/src/far.rs
-+++ b/src/far.rs
-@@ -10 +10 @@
--    debug_assert!(
-+    assert!(
-@@ -40,0 +41 @@
-+        true,
-diff --git a/src/far.js b/src/far.js
---- a/src/far.js
-+++ b/src/far.js
-@@ -10 +10 @@
--  } catch (err) {
-+  } catch (e) {
-@@ -40,0 +41,3 @@
-+}
-+
-+function addedBelow() {

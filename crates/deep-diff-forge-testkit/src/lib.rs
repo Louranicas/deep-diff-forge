@@ -1,4 +1,4 @@
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-testkit--lib
+// Module index: docs/ARCHITECTURE.md#crates-as-built-030
 //! Test-only helpers for the workspace (DDF-TEST-TMPLEAK-001).
 //!
 //! A test that needs a file or directory on disk takes a [`Scratch`]: a fresh, owner-private

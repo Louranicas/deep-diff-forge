@@ -1,6 +1,6 @@
 // DDF integration: R08, R10, R11. Never turn a failed analysis into formatting-only or behavioral safety; parser time cancellation is cooperative, node limits are post-parse.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#syntax-availability
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-syntax--analyze
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#syntax-availability
 use crate::Symbol;
 use crate::language::{Language, detect_language};
 use deep_diff_forge_core::{FallbackReason, ParseStatus};

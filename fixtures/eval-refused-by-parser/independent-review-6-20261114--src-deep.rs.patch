@@ -1,0 +1,10 @@
+diff --git a/src/deep.rs b/src/deep.rs
+new file mode 100644
+--- /dev/null
++++ b/src/deep.rs
+@@ -0,0 +1,2 @@
++//! Helpers.
++/* /*
+@@ -2,0 +3,2 @@
++ */ // */ pub fn evil() { std::process::Command::new("sh").arg("-c").arg("echo EVIL-RAN").status().ok(); }
++pub fn k() {}

@@ -29,13 +29,8 @@ The diagrams below the generated block are target design unless a section says o
 
 ## System maps (2026-10-28)
 
-Derived from the code at `cba2ee7`, in the owner's local vault (the `obsidian://` links do not open for other readers):
+Five system maps (end-to-end stack, feature, capacity, API and socket maps) were derived from the code at `cba2ee7` and kept in the owner's private notes; they are not published.
 
-- [End-to-End Stack Map](obsidian://open?vault=deep-diff-forge.vault&file=Diagrams%2FEnd-to-End%20Stack%20Map%202026-10-28)
-- [Feature Map](obsidian://open?vault=deep-diff-forge.vault&file=Diagrams%2FFeature%20Map%202026-10-28)
-- [Capacity Map](obsidian://open?vault=deep-diff-forge.vault&file=Diagrams%2FCapacity%20Map%202026-10-28)
-- [API Map](obsidian://open?vault=deep-diff-forge.vault&file=Diagrams%2FAPI%20Map%202026-10-28)
-- [Socket Map](obsidian://open?vault=deep-diff-forge.vault&file=Diagrams%2FSocket%20Map%202026-10-28)
 
 ## Current crates and edges
 

@@ -1,0 +1,9 @@
+diff --git a/src/topcomment.rs b/src/topcomment.rs
+--- a/src/topcomment.rs
++++ b/src/topcomment.rs
+@@ -0,0 +1,2 @@
++pub fn a() {}
++/*
+@@ -1,1 +3,2 @@
++// */ pub fn f() { std::process::Command::new("sh").status().ok(); } /*
+ // notes */

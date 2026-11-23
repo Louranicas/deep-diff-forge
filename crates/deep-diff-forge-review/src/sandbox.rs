@@ -146,7 +146,20 @@ impl Sandbox {
         )
     }
     /// Wrap a fixed gate argv. `network` is only true for the controller's dependency vendoring step.
-    pub(crate) fn argv(&self, spec: &Spec<'_>) -> Vec<String> {
+    /// A host path to mount must be UTF-8 without `:` or `,`: `--volume` splits its value at `:`
+    /// and its options at `,`, so such a path would mount another directory or add options.
+    pub(crate) fn argv(&self, spec: &Spec<'_>) -> Result<Vec<String>> {
+        let mounts = [Some(spec.work), Some(spec.source), spec.cargo_home];
+        for path in mounts
+            .into_iter()
+            .flatten()
+            .chain(spec.vendor.map(|(p, _)| p))
+        {
+            require(
+                path.to_str().is_some_and(|p| !p.contains([':', ','])),
+                "gate sandbox refused: a host path to mount is not UTF-8 or holds ':' or ','",
+            )?;
+        }
         let mut argv = self.runtime.clone();
         argv.extend(
             [
@@ -202,7 +215,7 @@ impl Sandbox {
         argv.push(format!("--workdir={SOURCE}"));
         argv.push(spec.image_id.to_owned());
         argv.extend(spec.inner.iter().cloned());
-        argv
+        Ok(argv)
     }
     pub(crate) fn record(&self, spec: &Spec<'_>) -> serde_json::Value {
         let mut read_only = vec![SOURCE];
@@ -311,7 +324,36 @@ pub(crate) fn container_name(run_id: &str, job: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::Sandbox;
+    use super::{Sandbox, Spec};
+    use std::path::Path;
+
+    /// G-CI-1f: `:` and `,` in a mounted host path are refused before the path reaches
+    /// `--volume`.
+    #[test]
+    fn a_colon_in_a_mounted_path_is_refused() {
+        let spec = |work: &'static str| Spec {
+            name: "n",
+            image_id: "i",
+            work: Path::new(work),
+            source: Path::new("/run/src"),
+            cargo_home: None,
+            vendor: None,
+            inner: &[],
+            timeout_seconds: 1,
+            network: false,
+            mutation: false,
+            fuzz: false,
+        };
+        let sandbox = printing(0);
+        for bad in ["/run/a:b", "/run/a,b", "/run/a:/etc:rw"] {
+            assert!(sandbox.argv(&spec(bad)).is_err(), "{bad} reaches --volume");
+        }
+        let argv = sandbox.argv(&spec("/run/work")).unwrap();
+        assert!(
+            argv.contains(&"--volume=/run/work:/work:Z".to_owned()),
+            "{argv:?}"
+        );
+    }
 
     /// A runtime whose control command is a shell script printing `bytes` zero bytes to stdout.
     fn printing(bytes: usize) -> Sandbox {

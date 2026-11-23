@@ -1,0 +1,10 @@
+diff --git a/src/far.js b/src/far.js
+--- a/src/far.js
++++ b/src/far.js
+@@ -10 +10 @@
+-  } catch (err) {
++  } catch (e) {
+@@ -40,0 +41,3 @@
++}
++
++function addedBelow() {

@@ -120,7 +120,10 @@ Patch truth is the exact text that can be applied, and it is separate from every
 layer. Semantic analysis, risk ranking and agent notes may be absent, partial or wrong, but
 none of them can change the apply-able patch.
 
-The reverse holds too. An internally incoherent patch is **refused, not repaired**:
+The reverse holds too. These internally incoherent patches are **refused, not repaired** (hunks
+out of order, overlapping hunks and a new-side start that the old start and earlier counts do not
+give are read: Git either places each hunk by its own rule or refuses the whole patch and writes
+nothing, and the review states neither which, `CONFORMANCE.md`):
 
 - a hunk whose body disagrees with its `@@ -a,b +c,d @@` counts;
 - a hunk cut off at end of file;
@@ -133,6 +136,31 @@ The reverse holds too. An internally incoherent patch is **refused, not repaired
 - a mode header that is not octal.
 
 Each fails with exit 4. None is quietly turned into a plausible-looking model.
+
+A `diff --git` section is read only if its header lines are one of the shapes Git's own diff writes
+(`crates/deep-diff-forge-patch/CONFORMANCE.md`). What that promises is what a patch alone can
+settle: for every patch DDF accepts, a plain `git apply` in Git's default configuration either
+refuses the whole patch while checking it and writes nothing, or writes exactly the paths, types
+and modes the review shows and, for each hunk, removes and adds exactly the lines (as Git stores
+them) the review shows, at the place Git's own anchor rule gives: a hunk with no trailing context
+at the end of the file, one at old line 0 or 1 at its start, any other by Git's search outward from
+the new-side line its header names, over lines no earlier hunk of the same section wrote (a later
+section for the same path is applied to the earlier section's result, where no line is skipped; the
+review does not say which of several equal places Git takes). A header's line numbers are the
+patch's claim, true on the tree Git made it from; a hand-written header can name one copy of some
+lines while Git changes another, so the review states the anchor ("Git places this hunk at the end
+of the file"). Checking the place against the tree is not built. DDF reads a diff without the tree
+it applies to, so a review can show a change that never lands, but never one that lands otherwise.
+It refuses a hunk with no context past line 1, or one after a hunk with no trailing context (`git
+diff -U0` output), and a patch Git would fail to write halfway
+(`crates/deep-diff-forge-patch/CONFORMANCE.md` has the limits). The restated promise does not need
+the first refusal: a hunk with no context past line 1 would be stated as placed at the end of the
+file. DDF refuses such hunks (`HunkPlacedElsewhere`) because plain `git apply` places them at the
+end of the file whatever their author meant (`git diff -U0` output is meant for `git apply
+--unidiff-zero`). `GitCannotWrite` is what the promise's second outcome needs.
+"Git writes it" is not "`git apply` accepts it": a plain `git diff` of a binary file, a
+`--submodule=diff` envelope and a `--no-index` pair of binary files are read, and `git apply`
+refuses each whole.
 
 ## How it works
 
@@ -161,36 +189,37 @@ Each fails with exit 4. None is quietly turned into a plausible-looking model.
 
 ## Install
 
-**Prebuilt binaries** for Linux (x86_64 and, since v0.6.0, arm64) and macOS (Apple silicon and
-Intel) are on the [releases page](https://github.com/Louranicas/deep-diff-forge/releases)
-([supported platforms](#supported-platforms)). The commands below fetch v0.8.3,
-the latest GitHub release (0.8.4 and 0.9.0 have none).
-Each archive has a `.sha256` file, and the release carries an SPDX SBOM:
+**Prebuilt binaries.** From 0.8.4 a release ships one binary, for Linux x86_64, built and
+tested on the owner's machine; Linux arm64 and macOS are not built for this release, and v0.8.3
+is the last release with binaries for them ([supported platforms](#supported-platforms)).
+GitLab is the place of release: **0.10.0** (the signed tag `v0.10.0`, 2026-11-23), **0.9.0**
+(`v0.9.0`, 2026-11-18) and **0.8.4** (`v0.8.4`, 2026-11-17) are on its [releases page](https://gitlab.com/lukeomahoney/deep-diff-forge/-/releases)
+with the archive and its `.sha256`, the SBOM, the build receipt, `SHA256SUMS` and the owner's
+signature of it, `SHA256SUMS.sig`. GitHub's [releases page](https://github.com/Louranicas/deep-diff-forge/releases)
+mirrors the same files (since 2026-11-22):
 
 ```bash
-curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.8.3/deep-diff-forge-v0.8.3-x86_64-unknown-linux-gnu.tar.gz
-curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.8.3/deep-diff-forge-v0.8.3-x86_64-unknown-linux-gnu.tar.gz.sha256
-sha256sum -c deep-diff-forge-v0.8.3-x86_64-unknown-linux-gnu.tar.gz.sha256
+curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.10.0/deep-diff-forge-v0.10.0-x86_64-unknown-linux-gnu.tar.gz
+curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.10.0/deep-diff-forge-v0.10.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+sha256sum -c deep-diff-forge-v0.10.0-x86_64-unknown-linux-gnu.tar.gz.sha256
 ```
 
-**0.8.4** (the signed tag `v0.8.4`, 2026-11-17) and **0.9.0** (the signed tag `v0.9.0`,
-2026-11-18) are published on GitLab, <https://gitlab.com/lukeomahoney/deep-diff-forge>:
-the tag and a Linux x86_64 archive (`deep-diff-forge-v0.9.0-x86_64-unknown-linux-gnu.tar.gz`
-for 0.9.0) with its `.sha256`, the SBOM, the build receipt, `SHA256SUMS` and the owner's
-signature of it, `SHA256SUMS.sig`. There is no arm64 Linux or macOS binary of either. Check the
-downloaded files from a clone with
-`scripts/release_local.sh verify v0.9.0 <dir> .github/release_allowed_signers`: the tag's signature, every checksum and
+Check all the downloaded files from a clone with
+`scripts/release_local.sh verify v0.10.0 <dir> .github/release_allowed_signers`: the tag's signature, every checksum and
 its signature, and a rebuild that must give the same binary
 ([local release](docs/RELEASE_AND_PUBLICATION.md#local-release-from-084)).
 
-**From source** (`main` on GitLab: 0.9.0, everything in this README; GitHub's `main` stays at
-0.8.3). This needs Rust **1.88+** (edition 2024):
+**From crates.io** (0.9.0 since 2026-11-23; 0.10.0 from its tag): `cargo install deep-diff-forge-cli --locked`
+builds the same CLI from the fourteen published crates.
+
+**From source** (`main` on GitLab, mirrored to GitHub: everything in this README). This needs
+Rust **1.88+** (edition 2024):
 
 ```bash
 git clone https://gitlab.com/lukeomahoney/deep-diff-forge.git
 cd deep-diff-forge
 cargo build --release --locked -p deep-diff-forge-cli
-target/release/deep-diff-forge --version        # deep-diff-forge 0.9.0
+target/release/deep-diff-forge --version        # deep-diff-forge 0.10.0
 target/release/deep-diff-forge --self-test
 ```
 
@@ -200,15 +229,16 @@ These four release targets are the whole platform scope. Up to v0.8.3 each was b
 `release.yml` and its binary run (`--version` and a review) before it shipped. From 0.8.4 a
 release is not built by `release.yml`: only `x86_64-unknown-linux-gnu` is built, on the owner's
 machine in the `fedora-toolbox-44` toolbox with `scripts/release_local.sh`, which runs the same
-smoke and glibc check; the other three targets are not built for 0.8.4 or 0.9.0, and v0.8.3's
-binaries for them remain on the GitHub releases page.
+smoke and glibc check, and each such build has a receipt
+([runs on record](docs/reference/supported-platforms.md#runs-on-record)). The other three
+targets are not built for this release; v0.8.3's binaries for them remain on its GitHub release.
 
-| Target | 0.8.4 and 0.9.0 | Built and run on (to v0.8.3) | Needs | Tests on every pull request (to v0.8.3) |
+| Target | This release (from 0.8.4) | Built and run on (to v0.8.3) | Needs | Tests on every pull request (to v0.8.3) |
 | --- | --- | --- | --- | --- |
-| `x86_64-unknown-linux-gnu` | built locally (Fedora 44 toolbox, Rust 1.99.1, LLD); the whole local gate (`scripts/ci_local.sh`) | `ubuntu-24.04` | glibc 2.34 or newer | the whole suite (`deploy gate-feature`, required) |
-| `aarch64-unknown-linux-gnu` | not built | `ubuntu-22.04-arm`, natively | glibc 2.34 or newer | the whole suite (`Linux arm64 tests`, not required; gates releases) |
-| `aarch64-apple-darwin` | not built | `macos-26` (arm64) | macOS 11 or newer | the whole suite (`macOS tests`, required); the launchd agent (`macOS launchd agent`, not required; skipped in releases) |
-| `x86_64-apple-darwin` | not built | cross-built on `macos-26`, run under Rosetta 2 | macOS 10.12 or newer | none (the release smoke only) |
+| `x86_64-unknown-linux-gnu` | built and tested (Fedora 44 toolbox, Rust 1.99.1, LLD): the release smoke and the whole local gate (`scripts/ci_local.sh`); [receipts](docs/reference/supported-platforms.md#runs-on-record) | `ubuntu-24.04` | glibc 2.34 or newer | the whole suite (`deploy gate-feature`, required) |
+| `aarch64-unknown-linux-gnu` | not built for this release | `ubuntu-22.04-arm`, natively | glibc 2.34 or newer | the whole suite (`Linux arm64 tests`, not required; gates releases) |
+| `aarch64-apple-darwin` | not built for this release | `macos-26` (arm64) | macOS 11 or newer | the whole suite (`macOS tests`, required); the launchd agent (`macOS launchd agent`, not required; skipped in releases) |
+| `x86_64-apple-darwin` | not built for this release | cross-built on `macos-26`, run under Rosetta 2 | macOS 10.12 or newer | none (the release smoke only) |
 
 The glibc floor and how it is held, the loader warning on glibc 2.34 to 2.38, source builds and
 the macOS minimums are measured in [supported platforms: measurements](docs/reference/supported-platforms.md).
@@ -307,11 +337,14 @@ moved from this page. The release archive ships this README alone: read them in 
 
 ## Project status
 
-- **Released:** 0.9.0 (2026-11-18), a signed tag on GitLab, Gitea and Forgejo; from 0.8.4 a
-  release is built only for `x86_64-unknown-linux-gnu` ([supported platforms](#supported-platforms)).
-- **Readiness:** 0.9.0 is not production-ready yet (verdict of 2026-11-18); neither 0.8.4 nor 0.9.0 has had an independent rescore.
-- **Not claimed:** crates.io publication (on hold), and multi-user or shared-host daemon
-  deployment; the known limits are in the [0.9.0 notes](docs/release-notes/0.9.0.md#status-at-release).
+- **Released:** 0.10.0 (2026-11-23), a signed tag on GitLab, Gitea and Forgejo, with release
+  pages on GitLab and, mirrored, on GitHub, and its crates on crates.io (0.9.0's since
+  2026-11-23); from 0.8.4 a release is built only for `x86_64-unknown-linux-gnu`
+  ([supported platforms](#supported-platforms)). With forge-warden as the judge, upgrade in the
+  [cutover order](docs/release-notes/0.10.0.md#cutover-with-forge-warden).
+- **Readiness:** the last verdict (2026-11-18) found 0.9.0 not production-ready yet; none of
+  0.8.4, 0.9.0 and 0.10.0 has had an independent rescore.
+- **Not claimed:** multi-user or shared-host daemon deployment; the known issues of 0.10.0 are in [its notes](docs/release-notes/0.10.0.md#known-issues), the known limits in the [0.9.0 notes](docs/release-notes/0.9.0.md#status-at-release).
 - **History:** the notes of every release, and the dated history of this section, are in [`docs/release-notes/`](docs/release-notes/README.md).
 - **Known issues:** issues found after a release are listed on its [release page](https://gitlab.com/lukeomahoney/deep-diff-forge/-/releases).
 
@@ -320,14 +353,16 @@ moved from this page. The release archive ships this README alone: read them in 
 **Everyone is welcome.** Deep-Diff-Forge is an open invitation, with no prior involvement
 needed, and no contribution is too small. Fix a typo, report a bug with a patch that reproduces
 it, add a tree-sitter language, close one of the [known limits](docs/release-notes/0.9.0.md#status-at-release), or review
-someone else's pull request.
+someone else's merge request.
 
 1. Read [CONTRIBUTING.md](CONTRIBUTING.md). It covers setup in three commands, the quality bar
    and the open problems.
 2. Pick an [open issue on GitLab](https://gitlab.com/lukeomahoney/deep-diff-forge/-/issues), or
    [open your own](https://gitlab.com/lukeomahoney/deep-diff-forge/-/issues/new).
-3. Send a pull request. CI tells you everything a reviewer would check mechanically, so the
-   human review can focus on ideas.
+3. Open a [merge request on GitLab](https://gitlab.com/lukeomahoney/deep-diff-forge/-/merge_requests).
+   The local gate (`scripts/ci_local.sh`) checks everything a reviewer would check mechanically,
+   so the human review can focus on ideas. GitHub is a mirror and takes pull requests only to
+   bring its `main` up to date.
 
 Everyone participates under the [Code of Conduct](CODE_OF_CONDUCT.md). Security issues go
 through a confidential issue on GitLab ([SECURITY.md](SECURITY.md#reporting-a-vulnerability)), not a public issue.

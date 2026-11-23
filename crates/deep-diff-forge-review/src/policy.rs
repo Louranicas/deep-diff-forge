@@ -1,6 +1,6 @@
 // Review council: Fail-closed request/report admission and synthesis: no missing quorum, stale evidence or vote-based approval.
 // Design/status: docs/REVIEW_COUNCIL.md#admission-and-synthesis
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--src--policy
+// Module index: docs/REVIEW_COUNCIL.md#cratesdeep-diff-forge-reviewsrcpolicyrs
 //! Admission, independent rounds, and fail-closed synthesis; votes cannot satisfy tool gates.
 use crate::{
     Assessment, AssessmentState, Disposition, Execution, Gate, Manifest, Outcome, Persona, Profile,

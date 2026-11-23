@@ -1,6 +1,6 @@
 // DDF integration: daemon metrics for standard monitoring, without a listener (M1 monitoring).
 // Design/status: docs/OPERATIONS_AND_DAEMON.md#exporting-metrics-to-prometheus
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-daemon--src--metrics
+// Module index: docs/ARCHITECTURE.md#crates-as-built-030
 //! The `deep-diff-forge.daemon-metrics.v0` document in the Prometheus text exposition format
 //! (version 0.0.4), read by `deep-diff-forge daemon metrics --format prometheus`.
 //!

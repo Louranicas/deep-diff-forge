@@ -1,12 +1,13 @@
 // Review council: Append-only, hash-chained decision journal fed by human dispositions recorded in a local tuicr session.
 // Design/status: docs/REVIEW_COUNCIL.md#decision-journal
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Comparisons%2FArchitecture%20Lessons%20and%20Interoperability
+// Module index: docs/ARCHITECTURE.md#crates-as-built-030
 //! tuicr→DDF decision journal (DDF-R18). Human comments, revisions, lifecycle transitions, deletions
 //! and reviewed marks in a local tuicr session become actor-attributed events in `<run>/decisions.jsonl`.
 //!
 //! The journal is append-only and hash-chained: each event names the hash of the one before it, and
 //! create-new checkpoints record the head after every import, so a rewritten or truncated journal
-//! is refused on the next import. Nothing here writes to tuicr. Session content is untrusted data:
+//! is refused on the next import. A fault after the commit point, the synced append, is healed by
+//! the next executing import ([`reconcile`]). Nothing here writes to tuicr. Session content is untrusted data:
 //! it is size-capped, its ids and paths are validated, and a disposition is recorded only while the
 //! session still shows the revision and bytes the run sealed; otherwise the whole import is refused.
 use crate::storage::{self, INVENTORY_FILE, SNAPSHOT_DIR};
@@ -34,7 +35,8 @@ const JOURNAL_CAP: u64 = 64 * 1024 * 1024;
 const ENTRY_CAP: usize = 100_000;
 const TAG_CAP: usize = 256;
 
-/// Typed refusal of a tuicr import. Every variant is a refusal to append.
+/// Typed failure of a tuicr import. Every variant but [`TuicrImportError::Incomplete`] is a refusal
+/// to append.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum TuicrImportError {
@@ -54,6 +56,16 @@ pub enum TuicrImportError {
     Locked { lock: String },
     /// An export intent marker has no completion record, so DDF authorship is unknown.
     InterruptedExport { pending: String },
+    /// An I/O failure after the commit point: events `first` to `last` are in the journal (unless
+    /// `durable` is false: its sync failed), and `file` was not written. Run the import again.
+    /// `source` is the I/O error, also as [`Error::source`].
+    Incomplete {
+        first: u64,
+        last: u64,
+        file: String,
+        source: std::io::Error,
+        durable: bool,
+    },
 }
 impl fmt::Display for TuicrImportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -77,18 +89,41 @@ impl fmt::Display for TuicrImportError {
                 write!(f, "tuicr import refused (unsafe session): {reason}")
             }
             Self::Journal(reason) => write!(f, "tuicr import refused (journal): {reason}"),
+            // The remedy before the path: the command line cuts an error at 200 bytes.
             Self::Locked { lock } => write!(
                 f,
-                "tuicr import refused (locked): {lock} exists; another import is running or was interrupted; inspect the journal, then remove the lock"
+                "tuicr import refused (locked): another import of this run is running; run this one again when it has finished (it holds {lock})"
             ),
             Self::InterruptedExport { pending } => write!(
                 f,
                 "tuicr import refused (interrupted export): {pending} has no completion record; finish or inspect the export first"
             ),
+            Self::Incomplete {
+                first,
+                last,
+                file,
+                source,
+                durable,
+            } => write!(
+                f,
+                "tuicr import recorded, incomplete: events {first} to {last} {}; {file} could not be written ({source}); run the same import again to complete it",
+                if *durable {
+                    "are in the journal"
+                } else {
+                    "were appended, but whether they are durable is unknown"
+                }
+            ),
         }
     }
 }
-impl Error for TuicrImportError {}
+impl Error for TuicrImportError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Incomplete { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
 impl From<TuicrExportError> for TuicrImportError {
     fn from(e: TuicrExportError) -> Self {
         Self::Session(e)
@@ -302,6 +337,9 @@ pub struct TuicrImport {
     pub events: Vec<DecisionEvent>,
     /// Number of `events` that are conflicts.
     pub conflicts: usize,
+    /// The journal's repairs this import made (`--execute`) or would make (a dry run), one line
+    /// each, in the order made. Added in 0.10.0; before, they were only written to standard error.
+    pub repairs: Vec<String>,
     pub authority: &'static str,
 }
 
@@ -585,13 +623,20 @@ struct FileState {
     /// tuicr content hash of the first journaled positive mark; later positive marks must match it.
     pinned: Option<u64>,
 }
-/// A verified journal and the state it replays to.
+/// A verified journal, the state it replays to, and what [`reconcile`] may repair.
 #[derive(Default)]
 struct Journal {
+    /// Length of the verified lines (the file without `torn`).
     bytes: u64,
     events: Vec<DecisionEvent>,
     comments: BTreeMap<(String, String), CommentState>,
     files: BTreeMap<(String, String), FileState>,
+    /// A torn last record no checkpoint names; empty checkpoints of held events (as 0.8.3 to
+    /// 0.9.0 leave them); leftover temporary checkpoint files; the newest checkpointed sequence.
+    torn: Vec<u8>,
+    empty: Vec<u64>,
+    temporary: Vec<PathBuf>,
+    checkpointed: Option<u64>,
 }
 fn genesis() -> String {
     "0".repeat(64)
@@ -648,6 +693,17 @@ struct Checkpoint {
     seq: u64,
     hash: String,
 }
+fn checkpoint_path(directory: &Path, seq: u64) -> PathBuf {
+    directory
+        .join(CHECKPOINT_DIR)
+        .join(format!("{seq:020}.json"))
+}
+fn checkpoint_bytes(event: &DecisionEvent) -> Result<Vec<u8>> {
+    Ok(serde_json::to_vec_pretty(&Checkpoint {
+        seq: event.seq,
+        hash: event.hash.clone(),
+    })?)
+}
 /// Read and verify the whole journal: exact canonical lines, consecutive `seq`, `prev` chain,
 /// recomputed hashes, this run's id, and every create-new checkpoint still present at its sequence.
 fn load_journal(directory: &Path, run_id: &str) -> Result<Journal> {
@@ -656,12 +712,11 @@ fn load_journal(directory: &Path, run_id: &str) -> Result<Journal> {
     let mut journal = Journal::default();
     if path.exists() {
         // The reader's cap is the journal's own refusal, not the run's or the session's.
-        let bytes = storage::read_bytes(&path, JOURNAL_CAP).map_err(|e| corrupt(e.0))?;
-        journal.bytes = bytes.len() as u64;
+        let mut bytes = storage::read_bytes(&path, JOURNAL_CAP).map_err(|e| corrupt(e.0))?;
+        let lines = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+        journal.torn = bytes.split_off(lines);
+        journal.bytes = lines as u64;
         let text = String::from_utf8(bytes).map_err(|_| corrupt("not UTF-8".into()))?;
-        if !text.is_empty() && !text.ends_with('\n') {
-            return Err(corrupt("the last line is incomplete (truncated)".into()));
-        }
         let mut prev = genesis();
         for (seq, line) in (0u64..).zip(text.lines()) {
             let event: DecisionEvent = serde_json::from_str(line)
@@ -690,20 +745,48 @@ fn load_journal(directory: &Path, run_id: &str) -> Result<Journal> {
             }
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().into_owned();
-            let c: Checkpoint = storage::read_json(&entry.path(), 4096)
-                .map_err(|e| corrupt(format!("checkpoint {name}: {e}")))?;
+            if storage::is_temporary(&name) {
+                journal.temporary.push(entry.path());
+                continue;
+            }
+            // A zero-length file named for an event the journal holds: what 0.8.3 to 0.9.0 leave
+            // when a checkpoint write fails. Any other malformed content stays a refusal.
+            let empty = name
+                .strip_suffix(".json")
+                .filter(|seq| seq.len() == 20 && seq.bytes().all(|b| b.is_ascii_digit()))
+                .and_then(|seq| journal.events.get(seq.parse::<usize>().ok()?))
+                .filter(|_| {
+                    fs::symlink_metadata(entry.path()).is_ok_and(|m| m.is_file() && m.len() == 0)
+                });
+            let c = if let Some(event) = empty {
+                journal.empty.push(event.seq);
+                Checkpoint {
+                    seq: event.seq,
+                    hash: event.hash.clone(),
+                }
+            } else {
+                storage::read_json(&entry.path(), 4096)
+                    .map_err(|e| corrupt(format!("checkpoint {name}: {e}")))?
+            };
             if name != format!("{:020}.json", c.seq) {
                 return Err(corrupt(format!("checkpoint {name} is misnamed")));
             }
             let at = usize::try_from(c.seq)
                 .ok()
                 .and_then(|i| journal.events.get(i));
+            if at.is_none() && !journal.torn.is_empty() {
+                return Err(corrupt(format!(
+                    "the last line is incomplete (truncated), and checkpoint {} names an event at or after it",
+                    c.seq
+                )));
+            }
             if at.is_none_or(|e| e.hash != c.hash) {
                 return Err(corrupt(format!(
                     "checkpoint {} names an event the journal no longer holds (truncated or rewritten)",
                     c.seq
                 )));
             }
+            journal.checkpointed = journal.checkpointed.max(Some(c.seq));
         }
     }
     Ok(journal)
@@ -1059,23 +1142,51 @@ fn plan_files(p: &mut Planner<'_>, x: &Inputs<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Holds `<run>/decisions.lock` (create-new) for the duration of an executing import.
-struct Lock(PathBuf);
+/// An advisory `flock` on `<run>/decisions.lock` for the life of an executing import, taken as the
+/// hooks take theirs: a dead process holds nothing, so its lock file does not block. The file is
+/// removed while locked, so a lock is good only on the inode still at the path.
+struct Lock {
+    _held: nix::fcntl::Flock<fs::File>,
+    path: PathBuf,
+}
 impl Lock {
     fn acquire(directory: &Path) -> Result<Self> {
+        use nix::fcntl::{Flock, FlockArg};
+        use std::os::unix::fs::MetadataExt as _;
         let path = directory.join(LOCK_FILE);
-        match storage::write_new(&path, std::process::id().to_string().as_bytes()) {
-            Ok(()) => Ok(Self(path)),
-            Err(_) if path.exists() => Err(TuicrImportError::Locked {
-                lock: path.display().to_string(),
-            }),
-            Err(e) => Err(e.into()),
+        let locked = || TuicrImportError::Locked {
+            lock: path.display().to_string(),
+        };
+        for _ in 0..8 {
+            let file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o600)
+                .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
+                .open(&path)
+                .map_err(storage::named(&path))?;
+            let held = match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
+                Ok(held) => held,
+                Err((_, nix::errno::Errno::EWOULDBLOCK)) => return Err(locked()),
+                Err((_, errno)) => {
+                    return Err(storage::named(&path)(std::io::Error::from(errno)).into());
+                }
+            };
+            let same = match (held.metadata(), fs::symlink_metadata(&path)) {
+                (Ok(a), Ok(b)) => a.ino() == b.ino() && a.dev() == b.dev(),
+                _ => false,
+            };
+            if same {
+                return Ok(Self { _held: held, path });
+            }
         }
+        Err(locked())
     }
 }
 impl Drop for Lock {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
+        let _ = fs::remove_file(&self.path);
     }
 }
 /// The journal lines for `events`, refused when appending them to the verified journal of
@@ -1097,43 +1208,154 @@ fn encode(verified_len: u64, events: &[DecisionEvent]) -> Result<Vec<u8>> {
     }
     Ok(lines)
 }
-/// Append the [`encode`]d `lines` of `events` to the verified journal of `verified_len` bytes, then
-/// record a checkpoint.
+/// Append the [`encode`]d `lines` of `events` to the verified journal of `verified_len` bytes and
+/// checkpoint the new head. The commit point is the synced append; what can fail first does (the
+/// checkpoint, synced under a temporary name), leaving the journal as it was. A failure after it
+/// is [`TuicrImportError::Incomplete`].
 fn append(
     directory: &Path,
     verified_len: u64,
     lines: &[u8],
     events: &[DecisionEvent],
 ) -> Result<()> {
+    let (Some(first), Some(last)) = (events.first(), events.last()) else {
+        return Ok(());
+    };
+    let refused =
+        |e: ReviewFailure| TuicrImportError::Journal(format!("{e}; nothing was appended"));
+    let checkpoint = checkpoint_path(directory, last.seq);
+    let staged = stage_checkpoint(directory, last).map_err(refused)?;
     let path = directory.join(JOURNAL_FILE);
+    // Never through a link: a dangling one would otherwise create and fill its target.
     let mut file = OpenOptions::new()
         .append(true)
         .create(true)
         .mode(0o600)
-        .open(&path)?;
+        .custom_flags(nix::libc::O_NOFOLLOW)
+        .open(&path)
+        .map_err(|e| refused(storage::named(&path)(e)))?;
     if file.metadata()?.len() != verified_len {
         return Err(TuicrImportError::Journal(
             "the journal changed while this import was planned".into(),
         ));
     }
-    file.write_all(lines)?;
-    file.sync_all()?;
-    fs::File::open(directory)?.sync_all()?;
-    let Some(last) = events.last() else {
-        return Ok(());
+    let incomplete = |file: &Path, source, durable| TuicrImportError::Incomplete {
+        first: first.seq,
+        last: last.seq,
+        file: file.display().to_string(),
+        source,
+        durable,
     };
+    if let Err(e) = storage::fault("journal-write").and_then(|()| file.write_all(lines)) {
+        // Nothing is recorded once a part written is cut off again, durably.
+        return match file.set_len(verified_len).and_then(|()| file.sync_all()) {
+            Ok(()) => Err(refused(storage::named(&path)(e))),
+            Err(_) => Err(incomplete(&path, e, false)),
+        };
+    }
+    storage::fault("journal-sync")
+        .and_then(|()| file.sync_all())
+        .and_then(|()| fs::File::open(directory)?.sync_all())
+        .map_err(|e| incomplete(&path, e, false))?;
+    staged
+        .commit_io()
+        .map_err(|e| incomplete(&checkpoint, e, true))
+}
+/// `event`'s checkpoint, written and synced under a temporary name.
+fn stage_checkpoint(
+    directory: &Path,
+    event: &DecisionEvent,
+) -> std::result::Result<storage::Staged, ReviewFailure> {
     let checkpoints = directory.join(CHECKPOINT_DIR);
     if !checkpoints.exists() {
         storage::make_dir(&checkpoints)?;
     }
-    storage::write_json(
-        &checkpoints.join(format!("{:020}.json", last.seq)),
-        &Checkpoint {
-            seq: last.seq,
-            hash: last.hash.clone(),
-        },
-    )?;
-    Ok(())
+    storage::Staged::new(
+        &checkpoint_path(directory, event.seq),
+        &checkpoint_bytes(event)?,
+    )
+}
+/// Under the lock, after every planning-time check, before the append: cut a torn last record no
+/// checkpoint names (keeping its bytes beside the journal), replace empty checkpoints, checkpoint
+/// a head beyond the newest checkpoint and remove temporary files. Each is returned in one line,
+/// in the order made; a dry run only returns them.
+fn reconcile(directory: &Path, journal: &Journal, execute: bool) -> Result<Vec<String>> {
+    let mut repairs = Vec::new();
+    let mut announce = |what: String| repairs.push(what);
+    let path = directory.join(JOURNAL_FILE);
+    if !journal.torn.is_empty() {
+        let digest = sha256_hex(&journal.torn);
+        let kept = path.with_extension(format!(
+            "torn-{:020}-{}",
+            journal.events.len(),
+            &digest[..16]
+        ));
+        announce(format!(
+            "cut the torn last record off {}, kept in {}",
+            path.display(),
+            kept.display()
+        ));
+        if execute {
+            if !kept.exists() {
+                storage::write_new(&kept, &journal.torn)?;
+            }
+            OpenOptions::new()
+                .write(true)
+                .custom_flags(nix::libc::O_NOFOLLOW)
+                .open(&path)
+                .and_then(|file| file.set_len(journal.bytes).and_then(|()| file.sync_all()))
+                .map_err(storage::named(&path))?;
+        }
+    }
+    let empty = journal
+        .events
+        .iter()
+        .filter(|e| journal.empty.contains(&e.seq));
+    let head = journal
+        .events
+        .last()
+        .filter(|head| journal.checkpointed.is_none_or(|seq| seq < head.seq));
+    for (event, what) in empty
+        .map(|e| (e, "replace the empty"))
+        .chain(head.map(|e| (e, "write the missing")))
+    {
+        let checkpoint = checkpoint_path(directory, event.seq);
+        announce(format!("{what} checkpoint {}", checkpoint.display()));
+        if execute {
+            if journal.empty.contains(&event.seq) {
+                fs::remove_file(&checkpoint).map_err(storage::named(&checkpoint))?;
+            }
+            stage_checkpoint(directory, event)?.commit()?;
+        }
+    }
+    for temporary in &journal.temporary {
+        announce(format!("remove the temporary file {}", temporary.display()));
+        if execute {
+            fs::remove_file(temporary).map_err(storage::named(temporary))?;
+        }
+    }
+    Ok(repairs)
+}
+
+/// What a killed export left in session `session_id`'s ledger, removed when `execute`: an export
+/// takes no lock, so the temporary file of a running process is kept and named.
+fn ledger_temporaries(directory: &Path, session_id: &str, execute: bool) -> Result<Vec<String>> {
+    let ledger = (directory.join(LEDGER_DIR).join("tuicr")).join(crate::segment(session_id)?);
+    let mut repairs = Vec::new();
+    for (temporary, ended) in storage::temporaries(&ledger)? {
+        let shown = temporary.display();
+        if ended {
+            repairs.push(format!("remove the temporary file {shown}"));
+            if execute {
+                fs::remove_file(&temporary).map_err(storage::named(&temporary))?;
+            }
+        } else {
+            repairs.push(format!(
+                "keep the temporary file {shown}: a process with the number in its name is running"
+            ));
+        }
+    }
+    Ok(repairs)
 }
 
 /// Import human dispositions from the tuicr session file `session_path` into the run's decision journal.
@@ -1218,6 +1440,13 @@ pub fn import_tuicr(
     plan_tombstones(&mut planner, &inputs)?;
     plan_files(&mut planner, &inputs)?;
     let lines = encode(journal.bytes, &planner.events)?;
+    // After the checks above, so a session they refuse changes nothing (G-S313-2b).
+    let mut repairs = reconcile(&directory, &journal, options.execute)?;
+    repairs.extend(ledger_temporaries(
+        &directory,
+        &session.id,
+        options.execute,
+    )?);
     if options.execute && !planner.events.is_empty() {
         append(&directory, journal.bytes, &lines, &planner.events)?;
     }
@@ -1236,6 +1465,7 @@ pub fn import_tuicr(
             .filter(|e| e.conflict.is_some())
             .count(),
         events: planner.events,
+        repairs,
         authority: "human decisions recorded as observed in a local tuicr session; not approval, merge or verified fact",
     })
 }
@@ -1420,13 +1650,11 @@ mod tests {
         // The documented 64 MiB, written out so the test does not move with the constant.
         let cap: u64 = 64 << 20;
         let file = fs::File::create(dir.join(JOURNAL_FILE)).unwrap();
-        // Exactly the cap is read in full, then refused for its content (NULs, no final newline).
+        // Exactly the cap is read in full: NULs and no newline, all of it a torn last record
+        // that no checkpoint names (so it is for `reconcile` to cut off and keep).
         file.set_len(cap).unwrap();
-        let at_cap = load_journal(dir.path(), "run").map(|j| j.bytes);
-        assert!(
-            matches!(&at_cap, Err(TuicrImportError::Journal(r)) if r.contains("incomplete")),
-            "{at_cap:?}"
-        );
+        let at_cap = load_journal(dir.path(), "run").map(|j| (j.bytes, j.torn.len() as u64));
+        assert_eq!(at_cap.ok(), Some((0, cap)));
         file.set_len(cap + 1).unwrap();
         // Over the cap is the journal's refusal, not one about the run or session export.
         let over = load_journal(dir.path(), "run").map(|j| j.bytes);
@@ -1501,8 +1729,11 @@ mod tests {
         assert_eq!(pinned(&journal), Some(2), "later marks keep the first pin");
     }
 
+    /// FINDINGS A.3: the lock is a `flock`. A second holder is refused while the first lives; the
+    /// file goes with its holder; a file left by a dead process (0.8.3 to 0.9.0 wrote its id into
+    /// a create-new file, or left it empty after an I/O error) does not block.
     #[test]
-    fn only_an_existing_lock_file_is_reported_as_locked() {
+    fn a_held_lock_refuses_and_a_left_lock_file_does_not() {
         let dir = Scratch::new("journal");
         let lock = Lock::acquire(dir.path()).unwrap();
         assert!(matches!(
@@ -1510,11 +1741,583 @@ mod tests {
             Err(TuicrImportError::Locked { .. })
         ));
         drop(lock);
-        assert!(!dir.join(LOCK_FILE).exists(), "the lock is released");
-        // Any other failure to create the lock is reported as itself.
-        assert!(matches!(
-            Lock::acquire(&dir.join("missing")),
-            Err(TuicrImportError::Session(_))
-        ));
+        assert!(
+            !dir.join(LOCK_FILE).exists(),
+            "the lock file goes with its holder"
+        );
+        for left in ["2147483647", ""] {
+            fs::write(dir.join(LOCK_FILE), left).unwrap();
+            drop(Lock::acquire(dir.path()).unwrap());
+        }
+        // Any other failure to take the lock is reported as itself, naming the file.
+        let missing = Lock::acquire(&dir.join("missing"));
+        assert!(
+            matches!(&missing, Err(TuicrImportError::Session(e)) if e.to_string().contains("missing/decisions.lock")),
+            "{missing:?}",
+            missing = missing.map(|_| ())
+        );
+    }
+
+    const SOURCE: &str = "fn a() {}\n";
+    /// A run prepared in-process over a one-file repository, for the fault tests.
+    struct Run {
+        _scratch: Scratch,
+        root: PathBuf,
+        dir: PathBuf,
+        repository: PathBuf,
+    }
+    fn cp(seq: u64) -> String {
+        format!("{seq:020}.json")
+    }
+    impl Run {
+        fn new() -> Self {
+            let scratch = Scratch::new("recovery");
+            let root = scratch.path().to_owned();
+            let repository = root.join("repo");
+            fs::create_dir(&repository).unwrap();
+            fs::write(repository.join("x.rs"), SOURCE).unwrap();
+            let git = |args: &[&str]| storage::git_bytes(&repository, args, 1 << 20).unwrap();
+            git(&["init", "-q"]);
+            git(&["add", "x.rs"]);
+            git(&[
+                "-c",
+                "user.name=F",
+                "-c",
+                "user.email=f@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "f",
+            ]);
+            let snapshot = deep_diff_forge_core::changed_source_snapshot_id([(
+                "x.rs",
+                Some(SOURCE.as_bytes()),
+            )]);
+            let analysis = root.join("analysis.json");
+            let value = serde_json::json!({
+                "schema": "deep-diff-forge.analysis.v1",
+                "review_id": "0".repeat(64),
+                "candidate_snapshot": snapshot,
+                "coverage": [{"path": "x.rs", "coverage": "analyzed"}],
+                "review": {"files": [{"path": "x.rs", "status": "modified"}]}
+            });
+            fs::write(&analysis, serde_json::to_vec(&value).unwrap()).unwrap();
+            let decision = root.join("decision.md");
+            fs::write(&decision, "Keep dissent.\n").unwrap();
+            let mut request = crate::cli::example();
+            request.profile = crate::Profile::Roster;
+            request.reviewers.truncate(2);
+            request.repository = repository.display().to_string();
+            request.analysis_file = analysis.display().to_string();
+            request.decision_file = decision.display().to_string();
+            let run = root.join("run");
+            crate::prepare(request, &run).unwrap();
+            Self {
+                _scratch: scratch,
+                root,
+                dir: run,
+                repository,
+            }
+        }
+        /// Import a session whose review-level comments are `ids`.
+        fn import(&self, ids: &[&str], execute: bool) -> Result<TuicrImport> {
+            let path = self.session(ids);
+            import_tuicr(&self.dir, &path, ImportOptions { execute })
+        }
+        fn session(&self, ids: &[&str]) -> PathBuf {
+            let head = storage::git_bytes(&self.repository, &["rev-parse", "HEAD"], 1024).unwrap();
+            let comments: Vec<_> = ids
+                .iter()
+                .map(|id| serde_json::json!({"id": id, "content": format!("decision {id}"), "author": "Luke"}))
+                .collect();
+            let session = serde_json::json!({
+                "id": "00000000-0000-4000-8000-000000000001", "version": "1.3",
+                "repo_path": self.repository, "branch_name": null,
+                "base_commit": String::from_utf8(head).unwrap().trim(),
+                "diff_source": "working_tree", "commit_range": null, "pr_session_key": null,
+                "created_at": "2026-10-25T00:00:00Z", "updated_at": "2026-10-25T00:00:00Z",
+                "review_comments": comments,
+                "files": {"x.rs": {"path": "x.rs", "reviewed": false, "status": "modified",
+                    "file_comments": [], "line_comments": {}, "reviewed_hunks": [], "content_hash": 0}},
+                "session_notes": null
+            });
+            let path = self.root.join("session.json");
+            fs::write(&path, serde_json::to_vec(&session).unwrap()).unwrap();
+            path
+        }
+        fn journal(&self) -> Vec<u8> {
+            fs::read(self.dir.join(JOURNAL_FILE)).unwrap_or_default()
+        }
+        /// Every name in the checkpoint directory, temporary files included.
+        fn checkpoints(&self) -> Vec<String> {
+            let mut names: Vec<String> = fs::read_dir(self.dir.join(CHECKPOINT_DIR))
+                .map(|d| {
+                    d.map(|e| e.unwrap().file_name().into_string().unwrap())
+                        .collect()
+                })
+                .unwrap_or_default();
+            names.sort();
+            names
+        }
+        /// The truncation guarantee: a cut back to every earlier head is refused.
+        fn cuts_are_detected(&self) {
+            let good = self.journal();
+            let run_id = load_manifest(&self.dir).unwrap().run_id.clone();
+            let mut heads = vec![0];
+            heads.extend((0..good.len()).filter(|i| good[*i] == b'\n').map(|i| i + 1));
+            heads.pop();
+            for cut in heads {
+                fs::write(self.dir.join(JOURNAL_FILE), &good[..cut]).unwrap();
+                let loaded = load_journal(&self.dir, &run_id).map(|j| j.events.len());
+                assert!(
+                    matches!(&loaded, Err(TuicrImportError::Journal(r)) if r.contains("truncated or rewritten")),
+                    "cut to {cut} bytes: {loaded:?}"
+                );
+            }
+            fs::write(self.dir.join(JOURNAL_FILE), &good).unwrap();
+        }
+    }
+    fn failing<T>(step: &'static str, f: impl FnOnce() -> T) -> T {
+        storage::FAIL_AT.with(|at| at.set(Some(step)));
+        let out = f();
+        storage::FAIL_AT.with(|at| at.set(None));
+        out
+    }
+
+    /// FINDINGS A.4, in-process: every I/O error the seam injects into an executing import of
+    /// one new event. Before the commit point (the synced append) it is a refusal that leaves the
+    /// journal as it was; after it, it is `Incomplete` with the event recorded. Either way no
+    /// checkpoint or temporary file is left, a dry run writes nothing, the identical retry
+    /// completes the import and checkpoints the head, cuts back are detected, and a different
+    /// import appends after it.
+    #[test]
+    fn every_injected_io_error_refuses_before_the_append_or_is_recorded_after_it() {
+        for (step, recorded) in [
+            ("stage-write", false),
+            ("stage-sync", false),
+            ("journal-write", false),
+            ("journal-sync", true),
+            ("link", true),
+        ] {
+            let r = Run::new();
+            r.import(&["h-1"], true).unwrap();
+            let before = r.journal();
+            let failed = failing(step, || r.import(&["h-1", "h-2"], true));
+            let failed = failed.map(|i| i.events.len());
+            if recorded {
+                assert!(
+                    matches!(&failed, Err(TuicrImportError::Incomplete { first: 1, last: 1, durable, .. })
+                        if *durable == (step == "link")),
+                    "{step}: {failed:?}"
+                );
+                assert!(r.journal().starts_with(&before) && r.journal().len() > before.len());
+            } else {
+                assert!(
+                    matches!(&failed, Err(TuicrImportError::Journal(m)) if m.ends_with("nothing was appended")),
+                    "{step}: {failed:?}"
+                );
+                assert_eq!(r.journal(), before, "{step}: refused, nothing appended");
+            }
+            assert_eq!(r.checkpoints(), [cp(0)], "{step}");
+            let journal = r.journal();
+            let planned = usize::from(!recorded);
+            assert_eq!(
+                r.import(&["h-1", "h-2"], false).unwrap().events.len(),
+                planned
+            );
+            assert_eq!(
+                (r.journal(), r.checkpoints()),
+                (journal, vec![cp(0)]),
+                "{step}: dry run"
+            );
+            assert_eq!(
+                r.import(&["h-1", "h-2"], true).unwrap().events.len(),
+                planned
+            );
+            assert_eq!(
+                r.checkpoints(),
+                [cp(0), cp(1)],
+                "{step}: the retry checkpoints the head"
+            );
+            r.cuts_are_detected();
+            let different = r.import(&["h-1", "h-2", "h-3"], true).unwrap();
+            assert_eq!(
+                different.events.iter().map(|e| e.seq).collect::<Vec<_>>(),
+                [2]
+            );
+            assert_eq!(r.checkpoints(), [cp(0), cp(1), cp(2)]);
+            r.cuts_are_detected();
+        }
+    }
+
+    /// FINDINGS A.4 P0 to P4b and section A.1 to A.3: the states a kill (or 0.8.3 to 0.9.0) leaves,
+    /// planted after one import of `h-1`. None blocks a dry run, which writes nothing; the
+    /// executing import repairs it and completes, and cuts back are detected afterwards.
+    #[test]
+    fn the_states_a_kill_or_an_older_version_leaves_are_repaired() {
+        type Plant = fn(&Run);
+        let staged = |r: &Run| {
+            let name = format!("{}{}.4242-0", storage::TEMPORARY_PREFIX, cp(1));
+            fs::write(r.dir.join(CHECKPOINT_DIR).join(name), "{\"se").unwrap();
+        };
+        let torn = |r: &Run| {
+            let line = r.journal();
+            let mut file = OpenOptions::new()
+                .append(true)
+                .open(r.dir.join(JOURNAL_FILE))
+                .unwrap();
+            file.write_all(&line[..line.len() / 2]).unwrap();
+        };
+        let headless = |r: &Run| {
+            r.import(&["h-1", "h-2"], true).unwrap();
+            fs::remove_file(r.dir.join(CHECKPOINT_DIR).join(cp(1))).unwrap();
+        };
+        let empty = |r: &Run| {
+            r.import(&["h-1", "h-2"], true).unwrap();
+            fs::write(r.dir.join(CHECKPOINT_DIR).join(cp(1)), "").unwrap();
+        };
+        let ledger = |r: &Run| {
+            let dir = r
+                .dir
+                .join(LEDGER_DIR)
+                .join("tuicr/00000000-0000-4000-8000-000000000001");
+            fs::create_dir_all(&dir).unwrap();
+            let name = format!(
+                "{}{}.json.4242-0",
+                storage::TEMPORARY_PREFIX,
+                "a".repeat(64)
+            );
+            fs::write(dir.join(name), "{").unwrap();
+        };
+        let cases: [(&str, Plant, usize); 7] = [
+            (
+                "lock file of a dead process",
+                |r| fs::write(r.dir.join(LOCK_FILE), "2147483647").unwrap(),
+                1,
+            ),
+            (
+                "empty lock file",
+                |r| fs::write(r.dir.join(LOCK_FILE), "").unwrap(),
+                1,
+            ),
+            ("staged checkpoint of a killed import", staged, 1),
+            ("export ledger temporary file", ledger, 1),
+            ("torn last record", torn, 1),
+            ("head without its checkpoint", headless, 0),
+            ("empty checkpoint", empty, 0),
+        ];
+        for (name, plant, planned) in cases {
+            let r = Run::new();
+            r.import(&["h-1"], true).unwrap();
+            plant(&r);
+            let state = (r.journal(), r.checkpoints());
+            let dry = r.import(&["h-1", "h-2"], false);
+            assert_eq!(dry.map(|i| i.events.len()).ok(), Some(planned), "{name}");
+            assert_eq!(
+                (r.journal(), r.checkpoints()),
+                state,
+                "{name}: a dry run writes nothing"
+            );
+            let done = r.import(&["h-1", "h-2"], true).map(|i| i.events.len());
+            assert_eq!(done.ok(), Some(planned), "{name}");
+            assert_eq!(r.checkpoints(), [cp(0), cp(1)], "{name}");
+            assert_eq!(
+                String::from_utf8(r.journal()).unwrap().lines().count(),
+                2,
+                "{name}"
+            );
+            assert!(!r.dir.join(LOCK_FILE).exists(), "{name}");
+            r.cuts_are_detected();
+        }
+        // The torn bytes are kept beside the journal, named for their sequence.
+        let r = Run::new();
+        r.import(&["h-1"], true).unwrap();
+        let line = r.journal();
+        torn(&r);
+        r.import(&["h-1", "h-2"], true).unwrap();
+        let kept: Vec<_> = fs::read_dir(&r.dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| {
+                p.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("decisions.torn-00000000000000000001-")
+            })
+            .collect();
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert_eq!(fs::read(&kept[0]).unwrap(), line[..line.len() / 2]);
+        // The replaced checkpoint holds what an import writes.
+        let r = Run::new();
+        r.import(&["h-1"], true).unwrap();
+        r.import(&["h-1", "h-2"], true).unwrap();
+        let path = r.dir.join(CHECKPOINT_DIR).join(cp(1));
+        let good = fs::read(&path).unwrap();
+        fs::write(&path, "").unwrap();
+        r.import(&["h-1", "h-2"], true).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), good);
+    }
+
+    /// What stays a refusal: a torn record a checkpoint names (truncated committed data), and a
+    /// checkpoint with malformed content other than none.
+    #[test]
+    fn a_torn_committed_record_and_a_malformed_checkpoint_stay_refused() {
+        let r = Run::new();
+        r.import(&["h-1"], true).unwrap();
+        r.import(&["h-1", "h-2"], true).unwrap();
+        let good = r.journal();
+        fs::write(r.dir.join(JOURNAL_FILE), &good[..good.len() - 10]).unwrap();
+        for execute in [false, true] {
+            let refused = r.import(&["h-1", "h-2"], execute).map(|i| i.events.len());
+            assert!(
+                matches!(&refused, Err(TuicrImportError::Journal(m)) if m.contains("incomplete")),
+                "{refused:?}"
+            );
+        }
+        assert_eq!(r.journal(), good[..good.len() - 10]);
+        fs::write(r.dir.join(JOURNAL_FILE), &good).unwrap();
+        let path = r.dir.join(CHECKPOINT_DIR).join(cp(1));
+        for bad in ["{", " ", "{\"seq\":1}"] {
+            fs::write(&path, bad).unwrap();
+            let refused = r.import(&["h-1", "h-2"], true).map(|i| i.events.len());
+            assert!(
+                matches!(&refused, Err(TuicrImportError::Journal(m)) if m.starts_with("checkpoint")),
+                "{bad:?}: {refused:?}"
+            );
+            assert_eq!(fs::read(&path).unwrap(), bad.as_bytes());
+        }
+    }
+
+    /// FINDINGS B: `write_new` serves the export ledger, the reports, `execution.json` and
+    /// `qualification.json`. An I/O error at any step leaves nothing at the final name (0.8.3 to
+    /// 0.9.0 left an empty file every reader refused and create-new would not replace) and no
+    /// temporary file; the error names the file; the next attempt succeeds.
+    #[test]
+    fn a_failed_artifact_write_leaves_nothing_at_its_name() {
+        let dir = Scratch::new("write-new");
+        let targets = [
+            format!("{LEDGER_DIR}/tuicr/s/{}.json", "a".repeat(64)),
+            "reports/r-independent.json".to_owned(),
+            "jobs/review-r-independent/execution.json".to_owned(),
+            "jobs/review-r-independent/qualification.json".to_owned(),
+        ];
+        for step in ["stage-write", "stage-sync", "link", "dir-sync"] {
+            for target in &targets {
+                let path = dir.join(step).join(target);
+                let parent = path.parent().unwrap();
+                fs::create_dir_all(parent).unwrap();
+                let value = serde_json::json!({"k": 1});
+                let failed = failing(step, || storage::write_json(&path, &value));
+                assert!(
+                    failed
+                        .as_ref()
+                        .is_err_and(|e| e.0.starts_with(&path.display().to_string())),
+                    "{step} {target}: {failed:?}"
+                );
+                assert!(!path.exists(), "{step} {target}");
+                let left = fs::read_dir(parent)
+                    .unwrap()
+                    .map(|e| e.unwrap().file_name());
+                let left: Vec<_> = left
+                    .filter(|n| storage::is_temporary(&n.to_string_lossy()))
+                    .collect();
+                assert!(left.is_empty(), "{step} {target}: {left:?}");
+                storage::write_json(&path, &value).unwrap();
+                let read: serde_json::Value = storage::read_json(&path, 4096).unwrap();
+                assert_eq!(read, value);
+                assert!(storage::write_json(&path, &value).is_err(), "create-new");
+            }
+        }
+    }
+
+    /// The torn last record of `r`'s journal: half its one line appended again.
+    fn tear(r: &Run) {
+        let line = r.journal();
+        OpenOptions::new()
+            .append(true)
+            .open(r.dir.join(JOURNAL_FILE))
+            .unwrap()
+            .write_all(&line[..line.len() / 2])
+            .unwrap();
+    }
+
+    /// G-S313-2a: a link at the journal's name, even one that points nowhere (which reads as no
+    /// journal), is never appended through.
+    #[test]
+    fn a_symlinked_journal_is_never_appended_through() {
+        let r = Run::new();
+        let target = r.root.join("elsewhere.jsonl");
+        std::os::unix::fs::symlink(&target, r.dir.join(JOURNAL_FILE)).unwrap();
+        let refused = r.import(&["h-1"], true).map(|i| i.events.len());
+        assert!(
+            !target.exists(),
+            "the link target grows: {:?}",
+            fs::read(&target).map(|b| b.len())
+        );
+        assert!(
+            matches!(&refused, Err(TuicrImportError::Journal(m)) if m.ends_with("nothing was appended")),
+            "{refused:?}"
+        );
+    }
+
+    /// G-S313-1b, decided: when the checkpoint directory cannot be synced after the link, the
+    /// events are in the journal and the import says so (exit 3); the checkpoint's name is left as
+    /// it was, and the next import writes it and says so.
+    #[test]
+    fn a_failed_directory_sync_after_the_link_is_reported_as_decided() {
+        let r = Run::new();
+        r.import(&["h-1"], true).unwrap();
+        let failed = failing("dir-sync", || r.import(&["h-1", "h-2"], true)).map(|i| i.events);
+        assert!(
+            matches!(&failed, Err(TuicrImportError::Incomplete { first: 1, last: 1, durable: true, file, .. })
+                if file.ends_with(&cp(1))),
+            "{failed:?}"
+        );
+        let said = failed.unwrap_err().to_string();
+        assert!(said.contains("events 1 to 1 are in the journal"), "{said}");
+        assert_eq!(String::from_utf8(r.journal()).unwrap().lines().count(), 2);
+        assert_eq!(r.checkpoints(), [cp(0)], "the name is left as it was");
+        let next = r.import(&["h-1", "h-2"], true).unwrap();
+        assert_eq!(next.events.len(), 0);
+        assert!(
+            next.repairs
+                .iter()
+                .any(|w| w.starts_with("write the missing checkpoint")),
+            "{:?}",
+            next.repairs
+        );
+        assert_eq!(r.checkpoints(), [cp(0), cp(1)]);
+        r.cuts_are_detected();
+    }
+
+    /// G-S313-2c: the library returns the repairs (the JSON names them); the command line prints
+    /// them. The plant is the old announcement on standard error: the list stays empty.
+    #[test]
+    fn repairs_are_returned_not_printed() {
+        let r = Run::new();
+        r.import(&["h-1"], true).unwrap();
+        tear(&r);
+        let cut = |i: &TuicrImport| {
+            i.repairs
+                .iter()
+                .any(|w| w.starts_with("cut the torn last record off"))
+        };
+        let dry = r.import(&["h-1", "h-2"], false).unwrap();
+        assert!(cut(&dry), "{:?}", dry.repairs);
+        let done = r.import(&["h-1", "h-2"], true).unwrap();
+        assert!(cut(&done), "{:?}", done.repairs);
+        let json = serde_json::to_value(&done).unwrap();
+        assert_eq!(
+            json["repairs"].as_array().map(Vec::len),
+            Some(done.repairs.len())
+        );
+        let again = r.import(&["h-1", "h-2"], true).unwrap();
+        assert_eq!(again.repairs, Vec::<String>::new());
+    }
+
+    /// G-S313-2b: the repairs run after every planning-time check, so a session that is refused
+    /// changes nothing, also with --execute.
+    #[test]
+    fn a_refused_import_repairs_nothing() {
+        let r = Run::new();
+        r.import(&["h-1"], true).unwrap();
+        tear(&r);
+        let state = (r.journal(), r.checkpoints());
+        let path = r.session(&["h-1", "h-2"]);
+        let mut session: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        session["files"]["x.rs"]["reviewed"] = true.into();
+        session["files"]["x.rs"]["content_hash"] = serde_json::Value::Null;
+        fs::write(&path, serde_json::to_vec(&session).unwrap()).unwrap();
+        let refused =
+            import_tuicr(&r.dir, &path, ImportOptions { execute: true }).map(|i| i.events.len());
+        assert!(
+            matches!(&refused, Err(TuicrImportError::StaleReviewMark { .. })),
+            "{refused:?}"
+        );
+        assert_eq!(
+            (r.journal(), r.checkpoints()),
+            state,
+            "a refused import repaired the journal"
+        );
+    }
+
+    /// G-S313-2d: the I/O error of an incomplete import is its source, not only its text.
+    #[test]
+    fn an_incomplete_import_keeps_its_io_cause_as_source() {
+        let r = Run::new();
+        r.import(&["h-1"], true).unwrap();
+        for (step, ids) in [
+            ("journal-sync", &["h-1", "h-2"][..]),
+            ("link", &["h-1", "h-2", "h-3"]),
+        ] {
+            let failed = failing(step, || r.import(ids, true)).map(|i| i.events);
+            let failed = failed.unwrap_err();
+            let cause = Error::source(&failed)
+                .and_then(|e| e.downcast_ref::<std::io::Error>())
+                .and_then(std::io::Error::raw_os_error);
+            assert_eq!(cause, Some(nix::libc::EIO), "{step}: {failed:?}");
+            r.import(ids, true).unwrap();
+        }
+    }
+
+    /// S3.17a.e: a temporary file that a process which has ended left in the export ledger, a
+    /// job directory or the reports is removed (by the executing import, or by the readers of
+    /// jobs and reports); one with a running process's number is kept, and the import names it.
+    #[test]
+    fn temporaries_left_in_the_ledger_and_jobs_are_removed_or_reported() {
+        let r = Run::new();
+        let dir = fs::canonicalize(&r.dir).unwrap();
+        let ledger = dir
+            .join(LEDGER_DIR)
+            .join("tuicr/00000000-0000-4000-8000-000000000001");
+        let job = dir.join("jobs/review-x-independent");
+        fs::create_dir_all(&ledger).unwrap();
+        fs::create_dir_all(&job).unwrap();
+        // No process can have the largest id; this test's own process is running.
+        let plant = |dir: &Path, name: &str, pid: u32| {
+            let path = dir.join(format!("{}{name}.{pid}-0", storage::TEMPORARY_PREFIX));
+            fs::write(&path, "{").unwrap();
+            path
+        };
+        let left = [
+            plant(&ledger, "a.json", 2_147_483_647),
+            plant(&job, "execution.json", 2_147_483_647),
+            plant(&dir.join("reports"), "r-independent.json", 2_147_483_647),
+        ];
+        let running = plant(&ledger, "b.json", std::process::id());
+        let dry = r.import(&["h-1"], false).unwrap();
+        assert!(left[0].exists(), "a dry run removes nothing");
+        let done = r.import(&["h-1"], true).unwrap();
+        for import in [&dry, &done] {
+            let said = import.repairs.join("\n");
+            let remove = format!("remove the temporary file {}", left[0].display());
+            let keep = format!("keep the temporary file {}", running.display());
+            assert!(said.contains(&remove) && said.contains(&keep), "{said}");
+        }
+        assert!(running.exists());
+        let manifest = load_manifest(&dir).unwrap();
+        storage::reports(&dir, &manifest).unwrap();
+        storage::executions(&dir, &manifest).unwrap();
+        for path in &left {
+            assert!(
+                !path.exists(),
+                "a planted temporary stays: {}",
+                path.display()
+            );
+        }
+    }
+
+    /// The remedy of a held lock is inside the 200 bytes the command line shows of an error.
+    #[test]
+    fn a_held_lock_says_what_to_do_within_the_error_limit() {
+        let lock = format!("/{}/decisions.lock", "d".repeat(300));
+        let said = TuicrImportError::Locked { lock }.to_string();
+        let shown = deep_diff_forge_core::display_safe_bounded(&said, 200);
+        assert!(
+            shown.contains("run this one again when it has finished"),
+            "{shown}"
+        );
     }
 }

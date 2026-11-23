@@ -1,6 +1,6 @@
 // DDF integration: daemon log lines as text or JSON (plan 2026-10-30, M1 monitoring).
 // Design/status: docs/OPERATIONS_AND_DAEMON.md#observability
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcrates--deep-diff-forge-daemon--src--metrics
+// Module index: docs/ARCHITECTURE.md#crates-as-built-030
 //! The daemon's log lines, written to stderr: the text the daemon has always written, or with
 //! `daemon start --log-format json` one JSON object per line, so a supervisor can parse them.
 //! Every log line goes through [`line()`], so the two formats cannot drift apart.

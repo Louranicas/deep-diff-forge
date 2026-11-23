@@ -1,5 +1,5 @@
 // DDF integration: agent batteries, the integrity signals of a Rust hunk read as tokens.
-// Design/status: obsidian://open?vault=deep-diff-forge.vault&file=Strategy%2FDDF%20batteries%20-%20plan%20of%20record%202026-11-13
+// Design/status: docs/reference/risk-ranking.md
 //! The tokens of one side of a Rust hunk, read once and in order, and the constructs the
 //! integrity signals are about, found among them.
 //!

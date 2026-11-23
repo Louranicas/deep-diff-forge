@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # DDF integration: R39, R40, R41, R42, R43, R44, R45, R46, R57, R58, R59. Make checks fail closed, preserve fuzz crash evidence, use the actual build output path and gate tag publication on the quality workflow.
 # Design/status: docs/RECOMMENDATION_INTEGRATION.md#quality-gates
-# Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fscripts--security--daemon_soak
+# Module index: docs/RECOMMENDATION_INTEGRATION.md#quality-gates
 """Hostile-client soak for the Deep-Diff-Forge UDS daemon.
 
 The soak uses an explicit socket path under a freshly-created 0700 temp dir,

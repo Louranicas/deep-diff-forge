@@ -15,11 +15,58 @@
 //! still be lowercase names). Everything else the schema fixes is fixed here, the members it
 //! makes optional included: when one is present it has the schema's form. The table of what
 //! the schema names is in the test `every_member_the_schema_names_is_read`.
+//!
+//! A `forge-warden.verdict.v3` document (forge-warden's main branch, for 0.3.0) is read the
+//! same way against its own schema (`schemas/verdict.v3.schema.json`), which differs from v2
+//! in three places, each read for what it means (S3.21):
+//! - `seals.claims` may also be bound (ADR 0012): `base`, `head` and `merge_base`, full
+//!   object ids of one length (40 or 64 digits), with `verified: true`. forge-warden says it
+//!   made the patch itself from a copy of the repository it checked. The stop hook gives no
+//!   `--repo`, cannot check that and does not use it: the claims never change an outcome,
+//!   and the verdict is bound to the hook's patch by the seals alone. The unverified form is
+//!   v2's, with no `merge_base`.
+//! - a rule of kind `builtin` (M7-Q64) has the id `builtin:` and a policy id, and only such a
+//!   rule has; it holds (severity and outcome `hold`) and no waiver covers its violations.
+//! - a note `code` may be `claims_unverified`, which the open note codes already admit.
+//!
+//! A document that names any other schema is no verdict of either.
 
 use serde_json::Value;
 
 /// The schema name every verdict carries.
 pub(crate) const SCHEMA: &str = "forge-warden.verdict.v2";
+
+/// The schema name of a version 3 verdict.
+pub(crate) const SCHEMA_V3: &str = "forge-warden.verdict.v3";
+
+/// The verdict schemas this build reads, as a sentence names them.
+pub(crate) const READS: &str = "forge-warden.verdict.v2 and forge-warden.verdict.v3";
+
+/// A version of the verdict schema this build reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Version {
+    V2,
+    V3,
+}
+
+impl Version {
+    /// The version `document` names, when it is one this build reads.
+    pub(crate) fn named_by(document: &Value) -> Option<Self> {
+        match document["schema"].as_str()? {
+            SCHEMA => Some(Self::V2),
+            SCHEMA_V3 => Some(Self::V3),
+            _ => None,
+        }
+    }
+
+    /// The schema name of this version.
+    pub(crate) const fn schema(self) -> &'static str {
+        match self {
+            Self::V2 => SCHEMA,
+            Self::V3 => SCHEMA_V3,
+        }
+    }
+}
 
 /// `verdict`, and the `exit` triple that belongs to it.
 const OUTCOMES: [(&str, u64, &str, &str); 3] = [
@@ -92,7 +139,18 @@ fn optional_strings(value: &Value, members: &[&str]) -> bool {
         .all(|member| value.get(*member).is_none_or(Value::is_string))
 }
 
-fn seals_defect(seals: &Value) -> Option<&'static str> {
+/// v3's bound claims: `base`, `head` and `merge_base` of one length, 40 or 64 lowercase hex
+/// digits, and `verified` is `true`.
+fn is_bound(claims: &Value) -> bool {
+    let length = claims["base"].as_str().map(str::len);
+    claims["verified"] == true
+        && matches!(length, Some(40 | 64))
+        && ["base", "head", "merge_base"].iter().all(|member| {
+            is_commit(&claims[*member]) && claims[*member].as_str().map(str::len) == length
+        })
+}
+
+fn seals_defect(seals: &Value, version: Version) -> Option<&'static str> {
     if !seals.is_object() {
         return Some("`seals` is not an object");
     }
@@ -133,9 +191,20 @@ fn seals_defect(seals: &Value) -> Option<&'static str> {
     }
     if let Some(claims) = seals.get("claims") {
         let commit = |member: &str| claims.get(member).is_none_or(is_commit);
-        if !(claims.is_object() && claims["verified"] == false && commit("base") && commit("head"))
-        {
-            return Some("`seals.claims` is not an unverified claim of two commits");
+        let asserted =
+            claims.is_object() && claims["verified"] == false && commit("base") && commit("head");
+        match version {
+            Version::V2 if !asserted => {
+                return Some("`seals.claims` is not an unverified claim of two commits");
+            }
+            Version::V3
+                if !((asserted && claims.get("merge_base").is_none()) || is_bound(claims)) =>
+            {
+                return Some(
+                    "`seals.claims` is neither an unverified claim of two commits nor a bound one of three",
+                );
+            }
+            _ => {}
         }
     }
     None
@@ -175,8 +244,18 @@ fn violation_is_whole(violation: &Value) -> bool {
         && violation.get("waived_by").is_none_or(Value::is_u64)
 }
 
-fn rule_defect(rule: &Value) -> Option<&'static str> {
-    if !(is_rule_id(&rule["id"])
+fn rule_defect(rule: &Value, version: Version) -> Option<&'static str> {
+    // v3: the id of a built-in rule is `builtin:` and a policy id; no other rule's is
+    let builtin = version == Version::V3 && rule["kind"] == "builtin";
+    let id = if builtin {
+        rule["id"]
+            .as_str()
+            .and_then(|id| id.strip_prefix("builtin:"))
+            .is_some_and(|id| is_rule_id(&Value::from(id)))
+    } else {
+        is_rule_id(&rule["id"])
+    };
+    if !(id
         && is_name(&rule["kind"])
         && is_one_of(&rule["severity"], &["fail", "hold"])
         && is_one_of(&rule["outcome"], &["pass", "waived", "hold", "fail"])
@@ -189,7 +268,16 @@ fn rule_defect(rule: &Value) -> Option<&'static str> {
     let whole = rule["violations"]
         .as_array()
         .is_some_and(|violations| violations.iter().all(violation_is_whole));
-    (!whole).then_some("a rule's violations are missing or malformed")
+    if !whole {
+        return Some("a rule's violations are missing or malformed");
+    }
+    let unwaived = || {
+        rule["violations"]
+            .as_array()
+            .is_some_and(|violations| violations.iter().all(|v| v.get("waived_by").is_none()))
+    };
+    (builtin && !(rule["severity"] == "hold" && rule["outcome"] == "hold" && unwaived()))
+        .then_some("a built-in rule is not a hold that no waiver covers")
 }
 
 fn lists_defect(document: &Value) -> Option<&'static str> {
@@ -219,13 +307,26 @@ fn lists_defect(document: &Value) -> Option<&'static str> {
 /// Why `document` is not a whole `forge-warden.verdict.v2`; `None` when it is.
 ///
 /// This says nothing about which stop the verdict is for: the caller compares the seals with
-/// the inputs it wrote and the outcome with the judge's exit code.
+/// the inputs it wrote and the outcome with the judge's exit code. The hook reads a document
+/// by the version it names ([`defect_in`]); this is the v2 reading the tests ask about.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the hook reads by the version a document names")
+)]
 pub(crate) fn defect(document: &Value) -> Option<&'static str> {
+    defect_in(document, Version::V2)
+}
+
+/// Why `document` is not a whole verdict of `version`; `None` when it is.
+pub(crate) fn defect_in(document: &Value, version: Version) -> Option<&'static str> {
     if !document.is_object() {
         return Some("it is not a JSON object");
     }
-    if document["schema"] != SCHEMA {
-        return Some("it does not name the schema forge-warden.verdict.v2");
+    if document["schema"] != version.schema() {
+        return Some(match version {
+            Version::V2 => "it does not name the schema forge-warden.verdict.v2",
+            Version::V3 => "it does not name the schema forge-warden.verdict.v3",
+        });
     }
     if !(document["tool"]["name"] == "forge-warden" && document["tool"]["version"].is_string()) {
         return Some("`tool` does not name forge-warden and its version");
@@ -233,7 +334,7 @@ pub(crate) fn defect(document: &Value) -> Option<&'static str> {
     if !is_date(&document["evaluated_on"]) {
         return Some("`evaluated_on` is not a date");
     }
-    if let Some(defect) = seals_defect(&document["seals"]) {
+    if let Some(defect) = seals_defect(&document["seals"], version) {
         return Some(defect);
     }
     // The outcome and the exit triple that belongs to it.
@@ -253,7 +354,7 @@ pub(crate) fn defect(document: &Value) -> Option<&'static str> {
     else {
         return Some("`rules` is missing or empty");
     };
-    if let Some(defect) = rules.iter().find_map(rule_defect) {
+    if let Some(defect) = rules.iter().find_map(|rule| rule_defect(rule, version)) {
         return Some(defect);
     }
     // The summary counts the rules beside it.
@@ -705,5 +806,467 @@ pub(crate) mod tests {
         theirs["exit"]["name"] = json!("policy_fail");
         theirs["exit"]["action"] = json!("change_input");
         assert!(defect(&theirs).is_some());
+    }
+
+    // `forge-warden.verdict.v3` (S3.21). The v2 tests above are as they were.
+
+    /// forge-warden's own v3 document: `fixtures/demo.verdict.json` on its main branch at
+    /// commit fbd621e0e4c3183e7cb9d9c949dac942b8fb0dd8 (the file last changed in dd05b45b),
+    /// copied byte for byte. An advisory verdict: a supplied ranking, an unpinned Git, a fail
+    /// with a failing rule, four held ones and a note.
+    pub(crate) const FORGE_WARDEN_V3_DEMO: &str =
+        include_str!("../tests/fixtures/forge-warden-main-fbd621e0/demo.verdict.json");
+
+    /// A built-in rule as forge-warden's main branch writes one (`crates/forge-warden-core/
+    /// src/builtin.rs` at fbd621e0: `builtin:binary-on-executable`, kind `builtin`, a hold, a
+    /// violation with a path and a message and nothing else).
+    pub(crate) fn builtin_rule() -> Value {
+        json!({"id": "builtin:binary-on-executable", "kind": "builtin", "severity": "hold",
+               "outcome": "hold",
+               "why": "an executable or a symlink sent as a binary section hides its lines from every signal rule, and the shell can still run it; a person reads it before it merges",
+               "violations": [{"path": "tools/run",
+                               "message": "a binary section on an executable file (100755)"}]})
+    }
+
+    /// Bound claims as forge-warden's main branch writes them (`crates/forge-warden-cli/tests/
+    /// authority_mode.rs` at fbd621e0, `bound_mode_verifies_the_claims_only_through_the_
+    /// comparison`), with ids of `digits` hex digits.
+    pub(crate) fn bound_claims(digits: usize) -> Value {
+        json!({"base": "a".repeat(digits), "head": "b".repeat(digits),
+               "merge_base": "c".repeat(digits), "verified": true})
+    }
+
+    /// [`whole`] under the v3 schema name: what v3 keeps of v2 is the same.
+    pub(crate) fn whole_v3(outcome: &str, policy: &str, patch: &str, ranker: &str) -> Value {
+        let mut document = whole(outcome, policy, patch, ranker);
+        document["schema"] = json!(SCHEMA_V3);
+        document
+    }
+
+    fn v3(document: &Value) -> Option<&'static str> {
+        defect_in(document, Version::V3)
+    }
+
+    /// A v3 hold with what v3 adds: a built-in rule last, bound claims of SHA-1 ids.
+    fn sample_v3() -> Value {
+        let mut document = whole_v3("hold", &"1".repeat(64), &"2".repeat(64), &"6".repeat(64));
+        document["rules"]
+            .as_array_mut()
+            .unwrap()
+            .push(builtin_rule());
+        document["seals"]["claims"] = bound_claims(40);
+        recount(&mut document);
+        document
+    }
+
+    #[test]
+    fn forge_wardens_own_v3_document_is_a_whole_v3_and_no_v2() {
+        let demo: Value = serde_json::from_str(FORGE_WARDEN_V3_DEMO).unwrap();
+        assert_eq!(Version::named_by(&demo), Some(Version::V3));
+        assert_eq!(v3(&demo), None);
+        assert_eq!(
+            defect(&demo),
+            Some("it does not name the schema forge-warden.verdict.v2")
+        );
+        // the other way round: a v2 document is no v3 one
+        assert_eq!(
+            v3(&sample("pass")),
+            Some("it does not name the schema forge-warden.verdict.v3")
+        );
+        assert_eq!(Version::named_by(&sample("pass")), Some(Version::V2));
+        for other in [
+            json!({"schema": "forge-warden.verdict.v4"}),
+            json!({}),
+            json!(3),
+        ] {
+            assert_eq!(Version::named_by(&other), None, "{other}");
+        }
+        for outcome in ["pass", "hold", "fail"] {
+            let document = whole_v3(outcome, &"1".repeat(64), &"2".repeat(64), &"6".repeat(64));
+            assert_eq!(v3(&document), None, "{outcome}");
+        }
+    }
+
+    /// What v3 adds, each in the form forge-warden writes it, is read; none of it is v2's. And
+    /// what v3 leaves open, like v2, is left open on purpose: a member it does not know, a rule
+    /// kind and a note code that are new lowercase names.
+    #[test]
+    fn what_v3_adds_is_read_in_its_own_form_and_only_in_v3() {
+        let mut added = sample_v3();
+        assert_eq!(v3(&added), None);
+        added["seals"]["claims"] = bound_claims(64);
+        assert_eq!(v3(&added), None);
+        // the unverified claims of v2, unchanged in v3
+        for claims in [
+            json!({"verified": false}),
+            json!({"verified": false, "base": "abcd", "head": "0f".repeat(32)}),
+        ] {
+            added["seals"]["claims"] = claims;
+            assert_eq!(v3(&added), None);
+        }
+        added["notes"] = json!([{"code": "claims_unverified", "detail": "d"}]);
+        assert_eq!(v3(&added), None);
+        // open on purpose
+        let mut open = sample_v3();
+        open["a_later_member"] = json!(1);
+        open["seals"]["claims"]["a_later_member"] = json!(1);
+        open["rules"][0]["kind"] = json!("a_kind_of_a_later_version");
+        open["notes"] = json!([{"code": "a_later_code", "detail": "d"}]);
+        assert_eq!(v3(&open), None);
+        // under the v2 name, what v3 adds is not read
+        let as_v2 = |change: fn(&mut Value)| {
+            let mut document = sample("hold");
+            change(&mut document);
+            recount(&mut document);
+            defect(&document)
+        };
+        assert_eq!(
+            as_v2(|d| d["seals"]["claims"] = bound_claims(40)),
+            Some("`seals.claims` is not an unverified claim of two commits")
+        );
+        assert!(as_v2(|d| d["rules"].as_array_mut().unwrap().push(builtin_rule())).is_some());
+    }
+
+    /// The table of [`every_member_the_schema_fixes_is_needed`] for v3: each thing the v3
+    /// schema fixes (at forge-warden fbd621e0) is taken away or bent on its own, and each time
+    /// the document is no v3 verdict. The first part is what v3 keeps of v2; the second is
+    /// what v3 adds, each condition of a form of two broken while the other holds.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one table: each thing the v3 schema fixes, bent on its own, has its row"
+    )]
+    fn every_member_the_v3_schema_fixes_is_needed() {
+        type Bend = fn(&mut Value);
+        /// The index of the last rule: the built-in one.
+        fn last(d: &Value) -> usize {
+            d["rules"].as_array().unwrap().len() - 1
+        }
+        let bends: &[(&str, Bend)] = &[
+            ("not an object", |d| *d = json!([1])),
+            ("the v2 schema", |d| d["schema"] = json!(SCHEMA)),
+            ("a later schema", |d| {
+                d["schema"] = json!("forge-warden.verdict.v4");
+            }),
+            ("no schema", |d| {
+                d.as_object_mut().unwrap().remove("schema");
+            }),
+            ("no tool", |d| d["tool"] = Value::Null),
+            ("another tool", |d| d["tool"]["name"] = json!("x")),
+            ("a tool with no version", |d| {
+                d["tool"]["version"] = json!(1);
+            }),
+            ("a date that is not one", |d| {
+                d["evaluated_on"] = json!("2026-1-01");
+            }),
+            ("no seals", |d| d["seals"] = Value::Null),
+            ("no patch facts member", |d| {
+                d["seals"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("patch_facts_sha256");
+            }),
+            ("no git member", |d| {
+                d["seals"].as_object_mut().unwrap().remove("git");
+            }),
+            ("git without its digest", |d| {
+                d["seals"]["git"]["sha256"] = json!("x");
+            }),
+            ("git without its path", |d| {
+                d["seals"]["git"]["path"] = Value::Null;
+            }),
+            ("approved git without an allowlist", |d| {
+                d["seals"]["git"]["allowlist_sha256"] = Value::Null;
+            }),
+            ("an unpinned git that names an allowlist", |d| {
+                d["seals"]["git"]["admission"] = json!("unpinned");
+            }),
+            ("an empty ranked_by", |d| {
+                d["seals"]["ranked_by"] = json!({});
+            }),
+            ("a short seal", |d| d["seals"]["rank_sha256"] = json!("abc")),
+            ("an uppercase seal", |d| {
+                d["seals"]["policy_sha256"] = json!("A".repeat(64));
+            }),
+            ("another provenance", |d| {
+                d["seals"]["provenance"] = json!("guessed");
+            }),
+            ("an unknown verdict", |d| d["verdict"] = json!("maybe")),
+            ("the exit name of another outcome", |d| {
+                d["exit"]["name"] = json!("policy_fail");
+            }),
+            ("the exit action of another outcome", |d| {
+                d["exit"]["action"] = json!("proceed");
+            }),
+            ("the exit code of another outcome", |d| {
+                d["exit"]["code"] = json!(7);
+            }),
+            ("no exit", |d| d["exit"] = Value::Null),
+            ("an empty summary", |d| d["summary"] = json!({})),
+            ("a summary that counts other rules", |d| {
+                d["summary"]["held"] = json!(9);
+            }),
+            ("a summary with no files", |d| {
+                d["summary"]["files"] = json!(-1);
+            }),
+            ("no rules", |d| {
+                d["rules"] = json!([]);
+                recount(d);
+            }),
+            ("a rule id that is not one", |d| {
+                d["rules"][0]["id"] = json!("Not An Id");
+            }),
+            ("a rule with no kind", |d| {
+                d["rules"][0].as_object_mut().unwrap().remove("kind");
+            }),
+            ("a rule severity that is not one", |d| {
+                d["rules"][0]["severity"] = json!("pass");
+            }),
+            ("a rule outcome that is not one", |d| {
+                d["rules"][0]["outcome"] = json!("maybe");
+                recount(d);
+            }),
+            ("a rule with no reason", |d| {
+                d["rules"][0].as_object_mut().unwrap().remove("why");
+            }),
+            ("violations that are not a list", |d| {
+                d["rules"][0]["violations"] = json!({});
+            }),
+            ("a violation with no message", |d| {
+                d["rules"][0]["violations"] = json!([{}]);
+            }),
+            ("evidence that is not a list", |d| {
+                d["rules"][0]["violations"] = json!([{"message": "m", "evidence": "x"}]);
+            }),
+            ("a citation of line 0", |d| {
+                d["rules"][0]["violations"] = json!([{"message": "m", "evidence": [
+                    {"address": "8".repeat(64), "side": "new", "line": 0}]}]);
+            }),
+            ("evidence_truncated that is false", |d| {
+                d["rules"][0]["violations"] =
+                    json!([{"message": "m", "evidence_truncated": false}]);
+            }),
+            ("a waiver index below zero", |d| {
+                d["rules"][0]["violations"] = json!([{"message": "m", "waived_by": -1}]);
+            }),
+            ("no notes", |d| d["notes"] = Value::Null),
+            ("a note with no detail", |d| {
+                d["notes"] = json!([{"code": "claims_unverified"}]);
+            }),
+            ("a note code that is no name", |d| {
+                d["notes"] = json!([{"code": "Claims", "detail": "d"}]);
+            }),
+            ("a waiver with no owner", |d| {
+                d["expired_waivers"] = json!([{"index": 0, "rule": "r", "expires": "2026-01-01"}]);
+            }),
+            ("no unused_waivers", |d| d["unused_waivers"] = Value::Null),
+            // what v3 adds: the bound claims
+            ("bound claims of 39 digits", |d| {
+                d["seals"]["claims"] = bound_claims(39);
+            }),
+            ("bound claims of short ids", |d| {
+                d["seals"]["claims"] = bound_claims(4);
+            }),
+            ("bound claims of mixed lengths", |d| {
+                d["seals"]["claims"]["head"] = json!("b".repeat(64));
+            }),
+            ("bound claims with a merge base of another length", |d| {
+                d["seals"]["claims"]["merge_base"] = json!("c".repeat(64));
+            }),
+            ("bound claims with no merge base", |d| {
+                d["seals"]["claims"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("merge_base");
+            }),
+            ("bound claims with no base", |d| {
+                d["seals"]["claims"].as_object_mut().unwrap().remove("base");
+            }),
+            ("bound claims with no head", |d| {
+                d["seals"]["claims"].as_object_mut().unwrap().remove("head");
+            }),
+            ("bound claims with an uppercase id", |d| {
+                d["seals"]["claims"]["head"] = json!("B".repeat(40));
+            }),
+            ("bound claims that are not verified", |d| {
+                d["seals"]["claims"]["verified"] = json!(false);
+            }),
+            ("bound claims verified by a word", |d| {
+                d["seals"]["claims"]["verified"] = json!("true");
+            }),
+            ("a verified claim of nothing", |d| {
+                d["seals"]["claims"] = json!({"verified": true});
+            }),
+            ("an unverified claim with a merge base", |d| {
+                d["seals"]["claims"] = json!({"verified": false, "merge_base": "c".repeat(40)});
+            }),
+            ("claims that are no object", |d| {
+                d["seals"]["claims"] = json!(true);
+            }),
+            // what v3 adds: the built-in rule
+            ("a built-in rule with a policy id", |d| {
+                let at = last(d);
+                d["rules"][at]["id"] = json!("binary-on-executable");
+            }),
+            ("a policy rule with a built-in id", |d| {
+                d["rules"][0]["id"] = json!("builtin:size");
+            }),
+            ("a built-in id with nothing after its prefix", |d| {
+                let at = last(d);
+                d["rules"][at]["id"] = json!("builtin:");
+            }),
+            ("a built-in id that is prefixed twice", |d| {
+                let at = last(d);
+                d["rules"][at]["id"] = json!("builtin:builtin:x");
+            }),
+            ("a built-in id whose policy id is malformed", |d| {
+                let at = last(d);
+                d["rules"][at]["id"] = json!("builtin:Binary");
+            }),
+            ("a built-in rule of another kind's id prefix", |d| {
+                let at = last(d);
+                d["rules"][at]["id"] = json!("built-in:x");
+            }),
+            ("a built-in rule that fails", |d| {
+                let at = last(d);
+                d["rules"][at]["severity"] = json!("fail");
+            }),
+            ("a built-in rule whose outcome fails", |d| {
+                let at = last(d);
+                d["rules"][at]["outcome"] = json!("fail");
+                d["verdict"] = json!("fail");
+                d["exit"] = json!({"code": 7, "name": "policy_fail", "action": "change_input"});
+                recount(d);
+            }),
+            ("a built-in rule that passes", |d| {
+                let at = last(d);
+                d["rules"][at]["outcome"] = json!("pass");
+                recount(d);
+            }),
+            ("a built-in rule that is waived", |d| {
+                let at = last(d);
+                d["rules"][at]["outcome"] = json!("waived");
+                recount(d);
+            }),
+            ("a built-in violation a waiver covers", |d| {
+                let at = last(d);
+                d["rules"][at]["violations"][0]["waived_by"] = json!(0);
+            }),
+            ("a built-in violation with no message", |d| {
+                let at = last(d);
+                d["rules"][at]["violations"] = json!([{"path": "p"}]);
+            }),
+        ];
+        assert_eq!(v3(&sample_v3()), None);
+        for (what, bend) in bends {
+            let mut bent = sample_v3();
+            bend(&mut bent);
+            assert!(v3(&bent).is_some(), "{what} was accepted");
+        }
+        // the controls of the forms of two: each with both conditions held is read
+        let controls: &[(&str, Bend)] = &[
+            ("a built-in rule with no violation", |d| {
+                let at = last(d);
+                d["rules"][at]["violations"] = json!([]);
+            }),
+            ("a built-in id of words and digits", |d| {
+                let at = last(d);
+                d["rules"][at]["id"] = json!("builtin:rule-2-of-3");
+            }),
+            ("bound claims of SHA-256 ids", |d| {
+                d["seals"]["claims"] = bound_claims(64);
+            }),
+            ("a waived policy violation beside a built-in rule", |d| {
+                d["rules"][0]["violations"] = json!([{"message": "m", "waived_by": 0}]);
+            }),
+        ];
+        for (what, bend) in controls {
+            let mut bent = sample_v3();
+            bend(&mut bent);
+            assert_eq!(v3(&bent), None, "{what} was refused");
+        }
+    }
+
+    /// Every property the v3 schema names (`schemas/verdict.v3.schema.json` at forge-warden
+    /// fbd621e0), and the values that have a meaning of their own, against the code that
+    /// reads them.
+    #[test]
+    fn every_member_the_v3_schema_names_is_read() {
+        const NAMED: &[(&str, &[&str])] = &[
+            (
+                "verdict",
+                &[
+                    "schema",
+                    "tool",
+                    "evaluated_on",
+                    "seals",
+                    "verdict",
+                    "exit",
+                    "summary",
+                    "rules",
+                    "expired_waivers",
+                    "unused_waivers",
+                    "notes",
+                ],
+            ),
+            ("tool", &["name", "version"]),
+            (
+                "seals",
+                &[
+                    "policy_sha256",
+                    "rank_sha256",
+                    "patch_sha256",
+                    "patch_facts_sha256",
+                    "provenance",
+                    "ranked_by",
+                    "git",
+                    "claims",
+                ],
+            ),
+            ("ranked_by", &["version", "sha256"]),
+            (
+                "git",
+                &["path", "version", "sha256", "admission", "allowlist_sha256"],
+            ),
+            ("claims", &["base", "head", "merge_base", "verified"]),
+            ("exit", &["code", "name", "action"]),
+            (
+                "summary",
+                &["files", "rules", "passed", "waived", "held", "failed"],
+            ),
+            (
+                "rule",
+                &["id", "kind", "severity", "outcome", "why", "violations"],
+            ),
+            ("built-in rule", &["builtin", "builtin:", "hold"]),
+            (
+                "violation",
+                &[
+                    "path",
+                    "message",
+                    "signal",
+                    "evidence",
+                    "evidence_truncated",
+                    "waived_by",
+                ],
+            ),
+            ("citation", &["address", "side", "line"]),
+            ("waiver_note", &["index", "rule", "owner", "expires"]),
+            ("note", &["code", "path", "detail"]),
+            ("schema names", &[SCHEMA, SCHEMA_V3]),
+        ];
+        let source = include_str!("verdict_v2.rs");
+        let code = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the module has code before its tests");
+        for (object, members) in NAMED {
+            for member in *members {
+                assert!(
+                    code.contains(&format!("\"{member}\"")),
+                    "`{object}.{member}` is named by the v3 schema and read nowhere"
+                );
+            }
+        }
     }
 }

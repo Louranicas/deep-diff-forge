@@ -815,7 +815,7 @@ fn session_start_states_the_contract_and_whether_a_stop_can_be_judged() {
     std::fs::write(&exit_file, "8").unwrap();
     let (_, stdout, _) = hook("session-start", &judge_arg, &event);
     assert!(
-        stdout.contains("- The chain was checked the way `deep-diff-forge agent doctor --gate` checks it: stops will be judged.\n"),
+        stdout.contains(&format!("- The chain was checked the way `{} agent doctor --gate` checks it: stops will be judged.\n", this_binary().display())),
         "{stdout}"
     );
     assert!(
@@ -5666,8 +5666,8 @@ fn a_stops_message_is_bounded_and_what_blocks_keeps_its_rule() {
     crowded_stop(&scratch, &root);
 }
 
-/// The second half of [`a_stops_message_is_bounded_and_what_blocks_keeps_its_rule`]: forty
-/// commits that fail at one stop, the session's own the newest (as few as show all three
+/// The second half of [`a_stops_message_is_bounded_and_what_blocks_keeps_its_rule`]:
+/// forty-five commits that fail at one stop, the session's own the newest (as few as show all three
 /// forms: a stop judges what its forty-five seconds allow, and on a loaded host sixty were
 /// not all judged in them). With them, since the sixth independent review of the hooks
 /// (HR6-L-4, "weak tests"): commits the judge holds, commits with no verdict, and things
@@ -5680,7 +5680,9 @@ fn crowded_stop(scratch: &Scratch, root: &Path) {
         .collect();
     std::fs::write(root.join("h.rs"), "// HOLDME\n").unwrap();
     let held = commit_all(root, "for a person");
-    for n in 0..39 {
+    // forty until the remedy under a rule lost its substitute (S3.17a.f): all forty then fit
+    // with their rules or their names, and none was counted
+    for n in 0..44 {
         secret(root, &format!("pulled{n:02}.rs"));
         commit_all(root, "a key from elsewhere");
     }
@@ -5698,7 +5700,7 @@ fn crowded_stop(scratch: &Scratch, root: &Path) {
         .unwrap_or_else(|| panic!("the session's own commit is not named: {reason}"));
     assert!(named < 1_000, "{named}: {reason}");
     // with their rules while there is room, then twenty with the names of their rules, then
-    // a count: every one of the forty is in one of the three
+    // a count: every one of the forty-five is in one of the three
     let with_rules = reason.matches(": FAIL\n- rule no-secrets: ").count();
     assert_eq!(
         reason.matches(": FAIL (no-secrets)\n").count(),
@@ -5711,7 +5713,7 @@ fn crowded_stop(scratch: &Scratch, root: &Path) {
         .and_then(|(_, count)| count.parse().ok())
         .unwrap_or_else(|| panic!("the rest are not counted: {reason}"));
     assert!(with_rules >= 8 && counted > 0, "{with_rules} {counted}");
-    assert_eq!(with_rules + 20 + counted, 40, "{reason}");
+    assert_eq!(with_rules + 20 + counted, 45, "{reason}");
     // what the judge holds, with the name of its rule; the commits with no verdict; and
     // what is beside the verdict: each is in the same message, whole
     assert!(
@@ -5733,7 +5735,7 @@ fn crowded_stop(scratch: &Scratch, root: &Path) {
     // afterwards they stand, as a count, beside the other lines of every stop
     let later = allowed(&stop_from(root, "many", &script)).to_owned();
     assert!(
-        later.contains("40 earlier failures stand: ")
+        later.contains("45 earlier failures stand: ")
             && later.contains(&format!(
                 "1 held by the judge, for a person: Commit {held} (no-secrets).\n"
             ))
@@ -11057,4 +11059,613 @@ fn a_failure_in_a_tree_beyond_the_sixteen_stands() {
         inside.starts_with("deep-diff-forge: FAIL STANDS. "),
         "{inside}"
     );
+}
+
+// `forge-warden.verdict.v3` (S3.21). The tests above are as they were.
+
+/// forge-warden's own v3 document: `fixtures/demo.verdict.json` on its main branch at commit
+/// fbd621e0e4c3183e7cb9d9c949dac942b8fb0dd8 (the file last changed in dd05b45b), copied byte
+/// for byte.
+const FORGE_WARDEN_V3_DEMO: &str =
+    include_str!("fixtures/forge-warden-main-fbd621e0/demo.verdict.json");
+
+/// A v3 document for a stand-in judge, made from forge-warden's own: its rules whose outcome
+/// is one of `keep`, then, when `builtin`, a built-in rule as forge-warden's main branch writes
+/// one (`crates/forge-warden-core/src/builtin.rs` at fbd621e0); the verdict and the exit triple
+/// of `outcome`; a summary that counts the rules; no notes (the demo's note is about its
+/// advisory ranking). The judge fills in the seals.
+fn verdict_v3(outcome: &str, keep: &[&str], builtin: bool) -> Value {
+    let demo: Value = serde_json::from_str(FORGE_WARDEN_V3_DEMO).unwrap();
+    let mut rules: Vec<Value> = demo["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|rule| keep.contains(&rule["outcome"].as_str().unwrap()))
+        .cloned()
+        .collect();
+    if builtin {
+        rules.push(json!({"id": "builtin:binary-on-executable", "kind": "builtin",
+            "severity": "hold", "outcome": "hold",
+            "why": "an executable or a symlink sent as a binary section hides its lines from every signal rule, and the shell can still run it; a person reads it before it merges",
+            "violations": [{"path": "tools/run",
+                            "message": "a binary section on an executable file (100755)"}]}));
+    }
+    let count = |outcome: &str| rules.iter().filter(|r| r["outcome"] == outcome).count();
+    let (code, name, action) = match outcome {
+        "pass" => (0, "pass", "proceed"),
+        "fail" => (7, "policy_fail", "change_input"),
+        _ => (8, "policy_hold", "review_evidence"),
+    };
+    json!({
+        "schema": demo["schema"],
+        "tool": demo["tool"],
+        "evaluated_on": demo["evaluated_on"],
+        "seals": "@SEALS@",
+        "verdict": outcome,
+        "exit": {"code": code, "name": name, "action": action},
+        "summary": {"files": 4, "rules": rules.len(), "passed": count("pass"),
+                    "waived": count("waived"), "held": count("hold"), "failed": count("fail")},
+        "rules": rules,
+        "expired_waivers": [],
+        "unused_waivers": [],
+        "notes": [],
+    })
+}
+
+/// The stand-in judge of [`judge`] printing `document` with bound claims in its seals, as
+/// forge-warden's bound mode writes them (`crates/forge-warden-cli/tests/authority_mode.rs` at
+/// fbd621e0): base, head and merge base of 40 hex digits, `verified: true`.
+fn judge_v3_bound(scratch: &Scratch, document: &Value) -> (PathBuf, PathBuf) {
+    let (script, log, exit_file) = judge(scratch, document);
+    let text = judge_script(&log, &exit_file, document);
+    let sealed = r#"\"allowlist_sha256\":\"$f\"}}""#;
+    let claims = r#"\"allowlist_sha256\":\"$f\"},\"claims\":{\"base\":\"@A@\",\"head\":\"@B@\",\"merge_base\":\"@C@\",\"verified\":true}}""#
+        .replace("@A@", &"a".repeat(40))
+        .replace("@B@", &"b".repeat(40))
+        .replace("@C@", &"c".repeat(40));
+    let bound = text.replacen(sealed, &claims, 1);
+    assert_ne!(bound, text, "the stand-in's seals were not found");
+    write_program(&script, &bound);
+    (script, exit_file)
+}
+
+/// S3.21: forge-warden's main branch writes `forge-warden.verdict.v3`. The stop hook reads it as
+/// it reads v2: a fail holds the stop, with a built-in rule and verified claims in it too; a
+/// hold is reported; a pass passes. Before, a v3 document was no verdict, and a fail was
+/// allowed as UNJUDGED.
+#[test]
+fn a_v3_verdict_is_read_and_its_fail_holds_the_stop() {
+    let scratch = Scratch::new("hook-verdict-v3");
+    let root = repository(&scratch);
+    std::fs::write(
+        root.join("a.rs"),
+        "fn a() {}\n#[allow(dead_code)]\nfn b() {}\n",
+    )
+    .unwrap();
+    let stop_with = |document: &Value, code: &str, session: &str| -> Value {
+        let (script, exit_file) = judge_v3_bound(&scratch, document);
+        std::fs::write(&exit_file, code).unwrap();
+        let (_, stdout, _) = hook(
+            "stop",
+            &["--judge", script.to_str().unwrap()],
+            &input("Stop", &root, session, false),
+        );
+        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{e}: {stdout:?}"))
+    };
+
+    // fail: held, with the failing rule and the rules the judge holds for, the built-in one too
+    let out = stop_with(
+        &verdict_v3("fail", &["pass", "fail", "hold"], true),
+        "7",
+        "s1",
+    );
+    let reason = blocked(&out);
+    assert!(
+        reason.starts_with("deep-diff-forge: the judge fails this change")
+            && reason.contains("- rule no-ci-privilege: pull_request_target, write-all")
+            && reason.contains("- rule builtin:binary-on-executable (held, for a person): an executable or a symlink")
+            && reason.contains("\"tools/run\""),
+        "{reason}"
+    );
+
+    // hold: allowed and reported, the built-in rule named
+    let out = stop_with(&verdict_v3("hold", &["pass", "hold"], true), "8", "s2");
+    let said = allowed(&out);
+    assert!(
+        said.starts_with("deep-diff-forge: HOLD. ")
+            && said.contains("- rule builtin:binary-on-executable: an executable or a symlink"),
+        "{said}"
+    );
+
+    // pass: allowed, with nothing said but what the first stop of a session with no recorded
+    // start says
+    let out = stop_with(&verdict_v3("pass", &["pass"], false), "0", "s3");
+    let said = allowed(&out);
+    assert!(
+        said.starts_with("deep-diff-forge: This session's start was not recorded")
+            && !said.contains("UNJUDGED")
+            && !said.contains("HOLD"),
+        "{said}"
+    );
+}
+
+/// S3.21, point (c): exit 7 is the judge's fail. A fail whose document this build cannot read
+/// (here one that names a schema it does not know, as a later forge-warden would write it)
+/// holds the stop once, says why, and then stands. The same document under exit 0 or 8 is
+/// UNJUDGED, as before.
+#[test]
+fn a_fail_whose_document_cannot_be_read_holds_the_stop_once() {
+    let scratch = Scratch::new("hook-fail-unread");
+    let root = repository(&scratch);
+    std::fs::write(
+        root.join("a.rs"),
+        "fn a() {}\n#[allow(dead_code)]\nfn b() {}\n",
+    )
+    .unwrap();
+    let mut later = verdict_v3("fail", &["pass", "fail"], false);
+    later["schema"] = json!("forge-warden.verdict.v4");
+    let (script, _, exit_file) = judge(&scratch, &later);
+    let stop = |session: &str, active: bool| -> Value {
+        let (_, stdout, _) = hook(
+            "stop",
+            &["--judge", script.to_str().unwrap()],
+            &input("Stop", &root, session, active),
+        );
+        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{e}: {stdout:?}"))
+    };
+    std::fs::write(&exit_file, "7").unwrap();
+    let out = stop("s1", false);
+    let reason = blocked(&out);
+    assert!(
+        reason.contains("exit 7 is the judge's fail, so the stop is held; its verdict could not be read, so which rules failed is not known")
+            && reason.contains("its document names the schema forge-warden.verdict.v4, which this build does not read (it reads forge-warden.verdict.v2 and forge-warden.verdict.v3)"),
+        "{reason}"
+    );
+    // the client continues and stops again with nothing changed: the failure stands
+    let out = stop("s1", true);
+    let message = allowed(&out);
+    assert!(
+        message.starts_with("deep-diff-forge: FAIL STANDS. "),
+        "{message}"
+    );
+    // under exit 0 or 8 the same document is no verdict and nothing is held
+    for (code, session) in [("0", "s2"), ("8", "s3")] {
+        std::fs::write(&exit_file, code).unwrap();
+        let out = stop(session, false);
+        let message = allowed(&out);
+        assert!(
+            message.starts_with("deep-diff-forge: UNJUDGED. ")
+                && message.contains("names the schema forge-warden.verdict.v4"),
+            "{code}: {message}"
+        );
+    }
+}
+
+/// S3.21, point (d): `agent doctor --gate` says which verdict schemas this build reads and
+/// which one the judge wrote, and a judge that writes one this build does not read is the
+/// link `chain`, not ready, with the version its document gives.
+#[test]
+fn doctor_gate_names_the_verdict_schema_the_judge_writes() {
+    let (scratch, root, home, script, _log, exit_file) = gate_fixture("doctor-gate-v3");
+    let judge_arg = ["--judge", script.to_str().unwrap()];
+    let chain = |doc: &Value| -> (bool, String) {
+        let ok = doc["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == "chain")
+            .unwrap()["ok"]
+            .as_bool()
+            .unwrap();
+        (ok, detail(doc, "chain"))
+    };
+    let reads =
+        "read by this build, which reads forge-warden.verdict.v2 and forge-warden.verdict.v3";
+    // the stand-in that writes v2
+    let (ok, said) = chain(&doctor_gate(&root, &home, &judge_arg).1);
+    assert!(
+        ok && said.ends_with(&format!(
+            ": forge-warden.verdict.v2 of forge-warden 0.2.0, {reads}"
+        )),
+        "{said}"
+    );
+    // one that writes v3, with what v3 adds
+    let (bound, _) = judge_v3_bound(&scratch, &verdict_v3("hold", &["pass", "hold"], true));
+    assert_eq!(bound, script);
+    std::fs::write(&exit_file, "8").unwrap();
+    let (ok, said) = chain(&doctor_gate(&root, &home, &judge_arg).1);
+    assert!(
+        ok && said.ends_with(&format!(
+            ": forge-warden.verdict.v3 of forge-warden 0.2.1, {reads}"
+        )),
+        "{said}"
+    );
+    // a later one
+    let mut later = verdict_v3("hold", &["pass", "hold"], false);
+    later["schema"] = json!("forge-warden.verdict.v4");
+    later["tool"]["version"] = json!("0.4.0");
+    let (again, _, _) = judge(&scratch, &later);
+    assert_eq!(again, script);
+    std::fs::write(&exit_file, "8").unwrap();
+    let (code, doc, _) = doctor_gate(&root, &home, &judge_arg);
+    let (ok, said) = chain(&doc);
+    assert_eq!((ok, code), (false, 7), "{said}");
+    assert!(
+        said.contains("its document names the schema forge-warden.verdict.v4, which this build does not read (it reads forge-warden.verdict.v2 and forge-warden.verdict.v3); the document says forge-warden 0.4.0 wrote it"),
+        "{said}"
+    );
+}
+
+// ---- S3.17a part 2 and S3.25.a (0.10.0, lane H): the hooks say only what is true ----
+
+/// The text of every string member of a hook's output, or the output itself when it is not a
+/// JSON document (a session start prints plain text).
+fn texts_of(stdout: &str) -> Vec<String> {
+    fn walk(value: &Value, out: &mut Vec<String>) {
+        match value {
+            Value::String(text) => out.push(text.clone()),
+            Value::Array(items) => items.iter().for_each(|item| walk(item, out)),
+            Value::Object(members) => members.values().for_each(|member| walk(member, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    match serde_json::from_str::<Value>(stdout) {
+        Ok(document) => walk(&document, &mut out),
+        Err(_) => out.push(stdout.to_owned()),
+    }
+    out
+}
+
+/// The advice a `PostToolUse` hook gave the model; panics when it gave none.
+fn advice_of(stdout: &str) -> String {
+    let out: Value = serde_json::from_str(stdout).unwrap_or_else(|e| panic!("{e}: {stdout:?}"));
+    out["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no advice: {stdout}"))
+        .to_owned()
+}
+
+/// What N47 forbids in text a judged agent reads: a substitute that does not count (any of the
+/// vocabulary's, whether a label raises it or not: corrections 2, point B.1), a pointer to the
+/// people's `explain signal`, and a command of this program by its bare name rather than by
+/// its absolute path.
+fn agent_facing_faults(text: &str) -> Vec<String> {
+    let mut faults = Vec::new();
+    for facts in deep_diff_forge_graph::vocabulary() {
+        for not in deep_diff_forge_graph::remedy(facts.signal).not_accepted {
+            if text.contains(not.substitute) {
+                faults.push(format!(
+                    "a substitute of {}: {:?}",
+                    facts.label(),
+                    not.substitute
+                ));
+            }
+        }
+    }
+    if text.contains("Not accepted") {
+        faults.push("a \"Not accepted\" sentence".to_owned());
+    }
+    if text.contains("explain signal") {
+        faults.push("a pointer to `explain signal`".to_owned());
+    }
+    let by_path = format!("{} ", this_binary().display());
+    for command in ["agent doctor", "agent setup", "explain signal"] {
+        for (at, _) in text.match_indices(command) {
+            if !text[..at].ends_with(&by_path) {
+                faults.push(format!(
+                    "the command {command:?} by a bare name: {:?}",
+                    &text[text[..at]
+                        .char_indices()
+                        .rev()
+                        .nth(30)
+                        .map_or(0, |(i, _)| i)..at + command.len()]
+                ));
+            }
+        }
+    }
+    faults
+}
+
+/// S3.17a.f: "read as" names the rung that found the item, as the ranking gives it. Every item
+/// was said to be "read as lexical", also one read across the lines of a hunk.
+#[test]
+fn advice_says_the_basis_the_ranking_gives() {
+    let scratch = Scratch::new("hook-advice-basis");
+    let root = repository(&scratch);
+    let event = input("PostToolUse", &root, "s1", false);
+    std::fs::write(
+        root.join("a.rs"),
+        "fn a() {}\nfn b() { let _c = std::process::\n    Command::new(\"x\"); }\n",
+    )
+    .unwrap();
+    let (code, stdout, stderr) = hook("post-tool", &[], &event);
+    assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
+    let advice = advice_of(&stdout);
+    assert!(
+        advice.contains("- process_spawn at \"a.rs\" line 2 (new side, read as hunk). Accepted: "),
+        "the hunk item is not said as read across the hunk: {advice}"
+    );
+}
+
+/// S3.17a.f: every command the hooks name is this program by its own absolute path: a bare
+/// `deep-diff-forge` runs whatever `PATH` finds when it is typed. The session start names
+/// `agent doctor --gate`, and the first stop of a session no start recorded names `agent
+/// setup`.
+#[test]
+fn advice_names_the_binary_by_its_path() {
+    let scratch = Scratch::new("hook-advice-binary");
+    let root = repository(&scratch);
+    let by_path = format!("`{} agent", this_binary().display());
+    // no judge: the chain is not ready, and the start says which command checks it
+    let started = start(&root, "s1");
+    assert!(
+        started.contains(&format!("{by_path} doctor --gate` checks every link")),
+        "{started}"
+    );
+    // a stop that is its session's first hook names the command that prints the settings
+    let (script, _, _) = judge(&scratch, &verdict("pass", "r", "check_suppressed", "a.rs"));
+    let stopped = stop_from(&root, "s2", &script);
+    let said = texts_of(&stopped.to_string()).join("\n");
+    assert!(
+        said.contains(&format!(
+            "{by_path} setup --client claude --hooks` prints the settings"
+        )),
+        "{said}"
+    );
+    for text in [started, said] {
+        assert!(
+            !text.contains("`deep-diff-forge "),
+            "a bare command: {text}"
+        );
+    }
+}
+
+/// S3.17a.f as corrections 2, point B.1 amends it (gap N-01, N47): what a judged agent reads
+/// (the advice after a tool call, the session start, the reason a stop is held, what a stop
+/// adds) names the accepted repair only, never a substitute that does not count, never the
+/// people's `explain signal`, and no command by a bare name.
+#[test]
+fn no_agent_facing_text_offers_an_unseen_substitute() {
+    let scratch = Scratch::new("hook-agent-facing-text");
+    let root = repository(&scratch);
+    let mut said: Vec<(String, String)> = Vec::new();
+    let mut keep = |what: &str, stdout: &str| {
+        for text in texts_of(stdout) {
+            said.push((what.to_owned(), text));
+        }
+    };
+    // the start of a session, with no judge and then with one that fails everything
+    keep("session start (no judge)", &start(&root, "s1"));
+    let (script, _, _) = failing_judge(&scratch);
+    let judge_arg = ["--judge", script.to_str().unwrap()];
+    let (_, stdout, _) = hook(
+        "session-start",
+        &judge_arg,
+        &input("SessionStart", &root, "s2", false),
+    );
+    keep("session start (a judge)", &stdout);
+    // advice on a change with many labels, each with substitutes in the vocabulary
+    std::fs::write(
+        root.join("a.rs"),
+        "fn a() {}\n#[allow(dead_code)]\nfn b() { unsafe { c() }; d().unwrap(); }\n#[test]\n#[ignore]\nfn t() { assert!(true); }\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("big.rs"), "// x\n".repeat(600)).unwrap();
+    let (_, stdout, _) = hook("post-tool", &[], &input("PostToolUse", &root, "s2", false));
+    let advice = advice_of(&stdout);
+    for label in ["check_suppressed", "unsafe_added", "panic_path_added"] {
+        assert!(advice.contains(label), "{label}: {advice}");
+    }
+    keep("advice", &stdout);
+    // a stop held for a failing rule, and the first stop of a session no start recorded
+    keep("stop (held)", &stop_from(&root, "s2", &script).to_string());
+    keep(
+        "stop (first hook)",
+        &stop_from(&root, "s3", &script).to_string(),
+    );
+    assert!(said.len() >= 5, "{said:?}");
+    let faults: Vec<String> = said
+        .iter()
+        .flat_map(|(what, text)| {
+            agent_facing_faults(text)
+                .into_iter()
+                .map(move |fault| format!("{what}: {fault}"))
+        })
+        .collect();
+    assert!(faults.is_empty(), "{faults:#?}");
+}
+
+/// S3.17a.i: a signal that reads no line a ranking points at (hidden text, an executable bit,
+/// a symbolic link) is named once for its file after a tool call, and not again. The advice
+/// read the rows of evidence only, so it never named these.
+#[test]
+fn advice_names_a_signal_that_has_no_line() {
+    let scratch = Scratch::new("hook-advice-no-line");
+    let root = repository(&scratch);
+    std::fs::write(root.join("run.sh"), "echo hi\n").unwrap();
+    git(&root, &["add", "run.sh"]);
+    git(&root, &["commit", "--quiet", "-m", "script"]);
+    let event = input("PostToolUse", &root, "s1", false);
+    // the right-to-left override is assembled here, never written into this source
+    let hidden = format!(
+        "fn z() {{ let s = \"{}\"; }}\n",
+        char::from_u32(0x202E).unwrap()
+    );
+    std::fs::write(root.join("bidi.rs"), hidden).unwrap();
+    std::fs::set_permissions(
+        root.join("run.sh"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink("a.rs", root.join("link")).unwrap();
+    let (code, stdout, stderr) = hook("post-tool", &[], &event);
+    assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
+    let advice = advice_of(&stdout);
+    for (label, path) in [
+        ("hazardous_text", "bidi.rs"),
+        ("executable_bit", "run.sh"),
+        ("symlink_change", "link"),
+    ] {
+        let item = format!("- {label} in \"{path}\" (the file, read as ");
+        assert_eq!(advice.matches(&item).count(), 1, "{item}: {advice}");
+    }
+    assert!(
+        agent_facing_faults(&advice).is_empty(),
+        "{:?}",
+        agent_facing_faults(&advice)
+    );
+    // said once: the next tool call has nothing new to say
+    assert_eq!(hook("post-tool", &[], &event).1, "");
+}
+
+/// S3.17a.i: when the file's released items fill every row a ranking lists (32), a signal
+/// found further on keeps no row; the advice names it for the file. It named rows only, so
+/// `unsafe_added` after 33 process spawns was never told.
+#[test]
+fn advice_names_a_signal_the_row_cap_left_without_a_row() {
+    use std::fmt::Write as _;
+    let scratch = Scratch::new("hook-advice-row-cap");
+    let root = repository(&scratch);
+    let event = input("PostToolUse", &root, "s1", false);
+    let mut text = String::from("fn f(q: *const u8) {\n");
+    for n in 0..33 {
+        let _ = writeln!(text, "    let c{n} = std::process::Command::new(\"true\");");
+    }
+    text.push_str("    let p = unsafe { *q };\n}\n");
+    std::fs::write(root.join("spawns.rs"), text).unwrap();
+    let (code, stdout, stderr) = hook("post-tool", &[], &event);
+    assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
+    let advice = advice_of(&stdout);
+    assert!(
+        advice.contains("- unsafe_added in \"spawns.rs\" (the file, read as "),
+        "the signal the cap left without a row is not told: {advice}"
+    );
+    assert!(!advice.contains("- unsafe_added at "), "{advice}");
+}
+
+/// S3.17a.l: when the advice after a tool call is off for a reason told once in the session, the
+/// model is told as well as the user: it was told nothing, and advice that stops without a word
+/// reads as a change with nothing to say.
+#[test]
+fn advice_off_is_told_to_the_model() {
+    use std::os::unix::ffi::OsStrExt as _;
+    let scratch = Scratch::new("hook-advice-off");
+    let root = repository(&scratch);
+    let event = input("PostToolUse", &root, "s1", false);
+    std::fs::write(
+        root.join(std::ffi::OsStr::from_bytes(b"n\xffm.rs")),
+        "fn n() {}\n",
+    )
+    .unwrap();
+    let (code, stdout, stderr) = hook("post-tool", &[], &event);
+    assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
+    let out: Value = serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{e}: {stdout:?}"));
+    let user = out["systemMessage"].as_str().unwrap_or_default();
+    assert!(user.contains("the hook did not run: "), "{stdout}");
+    assert_eq!(
+        out["hookSpecificOutput"]["hookEventName"], "PostToolUse",
+        "{stdout}"
+    );
+    let model = out["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the model is told nothing: {stdout}"));
+    assert!(
+        model.contains("no advice was given after this tool call")
+            && model.contains("says nothing about it"),
+        "{model}"
+    );
+    assert!(agent_facing_faults(model).is_empty(), "{model}");
+    // told once: the next tool call says nothing
+    assert_eq!(hook("post-tool", &[], &event).1, "");
+}
+
+/// A v3 verdict of a policy that requires verified claims (`[claims] require_verified`, which
+/// `forge-warden init` writes from 0.3.0) on a patch the hook gives with no `--repo`, `--base`
+/// or `--head`: every rule passes and the change is held for the note `claims_unverified`.
+fn unverified_hold() -> Value {
+    let mut document = verdict_v3("hold", &["pass"], false);
+    document["notes"] = json!([{
+        "code": "claims_unverified",
+        "detail": "the patch was supplied without --repo, --base and --head; its claims cannot be verified"
+    }]);
+    document
+}
+
+/// S3.25.a: under a policy that requires verified claims a stop here can at best hold. The gate
+/// called that chain ready (the probe is held, so the policy seemed to protect itself); its link
+/// `claims_verified`, read from the verdict's notes, says it, and so does a session's start.
+#[test]
+fn doctor_gate_says_stops_hold_when_the_policy_requires_verified_claims() {
+    let (scratch, root, home, script, _log, exit_file) = gate_fixture("doctor-gate-claims");
+    let judge_arg = ["--judge", script.to_str().unwrap()];
+    let claims = |doc: &Value| -> (bool, String) {
+        let ok = doc["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == "claims_verified")
+            .unwrap_or_else(|| panic!("no link claims_verified: {doc:#}"))["ok"]
+            .as_bool()
+            .unwrap();
+        (ok, detail(doc, "claims_verified"))
+    };
+    std::fs::create_dir(root.join(".claude")).unwrap();
+    std::fs::write(
+        root.join(".claude/settings.local.json"),
+        stop_hook_settings(&script),
+    )
+    .unwrap();
+    // a judge that holds the probe for a rule: the claims are not in question
+    let (code, doc, stderr) = doctor_gate(&root, &home, &judge_arg);
+    assert!(claims(&doc).0, "{doc:#}");
+    assert_eq!(code, 0, "{stderr}\n{doc:#}");
+    // one that holds it for claims it cannot verify
+    let (again, _, _) = judge(&scratch, &unverified_hold());
+    assert_eq!(again, script);
+    std::fs::write(&exit_file, "8").unwrap();
+    let (code, doc, stderr) = doctor_gate(&root, &home, &judge_arg);
+    let (ok, said) = claims(&doc);
+    assert!(
+        !ok && said.starts_with("stops here will hold, never pass: ")
+            && said.contains("An uncommitted or staged change can never be verified, so it can at best hold: commit first."),
+        "{said}"
+    );
+    assert_eq!((code, doc["ok"].as_bool()), (7, Some(false)), "{stderr}");
+    // the start of a session tells the agent: judged, and held
+    let (_, stdout, _) = hook(
+        "session-start",
+        &judge_arg,
+        &input("SessionStart", &root, "s1", false),
+    );
+    assert!(
+        stdout.contains("- Stops will be judged. One link is weak: claims_verified: stops here will hold, never pass: "),
+        "{stdout}"
+    );
+}
+
+/// S3.25.a: a change held only for claims the judge cannot verify is said at every stop, and
+/// never passes; the stop names the note.
+#[test]
+fn a_hold_for_unverified_claims_is_said_at_every_stop_and_never_passes() {
+    let scratch = Scratch::new("hook-claims-hold");
+    let root = repository(&scratch);
+    silence_a_lint(&root);
+    let (script, _, exit_file) = judge(&scratch, &unverified_hold());
+    std::fs::write(&exit_file, "8").unwrap();
+    for active in [false, true, false] {
+        let (code, stdout, stderr) = hook(
+            "stop",
+            &["--judge", script.to_str().unwrap()],
+            &input("Stop", &root, "s1", active),
+        );
+        assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
+        let out: Value =
+            serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{e}: {stdout:?}"));
+        let said = allowed(&out);
+        assert!(
+            said.contains("HOLD") && said.contains("claims_unverified"),
+            "{said}"
+        );
+    }
 }

@@ -1,6 +1,6 @@
 // DDF integration: R03, R07, R46. Differential oracle for the parser: every patch DDF accepts must read as `git apply` reads it (paths, operations and modes), which round-trip equality does not show.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--git_differential
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
 //! Differential oracle: a patch DDF accepts is the patch `git apply` reads. For every accepted
 //! input, Git's `--numstat` (each file Git would write, with its added and deleted line counts)
 //! must equal the same projection of DDF's review. A reading that differs shows a reviewer one
@@ -74,8 +74,7 @@ fn ddf_numstat(files: &[ReviewFile]) -> Vec<Numstat> {
     files
         .iter()
         .map(|file| {
-            let binary =
-                file.status == FileStatus::BinaryChanged || !file.patch_twin.binary_body.is_empty();
+            let binary = file.patch_twin.is_binary() || !file.patch_twin.binary_body.is_empty();
             let lines = || file.patch_twin.hunks.iter().flat_map(|h| &h.lines);
             let count = |kind| lines().filter(|l| l.kind == kind).count();
             let counts =
@@ -324,10 +323,16 @@ fn header_mutants(header: &str) -> Vec<String> {
 #[test]
 fn no_hunk_header_mutant_hides_a_file_from_the_review() {
     let scratch = Scratch::new("mutants");
-    // Control: the unmutated header is a hunk of `x` to both readers, so `evil` is read as
-    // removed and added lines of `x` and no file is hidden.
+    // Control: the unmutated header is a hunk of `x` to Git, so `evil` is read as removed and
+    // added lines of `x` and no file is hidden. DDF refuses it whole: that hunk has no trailing
+    // context and another follows it, so Git places it elsewhere (`HunkPlacedElsewhere`).
     let control = format!("{VISIBLE}@@ -1,1 +1,1 @@\n{HIDDEN}");
-    assert!(reads_as_git_does(scratch.0.path(), control.as_bytes()));
+    let git = git_numstat(scratch.0.path(), control.as_bytes()).expect("git reads the control");
+    assert!(git.iter().all(|(_, path)| path == b"x"), "{git:?}");
+    assert!(matches!(
+        parse_decoded(&decode(control.as_bytes()), ParseOptions::default()),
+        Err(PatchParseError::HunkPlacedElsewhere { .. })
+    ));
     // The finding itself: Git writes `evil` from this patch, DDF must not accept it.
     let finding = format!("{VISIBLE}@@-1,1 +1,1 @@\n{HIDDEN}");
     let git = git_numstat(scratch.0.path(), finding.as_bytes()).expect("git applies the finding");
@@ -497,24 +502,17 @@ fn no_duplicated_or_copy_header_mutant_reads_differently_from_git() {
         "diff --git a/run.sh b/run.sh\nold mode 100755\nnew mode 100755\nindex 1111111..2222222 100644\n--- a/run.sh\n+++ b/run.sh\n@@ -1 +1 @@\n-echo hi\n+echo bye\n",
         "diff --git a/run.sh b/run.sh\nold mode 100644\nnew mode 100644\nnew mode 100755\n--- a/run.sh\n+++ b/run.sh\n@@ -1 +1 @@\n-echo hi\n+echo bye\n",
     ];
-    // Each is read as Git reads it (the copies, whose last `copy to` is now the reviewed path)
-    // or refused (the nameless `---`/`+++` and the repeated modes, forms no Git writes). The
-    // v0.8.1 parser read every one differently, which `reads_as_git_does` fails on.
-    let mut copies = 0;
+    // Each is refused: no Git writes a hunk with no `---`/`+++`, a second `copy to`, a nameless
+    // `---`/`+++` or a repeated mode (`CONFORMANCE.md`). 0.8.1 to 0.8.4 read the copies as Git
+    // reads them (the last `copy to` was the reviewed path); the v0.8.1 parser read every one
+    // differently, which `reads_as_git_does` fails on.
     for patch in findings {
         assert!(
             git_numstat(root, patch.as_bytes()).is_some(),
             "git applies the finding: {patch:?}"
         );
-        let copy = patch.contains("copy to ");
-        assert_eq!(reads_as_git_does(root, patch.as_bytes()), copy, "{patch:?}");
-        if copy {
-            let files = parse_decoded(&decode(patch.as_bytes()), ParseOptions::default()).unwrap();
-            assert_eq!(files[0].path, ".github/workflows/pwn.yml");
-            copies += 1;
-        }
+        assert!(!reads_as_git_does(root, patch.as_bytes()), "{patch:?}");
     }
-    assert_eq!(copies, 2);
     // Controls Git writes itself are still reviewed, copies and mode changes included, and so
     // is a new file whose `diff --git` halves differ: Git has no `diff --git` name to hold the
     // `+++` to, and creates `y`.
@@ -560,9 +558,11 @@ fn no_duplicated_or_copy_header_mutant_reads_differently_from_git() {
         }
     }
     // Not vacuous: hundreds of cases, with Git-identical acceptances and refusals both seen.
+    // An extra header almost always makes a shape no Git writes, which is refused since the
+    // accept-list (`CONFORMANCE.md`); 0.8.4 read more than ten of them as Git does.
     assert!(cases > 250, "{cases}");
     assert!(
-        accepted > 10 && refused > 100,
+        accepted > 0 && refused > 100,
         "accepted {accepted}, refused {refused}"
     );
 }
@@ -668,10 +668,19 @@ fn no_content_is_reviewed_under_a_mode_git_reads_as_a_submodule() {
         format!(
             "diff --git a/sub b/sub\nindex 1111111..2222222 160000\n--- a/sub\n+++ b/sub\n@@ -1 +1 @@\n-Subproject commit {id}\n+Subproject commit {id}-dirty\n"
         ),
-        format!("diff --git a/docs/notes.txt b/docs/notes.txt\nnew file mode 100664\n{new_file}"),
-        format!("diff --git a/docs/notes.txt b/docs/notes.txt\nnew file mode 100700\n{new_file}"),
     ] {
         assert!(reads_as_git_does(root, patch.as_bytes()), "{patch:?}");
+    }
+    // Modes Git reads as a regular file's but never writes: refused (0.8.4 read them).
+    for mode in ["100664", "100700"] {
+        let patch = format!(
+            "diff --git a/docs/notes.txt b/docs/notes.txt\nnew file mode {mode}\n{new_file}"
+        );
+        assert!(
+            git_numstat(root, patch.as_bytes()).is_some(),
+            "git: {patch:?}"
+        );
+        assert!(!reads_as_git_does(root, patch.as_bytes()), "ddf: {patch:?}");
     }
 }
 
@@ -754,10 +763,12 @@ fn no_name_carries_over_from_a_bare_header_and_no_mode_overrides_a_new_file_mode
         "{cases} cases: {accepted} accepted, {refused} refused"
     );
     println!("bare-header cases: {cases}, accepted {accepted}, refused {refused}");
-    // Controls: the forms Git writes are still reviewed as Git reads them.
+    // Controls: the forms Git writes are still reviewed as Git reads them (a hunk with no
+    // `---`/`+++` before it is no form Git writes, so the second section gets its names).
     for patch in [
         format!(
-            "diff --git a/first b/first\nindex 1111111..2222222 100644\nBinary files a/first and b/first differ\n{second}"
+            "diff --git a/first b/first\nindex 1111111..2222222 100644\nBinary files a/first and b/first differ\n{}",
+            second.replace("100644\n@@", "100644\n--- a/second\n+++ b/second\n@@")
         ),
         format!("diff --git a/docs/notes.txt b/docs/notes.txt\nnew file mode 100755\n{new_file}"),
         format!("diff --git a/docs/notes.txt b/docs/notes.txt\nnew file mode 120000\n{new_file}"),
@@ -771,8 +782,8 @@ fn no_name_carries_over_from_a_bare_header_and_no_mode_overrides_a_new_file_mode
 #[test]
 fn hunks_follow_their_file_header_or_the_previous_hunk() {
     let scratch = Scratch::new("placement");
-    let hunk = "@@ -1 +1 @@\n-a\n+b\n";
-    let later = "@@ -3 +3 @@\n-c\n+d\n";
+    let hunk = "@@ -1,2 +1,2 @@\n-a\n+b\n c\n";
+    let later = "@@ -3,2 +3,2 @@\n-c\n+d\n e\n";
     let git_refuses = [
         format!("--- a/x\n+++ b/x\n\n{hunk}"),
         format!("--- a/x\n+++ b/x\ngarbage\n{hunk}"),
@@ -798,18 +809,39 @@ fn hunks_follow_their_file_header_or_the_previous_hunk() {
     }
     let git_accepts = [
         format!("diff --git a/x b/x\n--- a/x\n+++ b/x\n{hunk}{later}"),
-        format!("diff --git a/x b/x\nindex 1..2 100644\n{hunk}"),
-        format!("diff --git a/x b/x\nold mode 100644\nnew mode 100755\n{hunk}"),
-        // A hunk may follow the `\ No newline` marker that ends the previous one (here it
-        // ends the new side, and the next hunk only removes).
-        "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n\\ No newline at end of file\n@@ -3 +2,0 @@\n-c\n"
-            .to_owned(),
+        format!("diff --git a/x b/x\nindex 1..2 100644\n--- a/x\n+++ b/x\n{hunk}"),
+        format!("diff --git a/x b/x\nold mode 100644\nnew mode 100755\n--- a/x\n+++ b/x\n{hunk}"),
         format!("--- a/x\n+++ b/x\n{hunk}--- a/y\n+++ b/y\n{hunk}"),
     ];
     for patch in &git_accepts {
         assert!(
             reads_as_git_does(scratch.0.path(), patch.as_bytes()),
             "ddf refused {patch:?}"
+        );
+    }
+    // Git reads a hunk after the `\ No newline` marker that ends the previous one's new side;
+    // that hunk has no trailing context and another follows, so Git places it at the end of the
+    // file, or refuses: DDF refuses it (`HunkPlacedElsewhere`).
+    let marker = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n\\ No newline at end of file\n@@ -3 +2,0 @@\n-c\n";
+    assert!(git_numstat(scratch.0.path(), marker.as_bytes()).is_some());
+    assert!(matches!(
+        parse_decoded(&decode(marker.as_bytes()), ParseOptions::default()),
+        Err(PatchParseError::HunkPlacedElsewhere { .. })
+    ));
+    // Git also reads a first hunk straight after the extended header, with no `---`/`+++`;
+    // no Git writes one, so it is refused (`CONFORMANCE.md`, row `hunk-header`).
+    for headers in ["index 1..2 100644\n", "old mode 100644\nnew mode 100755\n"] {
+        let patch = format!("diff --git a/x b/x\n{headers}{hunk}");
+        assert!(
+            git_numstat(scratch.0.path(), patch.as_bytes()).is_some(),
+            "git: {patch:?}"
+        );
+        assert!(
+            matches!(
+                parse_decoded(&decode(patch.as_bytes()), ParseOptions::default()),
+                Err(PatchParseError::HeaderNotWrittenByGit { .. })
+            ),
+            "ddf: {patch:?}"
         );
     }
 }
@@ -1121,7 +1153,7 @@ mod real_apply {
                 entry.executable = mode == "100755";
                 entry.symlink = mode == "120000";
             }
-            entry.content = if file.status == FileStatus::BinaryChanged {
+            entry.content = if file.patch_twin.is_binary() {
                 None
             } else {
                 Some(patched(entry.content.as_deref().unwrap_or_default(), file))
@@ -1170,9 +1202,10 @@ mod real_apply {
 
     /// G1: `Files … differ` after a full `index` line. Git writes the blob the line names from
     /// its object store, or empties the file for the null id. v0.8.3 showed `modified` (or
-    /// `renamed`, `added`) with no hunk and no binary flag.
+    /// `renamed`, `added`) with no hunk and no binary flag; 0.8.4 showed the binary change. No
+    /// Git writes the line, so it is refused now (`CONFORMANCE.md`, row `files-differ`).
     #[test]
-    fn a_files_differ_section_is_reviewed_as_the_binary_change_git_applies() {
+    fn a_files_differ_section_git_applies_is_refused() {
         let before = tree(&[("x", POLICY)]);
         let stored = Some(STORED.as_bytes().to_vec());
         let findings = [
@@ -1218,13 +1251,16 @@ mod real_apply {
             assert_eq!(git[*path].content, *content, "{patch:?}");
             assert_eq!(git[*path].executable, *executable, "{patch:?}");
             assert_eq!(git.contains_key("x"), *path != "y", "{patch:?}");
-            // The review says what Git does: a binary change of that path.
-            let files = review.unwrap_or_else(|e| panic!("{patch:?}: {e}"));
-            assert_eq!(files.len(), 1);
-            assert_eq!(
-                (files[0].path.as_str(), files[0].status),
-                (*path, FileStatus::BinaryChanged),
-                "{patch:?}"
+            // No Git writes it: refused.
+            assert!(
+                matches!(
+                    review,
+                    Err(PatchParseError::HeaderNotWrittenByGit {
+                        header: "Files … differ",
+                        ..
+                    })
+                ),
+                "{patch:?}: {review:?}"
             );
         }
         // Git honours the line after the section's `---`/`+++` too; there DDF refuses it, as it

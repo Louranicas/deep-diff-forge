@@ -4,22 +4,21 @@ The command-line front door to **Deep-Diff-Forge**, a deterministic code-review
 engine for diffs. It parses a unified or Git patch into a reviewable model,
 ranks the files by review risk, and never changes the patch it shows you.
 
-This crate builds the `deep-diff-forge` binary (version 0.9.0). It is a local,
+This crate builds the `deep-diff-forge` binary (version 0.10.0). It is a local,
 single-user tool for Linux and macOS
 ([supported platforms](https://github.com/Louranicas/deep-diff-forge#supported-platforms)).
 
 ## Install
 
-crates.io publication is on hold until the project is production-hardened, so
-`cargo install deep-diff-forge-cli` does not work yet. Use one of these:
-
-- **Release binaries:** the [GitHub releases](https://github.com/Louranicas/deep-diff-forge/releases)
-  ship `deep-diff-forge-<tag>-<target>.tar.gz` archives with `.sha256` files
-  for `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin` and
-  `x86_64-apple-darwin`, and `aarch64-unknown-linux-gnu` since v0.6.0.
-  Published GitHub releases: v0.1.0 to v0.8.3 (latest: v0.8.3, 2026-11-11 UTC). 0.8.4
-  (signed tag `v0.8.4`, 2026-11-17) and 0.9.0 have none: each is published as a signed tag on
-  GitLab, Gitea and Forgejo (0.9.0 once `v0.9.0` exists); binaries built locally for Linux x86_64.
+- **From crates.io** (0.9.0 since 2026-11-23; 0.10.0 from its tag):
+  `cargo install deep-diff-forge-cli --locked`.
+- **Release binaries:** the [GitLab releases](https://gitlab.com/lukeomahoney/deep-diff-forge/-/releases),
+  the place of release from 0.8.4, ship `deep-diff-forge-<tag>-<target>.tar.gz` archives with
+  `.sha256` files; from 0.8.4 only for `x86_64-unknown-linux-gnu`, built on the owner's machine,
+  with a signed `SHA256SUMS`. The [GitHub releases](https://github.com/Louranicas/deep-diff-forge/releases)
+  mirror them from 0.8.4 and, up to v0.8.3 (2026-11-11 UTC), were built by `release.yml` for
+  `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin` and `x86_64-apple-darwin`, and
+  `aarch64-unknown-linux-gnu` since v0.6.0.
 - **From source** (Rust 1.88 or newer):
 
   ```bash

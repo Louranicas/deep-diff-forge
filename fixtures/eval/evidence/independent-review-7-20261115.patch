@@ -43,14 +43,6 @@ diff --git a/tests/page.rs b/tests/page.rs
 +    let out = std::process::Command::new("true").status().unwrap();
 +    assert!(n > 0 && out.success());
  }
-diff --git a/src/m.rs b/src/m.rs
---- a/src/m.rs
-+++ b/src/m.rs
-@@ -2,0 +3,1 @@
-+    let v = opt.unwrap
-@@ -3,1 +4,1 @@
--    let b = 2;
-+    (); let b = v;
 diff --git a/src/cut.rs b/src/cut.rs
 --- a/src/cut.rs
 +++ b/src/cut.rs
@@ -122,20 +114,6 @@ new file mode 100644
 +#[
 +allow(dead_code)]
 +fn two() {}
-diff --git a/src/n.rs b/src/n.rs
-new file mode 100644
---- /dev/null
-+++ b/src/n.rs
-@@ -0,0 +1,2 @@
-+pub fn f(opt: Option<u32>) -> u32 {
-+    let v = opt.unwrap
-diff --git a/src/n.rs b/src/n.rs
---- a/src/n.rs
-+++ b/src/n.rs
-@@ -9,0 +3,3 @@
-+    ();
-+    v
-+}
 diff --git a/src/stub.rs b/src/stub.rs
 --- a/src/stub.rs
 +++ b/src/stub.rs
@@ -161,50 +139,66 @@ diff --git a/src/spawn.rs b/src/spawn.rs
 diff --git a/src/cmd.rs b/src/cmd.rs
 --- a/src/cmd.rs
 +++ b/src/cmd.rs
-@@ -3 +3 @@ struct Command;
+@@ -2,3 +2,3 @@ struct Command;
+ 
 -fn command() -> Command
 +pub fn command() -> Command
+ 
 diff --git a/src/net.rs b/src/net.rs
 --- a/src/net.rs
 +++ b/src/net.rs
-@@ -7 +7 @@
+@@ -6,3 +6,3 @@
+ 
 -fn dial(addr: &str) -> UnixStream
 +fn dial(addr: &str) -> TcpStream
+ 
 diff --git a/src/sock.rs b/src/sock.rs
 --- a/src/sock.rs
 +++ b/src/sock.rs
-@@ -4 +4 @@
+@@ -3,3 +3,3 @@
+ 
 -    socket: Socket
 +    socket: UdpSocket
+ 
 diff --git a/src/uses.rs b/src/uses.rs
 --- a/src/uses.rs
 +++ b/src/uses.rs
-@@ -2 +2 @@
+@@ -1,3 +1,3 @@
+ 
 -use hyper
 +use reqwest
+ 
 diff --git a/src/list.rs b/src/list.rs
 --- a/src/list.rs
 +++ b/src/list.rs
-@@ -9 +9 @@
+@@ -8,3 +8,3 @@
+ 
 -    let rest = done
 +    let rest = todo
+ 
 diff --git a/src/field.rs b/src/field.rs
 --- a/src/field.rs
 +++ b/src/field.rs
-@@ -12 +12 @@
+@@ -11,3 +11,3 @@
+ 
 -    let n = self.expected
 +    let n = self.expect
+ 
 diff --git a/src/assign.rs b/src/assign.rs
 --- a/src/assign.rs
 +++ b/src/assign.rs
-@@ -20 +20 @@
+@@ -19,3 +19,3 @@
+ 
 -skip = true;
 +ignore = true;
+ 
 diff --git a/tests/old.rs b/tests/old.rs
 --- a/tests/old.rs
 +++ b/tests/old.rs
-@@ -282 +281,0 @@
+@@ -281,3 +281,2 @@
+ 
 -test(&[], 1);
+ 
 diff --git a/src/two.rs b/src/two.rs
 new file mode 100644
 --- /dev/null
@@ -215,9 +209,11 @@ new file mode 100644
 diff --git a/src/two.rs b/src/two.rs
 --- a/src/two.rs
 +++ b/src/two.rs
-@@ -9,0 +3,2 @@
+@@ -9,2 +2,4 @@
+ 
 +  --help"; std::process::Command::new("sh").status().ok(); // "
 +    s }
+ 
 diff --git a/tests/cutassert.rs b/tests/cutassert.rs
 --- a/tests/cutassert.rs
 +++ b/tests/cutassert.rs

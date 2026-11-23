@@ -6,6 +6,59 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-23
+
+**Security and contract release.** 0.10.0 reads a `diff --git` section only if its headers are
+one of the 42 shapes Git's own diff writes and refuses every other shape with a named reason,
+which replaces the case-by-case header fixes of 0.8.0 to 0.8.4; `CONFORMANCE.md` in the patch
+crate is the table of what Git reads. It fixes six misses of released versions, each with an
+advisory: a decision journal that one fault could block for good (DDF-2026-004), a CI privilege
+grant written with quotes (DDF-2026-005), a source change that one attribute line made
+unreadable, now read as text and labelled with the new signal `diff_suppressed`
+(DDF-2026-006), GitLab tokens and fine-grained GitHub tokens (DDF-2026-007), a judge's leftover
+process that stretched an agent's stop (DDF-2026-008), and a findings gate that passed when the
+reader of its output had gone (DDF-2026-010). The stop hook reads forge-warden's verdict version
+3 as well as version 2, and a fail whose document it cannot read now holds the stop once
+instead of being allowed as UNJUDGED. Contracts change on purpose, each listed under
+[Contract changes](docs/release-notes/0.10.0.md#contract-changes) with its test: empty or prose input on `--stdin-patch`
+exits 4, `-U0` hunks without context are refused, `rank.v0` has one canonical byte form with
+`tool.scorer_sha256`, a Git file name that is not UTF-8 exits 4, `trivial_assert` is narrowed
+for Python, and the Rust library gains a `RiskSignal` variant and public fields. Install it
+before forge-warden 0.3.0, in the order under [Cutover with forge-warden](docs/release-notes/0.10.0.md#cutover-with-forge-warden),
+and keep the 0.9.0 binary as a ranker until every policy admits 0.10.0.
+
+Published as the signed tag `v0.10.0` on GitLab, the place of release, with mirrors on Gitea and
+Forgejo and a Linux x86_64 binary built on the owner's machine; GitHub mirrors the release page
+and crates.io carries the fourteen crates from the tag, as for 0.9.0.
+
+### Security
+
+- **A `diff --git` section is read only if its headers are a shape Git's own diff writes**
+- **`CONFORMANCE.md`**
+
+### Changed
+
+- **New signal `diff_suppressed`**
+- **New council exit code 3, `recorded_incomplete`**
+- **`--stdin-patch` refuses input in which Git finds no patch**
+- **`rank.v0` has one byte form on every surface**
+- **The judge's patch is the bytes forge-warden's `make_patch.sh` writes**
+- **Binary creations, deletions and renames carry Git's status**
+- and 10 more, in the full notes
+
+### Fixed
+
+- **A text file Git was told to show as binary is read as text**
+- **`ci_privilege` reads a key or a value in quotes as the key or value**
+- **The stop hook reads forge-warden's verdict version 3, and a fail it cannot read holds the stop**
+- **A judge that left a process holding its output could stretch an agent's stop past its limit**
+- **`secret_like` finds GitLab tokens and fine-grained GitHub tokens**
+- **A gate flag failed open when its output was closed**
+- **A fault during `council import-tuicr --execute` no longer blocks a run's journal for good, reports a recorded decision as refused, or leaves a cut back undetected**
+- and 7 more, in the full notes
+
+Full notes: [docs/release-notes/0.10.0.md](docs/release-notes/0.10.0.md)
+
 ## [0.9.0] - 2026-11-18
 
 **Feature release with fixes for released versions.** 0.9.0 adds five integrity signals for a

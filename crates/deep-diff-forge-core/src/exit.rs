@@ -1,4 +1,4 @@
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-core--exit
+// Module index: docs/ARCHITECTURE.md#crates-as-built-030
 //! The exit-code registry: the single owner of every process exit code deep-diff-forge documents.
 //!
 //! Two families share numbers with different meanings: `council` (the review-council subcommands)
@@ -27,6 +27,8 @@ pub const SIGNAL_BASE: i32 = 128;
 
 /// Council: the requested operation completed under its contract.
 pub const COUNCIL_COMPLETED: i32 = 0;
+/// Council: an I/O failure after the decision was recorded (`import-tuicr --execute`).
+pub const COUNCIL_RECORDED_INCOMPLETE: i32 = 3;
 /// Council: malformed input, stale admission, an existing artifact, or a protocol or I/O failure.
 pub const COUNCIL_REFUSED: i32 = 4;
 /// Council: HOLD (failed, missing or inconclusive evidence, or an import conflict).
@@ -140,7 +142,7 @@ pub const EXIT_CODES: &[ExitCode] = &[
         "engine",
         INVALID_INPUT,
         "invalid_input",
-        "Invalid input: a patch or analysis input that fails to parse or validate, input over the byte budget, an invalid receipt, a named path that is not a regular file, or a refused Git acquisition or file pair.",
+        "Invalid input: a patch or analysis input that fails to parse or validate, `--stdin-patch` input in which Git finds no patch (`no_patch_in_input`), input over the byte budget, an invalid receipt, a named path that is not a regular file, or a refused Git acquisition or file pair.",
         NextAction::ChangeInput,
     ),
     entry(
@@ -170,6 +172,13 @@ pub const EXIT_CODES: &[ExitCode] = &[
         "completed",
         "The requested council operation completed under its contract; `status` exit 0 means ready for human review.",
         NextAction::Proceed,
+    ),
+    entry(
+        "council",
+        COUNCIL_RECORDED_INCOMPLETE,
+        "recorded_incomplete",
+        "I/O failure after the decision was recorded: the journal holds it; run the same import again to complete it.",
+        NextAction::CheckEnvironment,
     ),
     entry(
         "council",
@@ -237,6 +246,7 @@ mod tests {
                 ("engine", "input_contract_refused", A::ChangeInput),
                 ("engine", "panic", A::ReportBug),
                 ("council", "completed", A::Proceed),
+                ("council", "recorded_incomplete", A::CheckEnvironment),
                 ("council", "refused", A::ChangeInput),
                 ("council", "hold", A::ReviewEvidence),
             ]
@@ -269,7 +279,11 @@ mod tests {
     fn lookup_is_by_family_and_code() {
         assert_eq!(lookup("engine", 4).map(|e| e.name), Some("invalid_input"));
         assert_eq!(lookup("council", 4).map(|e| e.name), Some("refused"));
-        assert_eq!(lookup("council", 3), None);
+        assert_eq!(
+            lookup("council", 3).map(|e| e.name),
+            Some("recorded_incomplete")
+        );
+        assert_eq!(lookup("council", 5), None);
         assert_eq!(lookup("other", 0), None);
     }
 }

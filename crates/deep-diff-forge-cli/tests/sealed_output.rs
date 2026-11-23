@@ -52,6 +52,17 @@ fn expected_seal(input: &[u8]) -> String {
     deep_diff_forge_core::InputSeal::of(input, env!("CARGO_PKG_VERSION")).json_members()
 }
 
+/// `rank.v0`'s seal: its `tool` also names the scorer (S3.15.b).
+fn expected_rank_seal(input: &[u8]) -> String {
+    expected_seal(input).replace(
+        "\"},\n",
+        &format!(
+            "\", \"scorer_sha256\": \"{}\"}},\n",
+            deep_diff_forge_graph::scorer_sha256()
+        ),
+    )
+}
+
 const PATCH: &str = "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new\n";
 // `printf -- '--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new\n' | sha256sum`
 const PATCH_SHA256: &str = "ddae457b65e3081c49d3f6983380c9580da19064d38ec2ad79ab5f68a495e820";
@@ -93,7 +104,7 @@ fn rank_json_carries_seal() {
     assert_eq!(code, 0);
     let head = format!(
         "{{\n  \"schema\": \"deep-diff-forge.rank.v0\",\n{}  \"ranked\": [",
-        expected_seal(PATCH.as_bytes())
+        expected_rank_seal(PATCH.as_bytes())
     );
     assert!(stdout.starts_with(&head), "got:\n{stdout}");
 }
@@ -148,7 +159,7 @@ fn seal_hashes_raw_bytes_before_any_normalisation() {
 
 #[test]
 fn empty_input_seal_is_the_empty_string_digest() {
-    let (code, stdout, _) = run_text(&["--stdin-patch", "--json"], "");
+    let (code, stdout, _) = run_text(&["--stdin-patch", "--json", "--allow-empty"], "");
     assert_eq!(code, 0);
     assert_eq!(
         input_sha256(&stdout),
@@ -214,7 +225,7 @@ fn require_files_does_not_mask_a_parse_failure() {
 
 #[test]
 fn without_require_files_empty_input_is_still_exit_zero() {
-    let (code, stdout, _) = run_text(&["--stdin-patch", "--rank", "--json"], "");
+    let (code, stdout, _) = run_text(&["--stdin-patch", "--rank", "--json", "--allow-empty"], "");
     assert_eq!(code, 0);
     assert!(stdout.contains("\"ranked\": []"));
 }
@@ -271,7 +282,7 @@ fn require_hunks_passes_a_real_diff_sealed_and_unchanged() {
     assert_eq!(stderr.len(), 0);
     let head = format!(
         "{{\n  \"schema\": \"deep-diff-forge.rank.v0\",\n{}  \"ranked\": [",
-        expected_seal(PATCH.as_bytes())
+        expected_rank_seal(PATCH.as_bytes())
     );
     assert!(with.starts_with(&head), "got:\n{with}");
     assert_eq!(input_sha256(&with), PATCH_SHA256);

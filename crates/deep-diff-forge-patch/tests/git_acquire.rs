@@ -1,6 +1,6 @@
 // DDF integration: R02, R03, R07. Structured Git acquisition against a real temporary repository; Git is the application oracle for the authoritative patch bytes.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-patch--tests--git_acquire
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
 //! Real-repository fixture: Unicode, tab and newline filenames, a binary file,
 //! a rename with modification, mode changes (one under a path that display
 //! headers split wrongly), a deletion, a no-final-newline edit, CRLF content and
@@ -1437,4 +1437,67 @@ fn diff_files_refuses_any_git_answer_but_silence_or_a_clean_patch() {
         Ok(b"diff --git a/x b/x\n".to_vec())
     );
     assert_eq!(diff_with("same-git", "exit 0"), Ok(Vec::new()));
+}
+
+/// `diff.context=0` in the repository's configuration does not reach DDF's own `git diff`: it
+/// passes `-U3`. Before, the capture held a hunk with no context, which plain `git apply` places
+/// at the end of the file and the parser refuses (S3B-H-1).
+#[test]
+fn diff_context_in_the_repository_does_not_change_the_capture() {
+    let scratch = Scratch::new("git-acq-context");
+    let r = scratch.join("repo");
+    std::fs::create_dir_all(&r).unwrap();
+    git_out(&r, &["init", "-q"]);
+    std::fs::write(r.join("f"), b"a\nb\nc\nd\ne\n").unwrap();
+    git_out(&r, &["add", "-A"]);
+    git_out(&r, &["commit", "-q", "-m", "base"]);
+    git_out(&r, &["config", "diff.context", "0"]);
+    std::fs::write(r.join("f"), b"a\nb\nC\nd\ne\n").unwrap();
+    let hunk = |acq: &GitAcquisition| {
+        let patch = String::from_utf8_lossy(acq.diff().patch_bytes()).into_owned();
+        let files = deep_diff_forge_patch::parse(&patch).unwrap_or_else(|e| panic!("{e}: {patch}"));
+        let lines = &files[0].patch_twin.hunks[0].lines;
+        assert_eq!(lines.len(), 6, "two lines of context on each side: {patch}");
+    };
+    hunk(&acquire_git(&r, &GitSelection::WorkingTree, &options(false)).unwrap());
+    git_out(&r, &["commit", "-q", "-am", "change"]);
+    let range = GitSelection::parse_range("HEAD~1..HEAD").unwrap();
+    hunk(&acquire_git(&r, &range, &options(false)).unwrap());
+}
+
+/// S3.17a.b: Git exits, but a process it started keeps Git's output pipes open. The readers were
+/// joined without a deadline after a normal exit, so one helper that outlived Git held the
+/// whole acquisition for as long as it lived (eight seconds here, per Git call, against a limit
+/// of 300 ms). Now the joins have the run's deadline: the acquisition stops at the limit.
+#[test]
+fn a_git_helper_that_outlives_git_cannot_stretch_the_acquisition() {
+    let fx = fixture("outlived");
+    let stub = fx.root.join("exiting-git");
+    // Written by a child process: a file this process wrote and then ran could be busy.
+    let made = Command::new("sh")
+        .args([
+            "-c",
+            "printf '#!/bin/sh\\nsleep 8 &\\nexit 0\\n' > \"$1\" && chmod 755 \"$1\"",
+            "sh",
+        ])
+        .arg(&stub)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let opts = GitAcquireOptions {
+        git_program: stub.into_os_string(),
+        time_limit: std::time::Duration::from_millis(300),
+        ..options(false)
+    };
+    let started = std::time::Instant::now();
+    let result = acquire_stub(&fx.root, &GitSelection::WorkingTree, &opts);
+    let took = started.elapsed();
+    assert!(
+        took < std::time::Duration::from_secs(4),
+        "a helper that outlived Git stretched the acquisition to {took:?}: {result:?}"
+    );
+    assert!(
+        matches!(result, Err(GitAcquireError::TimedOut { .. })),
+        "{result:?}"
+    );
 }

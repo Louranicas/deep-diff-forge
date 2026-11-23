@@ -1,6 +1,6 @@
 // Review council: Fixed provider/gate argv, deadlines, owned process groups, output limits and non-vacuous work qualification.
 // Design/status: docs/REVIEW_COUNCIL.md#execution-controller
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fcouncil--crates--deep-diff-forge-review--src--execution
+// Module index: docs/REVIEW_COUNCIL.md#cratesdeep-diff-forge-reviewsrcexecutionrs
 //! Controller-owned subprocesses. No model-produced command text is executed.
 use crate::model::Qualification;
 use crate::sandbox::{self, Sandbox, Spec, WORK};
@@ -190,7 +190,7 @@ fn launch_argv(
         &jobdir.join("environment.json"),
         &gate.sandbox.record(&spec),
     )?;
-    Ok((gate.sandbox.argv(&spec), Some(name)))
+    Ok((gate.sandbox.argv(&spec)?, Some(name)))
 }
 /// Truncate oversized transcripts and record that they are incomplete; returns whether the limit was hit.
 fn limit_transcripts(jobdir: &Path, stdout: &Path, stderr: &Path) -> Result<bool> {

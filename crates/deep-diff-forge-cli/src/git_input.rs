@@ -1,6 +1,6 @@
 // DDF integration: R02, R03, R07. Structured Git input for the CLI: acquire with raw-record identities, seal the exact Git patch bytes, and feed the same review/rank/JSON outputs as `--stdin-patch`.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
-// Module vault note (bidirectional): obsidian://open?vault=deep-diff-forge.vault&file=Implementation%2FModules%2Fdeep-diff-forge-cli--git_input
+// Module index: docs/RECOMMENDATION_INTEGRATION.md#patch-truth
 //! `--git-working-tree`, `--git-staged` and `--git-range A..B`.
 //!
 //! Unlike `git diff | deep-diff-forge --stdin-patch`, these selections run Git
@@ -9,15 +9,16 @@
 //! (`--include-untracked`, working tree only) without touching the index.
 //!
 //! Exit codes: 2 = usage error or invalid selection, 3 = Git could not be run
-//! or failed, or the patch is not UTF-8, 4 = structured output was malformed,
-//! mismatched, over budget or failed to parse, 7 = `--require-files` /
-//! `--require-hunks` refusal.
+//! or failed, 4 = structured output was malformed, mismatched, over budget or
+//! failed to parse, or a changed file's name is not UTF-8 (S3.27.f),
+//! 7 = `--require-files` / `--require-hunks` refusal.
 
 use crate::{InputGuards, emit, emit_review, flag_value, seal_of, validate_review_options_or_exit};
 use deep_diff_forge_core::exit;
 use deep_diff_forge_core::{display_safe, json_escape};
 use deep_diff_forge_patch::{
-    GitAcquireError, GitAcquireOptions, GitAcquisition, GitPath, GitSelection, acquire_git,
+    GitAcquireError, GitAcquireOptions, GitAcquisition, GitPath, GitSelection, PatchParseError,
+    acquire_git,
 };
 
 /// Flags that choose a structured Git selection.
@@ -48,14 +49,23 @@ pub(crate) fn exit_code(err: &GitAcquireError) -> i32 {
         | GitAcquireError::TimedOut { .. }
         | GitAcquireError::NonUtf8Path { .. }
         | GitAcquireError::FileUnreadable { .. } => exit::IO,
+        // A header Git wrote that is not UTF-8 (a file name) is the change's own: retrying
+        // never helps, so it is not `io` (S3.27.f).
+        GitAcquireError::Parse(PatchParseError::LossyHeader { .. }) => exit::INVALID_INPUT,
         GitAcquireError::Parse(error) => error.exit_code(),
         _ => exit::INVALID_INPUT,
     }
 }
 
 fn fail(err: &GitAcquireError) -> ! {
+    let class = match err {
+        GitAcquireError::Parse(PatchParseError::LossyHeader { .. }) => {
+            "refused (a file name that is not UTF-8): "
+        }
+        _ => "",
+    };
     eprintln!(
-        "error: structured Git acquisition failed: {}",
+        "error: structured Git acquisition failed: {class}{}",
         display_safe(&err.to_string())
     );
     std::process::exit(exit_code(err));
@@ -194,7 +204,7 @@ fn acquisition_json(acq: &GitAcquisition, include_untracked: bool, input: &[u8])
         }
         let _ = write!(
             changes,
-            "    {{\"status\": {}, \"score\": {}, \"origin\": {}, \"old_path\": {}, \"new_path\": {}, \"old_mode\": {}, \"new_mode\": {}, \"old_blob\": {}, \"new_blob\": {}, \"binary\": {}, \"patch_offset\": {}, \"patch_len\": {}, \"blocks\": {}}}",
+            "    {{\"status\": {}, \"score\": {}, \"origin\": {}, \"old_path\": {}, \"new_path\": {}, \"old_mode\": {}, \"new_mode\": {}, \"old_blob\": {}, \"new_blob\": {}, \"binary\": {}, \"patch_offset\": {}, \"patch_len\": {}, \"blocks\": {}",
             json_escape(c.kind.label()),
             c.score.map_or_else(|| "null".to_owned(), |s| s.to_string()),
             json_escape(c.origin.label()),
@@ -209,6 +219,10 @@ fn acquisition_json(acq: &GitAcquisition, include_untracked: bool, input: &[u8])
             c.patch_range.len(),
             c.block_count
         );
+        if let Some(cause) = c.diff_suppressed {
+            let _ = write!(changes, ", \"diff_suppressed\": \"{}\"", cause.label());
+        }
+        changes.push('}');
     }
     let omitted: Vec<String> = acq
         .omitted_untracked()

@@ -378,6 +378,78 @@ fn the_declared_platforms_are_the_release_targets_and_the_glibc_floor() {
     }
 }
 
+/// The cells of each row of the Markdown table under the line `heading` of `text` (the table
+/// ends at the next heading); the header row and the rule are skipped.
+fn table_rows<'a>(text: &'a str, heading: &str) -> Vec<Vec<&'a str>> {
+    let (_, section) = text
+        .split_once(&format!("\n{heading}\n"))
+        .unwrap_or_else(|| panic!("no heading {heading:?}"));
+    section
+        .split("\n#")
+        .next()
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| line.starts_with("| ") && !line.starts_with("| ---"))
+        .skip(1)
+        .map(|line| line.trim_matches('|').split(" | ").map(str::trim).collect())
+        .collect()
+}
+
+/// A platform named as built and tested has a receipt (S3.10). The README's platform table
+/// names each release target once; a target whose cell for this release says anything but
+/// "not built for this release" links the runs on record, and
+/// `docs/reference/supported-platforms.md`'s table "Runs on record" holds a row for that target
+/// whose last cell is the SHA-256 of a receipt (64 hexadecimal digits). At least one target is
+/// built. The test does not compare a receipt with the published file, or check that the newest
+/// release has a row.
+#[test]
+fn every_platform_the_readme_names_has_a_run_on_record() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    let read = |path: &str| std::fs::read_to_string(format!("{root}/{path}")).unwrap();
+    let readme = read("README.md");
+    let records = read("docs/reference/supported-platforms.md");
+    let recorded: BTreeSet<&str> = table_rows(&records, "## Runs on record")
+        .into_iter()
+        .filter(|cells| {
+            cells.last().is_some_and(|receipt| {
+                let hex = receipt.trim_matches('`');
+                hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit())
+            })
+        })
+        .map(|cells| cells[1].trim_matches('`'))
+        .collect();
+    let rows = table_rows(&readme, "### Supported platforms");
+    let named: Vec<&str> = rows
+        .iter()
+        .map(|cells| cells[0].trim_matches('`'))
+        .collect();
+    assert_eq!(named.len(), RELEASE_TARGETS.len(), "{named:?}");
+    assert_eq!(
+        named.iter().copied().collect::<BTreeSet<_>>(),
+        BTreeSet::from(RELEASE_TARGETS)
+    );
+    let mut built = 0;
+    for cells in &rows {
+        let (target, now) = (cells[0].trim_matches('`'), cells[1]);
+        if now == "not built for this release" {
+            continue;
+        }
+        built += 1;
+        assert!(
+            recorded.contains(target),
+            "README.md names {target} as {now:?}, but supported-platforms.md has no run on record for it"
+        );
+        assert!(
+            now.contains("(docs/reference/supported-platforms.md#runs-on-record)"),
+            "README.md names {target} as built without linking its receipts: {now}"
+        );
+    }
+    assert!(
+        built > 0,
+        "README.md names no target as built for this release"
+    );
+}
+
 /// The two jobs that are not required on pull requests still run inside a release, through
 /// release.yml's `quality` (which calls ci.yml), so each one's place there is a decision:
 /// `linux-arm64` tests a shipped target and gates the build; `launchd`, unproven on hosted

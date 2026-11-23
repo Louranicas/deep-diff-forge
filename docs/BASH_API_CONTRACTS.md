@@ -41,7 +41,7 @@ shipped command that does the job today.
 | 7 | `input_contract_refused` | Input contract refused (see the gate contract below). |
 | 101 | `panic` | Internal error (a panic). |
 
-`council` subcommands use their own family (0 completed, 4 refused, 7 hold).
+`council` subcommands use their own family (0 completed, 3 recorded incomplete, 4 refused, 7 hold).
 `deep-diff-forge explain <code> [--family engine|council] [--json]` names one
 code. `deep-diff-forge explain signal <label> [--json]` explains one signal of a
 ranking instead (`deep-diff-forge schema signals` lists them).

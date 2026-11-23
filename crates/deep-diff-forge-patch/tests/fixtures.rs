@@ -114,7 +114,7 @@ fn binary_literal_and_delta_fixture_keeps_every_file_and_body() {
         shape,
         [
             ("big.bin", FileStatus::BinaryChanged, 0),
-            ("new.bin", FileStatus::BinaryChanged, 0),
+            ("new.bin", FileStatus::Added, 0),
             ("t.rs", FileStatus::Modified, 1),
         ]
     );

@@ -64,11 +64,71 @@ fn human_mode_summarises_files() {
     assert!(stdout.contains("1 file(s) changed"));
 }
 
+/// S3.5 (L1): input in which Git finds no patch is refused as `git apply` refuses it ("No valid
+/// patches in input"): exit 4, the reason named, nothing on stdout, in every output mode.
+/// `--allow-empty`, Git's flag, makes it an empty change (exit 0, zero files, as 0.9.0 answered).
+/// Each row is checked against a real `git apply --check`, with and without the flag. Asked for,
+/// `--require-files` refuses first (7), with or without `--allow-empty`.
 #[test]
-fn empty_input_is_zero_files_not_an_error() {
-    let (code, stdout, _) = run(&["--stdin-patch"], "");
-    assert_eq!(code, 0);
-    assert!(stdout.contains("0 file(s) changed"));
+fn empty_and_prose_input_is_refused_as_git_refuses_it() {
+    let scratch = deep_diff_forge_testkit::Scratch::new("cli-no-patch");
+    let git_checks = |extra: &[&str], input: &str| {
+        std::fs::write(scratch.join("in.patch"), input).unwrap();
+        Command::new("git")
+            .current_dir(scratch.path())
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .args(["apply", "--check"])
+            .args(extra)
+            .arg("in.patch")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    };
+    let mail = "From 0123456789abcdef0123456789abcdef01234567 Mon Sep 17 00:00:00 2001\nFrom: A <a@example.invalid>\nSubject: [PATCH] nothing\n\nOnly the message.\n---\n-- \n2.56.1\n";
+    let modes: [&[&str]; 7] = [
+        &[],
+        &["--json"],
+        &["--jsonl"],
+        &["--rank"],
+        &["--rank", "--json"],
+        &["--outline"],
+        &["--layout", "inline"],
+    ];
+    for input in ["", " \n\t\n", "hello\n", mail] {
+        assert!(
+            !git_checks(&[], input),
+            "git apply reads a patch in {input:?}"
+        );
+        assert!(git_checks(&["--allow-empty"], input), "{input:?}");
+        for mode in modes {
+            let args = [&["--stdin-patch"][..], mode].concat();
+            let (code, stdout, stderr) = run(&args, input);
+            assert_eq!(code, 4, "{args:?} on {input:?}: {stderr}");
+            assert_eq!(stdout, "", "{args:?}");
+            assert!(stderr.contains("no_patch_in_input"), "{args:?}: {stderr}");
+            let args = [&args[..], &["--allow-empty"]].concat();
+            let (code, _, stderr) = run(&args, input);
+            assert_eq!(code, 0, "{args:?} on {input:?}: {stderr}");
+        }
+    }
+    let (code, stdout, _) = run(&["--stdin-patch", "--allow-empty"], "");
+    assert_eq!((code, stdout.as_str()), (0, "0 file(s) changed\n"));
+    // The order of the refusals: `--require-files` first, then no patch in the input.
+    for args in [
+        &["--stdin-patch", "--require-files"][..],
+        &["--stdin-patch", "--require-files", "--allow-empty"],
+    ] {
+        let (code, stdout, stderr) = run(args, "");
+        assert_eq!((code, stdout.as_str()), (7, ""), "{args:?}: {stderr}");
+    }
+    // A patch reads the same with the flag as without it.
+    let with = run(
+        &["--stdin-patch", "--rank", "--json", "--allow-empty"],
+        PATCH,
+    );
+    assert_eq!(with, run(&["--stdin-patch", "--rank", "--json"], PATCH));
 }
 
 #[test]

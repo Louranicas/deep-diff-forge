@@ -1,7 +1,7 @@
 //! Slice B: the daemon's `diff.compute` answers as `deep-diff-forge --stdin-patch --json` does for
 //! the same bytes, and `diff.rank` as `--stdin-patch --rank --json` does: the same document as a
-//! JSON value (seal included; key order is not part of the contract), the same refusal text, and
-//! the same parse-failure text, with the registry's codes on both surfaces.
+//! JSON value (seal included), the same refusal text, and the same parse-failure text, with the
+//! registry's codes on both surfaces. Since S3.15 the rank document is also the same bytes.
 #![expect(
     clippy::disallowed_methods,
     reason = "integration test: drives real processes, the environment and wall-clock time"
@@ -28,6 +28,8 @@ const FIXTURES: &[&str] = &[
 fn cli(patch: &str, mode: &[&str], flags: &[&str]) -> (i32, String, String) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
         .args(["--stdin-patch", "--json"])
+        // The daemon answers as the command line does with --allow-empty, until S3.15 decides whether the refusal moves into the shared builder.
+        .arg("--allow-empty")
         .args(mode)
         .args(flags)
         .stdin(Stdio::piped())
@@ -74,6 +76,87 @@ fn diff_rank_matches_the_cli_rank_document_refusals_and_failures() {
     parity("diff.rank", &["--rank"]);
 }
 
+/// S3.15: the rank document has one byte form, the command line's (what forge-warden seals), and
+/// every surface carries those bytes: a surface that pretty-prints, compacts or reorders on its
+/// own is named here.
+#[test]
+fn rank_bytes_are_one_document_on_every_surface() {
+    let mut compared = 0;
+    for patch in FIXTURES {
+        let (code, stdout, stderr) = cli(patch, &["--rank"], &[]);
+        if code != exit::SUCCESS {
+            assert_eq!(code, exit::INVALID_INPUT, "{patch:?}: {stderr}");
+            continue;
+        }
+        let review = deep_diff_forge_patch::SealedReview::new(
+            patch.as_bytes(),
+            deep_diff_forge_patch::InputGuards {
+                files: false,
+                hunks: false,
+            },
+            env!("CARGO_PKG_VERSION"),
+        )
+        .unwrap();
+        let ranked = deep_diff_forge_graph::rank(review.files());
+        let rendered = deep_diff_forge_graph::RankDocument {
+            seal: review.seal(),
+            ranked: &ranked,
+        }
+        .to_json();
+        let canonical = |answer: &serde_json::Value| answer.as_str().unwrap_or_default().to_owned();
+        let request =
+            serde_json::json!({"id": 1, "method": "diff.rank", "params": {"patch": patch}});
+        let rpc: serde_json::Value =
+            serde_json::from_str(&run(&["rpc"], &format!("{request}\n"))).unwrap();
+        let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"#;
+        let call = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "rank_patch", "arguments": {"patch": patch}}});
+        let mcp = run(&["mcp"], &format!("{init}\n{call}\n"));
+        let mcp: serde_json::Value = serde_json::from_str(mcp.lines().nth(1).unwrap()).unwrap();
+        let surfaces = [
+            ("the one renderer", rendered),
+            (
+                "the daemon's diff.rank canonical_json",
+                canonical(&daemon("diff.rank", patch, false, false).unwrap()["canonical_json"]),
+            ),
+            (
+                "rpc's diff.rank canonical_json",
+                canonical(&rpc["result"]["canonical_json"]),
+            ),
+            (
+                "MCP rank_patch's text",
+                canonical(&mcp["result"]["content"][0]["text"]),
+            ),
+        ];
+        for (surface, bytes) in surfaces {
+            assert!(
+                bytes == stdout,
+                "{surface} differs from the command line's bytes for {patch:?}:\n{bytes}\n{stdout}"
+            );
+            compared += 1;
+        }
+    }
+    assert!(compared >= 20, "{compared}");
+}
+
+fn run(args: &[&str], stdin: &str) -> String {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stdin.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "{args:?}");
+    String::from_utf8(out.stdout).unwrap()
+}
+
 /// A list cut short is the same list on both surfaces, and it is the one that keeps what
 /// release 0.8.3 listed: an item of a newer signal on line 1 above 32 spawns, and all 32
 /// spawns are listed (review of the released line's fix, VLF3-L-1; MCP's `rank_patch`
@@ -91,7 +174,9 @@ fn a_list_cut_short_is_the_same_list_from_the_cli_and_the_daemon() {
     assert_eq!(code, exit::SUCCESS, "{stderr}");
     let document: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(
-        daemon("diff.rank", &patch, false, false).ok(),
+        daemon("diff.rank", &patch, false, false)
+            .ok()
+            .map(value_form),
         Some(document.clone())
     );
     let file = &document["ranked"][0];
@@ -119,6 +204,15 @@ fn a_list_cut_short_is_the_same_list_from_the_cli_and_the_daemon() {
     );
 }
 
+/// A daemon answer's value form: `diff.rank` adds the document's bytes as `canonical_json`
+/// (S3.15; `rank_bytes_are_one_document_on_every_surface` compares them).
+fn value_form(mut answer: serde_json::Value) -> serde_json::Value {
+    if let Some(members) = answer.as_object_mut() {
+        members.remove("canonical_json");
+    }
+    answer
+}
+
 fn parity(method: &str, mode: &[&str]) {
     let guards: [(&[&str], bool, bool); 4] = [
         (&[], false, false),
@@ -134,7 +228,11 @@ fn parity(method: &str, mode: &[&str]) {
             match code {
                 exit::SUCCESS => {
                     let document: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-                    assert_eq!(rpc.as_ref().ok(), Some(&document), "{patch:?} {flags:?}");
+                    assert_eq!(
+                        rpc.ok().map(value_form),
+                        Some(document),
+                        "{patch:?} {flags:?}"
+                    );
                     seen[0] += 1;
                 }
                 exit::INPUT_CONTRACT_REFUSED => {
