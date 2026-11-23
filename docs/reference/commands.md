@@ -164,7 +164,7 @@ deep-diff-forge schema [result|exit-codes|signals|diagnostics]  # the envelope's
 deep-diff-forge explain {<code> [--family engine|council] | signal <label> [--audience agent|person]} [--json]
 deep-diff-forge mcp                             # read-only MCP server over stdio
 deep-diff-forge rpc                             # the daemon's JSON-RPC over stdio, no daemon
-deep-diff-forge agent check [--session ID | --base REV] [--range A..B] [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--json]  # the units a stop judges, judged with its judge and policy (agent-hooks.md)
+deep-diff-forge agent check [--session ID | --base REV] [--range A..B] [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--require-pass] [--json]  # the units a stop judges, judged with its judge and policy (agent-hooks.md)
 deep-diff-forge daemon {path|start [--foreground] [--log-format text|json]|health|status|metrics [--format json|prometheus] [--out PATH]|stop} [--socket PATH]
 ```
 

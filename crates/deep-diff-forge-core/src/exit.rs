@@ -312,6 +312,22 @@ pub const REFUSALS: &[Refusal] = &[
         action: NextAction::ReviewEvidence,
         since: "0.11.0",
     },
+    Refusal {
+        class: "require_pass_no_unit",
+        tag: "--require-pass no_unit",
+        commands: "`agent check`",
+        stdout: Stdout::Document,
+        action: NextAction::ReviewEvidence,
+        since: "0.11.0",
+    },
+    Refusal {
+        class: "require_pass_not_pass",
+        tag: "--require-pass not_pass",
+        commands: "`agent check`",
+        stdout: Stdout::Document,
+        action: NextAction::ReviewEvidence,
+        since: "0.11.0",
+    },
 ];
 
 /// The registered reason class named `class`.

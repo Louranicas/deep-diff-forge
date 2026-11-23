@@ -290,7 +290,7 @@ fn agent_check_says_its_usage_and_names_its_schema() {
     let outside = scratch.join("outside");
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&outside).unwrap();
-    let usage = "deep-diff-forge agent check [--session ID | --base REV] [--range A..B] [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--json]";
+    let usage = "deep-diff-forge agent check [--session ID | --base REV] [--range A..B] [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--require-pass] [--json]";
     let (code, _, stderr) = finish(
         {
             let mut command = ddf(&home, &outside);
@@ -302,7 +302,6 @@ fn agent_check_says_its_usage_and_names_its_schema() {
     assert_eq!(code, 2);
     assert!(stderr.contains(usage), "{stderr}");
     for (args, said) in [
-        (&["--require-pass"][..], "not in this build"),
         (
             &["--session", "s", "--base", "HEAD"][..],
             "exclude each other",
@@ -988,5 +987,58 @@ fn a_check_gives_the_judge_the_patches_a_stop_gives() {
         patches_given(&marked),
         by_stop,
         "the check gave the judge other patches than the stop: {doc}"
+    );
+}
+
+/// F3.e: `--require-pass` exits 7 through the one door when there is no unit (a clean
+/// checkout with no session: the vacuous pass) and when a unit is not a pass; the document is
+/// printed first, and a passing unit exits 0.
+#[test]
+fn require_pass_refuses_when_there_is_no_unit() {
+    let scratch = Scratch::new("agent-check-require-pass");
+    let (home, root) = repository(&scratch);
+    let marked = scratch.join("judge");
+    judge(&marked, "marked", None);
+    let judge_arg = marked.to_str().unwrap();
+    let (code, stdout, stderr) = check(
+        &home,
+        &root,
+        &["--json", "--require-pass", "--judge", judge_arg],
+        None,
+    );
+    assert_eq!(code, 7, "a clean checkout passed --require-pass: {stdout}");
+    assert_eq!(
+        stderr.trim_end(),
+        "refused: there is no unit to judge (--require-pass no_unit)"
+    );
+    let doc: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(doc["units"], json!([]));
+    std::fs::write(root.join("c.rs"), "fn c() {}\n").unwrap();
+    let (code, _, stderr) = check(
+        &home,
+        &root,
+        &["--require-pass", "--judge", judge_arg],
+        None,
+    );
+    assert_eq!(
+        (code, stderr.as_str()),
+        (0, ""),
+        "a passing unit was refused"
+    );
+    silence_a_lint(&root);
+    let (code, stdout, stderr) = check(
+        &home,
+        &root,
+        &["--require-pass", "--judge", judge_arg],
+        None,
+    );
+    assert_eq!(code, 7, "{stdout}");
+    assert_eq!(
+        stderr.trim_end(),
+        "refused: 1 of 1 units did not pass (--require-pass not_pass)"
+    );
+    assert!(
+        stdout.starts_with("The uncommitted change: FAIL"),
+        "{stdout}"
     );
 }

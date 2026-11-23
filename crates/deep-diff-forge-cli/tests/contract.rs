@@ -688,6 +688,7 @@ fn patch_option_rows<'a>(
         ("--session", vec!["agent", "check", "--session", "x"]),
         ("--base", vec!["agent", "check", "--base", "refs/no/such"]),
         ("--range", vec!["agent", "check", "--range", "HEAD..HEAD"]),
+        ("--require-pass", vec!["agent", "check", "--require-pass"]),
         (
             "--judge",
             vec![
@@ -1776,6 +1777,8 @@ fn action_texts_reachable_from_exit_7_are_pinned() {
             ("chain_not_ready", "check_environment"),
             ("fail_on_label", "review_evidence"),
             ("fail_on_truncated", "review_evidence"),
+            ("require_pass_no_unit", "review_evidence"),
+            ("require_pass_not_pass", "review_evidence"),
         ]
     );
     for (class, action) in &actions {
@@ -1996,6 +1999,10 @@ fn broken_pipe_is_handled_only_by_the_refusal_door() {
 
 /// How to make each reason class of exit 7 hold: the arguments, stdin, the directory to run in,
 /// and the exact first reason line. Every class of `schema exit-codes` must have one.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one driver per refusal class, in the registry's order"
+)]
 fn refusal_driver(
     class: &str,
     scratch: &deep_diff_forge_testkit::Scratch,
@@ -2093,8 +2100,53 @@ fn refusal_driver(
             "refused: the evidence of 1 files was cut at 32 rows (--fail-on evidence_truncated)"
                 .into(),
         ),
+        // F3.e: outside any repository there is no unit to judge
+        "require_pass_no_unit" => (
+            owned(&["agent", "check", "--require-pass"]),
+            String::new(),
+            here,
+            "refused: there is no unit to judge (--require-pass no_unit)".into(),
+        ),
+        // a change and a judge that gives no verdict (`false`): one unit, not a pass
+        "require_pass_not_pass" => {
+            let repo = a_repository_with_a_change(scratch);
+            (
+                owned(&["agent", "check", "--require-pass", "--judge", "/bin/false"]),
+                String::new(),
+                repo,
+                "refused: 1 of 1 units did not pass (--require-pass not_pass)".into(),
+            )
+        }
         other => panic!("no driver for the refusal class {other}: add one"),
     }
+}
+
+/// A repository with a committed policy and an untracked file: one unit for `agent check`.
+fn a_repository_with_a_change(scratch: &deep_diff_forge_testkit::Scratch) -> std::path::PathBuf {
+    let repo = scratch.join("require-pass");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |args: &[&str]| {
+        let ok = Command::new("git")
+            .current_dir(&repo)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .args([
+                "-c",
+                "user.name=ddf",
+                "-c",
+                "user.email=ddf@example.invalid",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(ok.status.success(), "git {args:?}");
+    };
+    git(&["init", "--quiet"]);
+    std::fs::write(repo.join("warden.toml"), "# policy\n").unwrap();
+    git(&["add", "--all"]);
+    git(&["commit", "--quiet", "-m", "base"]);
+    std::fs::write(repo.join("a.rs"), "fn a() {}\n").unwrap();
+    repo
 }
 
 /// Where a refusal run's stdout goes.

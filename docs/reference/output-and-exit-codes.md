@@ -120,7 +120,7 @@ On `--stdin-patch` the refusals come in this order: a parse error (4), then `--r
 A reader that closes stdout ends a command with exit 0 (`… | head`), except while a
 refusal is pending: every verdict refusal (`findings verify --require-findings` and
 `--require-all` since 0.10.0, [DDF-2026-010](../advisories/DDF-2026-010.md); `eval` and
-`agent doctor` since 0.11.0, [DDF-2026-011](../advisories/DDF-2026-011.md); `--rank --fail-on` from its first release, 0.11.0) is decided before its document is written and exits 7 with its
+`agent doctor` since 0.11.0, [DDF-2026-011](../advisories/DDF-2026-011.md); `--rank --fail-on` and `agent check --require-pass` from their first release, 0.11.0) is decided before its document is written and exits 7 with its
 reason lines on stderr even when the reader has gone or stdout cannot be written (`>/dev/full`).
 A diagnostic that cannot be written (`2>/dev/full`) leaves the exit code as it is; before 0.10.0 it exited 101. A daemon socket path of
 108 bytes or more is a usage error (exit 2) of `daemon path` and `daemon start` since 0.10.0.
@@ -170,6 +170,8 @@ refines exit 7's `change_input` for that class. `schema exit-codes` lists the cl
 | `chain_not_ready` | `agent doctor` | `agent doctor` | `document` | `check_environment` | 0.9.0 | `refused: N checks failed (agent doctor)` |
 | `fail_on_label` | `--fail-on` | `--rank` and `--diagnostics` of `--stdin-patch`, `--git-*`, `<old> <new>` | `document` | `review_evidence` | 0.11.0 | `refused: N files carry a label of LIST (--fail-on)` |
 | `fail_on_truncated` | `--fail-on evidence_truncated` | `--rank` and `--diagnostics` of `--stdin-patch`, `--git-*`, `<old> <new>` | `document` | `review_evidence` | 0.11.0 | `refused: the evidence of N files was cut at 32 rows (--fail-on evidence_truncated)` |
+| `require_pass_no_unit` | `--require-pass no_unit` | `agent check` | `document` | `review_evidence` | 0.11.0 | `refused: there is no unit to judge (--require-pass no_unit)` |
+| `require_pass_not_pass` | `--require-pass not_pass` | `agent check` | `document` | `review_evidence` | 0.11.0 | `refused: N of M units did not pass (--require-pass not_pass)` |
 Input refusals (stdout `empty`) end the command before anything is written. Verdict refusals
 (stdout `document`) print the judged document first, then the reason. `--require-hunks` refuses a
 patch with 0 hunks or 0 added and removed lines (header-only, rename-only, context-only).

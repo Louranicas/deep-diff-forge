@@ -411,7 +411,7 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   names as weak.
 - **`agent check` judges, on demand, the units a stop judges, with a stop's judge and
   policy** (0.11.0). `deep-diff-forge agent check [--session ID | --base REV] [--range A..B]
-  [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--json]` judges, in the stop's order
+  [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--require-pass] [--json]` judges, in the stop's order
   and each by the patch a stop makes for it: the uncommitted change of the working tree around
   the current directory against the commit its `HEAD` names; the staged change, when it is
   another change than the tree's; then each commit by its own patch, from its first parent:
@@ -469,7 +469,12 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   it is empty. Making its directory, it removes what killed hooks left there, as every hook
   does. It changes neither the index nor the working tree (`git status` and the index file are
   as they were), nor anything in the state directory. Exit 0 with the document, 2 for a usage
-  error; `--require-pass` is refused as not in this build.
+  error. With `--require-pass` it exits 7 after the document when there is no unit (nothing
+  to judge, or nothing could be judged: `refused: there is no unit to judge (--require-pass
+  no_unit)`) or when any unit is not a pass (`refused: N of M units did not pass
+  (--require-pass not_pass)`): a clean CI checkout is no pass. The refusal is decided before
+  the document is written, so a reader that has gone, or a full disk, still gets exit 7 and the
+  reason.
 - **A hook never fails its client, and a failure is never silence.** A hook always exits 0;
   exit 2, which Claude Code reads from a stop hook as a block, is never used, also not for a
   command line the hook cannot read (a mistyped option says that the hook did not run, and

@@ -12,7 +12,7 @@ use deep_diff_forge_core::{display_safe, exit};
 use serde_json::{Value, json};
 use std::path::Path;
 
-pub(crate) const CHECK_USAGE: &str = "deep-diff-forge agent check [--session ID | --base REV] [--range A..B] [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--json]";
+pub(crate) const CHECK_USAGE: &str = "deep-diff-forge agent check [--session ID | --base REV] [--range A..B] [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--require-pass] [--json]";
 
 /// Said when not every unit a stop answers for was judged with the stop's inputs.
 const NOT_WHOLE: &str = "This is not the stop's whole answer: not every unit a stop of this session answers for was judged here with the stop's inputs (the lines \"Not as the stop\" say what differs).";
@@ -36,9 +36,6 @@ pub(crate) fn run(args: &[String]) {
         },
         CHECK_USAGE,
     );
-    if args.iter().any(|a| a == "--require-pass") {
-        refuse("--require-pass is not in this build of agent check");
-    }
     let (session, base) = (
         crate::flag_value(args, "--session"),
         crate::flag_value(args, "--base"),
@@ -47,11 +44,28 @@ pub(crate) fn run(args: &[String]) {
         refuse("--session and --base exclude each other: a session names its own base");
     }
     let document = check(session.as_deref(), base.as_deref(), args);
+    // --require-pass: decided before the document is written, so a closed or full stdout keeps it
+    if args.iter().any(|a| a == "--require-pass") {
+        let units = document["units"].as_array().map_or(&[][..], Vec::as_slice);
+        let failed = units
+            .iter()
+            .filter(|unit| unit["outcome"] != "pass")
+            .count();
+        if units.is_empty() {
+            let class = exit::refusal("require_pass_no_unit");
+            crate::refusal::pending(&[(class, "there is no unit to judge".to_owned())]);
+        } else if failed > 0 {
+            let class = exit::refusal("require_pass_not_pass");
+            let text = format!("{failed} of {} units did not pass", units.len());
+            crate::refusal::pending(&[(class, text)]);
+        }
+    }
     if args.iter().any(|a| a == "--json") {
         crate::emit_pretty_json(&document);
     } else {
         emitln!("{}", text(&document));
     }
+    crate::refusal::finish();
 }
 
 fn refuse(why: &str) -> ! {
