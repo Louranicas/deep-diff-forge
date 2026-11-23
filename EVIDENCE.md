@@ -1540,3 +1540,30 @@ mirrors the tag and the release page again, and the crates are published on crat
   them when this was written). forge-warden 0.2.1 and 0.3.0 were not run against
   this build (hub main `db4c580e` was). No binary was built for `aarch64-unknown-linux-gnu`,
   `x86_64-apple-darwin` or `aarch64-apple-darwin`. The known issues are in the release notes.
+
+## 0.10.0 binaries and commits by name (2026-11-23, after the tag)
+
+Appended after the tag; the section above stands as written. It names what each hash and commit
+of that section, of `fixtures/corpus/compare-v1.sha256` and of advisories DDF-2026-007 and
+DDF-2026-008 is.
+
+- **"The release binary `df8359c4…`"** of the 0.10.0 section (its Evaluation and Comparison
+  items) and of `fixtures/corpus/compare-v1.sha256` is the release-profile build
+  (`cargo build --release --locked -p deep-diff-forge-cli`, a Cargo target directory) of the
+  release-prepared commit `2343eef1`, frozen before the tag:
+  `df8359c42d99a957c5266825b1d8e87c84b7b7d6aaeb30753527454b321c3e6f`. **The published 0.10.0
+  binary** is the reproducible build of the tag's commit by `scripts/release_local.sh` (two
+  builds from two exports, one hash):
+  `121503a8d292da951c31e33e8b59bf33b54dd316e3d6ec3055e5c4bfac18e9ff`, the hash the section's
+  dry run gives for `2343eef1`.
+- **Commits.** `2343eef1` is the commit the gate, the fuzz campaign and the dry run ran on; its
+  child `0cb3c161` changes only the release notes and the comment of
+  `fixtures/corpus/compare-v1.sha256`; `3e929e0c` (the evidence commit) is the release commit
+  that was reviewed and merged; the signed tag `v0.10.0` names the merge commit `834bfd33` on
+  main, whose tree equals `3e929e0c`'s.
+- **"The 0.9.0 release binary `5ba0a366…`"** (advisory DDF-2026-007, and "the candidate's
+  release binary" of the 0.9.0 section) is a release-profile build of the 0.9.0 code: commit
+  `db9df06d`, whose tree (`cf3bb225`) is the tree of the tag `v0.9.0` (tag object `367a8c2c`,
+  commit `7fb73f13`). **The published 0.9.0 binary** is
+  `83158afed4915dc2539543dd6cbb6108841f0951c668bfeefc1fc8ef717793cd`. Measurements on either
+  are of the same source; the advisories now say which binary they ran.

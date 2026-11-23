@@ -209,6 +209,10 @@ text of the change the text form prints. `judge_sees` is not printed.
 
 ## Paging
 
+**Planned, not built yet** (F5a round 2). This branch's daemon and `rpc` speak engine protocol 2
+and answer `diff.diagnostics` with error -32601, method not found; until the method lands, the
+rest of this section is the design it is held to, not something any surface does.
+
 The daemon method `diff.diagnostics` (engine protocol 3, [the optional daemon](mcp-sdk-daemon.md#the-optional-daemon))
 returns pages of at most `max_bytes` (1 024 to 16 777 216, default 65 536). A page holds whole
 diagnostics. Each page repeats the header, the members from `schema` to `counts`, which holds

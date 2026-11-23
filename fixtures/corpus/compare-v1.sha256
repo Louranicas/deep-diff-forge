@@ -4,7 +4,11 @@
 # "comparison corpus manifest" verifies the corpus where it exists.
 #
 # Whole-tree record for the release-prepared commit 2343eef1 (version 0.10.0; binary sha256
-# df8359c42d99a957c5266825b1d8e87c84b7b7d6aaeb30753527454b321c3e6f), run 2026-11-23T02:31Z,
+# df8359c42d99a957c5266825b1d8e87c84b7b7d6aaeb30753527454b321c3e6f, the release-profile Cargo
+# build of that commit; the published 0.10.0 binary, its reproducible build, is
+# 121503a8d292da951c31e33e8b59bf33b54dd316e3d6ec3055e5c4bfac18e9ff: named 2026-11-23, EVIDENCE.md
+# "0.10.0 binaries and commits by name"; "v0.9.0 code (5ba0a366…)" below is a build of the
+# 0.9.0 code, the published 0.9.0 binary being 83158afe…), run 2026-11-23T02:31Z,
 # record runs/20261123T023136Z-df8359c42d99 of the corpus:
 #   identity control                 lost 0   gained 0
 #   against v0.8.3 (4cafd0ad…)       lost 1   gained 2063   (see note 1)
