@@ -1015,6 +1015,10 @@ Stated limits, which the judge on the pull request covers:
     what the hooks write) says why and the same about removing it. That is what removing
     it does: the next stop takes the commit `HEAD` names as the session's base, says that
     the session's start was not recorded, and the commits made before are not judged.
+    A list beside the state that is not what the state names (`.tips` or `.judged` missing,
+    cut, changed, or with a line that is not one) is refused with the same cost in its own
+    words: "start a new session to have its work judged (a new session begins at the commit
+    HEAD names then: what this session committed before is not judged)".
   - A newer state is never written over. A state of a schema above this build's own (a
     newer build of the hooks wrote it) is refused by its name: "this session's state file
     … is of schema v12, written by a newer deep-diff-forge; this one reads v10 to v11, and

@@ -1379,7 +1379,7 @@ fn load_list(
     use std::os::unix::fs::OpenOptionsExt as _;
     let refused = |why: &str| {
         format!(
-            "this session's list of {called}, {}, {why}, so which commits are the session's to judge is not known; start a new session to have its work judged",
+            "this session's list of {called}, {}, {why}, so which commits are the session's to judge is not known; start a new session to have its work judged (a new session begins at the commit HEAD names then: what this session committed before is not judged)",
             shown(path)
         )
     };
