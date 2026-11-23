@@ -768,10 +768,10 @@ project and not judged at every stop while it is true, as stated above):
   UNJUDGED. It is forgotten when its directory is gone (the ordinary
   `git worktree remove`), or when it is a tree again and the judge's own reading finds
   that tree clean. For this the session's state (schema `deep-diff-forge.hook-state.v10`)
-  records the top level of each linked tree it remembers a failure of; a state of the
-  schema before (`v9`) is read with no tree recorded and written back in the new one by
-  the first hook that reads it and keeps its state (a stop, or a session's start), changed
-  or not. A path that is not UTF-8 or is longer than 16 KiB, and the paths past 256 KiB in
+  records the top level of each linked tree it remembers a failure of (a state of the
+  schema before, `v9`, which no release wrote, was read with no tree recorded until
+  0.10.0; since 0.11.0 it is refused as older than the last release: "The state's schema",
+  at the end). A path that is not UTF-8 or is longer than 16 KiB, and the paths past 256 KiB in
   all, are not recorded: such a tree is forgotten when it is no longer listed, as before.
 - The order of a stop, and its time. One limit: 45 seconds for everything, of which 4 are
   kept for remembering and saying, and 6 more for looking at the submodules and the other
@@ -983,6 +983,49 @@ Stated limits, which the judge on the pull request covers:
   the session's id: the state, the list of commits that were there when it began, and the
   list of commits that have their answer. Files of sessions that have
   ended are not removed. Hooks for Codex are not designed.
+- **The state's schema** (from 0.11.0; the hook-state version policy):
+  - Names. The files are `session-<the first 32 hex digits of the SHA-256 of the session's
+    id>` with `.json` (the state), `.tips` (the commits there when the session began, one id
+    a line), `.judged` (the commits that have their answer) and `.lock` (an exclusive
+    `flock`). Names and the lock do not change from one schema to the next: two builds of
+    different versions share them.
+  - The schema. The state's member `schema` is exactly `deep-diff-forge.hook-state.v<N>`,
+    `N` in one to six decimal digits with no leading zero, read byte by byte; any other
+    text is a damaged state. Any change to the state's members, to a member's type, grammar
+    or meaning, or to the lines of `.tips` or `.judged` is a new `N`, between releases too.
+    The lines of `.judged` are `ID:p`, `ID:h[:kept]`, `ID:f[:kept]`,
+    `ID:n<attempts>@<stop>:reason` and `ID:x:reason`; any other line makes the list damaged.
+  - What is read. A build reads every schema from the one the last release wrote (v10,
+    written by 0.9.0 and 0.10.0) to its own (v10), and writes its own; one of a schema in
+    that range below its own is written in its own by the first hook that keeps state. A state
+    of an older schema is refused by its name: "this session's state file … is of schema
+    v9, written by a deep-diff-forge older than the last release; this one reads v10 to
+    v10, and nothing is recorded over it (removing it makes the next hook take the commit
+    HEAD names as this session's base: what this session committed before would not be
+    judged)". A damaged one (not JSON, a schema that is not one, a member missing or not
+    what the hooks write) says why and the same about removing it. That is what removing
+    it does: the next stop takes the commit `HEAD` names as the session's base, says that
+    the session's start was not recorded, and the commits made before are not judged.
+  - A newer state is never written over. A state of a schema above this build's own (a
+    newer build of the hooks wrote it) is refused by its name: "this session's state file
+    … is of schema v11, written by a newer deep-diff-forge; this one reads v10 to v10, and
+    nothing was written over it". No hook writes the state, `.tips` or `.judged` then (a
+    stop, an advice hook, a session's start; the lock may be taken), and the message names
+    no removal: the newer build reads its state again. The stop is UNJUDGED, as for any
+    state it cannot use, and the judge is not run. A hook writes a state only after reading
+    what is there: a stop and a session's start hold the session's lock from their read to
+    their write, an advice hook reads again under the lock, and every write reads the file
+    once more before its lists and again just before the state is moved into place, and
+    is abandoned (said as a state that could not be kept) when the file is then newer.
+    **Stated limit:** where file locks do not keep two hooks of a session apart (a file
+    system with none, or a build that takes none), a newer build that writes between those
+    reads and this hook's writes is not seen, and its state or the lists beside it are
+    replaced: the reads narrow that race and do not close it.
+  - The fixtures `crates/deep-diff-forge-cli/tests/fixtures/hook-state/<schema>-<release>/`
+    hold the three files the published 0.9.0 and 0.10.0 binaries wrote (each directory's
+    `ORIGIN` names the binary by its SHA-256), captured once by
+    `scripts/capture_hook_state.sh` and never edited; the test
+    `every_schema_since_the_last_release_is_read` has the build under test read each.
 
 ---
 
