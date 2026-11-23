@@ -1322,7 +1322,7 @@ fn new_lines(unit: &TreeJudged, blocked: &[String]) -> BTreeSet<String> {
 /// Whether the failure of `unit` holds this stop: a commit that is judged now; a working
 /// tree's change with a line that is new ([`new_lines`]). Lines that are all remembered
 /// stand, however many of the remembered ones are gone.
-fn blocks_now(unit: &TreeJudged, blocked: &[String]) -> bool {
+pub(crate) fn blocks_now(unit: &TreeJudged, blocked: &[String]) -> bool {
     match (&unit.judged, unit.holds) {
         (Some(Judged::Fail { .. }), Holds::Now) => true,
         (Some(Judged::Fail { .. }), Holds::WhileNew) => !new_lines(unit, blocked).is_empty(),

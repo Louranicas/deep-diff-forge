@@ -71,6 +71,7 @@ mod agent_check;
 mod doctor;
 mod hook;
 mod hook_run;
+mod ledger;
 mod verdict_v2;
 
 /// Read all of `reader` into a `String`, but never buffer more than the patch

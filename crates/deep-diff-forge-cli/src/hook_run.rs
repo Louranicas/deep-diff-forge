@@ -708,7 +708,7 @@ fn lock_directory(dir: &Path) -> Result<nix::fcntl::Flock<std::fs::File>, nix::e
 
 /// 16 hex digits no other process can foresee: the keys of the standard library's hasher are
 /// drawn from the system's randomness.
-fn random_hex() -> String {
+pub(crate) fn random_hex() -> String {
     use std::hash::{BuildHasher as _, Hasher as _};
     let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
     hasher.write_u32(std::process::id());
@@ -2243,7 +2243,7 @@ fn run_judge(
     patch: &Path,
     ranker: &Path,
     time: Duration,
-) -> (Option<i32>, Option<Value>, Option<String>) {
+) -> (Option<i32>, Option<Value>, Option<String>, Option<String>) {
     let mut command = std::process::Command::new(judge);
     command
         .arg("check")
@@ -2266,9 +2266,17 @@ fn run_judge(
                 .ok()
                 .filter(|text| !hook::has_duplicate_key(text))
                 .and_then(|text| serde_json::from_str(text).ok());
-            (done.status.code(), verdict, judge_words(&done.stderr))
+            let digest = verdict
+                .is_some()
+                .then(|| deep_diff_forge_core::sha256_hex(&done.stdout));
+            (
+                done.status.code(),
+                verdict,
+                judge_words(&done.stderr),
+                digest,
+            )
         }
-        Err(stopped) => (None, None, Some(stopped.to_string())),
+        Err(stopped) => (None, None, Some(stopped.to_string()), None),
     }
 }
 
@@ -2286,6 +2294,8 @@ struct Bench<'a> {
     /// The ranker of the last run of the judge that the policy admitted (not exit 4): written
     /// here and read by `agent check` alone (F3.f); a stop never reads it.
     ranked_by: std::cell::RefCell<Option<PathBuf>>,
+    /// The seals of the last run of the judge, for the ledger (F11).
+    sealed: std::cell::RefCell<Option<crate::ledger::Seals>>,
 }
 
 impl<'a> Bench<'a> {
@@ -2331,6 +2341,7 @@ impl<'a> Bench<'a> {
             candidates: sealed_rankers(args, deadline)?,
             deadline,
             ranked_by: std::cell::RefCell::new(None),
+            sealed: std::cell::RefCell::new(None),
         })
     }
 
@@ -2380,8 +2391,14 @@ impl<'a> Bench<'a> {
                 break;
             };
             ran = true;
-            let (code, verdict, said) =
+            let (code, verdict, said, digest) =
                 run_judge(&self.program, &self.policy_file, &patch_file, ranker, time);
+            *self.sealed.borrow_mut() = Some(crate::ledger::Seals {
+                policy: self.policy_sha256.clone(),
+                patch: patch_sha256.clone(),
+                ranker: ranker_sha256.clone(),
+                verdict: digest,
+            });
             // (exit 7 holds the stop even when its document is no verdict: S3.21)
             last = hook::stop_judged(code, verdict.as_ref(), said.as_deref(), sealed);
             // A run that was stopped says what time it had, and why it was no more: "the
@@ -2930,6 +2947,14 @@ struct Judging {
     /// The top level of each linked tree this stop knows, by which tree it is: what
     /// [`State::trees`] records.
     tops: std::collections::BTreeMap<String, PathBuf>,
+    /// What the ledger names each unit by, with the seals of its verdict (F11): the unit's place
+    /// in `units`, or `None` for a commit that passed at this stop, which is no unit. A unit
+    /// with no name here is recorded as the stop's ([`crate::ledger::Name::Stop`]).
+    ledger: Vec<(
+        Option<usize>,
+        crate::ledger::Name,
+        Option<crate::ledger::Seals>,
+    )>,
 }
 
 /// One working tree whose uncommitted and staged changes a stop looked at, with the failing
@@ -3296,6 +3321,10 @@ struct Judge<'a> {
     /// Whether the judge was run for the patch [`Judge::judge`] was last asked about, at
     /// this stop (for that patch or for another with the same bytes).
     ran: bool,
+    /// The seals of each patch the judge was run for, by its SHA-256, and the SHA-256 of the
+    /// patch [`Judge::judge`] was last asked about: what the ledger records (F11).
+    seals: std::collections::BTreeMap<String, crate::ledger::Seals>,
+    last: Option<String>,
 }
 
 impl<'a> Judge<'a> {
@@ -3319,20 +3348,30 @@ impl<'a> Judge<'a> {
 
     fn judge(&mut self, patch: &[u8]) -> Judged {
         let digest = deep_diff_forge_core::sha256_hex(patch);
+        self.last = Some(digest.clone());
         if let Some(known) = self.answers.get(&digest) {
             self.ran = true;
             return known.clone();
         }
         let after = self.after;
-        let (answer, ran) = match self.bench() {
-            Ok(bench) => bench.judge(patch, "change.patch", after),
+        let ((answer, ran), sealed) = match self.bench() {
+            Ok(bench) => (
+                bench.judge(patch, "change.patch", after),
+                bench.sealed.borrow_mut().take(),
+            ),
             Err(reason) => (
-                Judged::Unjudged {
-                    reason: reason.clone(),
-                },
-                false,
+                (
+                    Judged::Unjudged {
+                        reason: reason.clone(),
+                    },
+                    false,
+                ),
+                None,
             ),
         };
+        if let Some(sealed) = sealed {
+            self.seals.insert(digest.clone(), sealed);
+        }
         self.ran = ran;
         if !matches!(answer, Judged::Unjudged { .. }) {
             self.chain = Some(true);
@@ -3342,6 +3381,12 @@ impl<'a> Judge<'a> {
             self.answers.insert(digest, answer.clone());
         }
         answer
+    }
+
+    /// The seals of the patch [`Judge::judge`] was last asked about, when the judge was run
+    /// for it.
+    fn last_seals(&self) -> Option<crate::ledger::Seals> {
+        self.seals.get(self.last.as_ref()?).cloned()
     }
 
     /// Whether the chain gives verdicts at this stop: known from the first verdict any patch
@@ -4083,6 +4128,10 @@ fn judge_commits(
     let mut out_of_time = false;
     // (the commit, its attempts, whether they are final whatever the chain did, the reason)
     let mut tried: Vec<(usize, u32, bool, String)> = Vec::new();
+    // for the ledger (F11): the seals of each commit judged, and the commits left waiting
+    let mut sealed: std::collections::BTreeMap<usize, crate::ledger::Seals> =
+        std::collections::BTreeMap::new();
+    let mut waited: Vec<String> = Vec::new();
     for ask in asks {
         let at = ask.at;
         let commit = &listed[at];
@@ -4096,6 +4145,7 @@ fn judge_commits(
         if waits.is_some() {
             // one that had no verdict before is a unit already, with its reason
             waiting += usize::from(ask.attempts.is_none());
+            waited.extend(ask.attempts.is_none().then(|| id.clone()));
             if out_of_time {
                 not_asked(&mut units[at]);
             }
@@ -4124,11 +4174,14 @@ fn judge_commits(
             continue;
         }
         tribunal.ran = false;
+        tribunal.last = None;
         let (judged, proven) = judge_commit(stopping, tribunal, at, commit)?;
         let ran = tribunal.ran;
+        sealed.extend(tribunal.last_seals().map(|seals| (at, seals)));
         if let Some(reason) = tribunal.broken() {
             waits = Some(reason.to_owned());
             waiting += usize::from(ask.attempts.is_none());
+            waited.extend(ask.attempts.is_none().then(|| id.clone()));
             continue;
         }
         let said = match &judged {
@@ -4147,6 +4200,7 @@ fn judge_commits(
                 waits = Some(NOT_YET.to_owned());
                 out_of_time = true;
                 waiting += usize::from(ask.attempts.is_none());
+                waited.extend(ask.attempts.is_none().then(|| id.clone()));
                 not_asked(&mut units[at]);
                 continue;
             }
@@ -4185,6 +4239,10 @@ fn judge_commits(
                 continue;
             }
         };
+        if said == "p" {
+            let name = crate::ledger::Name::Commit(id.clone());
+            out.ledger.push((None, name, sealed.remove(&at)));
+        }
         units[at] = (said != "p").then(|| commit_unit(id, judged));
         out.commits.push((id.clone(), said));
     }
@@ -4210,8 +4268,19 @@ fn judge_commits(
             format!("n{attempts}@{}:{}", stopping.number, one_line(&reason)),
         ));
     }
+    let first = out.units.len();
+    let present = units.iter().enumerate().filter(|(_, unit)| unit.is_some());
+    for (place, (at, _)) in present.enumerate() {
+        let name = crate::ledger::Name::Commit(listed[at].0.clone());
+        out.ledger
+            .push((Some(first + place), name, sealed.remove(&at)));
+    }
     out.units.extend(units.into_iter().flatten());
     if waiting > 0 {
+        for id in waited {
+            let name = crate::ledger::Name::Commit(id);
+            out.ledger.push((Some(out.units.len()), name, None));
+        }
         out.units.push(TreeJudged {
             tag: String::new(),
             what: commits_label(waiting),
@@ -4985,12 +5054,23 @@ fn tree_units(
     } else {
         Duration::ZERO
     };
+    let digest = |patch: &Reading<Vec<u8>>| match patch {
+        Reading::Found(bytes) => Some(deep_diff_forge_core::sha256_hex(bytes)),
+        _ => None,
+    };
+    let mut named = vec![(digest(&found.tree), "uncommitted", None)];
+    tribunal.last = None;
     let tree = judged_patch(tribunal, found.tree, after + second);
+    named[0].2 = tribunal.last_seals();
     let index = match found.staged {
         Reading::Nothing => Reading::Nothing,
         Reading::Found(Staged::Same) => Reading::Found(Staged::Same),
         Reading::Found(Staged::Other(bytes)) => {
-            match judged_patch(tribunal, Reading::Found(bytes), after) {
+            let staged = Some(deep_diff_forge_core::sha256_hex(&bytes));
+            tribunal.last = None;
+            let judged = judged_patch(tribunal, Reading::Found(bytes), after);
+            named.push((staged, "staged", tribunal.last_seals()));
+            match judged {
                 Reading::Found(judged) => Reading::Found(Staged::Other(judged)),
                 Reading::Nothing => Reading::Nothing,
                 Reading::NotRead(reason) => Reading::NotRead(reason),
@@ -5000,6 +5080,18 @@ fn tree_units(
     };
     let (looked, units) = seen(id, &top.to_string_lossy(), tree, index, blocked);
     out.trees.push(looked);
+    // (the units are the uncommitted change and, when it has one, the staged change)
+    for (at, unit) in units.iter().enumerate() {
+        let (patch, kind, seals) = match named.get(at) {
+            Some((patch, kind, seals)) if unit.tag.ends_with(&kind[..1]) => {
+                (patch.clone(), *kind, seals.clone())
+            }
+            _ => (None, if at == 0 { "uncommitted" } else { "staged" }, None),
+        };
+        let tree = id.to_owned();
+        let name = crate::ledger::Name::Tree { patch, kind, tree };
+        out.ledger.push((Some(out.units.len() + at), name, seals));
+    }
     out.units.extend(units);
 }
 
@@ -5216,6 +5308,8 @@ fn judge_units(
         chain: None,
         after: After::Asks(0),
         ran: false,
+        seals: std::collections::BTreeMap::new(),
+        last: None,
     };
     let (count, asks) = (trees.len(), asks_kept(known));
     for (at, (top, id, scratch, unreadable)) in trees.into_iter().enumerate() {
@@ -6255,6 +6349,10 @@ fn no_commit_yet(work: &Work, deadline: Deadline) -> Option<Note> {
 
 /// When the agent wants to stop: have the session's work judged, unit by unit
 /// ([`judge_units`]), and block on a fail that holds this stop.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one stop in its order: lock, place, judging, memory, state, ledger, output"
+)]
 fn stop(input: &Input, args: &[String]) -> Result<Option<String>, String> {
     let deadline = Deadline::after(STOP_LIMIT);
     // one stop of a session at a time, from before its state is read until after it is written
@@ -6278,14 +6376,28 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, String> {
     let mut unsaved = session.keep().err();
     let mut beside: Vec<Note> = Vec::new();
     let mut memory: Vec<String> = Vec::new();
+    // what the project's ledger records of this stop (F11): a stop that judged nothing is one
+    // record of the stop's own
+    let mut records: Vec<crate::ledger::Unit> = Vec::new();
+    let nothing_judged = || crate::ledger::Unit {
+        name: crate::ledger::Name::Stop,
+        outcome: "unjudged",
+        class: None,
+        seals: None,
+        blocked: false,
+    };
     let mut decision = match subject(&work, deadline) {
         Subject::Nothing => {
             beside.extend(no_commit_yet(&work, deadline));
+            records.extend((!beside.is_empty()).then(nothing_judged));
             StopDecision::Allow { message: None }
         }
-        Subject::Unjudged(reason) => StopDecision::Allow {
-            message: Some(hook::unjudged_message(&reason)),
-        },
+        Subject::Unjudged(reason) => {
+            records.push(nothing_judged());
+            StopDecision::Allow {
+                message: Some(hook::unjudged_message(&reason)),
+            }
+        }
         Subject::Range { base, words } => {
             // Without the commits that were there when the session began, its own cannot be
             // told from them; without the ones that were judged, they would be judged again.
@@ -6293,9 +6405,12 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, String> {
                 .tips(&work.project)
                 .and_then(|tips| Ok((tips, session.judged()?)));
             match lists {
-                Err(reason) => StopDecision::Allow {
-                    message: Some(hook::unjudged_message(&reason)),
-                },
+                Err(reason) => {
+                    records.push(nothing_judged());
+                    StopDecision::Allow {
+                        message: Some(hook::unjudged_message(&reason)),
+                    }
+                }
                 Ok((tips, mut known)) => {
                     let scratch = Scratch::new(&work.place.own)?;
                     let number = session.state.stops.saturating_add(1);
@@ -6316,6 +6431,10 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, String> {
                     // remembered.
                     let decision =
                         hook::decide_stop_trees(&judging.units, &session.state.blocked, &words);
+                    let blocks: Vec<bool> = (judging.units.iter())
+                        .map(|unit| hook::blocks_now(unit, &session.state.blocked))
+                        .collect();
+                    records = ledger_units(&judging, &blocks);
                     // The stops are counted for the commits that are asked about and get no
                     // verdict, which are marked with the number: a stop with none of them
                     // changes nothing by having been made.
@@ -6359,6 +6478,11 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, String> {
         if input.stop_hook_active
             && let StopDecision::Block { reason } = &decision
         {
+            // (recorded as standing, with no blocked turn: F11)
+            for unit in records.iter_mut().filter(|unit| unit.outcome == "fail") {
+                (unit.outcome, unit.class) = ("fail_stands", Some("fail.unsaved_continuing"));
+                unit.blocked = false;
+            }
             decision = StopDecision::Allow {
                 message: Some(format!(
                     "deep-diff-forge: FAIL STANDS. This failure is not blocked because the client says this stop already follows a block and the hook cannot keep its own record of what has blocked; it is left for a person. The judge's answer:\n{reason}"
@@ -6370,8 +6494,75 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, String> {
             deep_diff_forge_core::display_safe(&why)
         ));
     }
+    // The ledger changes no decision: one that cannot be written is said beside it.
+    if !records.is_empty() {
+        let wait = LEDGER_WAIT.min(deadline.left());
+        let own = &work.place.own;
+        let written = own_directory(own)
+            .and_then(|()| crate::ledger::append_stop(own, &input.session, &records, wait));
+        if let Err(why) = written {
+            notes.push(format!(
+                "The hook could not write the project's ledger {} ({}): what this stop decided stands, and is not recorded there.",
+                shown(&own.join(crate::ledger::FILE)),
+                deep_diff_forge_core::display_safe(&why)
+            ));
+        }
+    }
     let note = (!notes.is_empty()).then(|| notes.join("\n"));
     Ok(hook::stop_output_with(&decision, note.as_deref()))
+}
+
+/// The most a stop waits for the lock of the project's ledger (F11).
+const LEDGER_WAIT: Duration = Duration::from_millis(200);
+
+/// What the ledger records of a stop's units (F11): each unit that had something to judge, by
+/// the names [`Judging::ledger`] gives it (several commits left waiting share one unit), with
+/// the outcome the stop gave it and the reason class where the stop knows it; `blocks` says
+/// which units block this stop. Then each commit that passed at this stop.
+fn ledger_units(judging: &Judging, blocks: &[bool]) -> Vec<crate::ledger::Unit> {
+    use crate::ledger::{Name, Unit};
+    let mut by_unit = vec![Vec::new(); judging.units.len()];
+    let mut passed = Vec::new();
+    for (at, name, seals) in &judging.ledger {
+        match at.and_then(|at| by_unit.get_mut(at)) {
+            Some(names) => names.push((name.clone(), seals.clone())),
+            None => passed.push(Unit {
+                name: name.clone(),
+                outcome: "pass",
+                class: Some("pass"),
+                seals: seals.clone(),
+                blocked: false,
+            }),
+        }
+    }
+    let mut out = Vec::new();
+    for ((unit, names), blocks) in judging.units.iter().zip(by_unit).zip(blocks) {
+        let Some(judged) = &unit.judged else { continue };
+        let (outcome, class) = match judged {
+            Judged::Pass => ("pass", Some("pass")),
+            Judged::Fail { .. } if *blocks => ("fail", Some("fail.new")),
+            Judged::Fail { .. } => ("fail_stands", Some("fail.stands")),
+            Judged::Hold { rules, .. } => ("hold", (!rules.is_empty()).then_some("hold.rule")),
+            Judged::Unjudged { .. } => ("unjudged", None),
+        };
+        let names = if names.is_empty() {
+            vec![(Name::Stop, None)]
+        } else {
+            names
+        };
+        for (name, seals) in names {
+            let blocked = *blocks;
+            out.push(Unit {
+                name,
+                outcome,
+                class,
+                seals,
+                blocked,
+            });
+        }
+    }
+    out.append(&mut passed);
+    out
 }
 
 /// One link of the chain a judged stop depends on.
@@ -6787,6 +6978,9 @@ pub(crate) struct Checked {
     pub(crate) units: Vec<CheckedUnit>,
     pub(crate) session_commits: Option<Vec<String>>,
     pub(crate) linked: bool,
+    /// Whether the run was recorded in the project's ledger, or why not: `None` when no judge
+    /// ran, and then nothing is recorded (F11).
+    pub(crate) recorded: Option<Result<(), String>>,
 }
 
 /// The units a stop judges, judged as it judges them, in its order: the uncommitted change of
@@ -6807,7 +7001,7 @@ pub(crate) fn check_units(
     args: &[String],
     no_judge: Option<&str>,
     range: Option<&str>,
-    tips: Option<&[String]>,
+    (tips, by): (Option<&[String]>, Option<&str>),
 ) -> Result<Checked, String> {
     let deadline = Deadline::after(STOP_LIMIT);
     let place = place_of(top, deadline)?;
@@ -6914,15 +7108,23 @@ pub(crate) fn check_units(
                 };
             units.push(("commit", Some(id.clone()), judged));
         }
-        let units = units
+        let units: Vec<CheckedUnit> = units
             .into_iter()
             .map(|(kind, id, (judged, other))| (kind, id, judged, other))
             .collect();
+        // A run with `--session` that had a judge is one record of the project's ledger (F11),
+        // the session's: nothing else of a check is written there, and nothing in the session's
+        // state. A check without a session writes nothing.
+        let recorded = by.filter(|_| matches!(bench, Some(Ok(_)))).map(|by| {
+            let failed = units.iter().filter(|unit| unit.2 != Judged::Pass).count();
+            crate::ledger::append_check(&place.own, by, units.len(), failed, LEDGER_WAIT)
+        });
         Ok(Checked {
             base: base.clone(),
             units,
             session_commits: session.map(|list| list.into_iter().map(|(id, _)| id).collect()),
             linked,
+            recorded,
         })
     })();
     if made_own {
@@ -7475,7 +7677,7 @@ fn probe(
             patch: &patch_sha256,
             ranker: &ranker_sha256,
         };
-        let (code, verdict, said) =
+        let (code, verdict, said, _) =
             run_judge(program, &policy_file, &patch_file, &ranker, deadline.left());
         match (
             code,

@@ -507,6 +507,15 @@ fn check_leaves_the_session_state_byte_identical() {
     }
     // (times are compared to the nanosecond: a write within the same tick still changes ctime)
     std::thread::sleep(Duration::from_millis(20));
+    let ledger = root.join(".git/deep-diff-forge/ledger.jsonl");
+    let lines = |file: &Path| -> Vec<Value> {
+        std::fs::read_to_string(file)
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    };
+    let recorded = lines(&ledger);
     let doc = check_json(&home, &root, &["--session", "s1"], None);
     assert_eq!(doc["units"][0]["outcome"], "fail", "{doc}");
     assert_eq!(doc["units"][2]["unit"], "commit", "{doc}");
@@ -522,6 +531,39 @@ fn check_leaves_the_session_state_byte_identical() {
         state_listing(&home),
         before,
         "agent check changed the session's state"
+    );
+    // F11: the ledger is the one file a check of a session grows: one record for each of the
+    // three runs of s1 that had a judge (the session "another" has no state: nothing judged),
+    // and the stop after them says how many there were
+    let now = lines(&ledger);
+    assert_eq!(
+        now[..recorded.len()],
+        recorded[..],
+        "the ledger was rewritten"
+    );
+    let key = &deep_diff_forge_core::sha256_hex(b"s1")[..16];
+    let added = &now[recorded.len()..];
+    assert_eq!(added.len(), 3, "{added:?}");
+    for record in added {
+        assert_eq!(
+            (&record["kind"], &record["session"], &record["failed"]),
+            (&json!("check"), &json!(key), &json!(record["units"])),
+            "{record}"
+        );
+    }
+    let (_, stdout, _) = hook(
+        &home,
+        "stop",
+        &["--judge", installed.to_str().unwrap()],
+        &input("Stop", &root, "s1"),
+    );
+    let after = lines(&ledger);
+    let stop = after.last().unwrap_or_else(|| panic!("{stdout}"));
+    assert_eq!(stop["kind"], "stop", "{stop}");
+    assert_eq!(
+        stop["agent_checks"],
+        json!({"runs": 3, "failed": 3}),
+        "{stop}"
     );
 }
 
@@ -711,8 +753,10 @@ fn a_check_leaves_nothing_behind_and_changes_neither_index_nor_tree() {
         own.display()
     );
 
-    // with a judge: judged, and its scratch and the directory it made are gone again
+    // with a judge: judged, and its scratch and the directory it made are gone again; a
+    // check without a session records nothing in the project's ledger (F11)
     let doc = check_json(&home, &root, &["--judge", fast.to_str().unwrap()], None);
+    assert_eq!(doc["ledger"], Value::Null, "{doc}");
     assert_eq!(doc["units"][0]["outcome"], "fail", "{doc}");
     assert!(!own.exists(), "a check left {} behind", own.display());
     assert_eq!(

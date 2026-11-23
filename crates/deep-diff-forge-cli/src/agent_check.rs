@@ -81,7 +81,7 @@ fn check(session: Option<&str>, base: Option<&str>, args: &[String]) -> Value {
         "schema": "deep-diff-forge.agent-check.v0",
         "tool": {"name": "deep-diff-forge", "version": env!("CARGO_PKG_VERSION")},
         "project": null, "session": null, "base": null, "judge": null, "units": [],
-        "unjudged": null,
+        "unjudged": null, "ledger": null,
         "stop": {"same_inputs": false, "differences": [], "whole_answer": false, "said": NOT_WHOLE,
                  "may_differ": []},
     });
@@ -123,12 +123,17 @@ fn check(session: Option<&str>, base: Option<&str>, args: &[String]) -> Value {
         &bench,
         no_judge.as_deref(),
         range.as_deref(),
-        tips,
+        (tips, session),
     ) {
         Ok(checked) => checked,
         Err(why) => return unjudged(doc, &differs, &why),
     };
     doc["base"] = json!({"commit": checked.base, "from": from});
+    doc["ledger"] = match &checked.recorded {
+        None => Value::Null,
+        Some(Ok(())) => json!({"written": true, "why": null}),
+        Some(Err(why)) => json!({"written": false, "why": why}),
+    };
     doc["units"] = checked
         .units
         .iter()
@@ -399,6 +404,12 @@ fn text(doc: &Value) -> String {
         path(&doc["judge"]["ranker_dir"]),
         path(&doc["judge"]["stop_hook"])
     ));
+    if doc["ledger"]["written"] == false {
+        out.push(format!(
+            "This check is not recorded in the project's ledger: {}",
+            word(&doc["ledger"]["why"])
+        ));
+    }
     let judged = doc["units"].get(0).is_some();
     if doc["stop"]["same_inputs"] == true && doc["stop"]["whole_answer"] != true && judged {
         out.push("Judged with what a stop of this session judges these units with: the policy at the base the session recorded, and the judge, the policy and the ranker directory of the registered Stop hook.".to_owned());

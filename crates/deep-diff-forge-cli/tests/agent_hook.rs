@@ -11674,3 +11674,236 @@ fn a_hold_for_unverified_claims_is_said_at_every_stop_and_never_passes() {
         );
     }
 }
+
+/// The records of the project's ledger (F11), each line as JSON; none when it is not there.
+fn ledger(root: &Path) -> Vec<Value> {
+    std::fs::read_to_string(root.join(".git/deep-diff-forge/ledger.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap_or_else(|e| panic!("{e}: {line}")))
+        .collect()
+}
+
+/// The ledger's records of the stops of `session`.
+fn stops_of(root: &Path, session: &str) -> Vec<Value> {
+    let key = &deep_diff_forge_core::sha256_hex(session.as_bytes())[..16];
+    ledger(root)
+        .into_iter()
+        .filter(|record| record["kind"] == "stop" && record["session"] == key)
+        .collect()
+}
+
+/// F11.a: every outcome of a stop is a record of the project's ledger, under the Git common
+/// directory where it outlives the session's state: a pass, a fail that blocks, the same fail
+/// standing at the next stop, a hold, an unjudged change, a commit. A record holds no line of
+/// the patch and none of the judge's words, and the file is the user's alone (mode 0600).
+#[test]
+fn every_stop_outcome_is_in_the_ledger() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let scratch = Scratch::new("agent-hook-ledger-outcomes");
+    let root = repository(&scratch);
+    let (judge, _, exit_file) = judge(
+        &scratch,
+        &verdict("fail", "no-silent-suppression", "check_suppressed", "a.rs"),
+    );
+    silence_a_lint(&root);
+    let outcome = |session: &str, code: &str, judge: &Path| -> Vec<Value> {
+        std::fs::write(&exit_file, code).unwrap();
+        start(&root, session);
+        let _ = stop_from(&root, session, judge);
+        stops_of(&root, session)
+    };
+    let unit = |records: &[Value], at: usize| {
+        let r = &records[at];
+        (
+            r["outcome"].clone(),
+            r["class"].clone(),
+            r["blocked_turns"].clone(),
+        )
+    };
+
+    let pass = outcome("pass", "0", &judge);
+    assert_eq!(pass.len(), 1, "{pass:?}");
+    assert_eq!(unit(&pass, 0), (json!("pass"), json!("pass"), json!(0)));
+    let tree = pass[0]["unit"].as_str().unwrap();
+    assert!(
+        tree.starts_with("tree:") && tree.ends_with(":uncommitted") && tree.len() == 5 + 32 + 12,
+        "{tree}"
+    );
+    assert_eq!(pass[0]["worktree"], "m");
+    assert_eq!(pass[0]["seals"]["patch_sha256"], Value::Null, "{pass:?}");
+    assert!(pass[0]["seals"]["policy_sha256"].is_string(), "{pass:?}");
+
+    let fail = outcome("fail", "7", &judge);
+    assert_eq!(unit(&fail, 0), (json!("fail"), json!("fail.new"), json!(1)));
+    // the same failure at the next stop of the session stands
+    let _ = stop_from(&root, "fail", &judge);
+    let stands = stops_of(&root, "fail");
+    assert_eq!(stands.len(), 2, "{stands:?}");
+    assert_eq!(
+        unit(&stands, 1),
+        (json!("fail_stands"), json!("fail.stands"), json!(0))
+    );
+    assert_eq!(stands[0]["unit"], stands[1]["unit"], "one change, one name");
+
+    let hold = outcome("hold", "8", &judge);
+    assert_eq!(
+        unit(&hold, 0),
+        (json!("hold"), json!("hold.rule"), json!(0))
+    );
+
+    let unjudged = outcome("unjudged", "0", &scratch.join("no-such-judge"));
+    assert_eq!(
+        unit(&unjudged, 0),
+        (json!("unjudged"), Value::Null, json!(0))
+    );
+
+    // a commit of the session is recorded by its id, with the seals of its verdict
+    std::fs::write(&exit_file, "7").unwrap();
+    start(&root, "commit");
+    git(&root, &["commit", "--quiet", "-am", "the failing change"]);
+    let id = git(&root, &["rev-parse", "HEAD"]).trim().to_owned();
+    let _ = stop_from(&root, "commit", &judge);
+    let committed = stops_of(&root, "commit");
+    let record = committed
+        .iter()
+        .find(|r| r["unit"] == format!("commit:{id}"))
+        .unwrap_or_else(|| panic!("no record of the commit: {committed:?}"));
+    assert_eq!(record["outcome"], "fail", "{record}");
+    assert!(record["seals"]["patch_sha256"].is_string(), "{record}");
+    assert!(record["seals"]["verdict_sha256"].is_string(), "{record}");
+
+    let file = root.join(".git/deep-diff-forge/ledger.jsonl");
+    let text = std::fs::read_to_string(&file).unwrap();
+    for words in [
+        "#[allow(dead_code)]",
+        "dead_code",
+        "A silenced check",
+        "no-silent-suppression",
+    ] {
+        assert!(!text.contains(words), "the ledger holds {words:?}: {text}");
+    }
+    let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "{mode:o}");
+}
+
+/// The stop's output with no ledger in the way, and with `spoil` done to the ledger in `own`,
+/// at fresh sessions on the same failing change: the decision of each, and the reason or the
+/// message of each.
+fn stop_beside(root: &Path, judge: &Path, case: &str, spoil: impl FnOnce(&Path)) -> (Value, Value) {
+    // (what an earlier case left at the ledger's name goes first: the control has a ledger)
+    let _ = std::fs::remove_file(root.join(".git/deep-diff-forge/ledger.jsonl"));
+    let control = stop_from(root, &format!("{case}-control"), judge);
+    spoil(&root.join(".git/deep-diff-forge"));
+    let spoiled = stop_from(root, &format!("{case}-spoiled"), judge);
+    (control, spoiled)
+}
+
+/// F11, the coordinator's condition 2: a ledger that cannot be written changes no decision and
+/// is never followed or written over. A ledger that is a link out of the repository, a FIFO, a
+/// file of a newer build, a file another process holds the lock of, and a ledger directory that
+/// cannot be written: each stop blocks as the stop beside it with a ledger does, says that the
+/// ledger was not written (except where the stop could not judge at all, as before), and leaves
+/// what stands at the ledger's name as it was. A held lock costs at most a fraction of a second.
+#[test]
+fn a_ledger_that_cannot_be_written_changes_no_decision() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let scratch = Scratch::new("agent-hook-ledger-spoiled");
+    let root = repository(&scratch);
+    let (judge, _, _) = failing_judge(&scratch);
+    silence_a_lint(&root);
+    let file = |own: &Path| own.join("ledger.jsonl");
+    let same_block = |(control, spoiled): (Value, Value), why: &str| {
+        let (control, spoiled) = (blocked(&control), blocked(&spoiled));
+        assert!(spoiled.starts_with(control), "{control}\n---\n{spoiled}");
+        let rest = &spoiled[control.len()..];
+        assert!(
+            rest.contains("could not write the project's ledger") && rest.contains(why),
+            "{rest}"
+        );
+    };
+
+    let outside = scratch.join("outside.txt");
+    std::fs::write(&outside, "not the repository's\n").unwrap();
+    same_block(
+        stop_beside(&root, &judge, "link", |own| {
+            std::fs::remove_file(file(own)).unwrap();
+            std::os::unix::fs::symlink(&outside, file(own)).unwrap();
+        }),
+        "could not be opened",
+    );
+    assert_eq!(
+        std::fs::read_to_string(&outside).unwrap(),
+        "not the repository's\n"
+    );
+
+    same_block(
+        stop_beside(&root, &judge, "fifo", |own| {
+            std::fs::remove_file(file(own)).unwrap();
+            let made = Command::new("mkfifo").arg(file(own)).status().unwrap();
+            assert!(made.success());
+        }),
+        "not a regular file",
+    );
+
+    let newer = "{\"v\":2,\"kind\":\"stop\",\"unit\":\"later\"}\n";
+    same_block(
+        stop_beside(&root, &judge, "newer", |own| {
+            std::fs::remove_file(file(own)).unwrap();
+            std::fs::write(file(own), newer).unwrap();
+        }),
+        "newer build",
+    );
+    assert_eq!(
+        std::fs::read_to_string(file(&root.join(".git/deep-diff-forge"))).unwrap(),
+        newer
+    );
+
+    let mut holder = None;
+    let started = std::cell::Cell::new(None);
+    same_block(
+        stop_beside(&root, &judge, "locked", |own| {
+            std::fs::remove_file(file(own)).unwrap();
+            let mut child = Command::new("flock")
+                .args(["-o", "-x"])
+                .arg(file(own))
+                .args(["sleep", "60"])
+                .spawn()
+                .unwrap();
+            let held = (0..200).any(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+                file(own).exists()
+                    && Command::new("flock")
+                        .args(["-n", "-x"])
+                        .arg(file(own))
+                        .arg("true")
+                        .status()
+                        .is_ok_and(|s| !s.success())
+            });
+            assert!(held, "the lock holder did not take the lock");
+            assert!(child.try_wait().unwrap().is_none(), "the lock holder ended");
+            holder = Some(child);
+            started.set(Some(std::time::Instant::now()));
+        }),
+        "held its lock",
+    );
+    let took = started.get().unwrap().elapsed();
+    if let Some(mut child) = holder {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    assert!(took < std::time::Duration::from_secs(20), "{took:?}");
+
+    // a ledger directory that cannot be written: the stop cannot make its scratch there and is
+    // unjudged as before; nothing is made
+    let own = root.join(".git/deep-diff-forge");
+    std::fs::remove_file(file(&own)).unwrap();
+    std::fs::set_permissions(&own, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let decision = stop_from(&root, "read-only", &judge);
+    std::fs::set_permissions(&own, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(decision.get("decision").is_none(), "{decision}");
+    assert!(
+        !file(&own).exists(),
+        "a ledger was made in a directory that cannot be written"
+    );
+}

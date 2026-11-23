@@ -478,7 +478,16 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   makes `.git/deep-diff-forge/` when that is missing and removes it again when it made it and
   it is empty. Making its directory, it removes what killed hooks left there, as every hook
   does. It changes neither the index nor the working tree (`git status` and the index file are
-  as they were), nor anything in the state directory. Exit 0 with the document, 2 for a usage
+  as they were), nor anything in the state directory. A check with `--session` that ran a judge
+  also appends one record to the project's ledger (below), in one bounded append: the
+  session's key, how many units it judged and how many of them did not pass, and nothing else
+  (no line, no path, none of the judge's words); `--json` says in `ledger` whether it was
+  written, or why not. A check without a session writes nothing to the ledger, and a check
+  with one leaves the session's state, its list of the commits there when it began and its
+  list of answered commits byte for byte as they were: the ledger is the one file a check of a
+  session grows. The count a stop records from these is a lower bound: a check without
+  `--session`, a check in a clone, and a run of the ranker or the judge by hand are not
+  counted. Exit 0 with the document, 2 for a usage
   error. With `--require-pass` it exits 7 after the document when there is no unit (nothing
   to judge, or nothing could be judged: `refused: there is no unit to judge (--require-pass
   no_unit)`) or when any unit is not a pass (`refused: N of M units did not pass
@@ -487,6 +496,44 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   or the like) to cover them. The refusal is decided before
   the document is written, so a reader that has gone, or a full disk, still gets exit 7 and the
   reason.
+- **The project's ledger records what each stop decided** (0.11.0). Every stop that has a
+  project appends one record for each unit it had something to judge to
+  `deep-diff-forge/ledger.jsonl` under the repository's Git common directory (`.git/` of the
+  main tree; a linked tree's stops write to the same file), one JSON object a line: `v` (1),
+  `kind` (`stop`), `session` (16 hex digits of the SHA-256 of the session's id, which its state
+  file's name begins with), `worktree` (`m` for the main tree, else the linked tree's 16 hex
+  digits; null for a commit), `unit` (`commit:<id>`; `tree:<digest>:uncommitted` or
+  `tree:<digest>:staged`, the digest a SHA-256 of the patch's SHA-256 under a salt of 32 random
+  bytes kept in `ledger.salt` beside it, or `unread` when the change could not be read; or
+  `stop` for what names no single commit or tree: a stop that judged nothing, or the session's
+  commits when they could not be listed), `outcome` (`pass`, `fail`, `fail_stands`, `hold` or
+  `unjudged`), `class` (`pass`, `fail.new`, `fail.stands`, `fail.unsaved_continuing` (a block
+  the hook let stand because the client continues after a block and the state cannot be
+  kept), `hold.rule`; null where this build does not class the reason yet: every `unjudged`
+  record and a hold for the judge's notes alone), `blocked_turns` (1 for a unit that blocked
+  the stop), `agent_checks` (`runs` and `failed`: the records of `agent check --session` of
+  this session since its last stop record), `ignored_elsewhere` (null: not counted yet, which
+  is never 0) and `seals` (the SHA-256 of the policy and of the ranker the verdict was sealed
+  to; for a commit also of its patch and of the verdict document; null when the judge did not
+  run). A commit that passed is recorded at the stop that judged it; a commit left waiting for
+  the stop's time is recorded as `unjudged` at each stop that leaves it. A stop with nothing
+  to judge records nothing. Nothing of a patch's lines, a path, Git's words or the judge's
+  words is written. The file is made with mode 0600, never through a link, and only appended
+  to (`O_APPEND`, one write a stop, under its `flock`); a stop waits at most 0.2 seconds for that
+  lock, and reads at most the last MiB of the file, so a stop's time does not grow with the
+  ledger. Nothing is synced to disk: the record is the stop's report, and waiting for a disk
+  inside the stop's time would cost the judging. **Writing it never changes a decision**: a
+  ledger that cannot be written (a link or anything but a regular file at its name, a
+  directory that cannot be written, a lock another process holds, a file that holds a record
+  of a newer build) is said beside the decision ("The hook could not write the project's
+  ledger … what this stop decided stands, and is not recorded there.", in a block's reason
+  like the note that the state could not be kept) and the stop decides as it would have. A
+  ledger with a record of a newer build (`v` above 1) is kept as it is: nothing is written to
+  it. A stop that ends on its own state (a state that cannot be read, a lock another hook of
+  the session holds) records nothing yet. **The ledger is not a boundary**: it is a file in
+  the repository's Git directory with the permissions of whoever works there, the agent
+  included, so a record is evidence that a stop decided so, not proof, and a missing or edited
+  ledger proves nothing.
 - **A hook never fails its client, and a failure is never silence.** A hook always exits 0;
   exit 2, which Claude Code reads from a stop hook as a block, is never used, also not for a
   command line the hook cannot read (a mistyped option says that the hook did not run, and
