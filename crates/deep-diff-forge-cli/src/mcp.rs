@@ -667,6 +667,13 @@ const PAGE_WRAPPER_BYTES: usize = 76;
 /// floor always fits it; a smaller budget is refused, never served over.
 pub const MCP_DIAGNOSTICS_MIN_BYTES: usize = 3 * MIN_PAGE_BYTES + PAGE_WRAPPER_BYTES;
 
+/// What `max_bytes` does not count: the bytes a modern answer's line adds around the tool result,
+/// besides the server's version, the id as written and the line feed (`{"id":`, `_meta` with the
+/// server's name, `resultType` and the JSON-RPC envelope). A legacy answer adds fewer. A test
+/// measures it on the line the server writes; the reference states it.
+#[cfg(test)]
+const LINE_ENVELOPE_BYTES: usize = 144;
+
 /// Run a tool that answers with a page, containing a panic as [`daemon_value`] does.
 fn contained(tool: impl FnOnce() -> Result<Value, Value>) -> Value {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(tool))
@@ -2280,6 +2287,59 @@ mod tests {
                 .unwrap()
                 >= 1
         );
+    }
+
+    /// F5b (round 2, point 2): what `max_bytes` leaves out of a diagnostics answer's line is
+    /// [`LINE_ENVELOPE_BYTES`], the version and the id, measured on the line the server writes for
+    /// a modern and a legacy client and for an integer and a string id; the reference states it.
+    #[test]
+    fn the_envelope_around_a_diagnostics_answer_is_measured_and_stated() {
+        let call = json!({"name": "diagnose_patch", "arguments": {"patch": spawns("a.rs", 3)}});
+        for id in [json!(1), json!("an id")] {
+            let mut modern = Server::default();
+            let mut legacy = Server::default();
+            let init = json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}});
+            legacy.handle_line(&init.to_string()).unwrap();
+            let request = |meta: bool| {
+                let mut params = call.clone();
+                if meta {
+                    params["_meta"] =
+                        json!({PROTOCOL_VERSION_KEY: MODERN, CLIENT_CAPABILITIES_KEY: {}});
+                }
+                json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": params})
+                    .to_string()
+            };
+            for (server, meta) in [(&mut modern, true), (&mut legacy, false)] {
+                let response = server.handle_line(&request(meta)).unwrap();
+                let line =
+                    escape_hidden(&deep_diff_forge_core::json_line_safe(&response.to_string()))
+                        .into_owned();
+                let mut result = response["result"].clone();
+                let members = result.as_object_mut().unwrap();
+                members.remove("_meta");
+                members.remove("resultType");
+                let extra = line.len()
+                    - emitted_with_page(&result)
+                    - id.to_string().len()
+                    - env!("CARGO_PKG_VERSION").len();
+                if meta {
+                    assert_eq!(extra, LINE_ENVELOPE_BYTES, "{line}");
+                } else {
+                    assert!(
+                        extra + env!("CARGO_PKG_VERSION").len() <= LINE_ENVELOPE_BYTES,
+                        "{line}"
+                    );
+                }
+            }
+        }
+        let reference = include_str!("../../../docs/reference/mcp-sdk-daemon.md");
+        for sentence in [
+            "counts the tool result as the server writes it on the line, both copies",
+            "the line adds 144 bytes, the server's version, the id as written and a line feed",
+            "12,364 is three pages at the pager's floor of 4,096 (escaping at most doubles the text copy) and the 76 bytes around them",
+        ] {
+            assert!(reference.contains(sentence), "{sentence}");
+        }
     }
 
     /// F5b: when the answer at half the budget is over it, the page shrinks; a page tried smaller
