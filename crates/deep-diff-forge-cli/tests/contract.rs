@@ -687,6 +687,10 @@ fn patch_option_rows<'a>(
                 "x",
             ],
         ),
+        (
+            "--fail-on",
+            vec!["--stdin-patch", "--rank", "--fail-on", "security,shape"],
+        ),
         ("--jsonl", vec!["--stdin-patch", "--jsonl"]),
         ("--rank", vec!["--stdin-patch", "--rank"]),
         ("--cluster", vec!["--stdin-patch", "--cluster"]),
@@ -1744,6 +1748,8 @@ fn action_texts_reachable_from_exit_7_are_pinned() {
             ("require_all", "review_evidence"),
             ("eval_failed", "review_evidence"),
             ("chain_not_ready", "check_environment"),
+            ("fail_on_label", "review_evidence"),
+            ("fail_on_truncated", "review_evidence"),
         ]
     );
     for (class, action) in &actions {
@@ -2035,6 +2041,31 @@ fn refusal_driver(
             String::new(),
             here,
             "refused: 13 checks failed (agent doctor)".into(),
+        ),
+        "fail_on_label" => (
+            owned(&[
+                "--stdin-patch",
+                "--rank",
+                "--json",
+                "--fail-on",
+                "unsafe_added",
+            ]),
+            "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1 +1,2 @@\n fn a() {}\n+fn b() { unsafe {} }\n"
+                .into(),
+            here,
+            "refused: 1 files carry a label of unsafe_added (--fail-on)".into(),
+        ),
+        // 33 spawn rows in one file: the evidence list is cut at 32, and the list selects no
+        // label the file carries, so the cut is the only reason.
+        "fail_on_truncated" => (
+            owned(&["--stdin-patch", "--rank", "--fail-on", "secret_like"]),
+            format!(
+                "--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1 +1,34 @@\n fn a() {{\n{}",
+                "+    let _ = std::process::Command::new(\"sh\");\n".repeat(33)
+            ),
+            here,
+            "refused: the evidence of 1 files was cut at 32 rows (--fail-on evidence_truncated)"
+                .into(),
         ),
         other => panic!("no driver for the refusal class {other}: add one"),
     }

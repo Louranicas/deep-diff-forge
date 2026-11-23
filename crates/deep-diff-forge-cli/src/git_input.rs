@@ -36,7 +36,7 @@ pub(crate) fn reject_with_stdin(opts: &[String]) {
 fn usage(message: &str) -> ! {
     eprintln!("error: {message}");
     eprintln!(
-        "usage: deep-diff-forge {{--git-working-tree [--include-untracked] | --git-staged | --git-range A..B}} [--repo PATH] [--acquisition-json | --json | --jsonl | --rank | --cluster | --layout inline|side-by-side] [--require-files] [--require-hunks]"
+        "usage: deep-diff-forge {{--git-working-tree [--include-untracked] | --git-staged | --git-range A..B}} [--repo PATH] [--acquisition-json | --json | --jsonl | --rank [--fail-on LIST] | --cluster | --layout inline|side-by-side] [--require-files] [--require-hunks]"
     );
     std::process::exit(exit::USAGE);
 }
@@ -116,6 +116,7 @@ pub(crate) fn run(selector: &str, opts: &[String]) {
             "--path",
             "--max-bytes",
             "--cursor",
+            "--fail-on",
         ],
         positionals: 0,
     };

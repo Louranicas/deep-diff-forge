@@ -48,14 +48,30 @@ pub fn refuse_input(reason: &str) -> ! {
 
 /// Record the verdict refusals that hold, before the document is written. Empty: none.
 pub fn pending(reasons: &[(&Refusal, String)]) {
+    let reasons: Vec<_> = reasons
+        .iter()
+        .map(|(class, text)| (*class, text.clone(), Vec::new()))
+        .collect();
+    pending_with(&reasons);
+}
+
+/// [`pending`] with the lines that follow each reason line (the files a verdict names, F7.i):
+/// each is written after two spaces, so none can match the reason grammar; the caller escapes
+/// them.
+pub fn pending_with(reasons: &[(&Refusal, String, Vec<String>)]) {
     let mut lines: Vec<(usize, String)> = reasons
         .iter()
-        .map(|(class, text)| {
+        .map(|(class, text, details)| {
             let order = REFUSALS
                 .iter()
                 .position(|r| r == *class)
                 .unwrap_or(usize::MAX);
-            (order, line(class, format_args!("{text}")))
+            let mut line = line(class, format_args!("{text}"));
+            for detail in details {
+                line.push_str("\n  ");
+                line.push_str(detail);
+            }
+            (order, line)
         })
         .collect();
     lines.sort_by_key(|(order, _)| *order);

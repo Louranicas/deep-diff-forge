@@ -18,6 +18,7 @@ mod args;
 mod bench;
 mod contract;
 mod eval;
+mod fail_on;
 mod file_pair;
 mod git_input;
 mod mcp;
@@ -249,14 +250,16 @@ const REVIEW_FLAGS: [&str; 8] = [
     "--require-files",
     "--require-hunks",
 ];
-/// The valued options shared by `--stdin-patch` and the structured Git selections.
-const REVIEW_VALUED: [&str; 6] = [
+/// The valued options of `--stdin-patch` and `<old> <new>` (the structured Git selections list
+/// theirs in `git_input`, `--repo` and these).
+const REVIEW_VALUED: [&str; 7] = [
     "--layout",
     "--parallel",
     "--address",
     "--path",
     "--max-bytes",
     "--cursor",
+    "--fail-on",
 ];
 /// `--stdin-patch`'s flags: the shared ones and Git's `--allow-empty`, admitted nowhere else.
 const STDIN_PATCH_FLAGS: [&str; 9] = [
@@ -275,7 +278,7 @@ const STDIN_PATCH: args::Spec = args::Spec {
     valued: &REVIEW_VALUED,
     positionals: 0,
 };
-const STDIN_PATCH_USAGE: &str = "deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side | --outline | --hunks [--address A]... [--path P]...] [--max-bytes N] [--cursor C] [--require-files] [--require-hunks] [--allow-empty]";
+const STDIN_PATCH_USAGE: &str = "deep-diff-forge --stdin-patch [--json | --jsonl | --rank [--fail-on LIST] | --cluster [--parallel N] | --layout inline|side-by-side | --outline | --hunks [--address A]... [--path P]...] [--max-bytes N] [--cursor C] [--require-files] [--require-hunks] [--allow-empty]";
 const SCHEMA: args::Spec = args::Spec {
     flags: &[],
     valued: &[],
@@ -478,6 +481,13 @@ pub(crate) fn validate_review_options_or_exit(opts: &[String]) {
     if has("--parallel") {
         let _ = parse_parallelism(opts);
     }
+    if let Some(list) = flag_value(opts, "--fail-on") {
+        if !has("--rank") {
+            eprintln!("error: --fail-on needs --rank");
+            std::process::exit(exit::USAGE);
+        }
+        let _ = fail_on::FailOn::parse_or_exit(&list);
+    }
 }
 
 /// The one parse → guard → seal path ([`deep_diff_forge_patch::SealedReview`], anchor C-05), with
@@ -520,11 +530,16 @@ fn emit_review(review: &deep_diff_forge_patch::SealedReview, opts: &[String]) {
         run_cluster(files, opts, seal);
     } else if opts.iter().any(|a| a == "--rank") {
         let ranked = deep_diff_forge_graph::rank(files);
+        // The gate's verdict is decided before the document, which it does not change (F7.i).
+        if let Some(list) = flag_value(opts, "--fail-on") {
+            fail_on::FailOn::parse_or_exit(&list).decide(&ranked);
+        }
         if opts.iter().any(|a| a == "--json") {
             print_rank_json(&ranked, seal);
         } else {
             print_rank_human(&ranked);
         }
+        refusal::finish();
     } else if opts.iter().any(|a| a == "--json") {
         emit(&review.to_json());
     } else if let Some(name) = flag_value(opts, "--layout") {

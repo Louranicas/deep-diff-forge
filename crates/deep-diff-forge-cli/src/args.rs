@@ -25,7 +25,7 @@ pub(crate) const REPEATABLE: [&str; 4] = ["--address", "--path", "--allow-repo",
 /// Every valued option any [`Spec`] declares. [`help_requested`] reads a `-h` that follows one of
 /// these as its value, not as a request for help; [`admit`] checks, in debug builds, that a spec
 /// declares no valued option missing here, so the two lists cannot drift.
-pub(crate) const VALUED: [&str; 23] = [
+pub(crate) const VALUED: [&str; 24] = [
     "--layout",
     "--parallel",
     "--address",
@@ -49,6 +49,7 @@ pub(crate) const VALUED: [&str; 23] = [
     "--judge",
     "--policy",
     "--ranker-dir",
+    "--fail-on",
 ];
 
 /// Whether `args` ask for help: `--help` or `-h` standing as an option, before any `--` and not

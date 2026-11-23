@@ -296,6 +296,22 @@ pub const REFUSALS: &[Refusal] = &[
         action: NextAction::CheckEnvironment,
         since: "0.9.0",
     },
+    Refusal {
+        class: "fail_on_label",
+        tag: "--fail-on",
+        commands: "`--rank` of `--stdin-patch`, `--git-*`, `<old> <new>`",
+        stdout: Stdout::Document,
+        action: NextAction::ReviewEvidence,
+        since: "0.11.0",
+    },
+    Refusal {
+        class: "fail_on_truncated",
+        tag: "--fail-on evidence_truncated",
+        commands: "`--rank` of `--stdin-patch`, `--git-*`, `<old> <new>`",
+        stdout: Stdout::Document,
+        action: NextAction::ReviewEvidence,
+        since: "0.11.0",
+    },
 ];
 
 /// The registered reason class named `class`.
