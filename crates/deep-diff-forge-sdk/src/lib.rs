@@ -31,7 +31,7 @@ pub use deep_diff_forge_graph::RankedFile;
 mod diagnostics;
 pub use diagnostics::{
     CutFile, DIAGNOSTICS_SCHEMA, Diagnostic, Diagnostics, DiagnosticsCounts, DiagnosticsJudge,
-    DiagnosticsTool,
+    DiagnosticsTool, MAX_NAMED_MEMBERS,
 };
 
 /// Which input contracts [`review`] applies: `Guards::none()`, then `require_files` and
@@ -94,6 +94,17 @@ pub enum Error {
         /// The method.
         method: &'static str,
     },
+    /// The daemon's diagnostics pages carry members this SDK's model does not know (a newer
+    /// schema of `v0`, whose members are only added): their bytes cannot be rebuilt by this
+    /// version of the SDK, so the document cannot be checked against `document_sha256` and is not
+    /// returned. Upgrade the SDK. `members` are their names (`tool.build`, `diagnostics[].x`),
+    /// escaped, at most [`MAX_NAMED_MEMBERS`] of them, each cut to 64 bytes.
+    UnknownMembers {
+        /// The pages read.
+        pages: usize,
+        /// The members' names, escaped and bounded.
+        members: Vec<String>,
+    },
     /// A diagnostics document, or the pages a daemon sent of one, broke its contract: `problem`
     /// names how, at page `pages` (0 for a document given to [`Diagnostics::from_json`]).
     Document {
@@ -115,9 +126,18 @@ impl fmt::Display for Error {
                 daemon,
                 needed,
                 method,
-            } => write!(
+            } if daemon < needed => write!(
                 f,
                 "protocol too old: {method} needs engine protocol {needed}; the daemon speaks {daemon}"
+            ),
+            Self::ProtocolTooOld { daemon, method, .. } => write!(
+                f,
+                "protocol too old: the daemon reported engine protocol {daemon} and does not know {method}"
+            ),
+            Self::UnknownMembers { members, .. } => write!(
+                f,
+                "the daemon's diagnostics document has members this SDK does not know ({}): this SDK version cannot rebuild its bytes, so the document cannot be checked against document_sha256; upgrade the SDK",
+                members.join(", ")
             ),
             Self::Document { pages: 0, problem } => {
                 write!(f, "not a {DIAGNOSTICS_SCHEMA} document: {problem}")
@@ -153,6 +173,7 @@ impl Error {
             Self::Rpc { .. }
             | Self::Transport(_)
             | Self::ProtocolTooOld { .. }
+            | Self::UnknownMembers { .. }
             | Self::Document { .. } => exit::DAEMON_OR_TERMINAL,
         }
     }
@@ -455,6 +476,24 @@ mod tests {
         assert_eq!(
             old.to_string(),
             "protocol too old: diff.diagnostics needs engine protocol 3; the daemon speaks 2"
+        );
+        let claimed = Error::ProtocolTooOld {
+            daemon: 3,
+            needed: 3,
+            method: "diff.diagnostics",
+        };
+        assert_eq!(
+            claimed.to_string(),
+            "protocol too old: the daemon reported engine protocol 3 and does not know diff.diagnostics"
+        );
+        let newer = Error::UnknownMembers {
+            pages: 2,
+            members: vec!["future".into(), "tool.build".into()],
+        };
+        assert_eq!(newer.exit_code(), 6);
+        assert_eq!(
+            newer.to_string(),
+            "the daemon's diagnostics document has members this SDK does not know (future, tool.build): this SDK version cannot rebuild its bytes, so the document cannot be checked against document_sha256; upgrade the SDK"
         );
         let pages = Error::Document {
             pages: 3,

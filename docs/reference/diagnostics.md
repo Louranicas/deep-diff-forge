@@ -275,9 +275,10 @@ method's range starts at 4 096.
 MCP's `diagnose_patch` (a patch) and `review_change` with view `diagnostics` (a change read from
 Git, with its `acquisition` member) answer with one page each, from the daemon's pager in the
 server's own process: `structuredContent` is the page and the text copy is the page as the
-daemon emits it. `max_bytes` (12 364 to 33 554 432, default 32 768) counts the whole answer as
-the server writes it, both copies: the page starts at half of it and is paged smaller while the
-answer is over it. 12 364 bytes is three pages at the pager's floor of 4 096 (escaping can at
+daemon emits it. `max_bytes` (12 364 to 33 554 432, default 32 768) counts the tool result as
+the server writes it on the line, both copies, but not the JSON-RPC envelope, `_meta` and
+`resultType` around it ([MCP server](mcp-sdk-daemon.md#mcp-server) gives their size): the page
+starts at half of it and is paged smaller while the result is over it. 12 364 bytes is three pages at the pager's floor of 4 096 (escaping can at
 most double the text copy) and 76 bytes around them, so at any budget in the range a page that
 fits the floor is served; a smaller budget is refused naming the range. A diagnostic that does
 not fit is refused naming the `max_bytes` it needs. The server writes the line of such an answer
@@ -294,9 +295,12 @@ change `total` or `document_sha256`, do not start where the last ended, hold no 
 repeat a cursor or do not end with the document end the call with a named error (Rust
 `Error::Document`, Python `PagingError`); a call takes at most `total` pages, and `total` may not
 exceed the patch's length in bytes. A daemon of protocol 2 or older is reported as
-`ProtocolTooOld` (`daemon`, `needed` 3, `method`), never worked around. The rebuilt document holds
-the members this SDK knows: a newer daemon's document with a member it does not know does not
-rebuild to the hashed bytes and ends the call with that named error.
+`ProtocolTooOld` (`daemon`, `needed` 3, `method`), never worked around; a daemon that reports
+protocol 3 or later and still does not know the method is named the same way, with the
+protocol it reported. An SDK rebuilds only the members it knows, so pages that carry a member
+it does not know end the call with `UnknownMembers` (Rust `Error::UnknownMembers`, Python
+`UnknownMembers`), which names the members and says that this SDK version cannot rebuild, and so
+cannot check, the document: upgrade the SDK. No document is returned unchecked.
 
 ## Gates: `--fail-on`
 
@@ -319,7 +323,9 @@ the list.
 ## Stability
 
 While the schema is `v0`: members are only added, and only as optional; readers ignore members
-they do not know; codes and ids are only added. A version of the engine that finds more on the
+they do not know (an added member needs an SDK that knows it for the paged, checked call of
+[In MCP and the SDKs](#in-mcp-and-the-sdks); the command, the daemon, MCP and the in-process
+`diagnostics(&Review)` are not affected); codes and ids are only added. A version of the engine that finds more on the
 same input changes `scorer_sha256`, not the schema. Removing, renaming or retyping a member, or
 changing the key, the order, the completeness rule or a code's meaning, makes `v1`.
 

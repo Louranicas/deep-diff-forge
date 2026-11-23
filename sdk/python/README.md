@@ -23,7 +23,9 @@ bytes `deep-diff-forge --stdin-patch --diagnostics --json` prints. The call fetc
 page, rebuilds the bytes and checks them against the pages' `document_sha256`. An older daemon
 raises `ProtocolTooOld` (`daemon`, `needed`, `method`); nothing is built from what it can
 answer. Pages that break the paging contract raise `PagingError` (a `TransportError` with `pages`
-and `problem`). A parse failure's `RpcError` names where the patch failed and none of its text.
+and `problem`). Pages that carry a member this version does not know raise `UnknownMembers` (a
+`PagingError` with `members`): it cannot rebuild, and so cannot check, that document; upgrade
+the SDK. A parse failure's `RpcError` names where the patch failed and none of its text.
 
 A JSON-RPC error raises `RpcError` with the daemon's `code`. Everything else that goes wrong in
 transport raises `TransportError`: a daemon or child that cannot be reached, sends no answer

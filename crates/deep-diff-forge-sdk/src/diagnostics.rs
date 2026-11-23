@@ -11,6 +11,91 @@ use std::collections::BTreeMap;
 /// The schema this model reads.
 pub const DIAGNOSTICS_SCHEMA: &str = "deep-diff-forge.diagnostics.v0";
 
+/// The most member names [`Error::UnknownMembers`] lists.
+pub const MAX_NAMED_MEMBERS: usize = 8;
+
+/// The members this model knows, by place: the document, `tool`, `judge`, `counts`, a `cut`
+/// entry and a diagnostic.
+#[cfg(unix)]
+const KNOWN: [(&str, &[&str]); 6] = [
+    (
+        "",
+        &[
+            "schema",
+            "input_sha256",
+            "tool",
+            "judge",
+            "counts",
+            "cut",
+            "diagnostics",
+            "texts",
+        ],
+    ),
+    ("tool.", &["name", "version", "scorer_sha256"]),
+    ("judge.", &["state", "ranker_sha256"]),
+    (
+        "counts.",
+        &["files", "diagnostics", "agent", "person", "cut_files"],
+    ),
+    ("cut[].", &["path", "rows_kept"]),
+    (
+        "diagnostics[].",
+        &[
+            "key",
+            "code",
+            "label",
+            "class",
+            "path",
+            "anchor",
+            "side",
+            "line",
+            "occurrence",
+            "reading",
+            "audience",
+            "cases",
+            "repairs",
+            "not_accepted",
+            "test_likely",
+            "judge_sees",
+        ],
+    ),
+];
+
+/// The names of the members of `document` (a reassembled document) that the model does not
+/// know, each escaped and cut to 64 bytes, at most [`MAX_NAMED_MEMBERS`], in name order.
+#[cfg(unix)]
+fn unknown_members(document: &Value) -> Vec<String> {
+    let mut found = std::collections::BTreeSet::new();
+    let mut look = |prefix: &str, value: &Value| {
+        let known = KNOWN
+            .iter()
+            .find(|(place, _)| *place == prefix)
+            .map_or(&[][..], |(_, names)| *names);
+        for name in value
+            .as_object()
+            .into_iter()
+            .flat_map(serde_json::Map::keys)
+        {
+            if !known.contains(&name.as_str()) {
+                found.insert(format!(
+                    "{prefix}{}",
+                    deep_diff_forge_core::display_safe_bounded(name, 64)
+                ));
+            }
+        }
+    };
+    look("", document);
+    for member in ["tool", "judge", "counts"] {
+        look(&format!("{member}."), &document[member]);
+    }
+    for (member, place) in [("cut", "cut[]."), ("diagnostics", "diagnostics[].")] {
+        for item in document[member].as_array().into_iter().flatten() {
+            look(place, item);
+        }
+    }
+    found.into_iter().take(MAX_NAMED_MEMBERS).collect()
+}
+
 /// A `deep-diff-forge.diagnostics.v0` document: every label the ranking raises, located. Its
 /// members are the schema's; [`Diagnostics::to_json`] is the document's bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -506,17 +591,18 @@ pub(crate) fn fetch(
             None => break,
         }
     }
-    rebuild(&pages, paging.digest.as_deref()).map_err(|problem| Error::Document {
-        pages: pages.len(),
-        problem,
-    })
+    rebuild(&pages, paging.digest.as_deref())
 }
 
 /// The document of `pages`: the first page's header without `page`, every page's `cut` and
 /// diagnostics in order and the union of `texts` (docs/reference/diagnostics.md, "Paging"),
 /// written in the byte form; only when those bytes hash to `digest`.
 #[cfg(unix)]
-fn rebuild(pages: &[Value], digest: Option<&str>) -> Result<Diagnostics, &'static str> {
+fn rebuild(pages: &[Value], digest: Option<&str>) -> Result<Diagnostics, Error> {
+    let bad = |problem| Error::Document {
+        pages: pages.len(),
+        problem,
+    };
     let mut whole = pages.first().cloned().unwrap_or_default();
     if let Some(members) = whole.as_object_mut() {
         members.remove("page");
@@ -540,10 +626,19 @@ fn rebuild(pages: &[Value], digest: Option<&str>) -> Result<Diagnostics, &'stati
     whole["cut"] = Value::Array(cut);
     whole["diagnostics"] = Value::Array(items);
     whole["texts"] = Value::Object(named);
-    let mut document = read(&whole)?;
+    // A member this model does not know cannot be written back: say so by name, never as a
+    // daemon whose pages do not hash.
+    let members = unknown_members(&whole);
+    if !members.is_empty() {
+        return Err(Error::UnknownMembers {
+            pages: pages.len(),
+            members,
+        });
+    }
+    let mut document = read(&whole).map_err(bad)?;
     document.bytes = write(&document);
     if digest != Some(deep_diff_forge_core::sha256_hex(document.bytes.as_bytes()).as_str()) {
-        return Err("the rebuilt document does not hash to document_sha256");
+        return Err(bad("the rebuilt document does not hash to document_sha256"));
     }
     Ok(document)
 }

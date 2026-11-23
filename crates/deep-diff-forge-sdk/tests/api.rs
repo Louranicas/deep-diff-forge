@@ -40,6 +40,7 @@ fn public_signatures_are_pinned() {
         Error::Transport(_) => "transport",
         Error::ProtocolTooOld { .. } => "protocol too old",
         Error::Document { .. } => "document",
+        Error::UnknownMembers { .. } => "unknown members",
         _ => "other",
     };
     assert_eq!(describe(&Error::Refused("x")), "refused");

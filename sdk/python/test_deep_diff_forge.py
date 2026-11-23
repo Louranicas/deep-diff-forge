@@ -2,6 +2,7 @@
 
 Run: DDF_BIN=target/debug/deep-diff-forge python3 -I sdk/python/test_deep_diff_forge.py
 """
+import hashlib
 import json
 import os
 import pathlib
@@ -65,7 +66,7 @@ if mode == "transcript":
         params = asked.get("params") if isinstance(asked, dict) else None
         if isinstance(asked, dict) and isinstance(params, (dict, type(None))):
             records.append((asked.get("method"), (params or {}).get("protocol"), json.loads(record["response"])))
-elif mode != "speaks2":
+elif mode not in ("speaks2", "claims3"):
     pages = json.load(open(source, encoding="utf-8"))
 for line in sys.stdin:
     request = json.loads(line)
@@ -77,6 +78,8 @@ for line in sys.stdin:
             answer = {"jsonrpc": "2.0", "error": {"code": -32000, "message": "diff.rank was asked"}}
     elif method == "engine.initialize":
         answer = {"jsonrpc": "2.0", "result": {"protocol": 2 if mode == "speaks2" else 3}}
+    elif mode == "claims3":
+        answer = {"jsonrpc": "2.0", "error": {"code": -32601, "message": "method not found: diff.diagnostics"}}
     else:
         cursor = params.get("cursor")
         index = 0 if cursor is None else next((i + 1 for i, p in enumerate(pages)
@@ -273,6 +276,55 @@ class Diagnostics(unittest.TestCase):
                         stub.diagnostics_patch(patch)
                 self.assertEqual((caught.exception.pages, caught.exception.problem), (at, problem), mode)
                 self.assertIsInstance(caught.exception, ddf.TransportError)
+
+
+    def test_a_member_this_sdk_does_not_know_is_named(self):
+        patch = paging_patch()
+        pages, cursor = [], None
+        with ddf.StdioClient((BIN, "rpc")) as client:
+            while True:
+                params = {"patch": patch, "max_bytes": 4096}
+                if cursor is not None:
+                    params["cursor"] = cursor
+                page = client.call("diff.diagnostics", **params)
+                pages.append(page)
+                cursor = page["page"]["next_cursor"]
+                if cursor is None:
+                    break
+        command = cli_diagnostics(patch).decode()
+        top = command.replace('\n  "cut": ', '\n  "future": 1,\n  "cut": ', 1)
+        first = command.index('\n    {"key"') + 1
+        close = command.rindex("}", 0, command.index("\n", first))
+        inner = command[:close] + ', "x\\u202e": true' + command[close:]
+        for document, name, tamper in ((top, "future", lambda k, p: p.__setitem__("future", 1)),
+                                       (inner, "diagnostics[].x\\u202e",
+                                        lambda k, p: k == 0 and p["diagnostics"][0].__setitem__("x\u202e", True))):
+            digest = hashlib.sha256(document.encode()).hexdigest()
+            newer = json.loads(json.dumps(pages))
+            for k, page in enumerate(newer):
+                page["page"]["document_sha256"] = digest
+                tamper(k, page)
+            with tempfile.TemporaryDirectory() as directory:
+                source = pathlib.Path(directory) / "pages.json"
+                source.write_text(json.dumps(newer), encoding="utf-8")
+                with ddf.StdioClient((sys.executable, "-I", "-c", STUB, str(source), "ok"), timeout=10) as stub:
+                    with self.assertRaises(ddf.UnknownMembers) as caught:
+                        stub.diagnostics_patch(patch)
+            error = caught.exception
+            self.assertEqual((error.pages, error.members), (len(pages), [name]))
+            self.assertIn("upgrade the SDK", str(error))
+            self.assertNotIn("\u202e", str(error))
+            self.assertIsInstance(error, ddf.PagingError)
+
+    def test_a_daemon_that_claims_protocol_3_without_the_method_is_named(self):
+        error = ddf.ProtocolTooOld(3, 3, "diff.diagnostics")
+        self.assertEqual(str(error), "protocol too old: the daemon reported engine protocol 3 and does not know "
+                                     "diff.diagnostics")
+        claims = ddf.StdioClient((sys.executable, "-I", "-c", STUB, str(TRANSCRIPT), "claims3"), timeout=10)
+        with claims:
+            with self.assertRaises(ddf.ProtocolTooOld) as caught:
+                claims.diagnostics_patch(PATCH)
+        self.assertEqual((caught.exception.daemon, str(caught.exception)), (3, str(error)))
 
 
 class Responses(unittest.TestCase):

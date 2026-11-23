@@ -207,6 +207,10 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   around; pages that break the paging contract end the call with a named error
   (`Error::Document`, `PagingError`). `Error` gains the two variants; it is `#[non_exhaustive]`
   (F5b).
+- Both SDKs refuse diagnostics pages that carry a member they do not know by name (Rust
+  `Error::UnknownMembers`, Python `UnknownMembers`): that version cannot rebuild, and so cannot
+  check, the document; upgrade the SDK. A daemon that reports protocol 3 and does not know
+  `diff.diagnostics` is `ProtocolTooOld` naming the protocol it reported (F5b).
 - `deep_diff_forge_daemon::change_review`: `review.change`'s acquisition, public for a caller
   that builds its own view of the change (F5b).
 - `agent doctor` checks `diagnostics_parity`: the probe's diagnostics document from the command,

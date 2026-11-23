@@ -23,8 +23,8 @@ import struct
 import subprocess
 import time
 
-__all__ = ["RpcError", "TransportError", "ProtocolTooOld", "PagingError", "Diagnostics", "StdioClient",
-           "SocketClient"]
+__all__ = ["RpcError", "TransportError", "ProtocolTooOld", "PagingError", "UnknownMembers", "Diagnostics",
+           "StdioClient", "SocketClient"]
 
 # The workspace version this client was released with (cli/tests/python_sdk.rs keeps it equal).
 __version__ = "0.11.0-dev"
@@ -52,7 +52,11 @@ class ProtocolTooOld(Exception):
     built in its place from what the older daemon can answer."""
 
     def __init__(self, daemon, needed, method):
-        super().__init__(f"protocol too old: {method} needs engine protocol {needed}; the daemon speaks {daemon}")
+        if isinstance(daemon, int) and not isinstance(daemon, bool) and daemon >= needed:
+            # It reported the protocol and still answered -32601 for the method.
+            super().__init__(f"protocol too old: the daemon reported engine protocol {daemon} and does not know {method}")
+        else:
+            super().__init__(f"protocol too old: {method} needs engine protocol {needed}; the daemon speaks {daemon}")
         self.daemon = daemon
         self.needed = needed
         self.method = method
@@ -66,6 +70,22 @@ class PagingError(TransportError):
         super().__init__(f"the daemon's diagnostics pages failed at page {pages}: {problem}")
         self.pages = pages
         self.problem = problem
+
+
+class UnknownMembers(PagingError):
+    """The daemon's diagnostics pages carry members this SDK does not know (a newer schema of v0,
+    whose members are only added): this SDK version cannot rebuild their bytes, so the document
+    cannot be checked against ``document_sha256`` and is not returned. Upgrade the SDK.
+    ``members`` are their names (``tool.build``, ``diagnostics[].x``), escaped, at most 8, each
+    cut to 64 characters."""
+
+    def __init__(self, pages, members):
+        TransportError.__init__(self, "the daemon's diagnostics document has members this SDK does not know ("
+                                + ", ".join(members) + "): this SDK version cannot rebuild its bytes, so the "
+                                "document cannot be checked against document_sha256; upgrade the SDK")
+        self.pages = pages
+        self.problem = "members this SDK does not know"
+        self.members = members
 
 
 class Diagnostics(dict):
@@ -132,6 +152,38 @@ def _diagnostics_bytes(header, cut, diagnostics, texts):
     ids = sorted(texts, key=lambda k: k.encode())
     members.append(("texts", _block([_string(k) + ": " + _string(texts[k]) for k in ids], "{", "}")))
     return ("{\n" + ",\n".join("  " + _string(k) + ": " + v for k, v in members) + "\n}\n").encode()
+
+
+_KNOWN = {"": ("schema", "input_sha256", "tool", "judge", "counts", "cut", "diagnostics", "texts"),
+          "tool.": _ORDER["tool"], "judge.": _ORDER["judge"], "counts.": _ORDER["counts"],
+          "cut[].": _ORDER["cut"], "diagnostics[].": _ORDER["diagnostic"]}
+
+
+def _shown(name):
+    """A member name as an error shows it: hidden and control characters as escapes, cut to 64."""
+    out = "".join(c if (_string(c) == '"' + c + '"' and c not in "\\\"") else _string(c)[1:-1] for c in name[:64])
+    return out + ("..." if len(name) > 64 else "")
+
+
+def _unknown_members(pages):
+    """The names of the members of the pages' document that this SDK does not know, sorted, at
+    most 8."""
+    found = set()
+
+    def look(prefix, value):
+        if isinstance(value, dict):
+            found.update(prefix + _shown(k) for k in value if k not in _KNOWN[prefix])
+    first = pages[0] if isinstance(pages[0], dict) else {}
+    look("", {k: v for k, v in first.items() if k != "page"})
+    for member in ("tool", "judge", "counts"):
+        look(member + ".", first.get(member))
+    for page in pages:
+        if not isinstance(page, dict):
+            continue
+        for member, place in (("cut", "cut[]."), ("diagnostics", "diagnostics[].")):
+            for item in page.get(member) if isinstance(page.get(member), list) else []:
+                look(place, item)
+    return sorted(found)[:8]
 
 
 def _without_patch_text(error):
@@ -306,6 +358,9 @@ class _Client:
             cursors.add(cursor)
             params["cursor"] = cursor
             pages.append(page)
+        members = _unknown_members(pages)
+        if members:
+            raise UnknownMembers(len(pages), members)
         try:
             cut = [c for p in pages for c in p["cut"]]
             diagnostics = [d for p in pages for d in p["diagnostics"]]

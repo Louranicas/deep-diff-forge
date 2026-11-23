@@ -241,14 +241,79 @@ fn an_old_daemon_is_named_never_worked_around() {
             old_daemon(request)
         }
     });
+    let claimed = skips.diagnostics("", Guards::none(), None);
     assert_eq!(
-        skips.diagnostics("", Guards::none(), None),
+        claimed,
         Err(Error::ProtocolTooOld {
             daemon: 3,
             needed: 3,
             method: "diff.diagnostics"
         })
     );
+    assert_eq!(
+        claimed.unwrap_err().to_string(),
+        "protocol too old: the daemon reported engine protocol 3 and does not know diff.diagnostics"
+    );
+}
+
+/// The pages of `patch` as a newer daemon would page a document with one more member: `future`
+/// at the top, or a member named `x` and a bidi control in the first diagnostic; each page names
+/// the true hash of that document's bytes.
+fn newer_pages(patch: &str, in_a_diagnostic: bool) -> Vec<Value> {
+    let bytes = diagnostics(&review(patch, Guards::none()).unwrap())
+        .to_json()
+        .to_owned();
+    let (bytes, place) = if in_a_diagnostic {
+        let first = bytes.find("\n    {\"key\"").unwrap() + 1;
+        let end = first + bytes[first..].find('\n').unwrap();
+        let close = bytes[..end].rfind('}').unwrap();
+        (
+            format!("{}, \"x\\u202e\": true{}", &bytes[..close], &bytes[close..]),
+            "diagnostic",
+        )
+    } else {
+        (
+            bytes.replacen("\n  \"cut\": ", "\n  \"future\": 1,\n  \"cut\": ", 1),
+            "top",
+        )
+    };
+    let digest = deep_diff_forge_core::sha256_hex(bytes.as_bytes());
+    let mut pages = real_pages(patch);
+    for (k, page) in pages.iter_mut().enumerate() {
+        page["page"]["document_sha256"] = json!(digest);
+        if place == "top" {
+            page["future"] = json!(1);
+        } else if k == 0 {
+            page["diagnostics"][0]["x\u{202e}"] = json!(true);
+        }
+    }
+    pages
+}
+
+/// F5b (coordinator's round 2, point 3): a document with a member this SDK does not know is
+/// refused by name, saying that this SDK version cannot rebuild and so cannot check it, never
+/// as pages that do not hash; the name is escaped. Nothing unverified is returned.
+#[test]
+fn a_member_this_sdk_does_not_know_is_named_not_taken_for_corruption() {
+    let patch = paging_patch();
+    for (in_a_diagnostic, name) in [(false, "future"), (true, "diagnostics[].x\\u{202e}")] {
+        let pages = newer_pages(&patch, in_a_diagnostic);
+        let count = pages.len();
+        let (_dir, client) = stub("sdk-newer", serving(pages, |_, _| {}));
+        let error = client
+            .diagnostics(&patch, Guards::none(), None)
+            .unwrap_err();
+        assert_eq!(
+            error,
+            Error::UnknownMembers {
+                pages: count,
+                members: vec![name.to_owned()]
+            }
+        );
+        let text = error.to_string();
+        assert!(text.contains("upgrade the SDK"), "{text}");
+        assert!(!text.contains('\u{202e}'), "{text}");
+    }
 }
 
 /// The pages this tree's pager gives `patch` at 4096 bytes, each a `diff.diagnostics` result.
