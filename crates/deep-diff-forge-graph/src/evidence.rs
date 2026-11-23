@@ -301,6 +301,8 @@ enum Scope {
     /// Cargo's manifest (`Cargo.toml`) and its configuration (`.cargo/config.toml`,
     /// `.cargo/config`), read as TOML ([`toml_strings`]).
     CargoFile,
+    /// Cargo's manifest (`Cargo.toml`).
+    CargoManifest,
 }
 
 /// What a rule looks for.
@@ -321,6 +323,8 @@ enum Match {
     EmptyHandler,
     /// A lint switched off in a Cargo file ([`lint_off`]).
     LintOff,
+    /// A build script or a procedural macro declared in Cargo's manifest ([`builds`]).
+    Builds,
     /// One of `heads` (a whole word, with no [`is_boundary_blocker`] before it) followed by one
     /// of `tails`, with any whitespace before the tail and between its bytes: `# [allow(` is
     /// `#` and `[allow(`.
@@ -340,6 +344,7 @@ impl Match {
             | Self::Secret
             | Self::Imports(_)
             | Self::LintOff
+            | Self::Builds
             | Self::Spaced { .. } => Basis::Lexical,
         }
     }
@@ -527,6 +532,13 @@ const RULES: &[Rule] = &[
         View::Code,
         Scope::BuildScript,
         Match::AnyCode,
+    ),
+    rule(
+        S::BuildHook,
+        Side::New,
+        View::Raw,
+        Scope::CargoManifest,
+        Match::Builds,
     ),
     rule(
         S::BuildHook,
@@ -1238,6 +1250,7 @@ impl FileKind {
             Scope::BuildScript => self.build_script,
             Scope::PackageJson => self.package_json,
             Scope::CargoFile => self.cargo.is_some(),
+            Scope::CargoManifest => self.cargo == Some(Cargo::Manifest),
         }
     }
 }
@@ -2155,9 +2168,11 @@ fn legacy_hits(hunk: &PatchHunk, rules: &[&Rule], views: &Views) -> Vec<Hit> {
                 Match::AnyCode => !text.trim().is_empty(),
                 Match::Secret => looks_like_secret(text),
                 // The release had no other kind of rule for Rust.
-                Match::Imports(_) | Match::EmptyHandler | Match::Spaced { .. } | Match::LintOff => {
-                    false
-                }
+                Match::Imports(_)
+                | Match::EmptyHandler
+                | Match::Spaced { .. }
+                | Match::LintOff
+                | Match::Builds => false,
             }
         };
         for signal in EvidenceSignal::ALL {
@@ -2697,6 +2712,7 @@ fn view_matches(
                 }
                 Match::Spaced { heads, tails } => spaced(text, heads, tails),
                 Match::LintOff => lint_off(text),
+                Match::Builds => builds(text),
             }
         };
         for signal in EvidenceSignal::ALL {
@@ -2803,6 +2819,22 @@ fn lint_off(line: &str) -> bool {
             off
         })
     })
+}
+
+/// Whether `line`, a line of Cargo's manifest, declares code that runs at build time (F2b): a
+/// build script (`build = "…"`, `build = true`) or a procedural macro (`proc-macro = true`,
+/// `proc_macro = true`), as a key of its own or the last part of a dotted key.
+fn builds(line: &str) -> bool {
+    let Some((key, value)) = line.split_once('=') else {
+        return false;
+    };
+    let key = key.trim().trim_matches(['"', '\'']);
+    let value = value.trim_start();
+    match key.rsplit('.').next() {
+        Some("build") => value.starts_with(['"', '\'']) || value.starts_with("true"),
+        Some("proc-macro" | "proc_macro") => value.starts_with("true"),
+        _ => false,
+    }
 }
 
 /// Whether `text` holds one of `heads`, whole and with no [`is_boundary_blocker`] byte before
@@ -3758,7 +3790,7 @@ impl Asking<'_> {
             Match::Secret => looks_like_secret(text),
             Match::Imports(modules) => imports_module(text, self.raw, modules),
             // Releases 0.8.3 and 0.8.4 had no rule of these kinds ([`RELEASED_RULES`]).
-            Match::EmptyHandler | Match::Spaced { .. } | Match::LintOff => false,
+            Match::EmptyHandler | Match::Spaced { .. } | Match::LintOff | Match::Builds => false,
         }
     }
 
@@ -4083,7 +4115,7 @@ mod tests {
             Scope::CiWorkflow => ".github/workflows/ci.yml",
             Scope::BuildScript => "build.rs",
             Scope::PackageJson => "package.json",
-            Scope::CargoFile => "Cargo.toml",
+            Scope::CargoFile | Scope::CargoManifest => "Cargo.toml",
         }
     }
 
@@ -5043,6 +5075,26 @@ mod tests {
         assert!(found > 1_000, "{found} empty handlers");
     }
 
+    /// The triggers of the long-line test for the readings of Cargo's files (F2b).
+    fn cargo_triggers(matches: Match) -> Vec<String> {
+        let triggers: &[&str] = if matches == Match::Builds {
+            &["build = \"b.rs\"", "proc-macro = true", "build=", "x.build"]
+        } else {
+            &[
+                "x = \"allow\"",
+                "x = 'allow'",
+                "x = { level = \"allow\" }",
+                "[\"-A\", \"x\"]",
+                "\"-Awarnings\"",
+                "\"--cap-lints\", \"allow\"",
+                "\"\\u0061",
+                "\"\"\"",
+                "\'\'\'",
+            ]
+        };
+        triggers.iter().map(|t| (*t).to_owned()).collect()
+    }
+
     /// The lines of the long-line test: every trigger the readers know, in the path of each
     /// language its table names (2026-11-18, the rule of the class "cost quadratic in the length
     /// of one line": no check walks from a match to the end of its line more than once for a
@@ -5114,19 +5166,7 @@ mod tests {
                 .map(str::to_owned)
                 .to_vec(),
                 Match::AnyCode => Vec::new(),
-                Match::LintOff => [
-                    "x = \"allow\"",
-                    "x = 'allow'",
-                    "x = { level = \"allow\" }",
-                    "[\"-A\", \"x\"]",
-                    "\"-Awarnings\"",
-                    "\"--cap-lints\", \"allow\"",
-                    "\"\\u0061",
-                    "\"\"\"",
-                    "\'\'\'",
-                ]
-                .map(str::to_owned)
-                .to_vec(),
+                Match::LintOff | Match::Builds => cargo_triggers(rule.matches),
             };
             for path in &paths {
                 for trigger in &triggers {
@@ -14156,5 +14196,47 @@ mod tests {
             [(S::CheckSuppressed, Basis::Lexical, 2, false, true)]
         );
         assert_eq!(read("unsafe_code = 'allow'"), basic);
+    }
+
+    /// A build script or a procedural macro declared in Cargo's manifest is a build hook (F2b),
+    /// beside `build.rs` itself (kept). Not: `build = false`, another key that holds the word,
+    /// a comment, the table header `[build]` of Cargo's configuration, another file.
+    #[test]
+    fn a_cargo_build_script_or_proc_macro_is_a_build_hook() {
+        let hooks = |path: &str, line: &str| -> Vec<u32> {
+            file_evidence(&added(path, &[line]))
+                .iter()
+                .filter(|e| e.signal == S::BuildHook)
+                .map(|e| e.line)
+                .collect()
+        };
+        for line in [
+            r#"build = "build.rs""#,
+            "build = 'tools/gen.rs'",
+            "build = true",
+            r#"  build   =   "b.rs""#,
+            r#"package.build = "b.rs""#,
+            r#""build" = "b.rs""#,
+            "proc-macro = true",
+            "proc_macro = true",
+            "lib.proc-macro = true",
+        ] {
+            assert_eq!(hooks("Cargo.toml", line), [2], "{line}");
+            assert_eq!(hooks("crates/m/Cargo.toml", line), [2], "{line}");
+        }
+        for line in [
+            "build = false",
+            "proc-macro = false",
+            r#"build-dependencies = "1""#,
+            r#"rebuild = "x""#,
+            r#"# build = "build.rs""#,
+            "[build]",
+            r#"build.rustflags = ["-Cx"]"#,
+        ] {
+            assert_eq!(hooks("Cargo.toml", line), [], "{line}");
+        }
+        assert_eq!(hooks(".cargo/config.toml", r#"build = "b.rs""#), []);
+        assert_eq!(hooks("pyproject.toml", r#"build = "b.rs""#), []);
+        assert_eq!(hooks("build.rs", "fn main() {}"), [2]);
     }
 }
