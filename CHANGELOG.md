@@ -6,6 +6,23 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+- Exit 7 has one meaning, with a registry of reason classes. Every exit 7 names its class in one
+  stderr line `refused: <text> (<tag>)`. `schema exit-codes`, `explain 7 [--json]` and the MCP
+  tools `explain_exit_code`/`exit_code_registry` list them as `refusals` (F7.h1).
+- `change_input` no longer says "or drop the contract that refused it". `review_evidence` now
+  reads "read the reason and the evidence the message or the council reported; a person decides
+  what changes; rerunning does not change it" (F7.h1).
+- `findings verify --require-all`, `eval` and `agent doctor` name their refusal on stderr. A
+  verdict refusal is decided before its document is written, so `eval` and `agent doctor` exit
+  7, not 0, when the reader of stdout has gone (F7.h2,
+  [DDF-2026-011](docs/advisories/DDF-2026-011.md)).
+- A stdout that cannot be written at all keeps a pending refusal for every class, through the
+  one door (0.10.0 fixed it for `findings verify`;
+  [DDF-2026-011](docs/advisories/DDF-2026-011.md)).
+- `docs/reference/diagnostics.md`: the contract of `deep-diff-forge.diagnostics.v0` (no command
+  prints it yet), with 42 pinned codes (F7.h1).
+- The tree's version is 0.11.0-dev (F7.h1).
+
 ## [0.10.0] - 2026-11-23
 
 **Security and contract release.** 0.10.0 reads a `diff --git` section only if its headers are

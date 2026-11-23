@@ -399,7 +399,8 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   and the user's `~/.claude/settings.json`; settings an administrator manages are not read.
   A link that cannot be checked because an earlier one is missing is reported as not ready,
   never as fine. Exit 0 only when every link is ready, otherwise 7 (the contract asked for is
-  not met). In `--json` the checks are named `git`, `repository`, `policy`, `judge`, `chain`,
+  not met). Stderr then carries `error: the chain is not ready: …` followed by
+  `refused: N checks failed (agent doctor)`, also when the reader of stdout has gone. In `--json` the checks are named `git`, `repository`, `policy`, `judge`, `chain`,
   `policy_protects_itself`, `claims_verified`, `patch`, `commits`, `state_directory`, `hooks_enabled`,
   `hooks_registered`,
   `hook_timeout`, `start_hook_registered` and `advice_hook_registered`,

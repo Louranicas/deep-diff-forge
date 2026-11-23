@@ -119,7 +119,7 @@ On `--stdin-patch` the refusals come in this order: a parse error (4), then `--r
 A reader that closes stdout ends a command with exit 0 (`… | head`), except while a
 refusal is pending: every verdict refusal (`findings verify --require-findings` and
 `--require-all` since 0.10.0, [DDF-2026-010](../advisories/DDF-2026-010.md); `eval` and
-`agent doctor` since 0.11.0) is decided before its document is written and exits 7 with its
+`agent doctor` since 0.11.0, [DDF-2026-011](../advisories/DDF-2026-011.md)) is decided before its document is written and exits 7 with its
 reason lines on stderr even when the reader has gone or stdout cannot be written (`>/dev/full`).
 A diagnostic that cannot be written (`2>/dev/full`) leaves the exit code as it is; before 0.10.0 it exited 101. A daemon socket path of
 108 bytes or more is a usage error (exit 2) of `daemon path` and `daemon start` since 0.10.0.

@@ -237,7 +237,10 @@ selection.
   a diagnostic that cannot be written (`2>/dev/full`) leaves the exit code as it was. Before
   0.10.0 `findings verify --require-findings` and `--require-all` exited 0 when the reader had
   gone ([DDF-2026-010](docs/advisories/DDF-2026-010.md)), and an unwritable stderr turned any
-  exit into 101.
+  exit into 101. From 0.11.0 every verdict refusal (`eval` and `agent doctor` as well) goes
+  through one door and keeps its exit 7 and its reason when stdout's reader has gone or stdout
+  cannot be written; 0.8.3 to 0.10.0 exited 0 for `eval` and `agent doctor --gate` when the
+  reader had gone ([DDF-2026-011](docs/advisories/DDF-2026-011.md)).
 - Annotation provenance is fail-closed: a claimed `source` is not trusted until
   evidence grounds it.
 
