@@ -1,8 +1,11 @@
 // DDF review route: DDF-R12, DDF-R13. Status and remaining work are recorded in the linked ledger; this comment does not claim delivery.
 // Design/status: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
 // Module index: docs/RECOMMENDATION_INTEGRATION.md#remaining-module-routes
-use crate::evidence::{CarriedShares, Evidence, EvidenceSignal, Share, file_evidence_marked};
-use deep_diff_forge_core::{FileStatus, PatchLineKind, ReviewFile};
+use crate::evidence::{
+    CarriedShares, Evidence, EvidenceSignal, MAX_EVIDENCE_PER_FILE, Share, Side,
+    file_evidence_marked,
+};
+use deep_diff_forge_core::{FileStatus, PatchLine, PatchLineKind, ReviewFile};
 
 /// A deterministic, explainable reason a file is ranked where it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,10 +226,7 @@ fn hazard_weight(file: &ReviewFile, signals: &mut Vec<RiskSignal>) -> u32 {
         .hunks
         .iter()
         .flat_map(|h| &h.lines)
-        .any(|line| {
-            line.kind != PatchLineKind::Context
-                && !deep_diff_forge_core::text_hazards(&line.text).is_empty()
-        });
+        .any(hazardous_line);
     // A rename or copy is as hazardous as the path it leaves: moving `.git/hooks/pre-commit` to
     // `src/y.rs` scored nothing while the reverse rename was flagged (bug hunt 2026-10-28, H4-07).
     let from_hazardous = file
@@ -244,6 +244,29 @@ fn hazard_weight(file: &ReviewFile, signals: &mut Vec<RiskSignal>) -> u32 {
     } else {
         0
     }
+}
+
+/// A changed line whose text holds a hazard of [`deep_diff_forge_core::text_hazards`]: what
+/// raises `hazardous_text` from a file's lines.
+fn hazardous_line(line: &PatchLine) -> bool {
+    line.kind != PatchLineKind::Context
+        && !deep_diff_forge_core::text_hazards(&line.text).is_empty()
+}
+
+/// Where `hazardous_text` stands in `file`'s lines: the side and number of the first
+/// [`MAX_EVIDENCE_PER_FILE`] changed lines [`hazard_weight`] counts, in the file's order
+/// (`diagnostics.v0`'s `hazardous_text@line`), and whether there are more. No text is kept.
+pub(crate) fn hazard_lines(file: &ReviewFile) -> (Vec<(Side, u32)>, bool) {
+    let lines = file.patch_twin.hunks.iter().flat_map(|h| &h.lines);
+    let at = |line: &PatchLine| match line.kind {
+        PatchLineKind::Removed => line.old_line.map(|n| (Side::Old, n)),
+        _ => line.new_line.map(|n| (Side::New, n)),
+    };
+    let found = lines.filter(|l| hazardous_line(l)).filter_map(at);
+    let mut found: Vec<_> = found.take(MAX_EVIDENCE_PER_FILE + 1).collect();
+    let more = found.len() > MAX_EVIDENCE_PER_FILE;
+    found.truncate(MAX_EVIDENCE_PER_FILE);
+    (found, more)
 }
 
 /// +3 for a symlink and +2 for a file made executable, recording each signal (bug hunt

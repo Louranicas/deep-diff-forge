@@ -123,7 +123,8 @@ fn signal_json(facts: &deep_diff_forge_graph::SignalFacts) -> Value {
 /// answers it, what does not, and the compiler or linter rules that prevent it. The people's
 /// form (the default, `"audience": "person"`) lists every substitute; `--audience agent` prints
 /// what an agent is shown (F7.c1, contract design 3.4): the same repairs, and of the substitutes
-/// only those with an `agent` sentence, in that sentence.
+/// only those with an `agent` sentence, in that sentence. The JSON names each entry's id beside it
+/// (`accept_ids` in the order of `accept`; `id` in each `not_accepted` entry; F1.a2).
 fn explain_signal(args: &[String]) -> Result<String, String> {
     use std::fmt::Write as _;
     let (mut json, mut agent, mut label) = (false, false, None);
@@ -158,6 +159,7 @@ fn explain_signal(args: &[String]) -> Result<String, String> {
         value["tool"] = tool();
         value["why"] = json!(remedy.why);
         value["accept"] = json!(remedy.accept);
+        value["accept_ids"] = json!(remedy.accept_ids);
         value["not_accepted"] = shown.into_iter().map(|(entry, _)| entry).collect();
         value["native_lints"] = remedy
             .native_lints
@@ -214,8 +216,12 @@ fn substitutes(remedy: &deep_diff_forge_graph::Remedy, agent: bool) -> Vec<(Valu
     if agent {
         return shown
             .filter_map(|n| {
-                n.agent
-                    .map(|a| (json!({"agent": a, "raises": n.raises}), a.into()))
+                n.agent.map(|a| {
+                    (
+                        json!({"id": n.id, "agent": a, "raises": n.raises}),
+                        a.into(),
+                    )
+                })
             })
             .collect();
     }
@@ -229,7 +235,7 @@ fn substitutes(remedy: &deep_diff_forge_graph::Remedy, agent: bool) -> Vec<(Valu
                 ),
             };
             (
-                json!({"substitute": n.substitute, "raises": n.raises}),
+                json!({"id": n.id, "substitute": n.substitute, "raises": n.raises}),
                 line,
             )
         })
@@ -810,6 +816,55 @@ mod tests {
             explain(&args(&["signal", "new_file", "--audience"])).unwrap_err(),
             "--audience takes agent or person"
         );
+    }
+
+    /// F1.a2: `signal-explain.v0` names the vocabulary id of every repair (`accept_ids`, in the
+    /// order of `accept`) and of every substitute it shows (`id`), for both audiences, and each
+    /// id is one of the pinned `fixtures/diagnostics/ids.v0.txt`.
+    #[test]
+    fn explain_signal_names_the_id_of_every_entry() {
+        let pinned = include_str!("../../../fixtures/diagnostics/ids.v0.txt");
+        let pinned: Vec<&str> = pinned.lines().collect();
+        let doc = |list: &[&str]| -> Value {
+            serde_json::from_str(&explain(&args(list)).unwrap()).unwrap()
+        };
+        for facts in deep_diff_forge_graph::vocabulary() {
+            let label = facts.label();
+            let remedy = deep_diff_forge_graph::remedy(facts.signal);
+            for audience in ["person", "agent"] {
+                let v = doc(&["signal", label, "--json", "--audience", audience]);
+                let ids = v["accept_ids"].as_array().expect("accept_ids");
+                assert_eq!(
+                    *ids,
+                    json!(remedy.accept_ids).as_array().unwrap().clone(),
+                    "{label}"
+                );
+                assert_eq!(ids.len(), v["accept"].as_array().unwrap().len(), "{label}");
+                let shown = v["not_accepted"].as_array().unwrap();
+                for entry in shown {
+                    let id = entry["id"]
+                        .as_str()
+                        .unwrap_or_else(|| panic!("{label}: {entry}"));
+                    let not = remedy.not_accepted.iter().find(|n| n.id == id).unwrap();
+                    let text = if audience == "agent" {
+                        not.agent
+                    } else {
+                        Some(not.substitute)
+                    };
+                    let member = if audience == "agent" {
+                        "agent"
+                    } else {
+                        "substitute"
+                    };
+                    assert_eq!(entry[member].as_str(), text, "{id}");
+                }
+                for id in ids.iter().chain(shown.iter().map(|e| &e["id"])) {
+                    let id = id.as_str().unwrap();
+                    assert!(pinned.contains(&id), "{id} is not pinned");
+                    assert!(id.starts_with(&format!("{label}:")), "{id}");
+                }
+            }
+        }
     }
 
     #[test]

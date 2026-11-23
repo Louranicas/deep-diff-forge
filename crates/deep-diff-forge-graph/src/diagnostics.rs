@@ -2,7 +2,7 @@
 //! raises, at the evidence row that locates it or at its file. Built from the ranking alone: it
 //! holds no text of the change but each path, and says nothing `rank.v0` does not.
 
-use crate::evidence::Side;
+use crate::evidence::{MAX_EVIDENCE_PER_FILE, Side};
 use crate::rank::RankedFile;
 use crate::risk::RiskSignal;
 use crate::vocabulary::{facts, remedy};
@@ -24,44 +24,80 @@ pub struct Diagnostic {
     pub current: bool,
     /// The row's `test_likely`; written on `panic_path_added@line` only.
     pub test_likely: bool,
+    /// Whether the admitted ranker raises this label in this file; only with [`Judge::Different`].
+    pub judge_sees: Option<bool>,
+}
+
+/// The ranker the stop's policy admits, when the producer knows it (`judge` in the document).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Judge {
+    /// The producer runs no judge and knows no admitted ranker (the CLI, the daemon, MCP).
+    Unknown,
+    /// The admitted ranker, by SHA-256, is this engine.
+    Same { ranker_sha256: String },
+    /// Another ranker is admitted; `signals` is every (path, label) of its `signals[]` on the
+    /// same input, which the producer has checked by its `input_sha256`.
+    Different {
+        ranker_sha256: String,
+        signals: Vec<(String, String)>,
+    },
+    /// The policy refused every candidate ranker.
+    NoneAdmitted,
 }
 
 /// A `deep-diff-forge.diagnostics.v0` document; `cut` is `{path, rows_kept}` in rank order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostics {
     pub seal: InputSeal,
+    pub judge: Judge,
     pub files: usize,
     pub cut: Vec<(String, usize)>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
-/// `<label>@line` or `<label>@file`; only an evidence row locates a label at a line.
+/// `<label>@line` or `<label>@file`; an evidence row, or a line `hazardous_text` stands on,
+/// locates a label at a line.
 #[must_use]
 pub fn code_of(signal: RiskSignal, line: bool) -> Option<String> {
     let anchor = if line { "line" } else { "file" };
-    (!line || matches!(signal, RiskSignal::Code(_))).then(|| format!("{}@{anchor}", signal.label()))
+    let located = matches!(signal, RiskSignal::Code(_) | RiskSignal::HazardousText);
+    (!line || located).then(|| format!("{}@{anchor}", signal.label()))
 }
 
 /// The diagnostics of `ranked`, the ranking of the input `seal` seals, in its order: per file,
-/// one `@line` per evidence row in the list's order, then one `@file` per label of `signals`
-/// no row locates, in that order.
+/// one `@line` per evidence row in the list's order, then one `hazardous_text@line` per line
+/// that raises it while the file has fewer than [`MAX_EVIDENCE_PER_FILE`] located ones, then
+/// one `@file` per label of `signals` none locates, in that order. `judge` is `unknown`.
 #[must_use]
 pub fn diagnostics(seal: &InputSeal, ranked: &[RankedFile]) -> Diagnostics {
-    let mut seen = HashMap::new();
-    let mut out = Vec::new();
+    let (mut seen, mut out, mut cut) = (HashMap::new(), Vec::new(), Vec::new());
     for file in ranked {
         let row = |e: &crate::Evidence| (RiskSignal::Code(e.signal), Some((e.side, e.line)));
         let rows = file
             .evidence
             .iter()
             .map(|e| (row(e), e.read_now, e.test_likely));
-        let located = |s: &RiskSignal| file.evidence.iter().any(|e| row(e).0 == *s);
+        let room = MAX_EVIDENCE_PER_FILE.saturating_sub(file.evidence.len());
+        let hazards = &file.hazard_lines[..file.hazard_lines.len().min(room)];
+        if file.evidence_truncated
+            || file.hazard_lines_cut
+            || hazards.len() < file.hazard_lines.len()
+        {
+            cut.push((file.path.clone(), file.evidence.len() + hazards.len()));
+        }
+        let kept = hazards.len();
+        let hazards = hazards
+            .iter()
+            .map(|&at| ((RiskSignal::HazardousText, Some(at)), true, false));
+        let located = |s: &RiskSignal| {
+            file.evidence.iter().any(|e| row(e).0 == *s)
+                || (*s == RiskSignal::HazardousText && kept > 0)
+        };
         let floor =
             |s: RiskSignal| matches!(s, RiskSignal::Code(e) if file.floor_only.contains(&e));
         let unlocated = file.signals.iter().filter(|s| !located(s));
-        for ((signal, at), current, test_likely) in
-            rows.chain(unlocated.map(|&s| ((s, None), !floor(s), false)))
-        {
+        let unlocated = unlocated.map(|&s| ((s, None), !floor(s), false));
+        for ((signal, at), current, test_likely) in rows.chain(hazards).chain(unlocated) {
             let seen = seen.entry((&file.path, signal.label(), at)).or_insert(0);
             let (occurrence, code) = (*seen, code_of(signal, at.is_some()).unwrap_or_default());
             *seen += 1;
@@ -74,14 +110,14 @@ pub fn diagnostics(seal: &InputSeal, ranked: &[RankedFile]) -> Diagnostics {
                 occurrence,
                 current,
                 test_likely,
+                judge_sees: None,
             });
         }
     }
-    let cut = ranked.iter().filter(|f| f.evidence_truncated);
-    let cut = cut.map(|f| (f.path.clone(), f.evidence.len())).collect();
     let (seal, files) = (seal.clone(), ranked.len());
     Diagnostics {
         seal,
+        judge: Judge::Unknown,
         files,
         cut,
         diagnostics: out,
@@ -154,11 +190,14 @@ impl Diagnostic {
             .map_or(("file", "null".into(), "null".into()), |(s, n)| {
                 ("line", format!("\"{}\"", s.label()), n.to_string())
             });
-        let likely = if self.code == "panic_path_added@line" {
+        let mut likely = if self.code == "panic_path_added@line" {
             format!(", \"test_likely\": {}", self.test_likely)
         } else {
             String::new()
         };
+        if let Some(sees) = self.judge_sees {
+            let _ = write!(likely, ", \"judge_sees\": {sees}");
+        }
         format!(
             "{{\"key\": \"{}\", \"code\": \"{}\", \"label\": \"{label}\", \"class\": \"{class}\", \"path\": {}, \"anchor\": \"{anchor}\", \"side\": {side}, \"line\": {line}, \"occurrence\": {}, \"reading\": \"{reading}\", \"audience\": \"{audience}\", \"repairs\": [{}], \"not_accepted\": [{}]{likely}}}",
             self.key,
@@ -172,8 +211,26 @@ impl Diagnostic {
 }
 
 impl Diagnostics {
+    /// The document with `judge` as its producer knows it; with [`Judge::Different`] each
+    /// diagnostic says whether that ranker raises its label in its file (`judge_sees`).
+    #[must_use]
+    pub fn judged(mut self, judge: Judge) -> Self {
+        for d in &mut self.diagnostics {
+            d.judge_sees = match &judge {
+                Judge::Different { signals, .. } => Some(
+                    signals
+                        .iter()
+                        .any(|(p, l)| *p == d.path && l == d.signal.label()),
+                ),
+                _ => None,
+            };
+        }
+        self.judge = judge;
+        self
+    }
+
     /// The canonical bytes: schema first, members in the contract's order, two-space indent,
-    /// one item a line. `judge` is `unknown`: no producer of this document runs a judge yet.
+    /// one item a line.
     #[must_use]
     pub fn to_json(&self) -> String {
         let mut texts = BTreeMap::new();
@@ -191,8 +248,15 @@ impl Diagnostics {
             .iter()
             .map(|(id, t)| format!("\"{id}\": {}", safe(t)))
             .collect();
+        let (state, ranker) = match &self.judge {
+            Judge::Unknown => ("unknown", None),
+            Judge::Same { ranker_sha256 } => ("same", Some(ranker_sha256)),
+            Judge::Different { ranker_sha256, .. } => ("different", Some(ranker_sha256)),
+            Judge::NoneAdmitted => ("none_admitted", None),
+        };
+        let ranker = ranker.map_or_else(|| "null".into(), |r| safe(r));
         format!(
-            "{{\n  \"schema\": \"deep-diff-forge.diagnostics.v0\",\n  \"input_sha256\": \"{}\",\n  \"tool\": {{\"name\": {}, \"version\": {}, \"scorer_sha256\": \"{}\"}},\n  \"judge\": {{\"state\": \"unknown\", \"ranker_sha256\": null}},\n  \"counts\": {{\"files\": {}, \"diagnostics\": {}, \"agent\": {agent}, \"person\": {}, \"cut_files\": {}}},\n  \"cut\": {},\n  \"diagnostics\": {},\n  \"texts\": {}\n}}\n",
+            "{{\n  \"schema\": \"deep-diff-forge.diagnostics.v0\",\n  \"input_sha256\": \"{}\",\n  \"tool\": {{\"name\": {}, \"version\": {}, \"scorer_sha256\": \"{}\"}},\n  \"judge\": {{\"state\": \"{state}\", \"ranker_sha256\": {ranker}}},\n  \"counts\": {{\"files\": {}, \"diagnostics\": {}, \"agent\": {agent}, \"person\": {}, \"cut_files\": {}}},\n  \"cut\": {},\n  \"diagnostics\": {},\n  \"texts\": {}\n}}\n",
             self.seal.input_sha256,
             safe(InputSeal::TOOL_NAME),
             safe(&self.seal.tool_version),
@@ -282,10 +346,19 @@ mod tests {
                     );
                     assert_eq!(found, want, "{patch}");
                 }
+                let room = MAX_EVIDENCE_PER_FILE - file.evidence.len();
+                for &at in file.hazard_lines.iter().take(room) {
+                    let d = rest.next().expect("a diagnostic for every hazardous line");
+                    let want = (&file.path, RiskSignal::HazardousText, Some(at), true);
+                    assert_eq!((&d.path, d.signal, d.at, d.current), want, "{patch}");
+                }
                 let located = |s: &RiskSignal| {
                     file.evidence
                         .iter()
                         .any(|e| RiskSignal::Code(e.signal) == *s)
+                        || (*s == RiskSignal::HazardousText
+                            && room > 0
+                            && !file.hazard_lines.is_empty())
                 };
                 for signal in file.signals.iter().filter(|s| !located(s)) {
                     let d = rest
@@ -304,7 +377,7 @@ mod tests {
         let (ranked, doc) = document(BIDI);
         assert_eq!(ranked[0].evidence, []);
         let codes: Vec<&str> = doc.diagnostics.iter().map(|d| d.code.as_str()).collect();
-        assert!(codes.contains(&"hazardous_text@file"), "{codes:?}");
+        assert_eq!(codes, ["hazardous_text@line"]);
         let (ranked, doc) = document(&cap_pad());
         assert!(
             ranked[0]
@@ -344,7 +417,8 @@ mod tests {
                     assert!(written.contains(&member), "{member} not in {written}");
                 }
                 assert!(
-                    d.at.is_none() || matches!(d.signal, RiskSignal::Code(_)),
+                    d.at.is_none()
+                        || matches!(d.signal, RiskSignal::Code(_) | RiskSignal::HazardousText),
                     "{code}"
                 );
             }
@@ -363,8 +437,7 @@ mod tests {
             .collect()
     }
 
-    /// The codes the builder can make are the pinned table, but `hazardous_text@line`, which
-    /// F1.a2 adds (a line from `core::text_hazards`); until then that label is at its file.
+    /// The codes the builder can make are the pinned table, every one of them.
     #[test]
     fn the_code_table_matches_the_builder() {
         let mut made: Vec<String> = vocabulary()
@@ -373,7 +446,6 @@ mod tests {
             .flatten()
             .collect();
         let mut pinned = codes_v0();
-        pinned.retain(|code| code != "hazardous_text@line");
         made.sort();
         pinned.sort();
         assert_eq!(made, pinned);
@@ -534,5 +606,134 @@ mod tests {
         assert_eq!(doc.diagnostics[0].code, "unsafe_added@line");
         assert!(!doc.diagnostics[0].current);
         assert!(doc.to_json().contains("\"counts\": {\"files\": 1, \"diagnostics\": 1, \"agent\": 0, \"person\": 1, \"cut_files\": 0}"));
+    }
+
+    /// `hazardous_text` from a line is located at that line (`core::text_hazards`, as the
+    /// score reads it); one from the path alone, which has no line, is at its file. The text of
+    /// the line never reaches the document.
+    #[test]
+    fn hazardous_text_is_located_per_line_and_its_text_is_never_copied() {
+        let canary = ["canary", "-c0ffee"].concat();
+        let patch = format!(
+            "--- a/src/h.rs\n+++ b/src/h.rs\n@@ -1,2 +1,2 @@\n ctx\n-let a = \"{canary}\u{200B}\";\n+let a = \"{canary}\u{202E}\";\n"
+        );
+        let doc = document(&patch).1;
+        let found: Vec<_> = doc
+            .diagnostics
+            .iter()
+            .map(|d| (d.code.as_str(), d.at))
+            .collect();
+        let want = [
+            ("hazardous_text@line", Some((Side::Old, 2))),
+            ("hazardous_text@line", Some((Side::New, 2))),
+        ];
+        assert_eq!(found, want);
+        let json = doc.to_json();
+        assert!(json.contains("\"side\": \"old\", \"line\": 2"), "{json}");
+        assert!(
+            !json.contains(&canary) && !json.contains('\u{202E}'),
+            "{json}"
+        );
+        let name = "src/a\u{202E}b.rs";
+        let doc = document(&format!(
+            "--- a/{name}\n+++ b/{name}\n@@ -1,1 +1,2 @@\n a\n+b\n"
+        ))
+        .1;
+        let found: Vec<_> = doc
+            .diagnostics
+            .iter()
+            .map(|d| (d.code.as_str(), d.at))
+            .collect();
+        assert_eq!(found, [("hazardous_text@file", None)]);
+    }
+
+    /// `n` added lines that each carry a bidi control, after `rows` lines of `unsafe`.
+    fn hazards_after_rows(rows: usize, n: usize) -> String {
+        let mut text = format!(
+            "--- a/src/z.rs\n+++ b/src/z.rs\n@@ -0,0 +1,{} @@\n",
+            rows + n
+        );
+        for i in 0..rows {
+            let _ = writeln!(text, "+unsafe {{ f{i}() }}");
+        }
+        for i in 0..n {
+            let _ = writeln!(text, "+let s{i} = \"\u{202E}\";");
+        }
+        text
+    }
+
+    /// A file keeps at most 32 located diagnostics and the ranking at most 32 hazardous lines:
+    /// past that the file is in `cut` with the number kept. While a `hazardous_text@line`
+    /// stands the label is located; when the rows took every place, it is at its file.
+    #[test]
+    fn hazardous_lines_over_the_cap_are_cut_and_said() {
+        let (ranked, doc) = document(&hazards_after_rows(0, 40));
+        assert_eq!(
+            (ranked[0].hazard_lines.len(), ranked[0].hazard_lines_cut),
+            (32, true)
+        );
+        let lines = |doc: &Diagnostics, code: &str| {
+            doc.diagnostics.iter().filter(|d| d.code == code).count()
+        };
+        assert_eq!(lines(&doc, "hazardous_text@line"), 32);
+        assert_eq!(lines(&doc, "hazardous_text@file"), 0);
+        assert_eq!(doc.cut, [("src/z.rs".to_owned(), 32)]);
+        let (ranked, doc) = document(&hazards_after_rows(30, 5));
+        assert_eq!(
+            (ranked[0].evidence.len(), ranked[0].evidence_truncated),
+            (30, false)
+        );
+        assert_eq!(lines(&doc, "hazardous_text@line"), 2);
+        assert_eq!(doc.cut, [("src/z.rs".to_owned(), 32)]);
+        let (ranked, doc) = document(&hazards_after_rows(33, 1));
+        assert_eq!(ranked[0].evidence.len(), 32);
+        assert_eq!(lines(&doc, "hazardous_text@line"), 0);
+        assert_eq!(lines(&doc, "hazardous_text@file"), 1);
+        assert_eq!(doc.cut, [("src/z.rs".to_owned(), 32)]);
+        let doc = document(&hazards_after_rows(31, 1)).1;
+        assert_eq!((lines(&doc, "hazardous_text@line"), doc.cut.len()), (1, 0));
+    }
+
+    /// `judge` says what the producer knows; with another admitted ranker each diagnostic says
+    /// whether that ranker raises its label in its file.
+    #[test]
+    fn the_judge_is_written_as_the_producer_knows_it() {
+        let doc = document(&hazards_after_rows(1, 1)).1;
+        let judge = |doc: &Diagnostics| {
+            let json = doc.to_json();
+            json.lines()
+                .find(|l| l.contains("\"judge\""))
+                .unwrap()
+                .to_owned()
+        };
+        let unknown = "  \"judge\": {\"state\": \"unknown\", \"ranker_sha256\": null},";
+        assert_eq!(judge(&doc), unknown);
+        assert!(!doc.to_json().contains("judge_sees"));
+        let sha = "ab".repeat(32);
+        let same = doc.clone().judged(Judge::Same {
+            ranker_sha256: sha.clone(),
+        });
+        let want = format!("  \"judge\": {{\"state\": \"same\", \"ranker_sha256\": \"{sha}\"}},");
+        assert_eq!(judge(&same), want);
+        assert!(!same.to_json().contains("judge_sees"));
+        let none = doc.clone().judged(Judge::NoneAdmitted);
+        assert!(judge(&none).contains("\"none_admitted\", \"ranker_sha256\": null"));
+        let signals = vec![("src/z.rs".to_owned(), "unsafe_added".to_owned())];
+        let other = doc.judged(Judge::Different {
+            ranker_sha256: sha,
+            signals,
+        });
+        assert!(judge(&other).contains("\"state\": \"different\""));
+        let json = other.to_json();
+        for d in &other.diagnostics {
+            let sees = d.code.starts_with("unsafe_added");
+            assert_eq!(d.judge_sees, Some(sees), "{}", d.code);
+            let written = json.lines().find(|l| l.contains(&d.key)).unwrap();
+            assert!(
+                written.ends_with(&format!(", \"judge_sees\": {sees}}},"))
+                    || written.ends_with(&format!(", \"judge_sees\": {sees}}}")),
+                "{written}"
+            );
+        }
     }
 }

@@ -50,8 +50,10 @@ The pairs (path, label) of the diagnostics are exactly the pairs of `signals[]` 
 the same input and scorer: none is added, none is left out. Every evidence row is a `@line`
 diagnostic. A label raised from the path, the status or the modes, or one whose rows were cut, is a
 `@file` diagnostic. Files come in `rank.v0` order. Inside a file come the rows in `rank.v0` order,
-then `hazardous_text@line` diagnostics, then one `@file` diagnostic per remaining label in
-`signals[]` order. A file keeps at most 32 located diagnostics; a file over that is listed in `cut`.
+then `hazardous_text@line` diagnostics, one per changed line whose text carries the hazard (its
+place only, never its text), then one `@file` diagnostic per remaining label in `signals[]`
+order. A file keeps at most 32 located diagnostics, rows first; a file over that is listed in
+`cut`. `hazardous_text` raised by a path alone, or whose lines found no place, is `@file`.
 
 ## Readings
 

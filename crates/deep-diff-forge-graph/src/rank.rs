@@ -30,6 +30,13 @@ pub struct RankedFile {
     /// The code signals no item of which a reading of this version finds, over every item, not
     /// only the listed ones ([`Evidence::read_now`]): `floor_only` in `diagnostics.v0`.
     pub floor_only: Vec<EvidenceSignal>,
+    /// The side and number of every changed line whose text raises `hazardous_text`, in the
+    /// file's order (`hazardous_text@line` in `diagnostics.v0`); empty when the label is not
+    /// raised, and when only the path raises it.
+    pub hazard_lines: Vec<(crate::Side, u32)>,
+    /// More lines raise `hazardous_text` than the [`MAX_EVIDENCE_PER_FILE`] that
+    /// `hazard_lines` holds.
+    pub hazard_lines_cut: bool,
 }
 
 impl RankedFile {
@@ -59,6 +66,12 @@ impl RankedFile {
         });
         let floor_only = floor_only.collect();
         let (evidence, evidence_truncated) = listed(assessment.evidence);
+        let (hazard_lines, hazard_lines_cut) =
+            if assessment.signals.contains(&RiskSignal::HazardousText) {
+                crate::risk::hazard_lines(file)
+            } else {
+                (Vec::new(), false)
+            };
         Self {
             path: file.path.clone(),
             status: file.status,
@@ -68,6 +81,8 @@ impl RankedFile {
             evidence_truncated,
             diff_suppressed: file.patch_twin.diff_suppressed,
             floor_only,
+            hazard_lines,
+            hazard_lines_cut,
         }
     }
 }
