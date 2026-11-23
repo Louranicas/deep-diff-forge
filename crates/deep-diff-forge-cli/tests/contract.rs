@@ -684,6 +684,9 @@ fn patch_option_rows<'a>(
             vec!["agent", "setup", "--client", "claude", "--hooks"],
         ),
         ("--gate", vec!["agent", "doctor", "--gate"]),
+        // F3: `agent check` prints its document, with the reason when it cannot judge
+        ("--session", vec!["agent", "check", "--session", "x"]),
+        ("--base", vec!["agent", "check", "--base", "refs/no/such"]),
         (
             "--judge",
             vec![

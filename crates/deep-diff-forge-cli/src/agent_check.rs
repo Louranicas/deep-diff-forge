@@ -1,0 +1,223 @@
+//! `agent check` (F3, part 1): the judgement a stop gives the uncommitted change, on demand,
+//! with the judge named by `--judge` (never one from `PATH`). It judges the uncommitted change
+//! alone: what is staged and the session's commits are not judged in this build, so it never
+//! says it is the stop's answer.
+
+use crate::emit;
+use crate::hook::{self, Judged};
+use deep_diff_forge_core::{display_safe, exit};
+use serde_json::{Value, json};
+use std::path::Path;
+
+pub(crate) const CHECK_USAGE: &str = "deep-diff-forge agent check [--session ID | --base REV] [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--json]";
+
+/// What a check does not judge, said with every answer: true of this build whatever it finds.
+const NOT_THE_STOP: &str = "This is not the stop's answer: a stop also judges what is staged and each commit of the session, and blocks only for a failure that has not blocked before; this build of agent check judges the uncommitted change alone.";
+
+pub(crate) fn run(args: &[String]) {
+    crate::args::admit_or_exit(
+        args,
+        &crate::args::Spec {
+            flags: &["--json", "--require-pass"],
+            valued: &[
+                "--session",
+                "--base",
+                "--judge",
+                "--policy",
+                "--ranker-dir",
+                "--range",
+            ],
+            positionals: 0,
+        },
+        CHECK_USAGE,
+    );
+    if crate::flag_value(args, "--range").is_some() || args.iter().any(|a| a == "--require-pass") {
+        refuse("--range and --require-pass are not in this build of agent check");
+    }
+    let (session, base) = (
+        crate::flag_value(args, "--session"),
+        crate::flag_value(args, "--base"),
+    );
+    if session.is_some() && base.is_some() {
+        refuse("--session and --base exclude each other: a session names its own base");
+    }
+    let document = check(session.as_deref(), base.as_deref(), args);
+    if args.iter().any(|a| a == "--json") {
+        crate::emit_pretty_json(&document);
+    } else {
+        emitln!("{}", text(&document));
+    }
+}
+
+fn refuse(why: &str) -> ! {
+    eprintln!("error: {why}");
+    eprintln!("usage: {CHECK_USAGE}");
+    std::process::exit(exit::USAGE);
+}
+
+/// The document `deep-diff-forge.agent-check.v0`: what was judged, with what, and what that
+/// says of a stop. A check that cannot judge says why in `unjudged` and has no unit.
+fn check(session: Option<&str>, base: Option<&str>, args: &[String]) -> Value {
+    let mut doc = json!({
+        "schema": "deep-diff-forge.agent-check.v0",
+        "tool": {"name": "deep-diff-forge", "version": env!("CARGO_PKG_VERSION")},
+        "project": null, "session": null, "base": null, "judge": null, "units": [],
+        "unjudged": null,
+        "stop": {"same_inputs": false, "differences": [], "whole_answer": false, "said": NOT_THE_STOP},
+    });
+    let mut differs: Vec<String> = Vec::new();
+    let found = if session.is_some() {
+        Err("reading a session is not in this build".to_owned())
+    } else {
+        differs.push(
+            "no session: the policy is read at the base named here, not at the base a session recorded"
+                .to_owned(),
+        );
+        std::env::current_dir()
+            .map_err(|e| format!("the current directory cannot be read: {e}"))
+            .and_then(|dir| crate::hook_run::project_of(&dir))
+            .map(|(top, _)| match base {
+                Some(base) => (top, base.to_owned(), "--base"),
+                None => (top, "HEAD".to_owned(), "HEAD"),
+            })
+    };
+    let (top, base, from) = match found {
+        Ok(found) => found,
+        Err(why) => return unjudged(doc, &differs, &why),
+    };
+    doc["project"] = json!(top.to_string_lossy());
+    let (bench, no_judge) = installed(&top, args, &mut differs, &mut doc);
+    match crate::hook_run::check_uncommitted(&top, &base, &bench, no_judge.as_deref()) {
+        Ok((commit, judged)) => {
+            doc["base"] = json!({"commit": commit, "from": from});
+            if let Some(judged) = judged {
+                doc["units"] = json!([unit(&judged)]);
+            }
+            doc["stop"]["same_inputs"] = json!(differs.is_empty());
+            doc["stop"]["differences"] = json!(differs);
+            doc
+        }
+        Err(why) => unjudged(doc, &differs, &why),
+    }
+}
+
+fn unjudged(mut doc: Value, differs: &[String], why: &str) -> Value {
+    doc["unjudged"] = json!(why);
+    doc["stop"]["differences"] = json!(differs);
+    doc
+}
+
+/// The judge, the policy and the ranker directory the check runs with, as options for the
+/// bench: those given here. With them, why there is no judge to run (never one from `PATH`).
+fn installed(
+    _top: &Path,
+    args: &[String],
+    _differs: &mut Vec<String>,
+    doc: &mut Value,
+) -> (Vec<String>, Option<String>) {
+    let mut bench = Vec::new();
+    for flag in ["--judge", "--policy", "--ranker-dir"] {
+        if let Some(value) = crate::flag_value(args, flag) {
+            bench.extend([flag.to_owned(), value]);
+        }
+    }
+    let judge = crate::flag_value(args, "--judge");
+    doc["judge"] = json!({
+        "program": judge,
+        "policy": crate::flag_value(args, "--policy").unwrap_or_else(|| "warden.toml".to_owned()),
+        "ranker_dir": crate::flag_value(args, "--ranker-dir"),
+        "stop_hook": null,
+    });
+    let no_judge = judge
+        .is_none()
+        .then(|| "no judge: --judge was not given".to_owned());
+    (bench, no_judge)
+}
+
+/// One unit as the document gives it: its outcome, and for a hold or a fail each rule by its
+/// id with the signals and paths the judge cites (never the judge's words: they can quote the
+/// patch).
+fn unit(judged: &Judged) -> Value {
+    let rules = |rules: &[hook::RuleOutcome]| -> Value {
+        rules
+            .iter()
+            .map(|rule| {
+                json!({"id": rule.id, "held": rule.held, "violations": rule.violations.iter()
+                    .map(|(signal, path, items)| json!({"signal": signal, "path": path, "items": items}))
+                    .collect::<Vec<_>>()})
+            })
+            .collect()
+    };
+    let (outcome, rules, notes, reason) = match judged {
+        Judged::Pass => ("pass", json!([]), 0, None),
+        Judged::Hold { rules: r, said } => ("hold", rules(r), said.len(), None),
+        Judged::Fail { rules: r, said } => ("fail", rules(r), said.len(), None),
+        Judged::Unjudged { reason } => ("unjudged", json!([]), 0, Some(reason.as_str())),
+    };
+    json!({"unit": "uncommitted", "outcome": outcome, "rules": rules, "judge_notes": notes, "reason": reason})
+}
+
+/// The text form, for an agent: each path quoted and escaped, no words of the judge.
+fn text(doc: &Value) -> String {
+    let word = |value: &Value| display_safe(value.as_str().unwrap_or("none")).into_owned();
+    let path = |value: &Value| {
+        value
+            .as_str()
+            .map_or_else(|| "none".to_owned(), hook::shown_path)
+    };
+    let mut out = Vec::new();
+    match doc["units"].get(0) {
+        _ if !doc["unjudged"].is_null() => {
+            out.push(format!("UNJUDGED: {}", word(&doc["unjudged"])));
+        }
+        None => out
+            .push("Nothing uncommitted: the working tree equals the commit HEAD names.".to_owned()),
+        Some(unit) => {
+            let outcome = unit["outcome"].as_str().unwrap_or_default().to_uppercase();
+            match unit["reason"].as_str() {
+                Some(reason) => out.push(format!(
+                    "The uncommitted change: {outcome}: {}",
+                    display_safe(reason)
+                )),
+                None => out.push(format!("The uncommitted change: {outcome}")),
+            }
+            for rule in unit["rules"].as_array().into_iter().flatten() {
+                for cited in rule["violations"].as_array().into_iter().flatten() {
+                    out.push(format!(
+                        "  {} {}: {} in {} ({} items)",
+                        if rule["held"] == true {
+                            "held"
+                        } else {
+                            "fails"
+                        },
+                        word(&rule["id"]),
+                        word(&cited["signal"]),
+                        path(&cited["path"]),
+                        cited["items"]
+                    ));
+                }
+            }
+        }
+    }
+    out.push(format!("project: {}", path(&doc["project"])));
+    out.push(format!(
+        "base: {} ({})",
+        word(&doc["base"]["commit"]),
+        word(&doc["base"]["from"])
+    ));
+    out.push(format!(
+        "judge: {}; policy: {}; ranker directory: {}; Stop hook: {}",
+        path(&doc["judge"]["program"]),
+        path(&doc["judge"]["policy"]),
+        path(&doc["judge"]["ranker_dir"]),
+        path(&doc["judge"]["stop_hook"])
+    ));
+    if doc["stop"]["same_inputs"] == true && doc["units"].get(0).is_some() {
+        out.push("Judged with what a stop of this session judges the uncommitted change with: the policy at the base the session recorded, and the judge, the policy and the ranker directory of the registered Stop hook.".to_owned());
+    }
+    for why in doc["stop"]["differences"].as_array().into_iter().flatten() {
+        out.push(format!("Not as the stop: {}", word(why)));
+    }
+    out.push(NOT_THE_STOP.to_owned());
+    out.join("\n")
+}

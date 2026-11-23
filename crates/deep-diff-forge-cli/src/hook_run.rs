@@ -6676,6 +6676,75 @@ fn settings_files(top: &Path) -> Vec<PathBuf> {
     files
 }
 
+/// The working tree around `dir`: its top level and which repository it is.
+pub(crate) fn project_of(dir: &Path) -> Result<(PathBuf, String), String> {
+    place_of(dir, Deadline::after(GATE_LIMIT)).map(|place| (place.top, place.id))
+}
+
+fn place_of(dir: &Path, deadline: Deadline) -> Result<Place, String> {
+    match find(dir, deadline) {
+        Found::Tree(place) => Ok(place),
+        Found::Failed { reason, .. } => Err(reason),
+        Found::Unpaired(unpaired) => Err(unpaired.reason(dir)),
+        Found::NotARepository | Found::AtBoundary { .. } | Found::Gone => {
+            Err(format!("{} is not in a Git repository", shown(dir)))
+        }
+    }
+}
+
+/// The uncommitted change of the working tree at `top` judged as a stop judges it: against
+/// the commit its `HEAD` names, in a scratch directory under the hooks' own directory, by the
+/// policy at the commit `base` names, with the judge and the rankers `args` names. `no_judge`
+/// says why there is no judge to run: then nothing is looked up on `PATH`. The commit `base`
+/// names comes with the answer, which is `None` when the tree equals that commit.
+pub(crate) fn check_uncommitted(
+    top: &Path,
+    base: &str,
+    args: &[String],
+    no_judge: Option<&str>,
+) -> Result<(String, Option<Judged>), String> {
+    let deadline = Deadline::after(STOP_LIMIT);
+    let place = place_of(top, deadline)?;
+    let deadline = deadline.with_project(&place);
+    let base = deep_diff_forge_patch::merge_base(&place.top, base, base, &deadline.git())
+        .map_err(|e| format!("the base names no commit: {}", git_words(&e)))?
+        .ok_or("the base names no commit")?;
+    let head = match head_state(&place.top, &deadline.git()) {
+        Ok(HeadState::Commit(id)) => id,
+        Ok(HeadState::Unborn { .. }) => base.clone(),
+        Err(e) => {
+            return Err(format!(
+                "the commit HEAD names could not be read: {}",
+                git_words(&e)
+            ));
+        }
+    };
+    let scratch = Scratch::new(&place.own)?;
+    let work = scratch.sub("tree")?;
+    let judged = match change(&place.top, &head, "the commit HEAD names", &work, deadline) {
+        Err(reason) => Some(Judged::Unjudged { reason }),
+        Ok(Change { patch: None, .. }) => None,
+        Ok(Change {
+            patch: Some(patch), ..
+        }) => Some(if let Some(why) = no_judge {
+            Judged::Unjudged {
+                reason: why.to_owned(),
+            }
+        } else {
+            let writable = [place.top.as_path(), place.common.as_path()];
+            match Bench::new(&place.top, &base, &scratch, args, &writable, deadline) {
+                Ok(bench) => {
+                    bench
+                        .judge(&patch, "change.patch", After::Trees(Duration::ZERO))
+                        .0
+                }
+                Err(reason) => Judged::Unjudged { reason },
+            }
+        }),
+    };
+    Ok((base, judged))
+}
+
 /// `agent doctor --gate`: every link a judged stop depends on, checked in order in the
 /// repository at `cwd`, each with what was found. A link that cannot be checked because an
 /// earlier one is missing is reported as not ready, never as fine.

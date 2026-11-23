@@ -67,6 +67,7 @@ fn emit_pretty_json(document: &serde_json::Value) {
 
 // Declared after `emitln!`, which it uses (a `macro_rules!` is visible only below it).
 mod agent;
+mod agent_check;
 mod doctor;
 mod hook;
 mod hook_run;
@@ -2116,8 +2117,8 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "agent",
-        "deep-diff-forge agent {setup --client claude|codex [--allow-repo PATH]... [--hooks] | doctor [--gate] | hook session-start|post-tool|stop --client claude} [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--json]",
-        "Print the MCP and hook setup for Claude Code or Codex (never written), check that every agent surface agrees, or answer a Claude Code hook: advice after a tool call, a judged stop.",
+        "deep-diff-forge agent {setup --client claude|codex [--allow-repo PATH]... [--hooks] | doctor [--gate] | check [--session ID | --base REV] | hook session-start|post-tool|stop --client claude} [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--json]",
+        "Print the MCP and hook setup for Claude Code or Codex (never written), check that every agent surface agrees, judge the uncommitted change with a stop's judge and policy (check), or answer a Claude Code hook: advice after a tool call, a judged stop.",
     ),
     (
         "mcp",
