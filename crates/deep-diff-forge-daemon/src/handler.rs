@@ -911,6 +911,42 @@ fn acquire_error(e: deep_diff_forge_patch::GitAcquireError) -> RpcError {
 /// the chosen view. Git runs with the acquisition crate's fixed argv and a 30 s limit; nothing
 /// is written. A repository outside every allowed root is refused before Git runs.
 fn review_change(params: &Value, allowed: &[std::path::PathBuf]) -> Result<Value, RpcError> {
+    let (review, acquisition) = change_review(params, allowed)?;
+    let mut answer = match params
+        .get("view")
+        .and_then(Value::as_str)
+        .unwrap_or("outline")
+    {
+        "outline" => {
+            crate::views::outline(&review, &page_param(params)?).map_err(|e| view_error(&e))?
+        }
+        "hunks" => crate::views::hunks(&review, &selection_param(params)?, &page_param(params)?)
+            .map_err(|e| view_error(&e))?,
+        "review" => review_document(&review)?,
+        "rank" => rank_document(&review),
+        other => {
+            return Err(RpcError::invalid_params(format!(
+                "view must be outline, hunks, review or rank, not {}",
+                deep_diff_forge_core::display_safe_bounded(other, ECHO_BYTES)
+            )));
+        }
+    };
+    answer["acquisition"] = acquisition;
+    Ok(answer)
+}
+
+/// `review.change`'s acquisition, for a caller that builds its own view of the change (MCP's
+/// `review_change` diagnostics view, F5b): the sealed review of the selected change in an allowed
+/// repository, under `require_files` and `require_hunks`, and the `acquisition` member that
+/// names it. The params and the checks are `review.change`'s, every one of them.
+///
+/// # Errors
+/// As `review.change`: an invalid param, a repository outside the allowed roots, a Git failure,
+/// a passed deadline or a refused input contract.
+pub fn change_review(
+    params: &Value,
+    allowed: &[std::path::PathBuf],
+) -> Result<(deep_diff_forge_patch::SealedReview, Value), RpcError> {
     use deep_diff_forge_patch::{GitSelection, acquire_git};
     let repo = std::path::PathBuf::from(str_param(params, "repo")?);
     if allowed.is_empty() {
@@ -974,26 +1010,7 @@ fn review_change(params: &Value, allowed: &[std::path::PathBuf]) -> Result<Value
         let refused = deep_diff_forge_patch::ReviewError::Refused(refusal);
         return Err(RpcError::new(INPUT_CONTRACT_REFUSED, refused.to_string()));
     }
-    let mut answer = match params
-        .get("view")
-        .and_then(Value::as_str)
-        .unwrap_or("outline")
-    {
-        "outline" => {
-            crate::views::outline(&review, &page_param(params)?).map_err(|e| view_error(&e))?
-        }
-        "hunks" => crate::views::hunks(&review, &selection_param(params)?, &page_param(params)?)
-            .map_err(|e| view_error(&e))?,
-        "review" => review_document(&review)?,
-        "rank" => rank_document(&review),
-        other => {
-            return Err(RpcError::invalid_params(format!(
-                "view must be outline, hunks, review or rank, not {}",
-                deep_diff_forge_core::display_safe_bounded(other, ECHO_BYTES)
-            )));
-        }
-    };
-    answer["acquisition"] = json!({
+    let acquisition = json!({
         "repo": top.to_string_lossy(),
         "selection": params.get("selection"),
         "base": acquisition.base(),
@@ -1008,7 +1025,7 @@ fn review_change(params: &Value, allowed: &[std::path::PathBuf]) -> Result<Value
             .map(deep_diff_forge_patch::GitPath::display_lossy)
             .collect::<Vec<_>>(),
     });
-    Ok(answer)
+    Ok((review, acquisition))
 }
 
 /// A param the method does not take is refused, not ignored: a misspelt `require_file` passed an
