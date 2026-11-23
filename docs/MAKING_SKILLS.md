@@ -46,7 +46,7 @@ This guide covers two targets:
 | Claude (Code / claude.ai / API) to *autonomously* review when asked | **Claude Agent Skill** | triggers on the `description`; progressive-disclosure-cheap; no glue code |
 | The **Pi** agent to expose review as a callable tool / `/command` | **Pi extension** | first-class `registerTool` the LLM can call mid-turn |
 | A fixed, always-identical review command in Claude Code | a **slash command** (`.claude/commands/*.md`) | simpler than a skill when there is no "when to use" judgment |
-| Any MCP client to call review as a tool, with no glue code | the built-in **MCP server** (`deep-diff-forge mcp`) | ships in the binary: eight read-only tools, `review_outline` (start here), `review_hunks`, `review_change` (with `--allow-repo`), `review_patch`, `rank_patch`, `verify_findings`, `explain_exit_code`, `exit_code_registry`; `deep-diff-forge agent setup --client claude\|codex` prints the registration |
+| Any MCP client to call review as a tool, with no glue code | the built-in **MCP server** (`deep-diff-forge mcp`) | ships in the binary: nine read-only tools, `review_outline` (start here), `review_hunks`, `diagnose_patch`, `review_change` (with `--allow-repo`), `review_patch`, `rank_patch`, `verify_findings`, `explain_exit_code`, `exit_code_registry`; `deep-diff-forge agent setup --client claude\|codex` prints the registration |
 | The same capability in *both* agents | a Skill **and** an extension over **one** `scripts/review.sh` | one substrate script, two thin wrappers — behavior can't drift |
 
 Keep the real work in a small script both wrappers call; the skill/extension is

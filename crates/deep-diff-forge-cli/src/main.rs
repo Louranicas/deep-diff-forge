@@ -2223,7 +2223,7 @@ MACHINE CONTRACT:
   vocabulary (every label a ranking can carry, with its class, weight and basis);
   explain names one exit code, or says why a signal matters, what answers it and
   what does not (explain signal <label>). mcp serves read-only MCP tools over stdio (review_outline,
-  review_hunks, review_patch, rank_patch, review_change, verify_findings,
+  review_hunks, diagnose_patch, review_patch, rank_patch, review_change, verify_findings,
   explain_exit_code, exit_code_registry).
   rpc speaks the daemon's JSON-RPC protocol over stdio without a daemon.
 
