@@ -22,6 +22,21 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - `docs/reference/diagnostics.md`: the contract of `deep-diff-forge.diagnostics.v0` (no command
   prints it yet), with 42 pinned codes (F7.h1).
 - The tree's version is 0.11.0-dev (F7.h1).
+- `--rank --fail-on LIST` (on `--stdin-patch`, `--git-*` and `<old> <new>`) is a gate on the
+  ranking. LIST holds classes (`security`, `integrity`, `shape`) and labels from
+  `schema signals`. The ranking is printed as without the flag. The command then exits 7 when any file's
+  `signals[]` holds a selected label (`fail_on_label`), or when any file's evidence list was cut
+  at 32 rows, whatever the list (`fail_on_truncated`). Each reason line is followed by the
+  escaped paths it names. A reader that closes stdout still gets exit 7. Not on rpc or MCP yet
+  (F7.i).
+- Exit-7 reason classes `fail_on_label` and `fail_on_truncated` in `schema exit-codes`,
+  `explain 7` and the MCP exit-code tools (F7.i).
+- `explain signal <label>` says its audience (`"audience": "person"`; last text line);
+  `--audience agent` prints what an agent is shown: the accepted repairs and only the
+  substitutes with a witnessed agent sentence (F7.c1).
+- Every accepted repair and substitute of the vocabulary has a fixed id (`<label>:a<k>`,
+  `<label>:n<k>`), pinned in `fixtures/diagnostics/ids.v0.txt`; five agent sentences each stand
+  on a witness patch the engine is tested on (F7.c1).
 
 ## [0.10.0] - 2026-11-23
 

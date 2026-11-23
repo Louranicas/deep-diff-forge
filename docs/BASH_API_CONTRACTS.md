@@ -44,7 +44,9 @@ shipped command that does the job today.
 `council` subcommands use their own family (0 completed, 3 recorded incomplete, 4 refused, 7 hold).
 `deep-diff-forge explain <code> [--family engine|council] [--json]` names one
 code. `deep-diff-forge explain signal <label> [--json]` explains one signal of a
-ranking instead (`deep-diff-forge schema signals` lists them).
+ranking instead (`deep-diff-forge schema signals` lists them). With `--audience agent` it
+prints what an agent is shown: the repairs, and only those substitutes that a committed
+witness patch proves this engine raises a label for.
 
 ## Stable Bootstrap Contract
 

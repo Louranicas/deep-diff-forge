@@ -2117,7 +2117,7 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "explain",
-        "deep-diff-forge explain {<code> [--family engine|council] | signal <label>} [--json]",
+        "deep-diff-forge explain {<code> [--family engine|council] | signal <label> [--audience agent|person]} [--json]",
         "Name one exit code and the action it asks for, or say why a signal matters and what answers it.",
     ),
     (

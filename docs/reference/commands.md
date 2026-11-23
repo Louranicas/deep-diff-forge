@@ -159,7 +159,7 @@ text passes through a control-character sanitiser, so the only raw escapes are f
 ```bash
 deep-diff-forge envelope -- <command…>          # any command as one ddf.result.v1 object
 deep-diff-forge schema [result|exit-codes|signals]  # the envelope's JSON Schema, the registry, or the signal vocabulary
-deep-diff-forge explain {<code> [--family engine|council] | signal <label>} [--json]
+deep-diff-forge explain {<code> [--family engine|council] | signal <label> [--audience agent|person]} [--json]
 deep-diff-forge mcp                             # read-only MCP server over stdio
 deep-diff-forge rpc                             # the daemon's JSON-RPC over stdio, no daemon
 deep-diff-forge daemon {path|start [--foreground] [--log-format text|json]|health|status|metrics [--format json|prometheus] [--out PATH]|stop} [--socket PATH]

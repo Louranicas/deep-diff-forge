@@ -640,6 +640,11 @@ fn every_documented_option_is_admitted() {
     let (address, cursor) = view_handles();
     let mut rows = patch_option_rows(&address, &cursor, &findings);
     rows.extend(command_option_rows(&source, socket.to_str().unwrap()));
+    // F7.c1: the audience of `explain signal`
+    rows.push((
+        "--audience",
+        vec!["explain", "signal", "new_file", "--audience", "agent"],
+    ));
     admits_every_documented_option(&rows);
     let _ = std::fs::remove_dir_all(&dir);
 }
