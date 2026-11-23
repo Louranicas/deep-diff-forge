@@ -8026,6 +8026,22 @@ mod tests {
         }
     }
 
+    /// A conditional allowance through a raw identifier (`r#allow`, `r#cfg_attr`) is the
+    /// attribute it names (the views read a raw identifier as the identifier it is).
+    #[test]
+    fn a_conditional_allow_through_a_raw_identifier_is_a_suppression() {
+        for line in [
+            "#[cfg_attr(test, r#allow(dead_code))]",
+            "#[r#cfg_attr(test, r#expect(dead_code))]",
+        ] {
+            assert_eq!(
+                signals(&added("src/x.rs", &[line])),
+                [S::CheckSuppressed],
+                "{line}"
+            );
+        }
+    }
+
     /// `#[expect(..)]` and `#![expect(..)]` switch a lint off as `allow` does, whatever the
     /// spacing, through a raw identifier, inside a macro's body, with or without a reason; a
     /// method `expect`, an attribute named otherwise, one in a comment or with no list are not.
@@ -9286,6 +9302,27 @@ mod tests {
         );
     }
 
+    /// The arguments of `nested_ignore_passed_functions_and_spaced_allow` that apply `allow(…)`
+    /// after a condition, in a whole attribute: since 0.11.0 (F2b) each is a suppression as well.
+    const CONDITIONAL_ALLOWANCES: [&str; 6] = [
+        "all(a, b), allow(x), ignore)]",
+        "ignore, allow(x))]",
+        "miri, allow(ignore))]",
+        "a, allow(x), cfg_attr(b, inline, ignore))]",
+        "all(), cfg_attr(ignore, allow(x)))]",
+        "cfg_attr(a, ignore), allow(x))]",
+    ];
+
+    /// What `#[cfg_attr(` and `arguments` on line 2 give: a suppression for the conditional
+    /// allowances, a skip where `skips`.
+    fn conditional_items(arguments: &str, skips: bool) -> Vec<Item> {
+        let suppresses = CONDITIONAL_ALLOWANCES.contains(&arguments);
+        [(suppresses, S::CheckSuppressed), (skips, S::TestSkipped)]
+            .into_iter()
+            .filter_map(|(on, signal)| on.then_some((signal, Basis::Lexical, 2)))
+            .collect()
+    }
+
     /// Independent review, IR-L-2 and IR-L-3: an `ignore` that belongs to another attribute is
     /// no skipped test; a function passed by name is a panic path; and `allow` is read
     /// whatever its spacing. (The arguments of a `cfg_attr`, case by case, are in the token
@@ -9344,11 +9381,7 @@ mod tests {
             ("miri, ignore)] fn a() {}", true),
             ("miri)] fn a() {}", false),
         ] {
-            let expected: &[(EvidenceSignal, Basis, u32)] = if skips {
-                &[(S::TestSkipped, Basis::Lexical, 2)]
-            } else {
-                &[]
-            };
+            let expected = conditional_items(arguments, skips);
             let line = format!("+#[cfg_attr({arguments}");
             assert_eq!(found(&hunk_of("tests/a.rs", &[&line])), expected, "{line}");
         }
@@ -9733,18 +9766,22 @@ mod tests {
             )),
             [(S::TestSkipped, Basis::Lexical, 2)]
         );
-        for line in [
-            "+#[cfg_attr(all(), cfg_attr(ignore, allow(x)))]",
-            "+#[cfg_attr(all(), serde(cfg_attr(all(), ignore)))]",
+        // since 0.11.0 (F2b) the allowance a nested `cfg_attr` applies is a suppression
+        for (line, expected) in [
+            (
+                "+#[cfg_attr(all(), cfg_attr(ignore, allow(x)))]",
+                &[(S::CheckSuppressed, Basis::Lexical, 2)][..],
+            ),
+            ("+#[cfg_attr(all(), serde(cfg_attr(all(), ignore)))]", &[]),
         ] {
             assert_eq!(
                 found(&hunk_of("tests/a.rs", &[line, "+struct A;"])),
-                [],
+                expected,
                 "{line}"
             );
             assert_eq!(
                 found(&hunk_of("tests/a.rs", &[&format!("{line} // {pad}")])),
-                [],
+                expected,
                 "{line}"
             );
         }
@@ -10913,7 +10950,7 @@ mod tests {
             "retodo ! ();",
             "x.unwrap_or ();",
             "unwrap ();",
-            "#[cfg_attr(miri, allow(ignore_me))]",
+            "#[cfg_attr(miri, doc(ignore_me))]",
             "ass ert!(true)",
             "assert!(tru",
             "assert_ne!(true, true)",

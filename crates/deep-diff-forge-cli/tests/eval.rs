@@ -198,14 +198,16 @@ use std::process::Command;
 /// Since 0.11.0 (F2b) `#[expect(..)]` is a suppression: line 8 of `src/allow.rs` leaves the
 /// declared misses for the expected items, and line 5 of `evidence/rust-negatives` is expected:
 /// precision 188 of 213, recall 188 of 265, 105 declared. The floors stay.
+/// F2b.c reads `cfg_attr(all(), allow(...))`: line 6 of `src/allow.rs` is expected too:
+/// precision 189 of 214, recall 189 of 265, 104 declared.
 const RANKING_PAIRS_FLOOR: u64 = 800_000;
 const EVIDENCE_PRECISION_FLOOR: u64 = 881_516;
 const EVIDENCE_RECALL_FLOOR: u64 = 704_545;
 const FINDINGS_FLOOR: u64 = 1_000_000;
 /// Declared misses (plan N4): each counts as wrong in its metric above. The receipt's
 /// `known_misses` keeps its first meaning, the evidence `known_miss` items; `declared` lists all.
-const DECLARED: u64 = 105;
-const EVIDENCE_KNOWN_MISSES: u64 = 77;
+const DECLARED: u64 = 104;
+const EVIDENCE_KNOWN_MISSES: u64 = 76;
 /// The smallest corpus the gate accepts, and the fewest cases of each kind.
 const MIN_CASES: usize = 30;
 const MIN_CASES_PER_KIND: usize = 3;
@@ -363,9 +365,9 @@ fn the_summary_names_each_metric_and_each_failure() {
     );
     for line in [
         "  ranking_pairs        12/15",
-        "  evidence_precision   188/213",
-        "  evidence_recall      188/265",
-        "  declared             105",
+        "  evidence_precision   189/214",
+        "  evidence_recall      189/265",
+        "  declared             104",
         "  KNOWN ranking/auth-check-removed: src/handlers/delete.rs ranks below docs/CHANGES.md",
         "  KNOWN evidence/shell-heredoc: reports (\"scripts/docs.sh\", \"network_fetch\", \"new\", 3)",
     ] {
@@ -761,7 +763,7 @@ fn a_declared_miss_must_still_be_a_miss() {
     );
     assert_eq!(
         metrics["evidence_recall"],
-        serde_json::json!({"right": 188, "total": 264, "ppm": 712_121})
+        serde_json::json!({"right": 189, "total": 264, "ppm": 715_909})
     );
 
     // A declared false positive the engine does not report.
@@ -779,7 +781,7 @@ fn a_declared_miss_must_still_be_a_miss() {
     );
     assert_eq!(
         metrics["evidence_precision"],
-        serde_json::json!({"right": 188, "total": 213, "ppm": 882_629})
+        serde_json::json!({"right": 189, "total": 214, "ppm": 883_177})
     );
 
     // A declared false positive that is also expected.
@@ -795,7 +797,7 @@ fn a_declared_miss_must_still_be_a_miss() {
             .unwrap()
             .ends_with("is not reported, or is expected: remove it")
     );
-    assert_eq!(metrics["evidence_precision"]["right"], 189);
+    assert_eq!(metrics["evidence_precision"]["right"], 190);
     assert_eq!(known, usize::try_from(DECLARED).unwrap() - 1);
 }
 

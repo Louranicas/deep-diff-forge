@@ -1085,6 +1085,11 @@ struct List {
     /// its own: the first changed line of the list up to that `ignore`, and the line the
     /// `ignore` is on.
     candidate: Option<(Option<usize>, usize)>,
+    /// The argument is `allow` or `expect` so far, and a `(` next makes it the lint attribute:
+    /// as `candidate`.
+    lint: Option<(Option<usize>, usize)>,
+    /// The suppression it holds so far, as `skip` (since 0.11.0, F2b).
+    suppression: Option<(usize, Basis)>,
     /// The skip it holds so far: the first changed line of the list up to an `ignore` that is
     /// an attribute of its own, and the rung. It is noted only when the list closes and the
     /// attribute's `]` follows (a list past [`CFG_ATTR_LISTS`] is not followed at all).
@@ -1128,6 +1133,13 @@ impl List {
 /// `cfg_attr(all(), ignore(` goes on as anything (VD3R18-M-1). The one exception: a list opened
 /// past [`CFG_ATTR_LISTS`] is not followed and is taken to hold a skip, with no `ignore` and no
 /// `]` (a writer's false item; round 19 of Vesper's review, VD3R19-M-1; IR12-L-2).
+///
+/// By the same rule, since 0.11.0 (F2b), the conditional suppressions: an argument after a
+/// condition that is `allow(` or `expect(` (`cfg_attr(test, allow(dead_code))`, nested too)
+/// switches lints off where the condition holds, and is noted as `check_suppressed` when the
+/// attribute is whole; `serde(allow(…))`, another attribute's argument, is not. A list past
+/// [`CFG_ATTR_LISTS`] is taken to hold no suppression: an allowance nested that deep is not
+/// read (taking it, like the skip, would add a writer's false item, VD3R19-M-1).
 #[derive(Default)]
 struct Skips {
     open: Vec<List>,
@@ -1145,11 +1157,11 @@ impl Skips {
         changed.map(|line| (line, basis))
     }
 
-    /// Note a skip.
-    fn note(found: &mut Found, (line, basis): (usize, Basis)) {
+    /// Note a skip, or a suppression.
+    fn note(found: &mut Found, signal: EvidenceSignal, (line, basis): (usize, Basis)) {
         found.note(Item {
             line,
-            signal: EvidenceSignal::TestSkipped,
+            signal,
             basis,
             test_likely: false,
         });
@@ -1168,10 +1180,13 @@ impl Skips {
         });
         if closed && let Some(inner) = self.open.pop() {
             // the attribute is whole: its list closed here, and its `]` follows
-            if window.marks(window.at + 1, b']')
-                && let Some(skip) = inner.skip
-            {
-                Self::note(found, skip);
+            if window.marks(window.at + 1, b']') {
+                if let Some(skip) = inner.skip {
+                    Self::note(found, EvidenceSignal::TestSkipped, skip);
+                }
+                if let Some(suppression) = inner.suppression {
+                    Self::note(found, EvidenceSignal::CheckSuppressed, suppression);
+                }
             }
             if let Some(around) = self.open.last_mut() {
                 // the inner list's `(` was a bracket of the list around it, and so were its
@@ -1210,13 +1225,16 @@ impl Skips {
             tokens: 0,
             head: None,
             candidate: None,
+            lint: None,
+            suppression: None,
             skip: None,
             closed: false,
         };
         if self.open.len() >= CFG_ATTR_LISTS {
-            // not followed: taken to hold a skip
+            // not followed: taken to hold a skip (and no suppression: a list that deep is
+            // a declared limit of that reading)
             if let Some(skip) = Self::skip(&list, changed, token.line) {
-                Self::note(found, skip);
+                Self::note(found, EvidenceSignal::TestSkipped, skip);
             }
             return;
         }
@@ -1235,6 +1253,15 @@ impl Skips {
                     .map_or((first, basis), |(at, was)| (at, was.max(basis))),
             );
         }
+        if let Some((changed, line)) = list.lint.take()
+            && token.what == What::Mark(b'(')
+            && let Some((first, basis)) = Self::skip(list, changed, line)
+        {
+            list.suppression = Some(
+                list.suppression
+                    .map_or((first, basis), |(at, was)| (at, was.max(basis))),
+            );
+        }
         if token.changed && list.changed.is_none() {
             list.changed = Some(token.line);
         }
@@ -1247,8 +1274,14 @@ impl Skips {
             What::Name(word) => {
                 if list.tokens == 0 {
                     list.head = Some(word);
-                    if word == Word::Ignore && list.argument > 0 && !list.spent {
-                        list.candidate = Some((list.changed, token.line));
+                    if list.argument > 0 && !list.spent {
+                        match word {
+                            Word::Ignore => list.candidate = Some((list.changed, token.line)),
+                            Word::Allow | Word::Expect => {
+                                list.lint = Some((list.changed, token.line));
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 list.count_token();
@@ -2068,6 +2101,73 @@ mod tests {
         assert_eq!(signals(&["+#[allow(ignore)]"]), [S::CheckSuppressed]);
     }
 
+    /// The cases of the conditional skip's tables that apply `allow(…)` after a condition, in a
+    /// whole attribute: since 0.11.0 (F2b) each is a suppression as well.
+    const SUPPRESSING: [&str; 6] = [
+        "all(a, b), allow(x), ignore)]",
+        "ignore, allow(x))]",
+        "miri, allow(ignore))]",
+        "a, allow(x), cfg_attr(b, inline, ignore))]",
+        "all(), cfg_attr(ignore, allow(x)))]",
+        "cfg_attr(a, ignore), allow(x))]",
+    ];
+
+    /// `#[cfg_attr(condition, allow(…))]` and `expect(…)` switch lints off where the
+    /// condition holds, also through a `cfg_attr` that a `cfg_attr` applies, whatever the
+    /// spacing and over lines, inner or outer (with a raw identifier in the evidence tests): a suppression on the
+    /// first changed line of the list, when the attribute is whole. Not: the condition,
+    /// another attribute's argument, a longer name, a path, no list, a list the side leaves open.
+    #[test]
+    fn a_conditional_allow_is_a_suppression() {
+        for line in [
+            "+#[cfg_attr(all(), allow(dead_code))]",
+            "+#[cfg_attr(test, expect(unused))]",
+            "+#![cfg_attr(not(test), allow(clippy::all))]",
+            "+# [ cfg_attr ( miri , allow ( x ) ) ]",
+            "+#[cfg_attr(all(), cfg_attr(test, expect(dead_code)))]",
+            "+#[cfg_attr(a, inline, allow(x, reason = \"r\"))]",
+            "+#[cfg_attr(feature = \"x\", allow(x))] fn f() {}",
+        ] {
+            assert_eq!(signals(&[line]), [S::CheckSuppressed], "{line}");
+            if line.contains('"') {
+                continue;
+            }
+            // the same over lines: every token on a line of its own
+            let spread: Vec<String> = tokens(&[line])
+                .iter()
+                .map(|token| {
+                    let rest = &line[1 + token.column..];
+                    let end = rest
+                        .bytes()
+                        .position(|byte| !names(byte))
+                        .map_or(rest.len(), |end| end.max(1));
+                    format!("+{}", &rest[..end])
+                })
+                .collect();
+            let spread: Vec<&str> = spread.iter().map(String::as_str).collect();
+            let items = new(&spread);
+            assert_eq!(items.len(), 1, "{line}, a token a line");
+            assert_eq!(
+                (items[0].0, items[0].1),
+                (S::CheckSuppressed, Basis::Hunk),
+                "{line}, a token a line"
+            );
+        }
+        for line in [
+            "+#[cfg_attr(feature = \"serde\", serde(allow(x)))]",
+            "+#[cfg_attr(allow(x), inline)]",
+            "+#[cfg_attr(test, allow)]",
+            "+#[cfg_attr(test, allowed(x))]",
+            "+#[cfg_attr(test, allow::x(y))]",
+            "+#[cfg_attr(test, allow(x)",
+            "+#[cfg_attr(test, allow(x))",
+            "+#[cfg_attr(test, inline) allow(x)]",
+            "+#[serde(allow(x))]",
+        ] {
+            assert_eq!(signals(&[line]), [], "{line}");
+        }
+    }
+
     /// The conditional skip, argument by argument. Independent review IR-L-2 (an `ignore`
     /// that is another attribute's), second independent review IR2-M-2 (a `cfg_attr` that a
     /// `cfg_attr` applies). These are the cases the line rule's `cfg_attr_skips` was held to,
@@ -2131,7 +2231,15 @@ mod tests {
             ),
             ("a, cfg_attr(b, inline))] fn f(x: u8, ignore: u8) {}", false),
         ] {
-            let expected: &[EvidenceSignal] = if skips { &[S::TestSkipped] } else { &[] };
+            // since 0.11.0 (F2b) an `allow(…)` after a condition of a whole attribute is a
+            // suppression as well
+            let suppresses = SUPPRESSING.contains(&arguments);
+            let expected: &[EvidenceSignal] = match (suppresses, skips) {
+                (true, true) => &[S::CheckSuppressed, S::TestSkipped],
+                (true, false) => &[S::CheckSuppressed],
+                (false, true) => &[S::TestSkipped],
+                (false, false) => &[],
+            };
             for opener in ["#[cfg_attr(", "# [ cfg_attr (", "#![cfg_attr("] {
                 let line = format!("+{opener}{arguments}");
                 assert_eq!(signals(&[&line]), expected, "{line}");
