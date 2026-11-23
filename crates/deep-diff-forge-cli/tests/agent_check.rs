@@ -192,6 +192,12 @@ case '@ANSWER@' in
 esac
 sum() { sha256sum < "$1" | cut -d' ' -f1; }
 sum "$patch" >> "$0.patches"
+if [ '@ANSWER@' = admit ]; then
+  if [ "$(sum "$ranker")" != "$(cat "$0.admit")" ]; then
+    echo '{"name":"invalid_input","message":"the policy does not admit this ranker"}' >&2; exit 4
+  fi
+  if grep -q '^+#\[allow' "$patch"; then code=7; fi
+fi
 sev=fail
 if [ "$code" = 7 ]; then said=fail; name=policy_fail; action=change_input; counts='"passed":0,"waived":0,"held":0,"failed":1'
 elif [ "$code" = 8 ]; then said=hold; name=policy_hold; action=review_evidence; sev=hold; counts='"passed":0,"waived":0,"held":1,"failed":0'
@@ -232,9 +238,17 @@ exit "$code"
 /// The user's Claude Code settings in `home`, registering the stop hook `agent setup --hooks`
 /// prints for this binary and `judge`.
 fn install(home: &Path, judge: &Path) {
+    install_with(home, judge, None);
+}
+
+/// [`install`], the stop command naming `--ranker-dir` when given.
+fn install_with(home: &Path, judge: &Path, ranker_dir: Option<&Path>) {
     std::fs::create_dir_all(home.join(".claude")).unwrap();
+    let rankers = ranker_dir.map_or_else(String::new, |dir| {
+        format!(" --ranker-dir '{}'", dir.display())
+    });
     let stop = format!(
-        "'{}' agent hook stop --client claude --judge '{}'",
+        "'{}' agent hook stop --client claude --judge '{}'{rankers}",
         this_binary().display(),
         std::fs::canonicalize(judge).unwrap().display()
     );
@@ -1041,4 +1055,111 @@ fn require_pass_refuses_when_there_is_no_unit() {
         stdout.starts_with("The uncommitted change: FAIL"),
         "{stdout}"
     );
+}
+
+/// A ranker directory in `scratch` holding one stand-in ranker whose body after reading its
+/// input is `then`, and a stand-in judge (`admit`) that admits that ranker alone (exit 4 for any
+/// other, this binary included) and fails a silenced lint. The judge and the directory.
+fn admitting(scratch: &Scratch, then: &str) -> (PathBuf, PathBuf) {
+    let dir = scratch.join("rankers");
+    std::fs::create_dir(&dir).unwrap();
+    let ranker = dir.join("ranker");
+    write_program(&ranker, &format!("#!/bin/sh\ncat >/dev/null\n{then}\n"));
+    let judge_path = scratch.join("judge");
+    judge(&judge_path, "admit", None);
+    let digest = deep_diff_forge_core::sha256_hex(&std::fs::read(&ranker).unwrap());
+    std::fs::write(format!("{}.admit", judge_path.display()), digest).unwrap();
+    (judge_path, dir)
+}
+
+/// What a ranker that raises no label on `a.rs` prints.
+const NO_LABEL: &str = r#"printf '%s\n' '{"schema":"deep-diff-forge.rank.v0","ranked":[{"path":"a.rs","signals":[]}]}'"#;
+
+/// F3.f: the policy admits a ranker of the ranker directory and not this binary: the stop and
+/// the check are judged with that one, the check says so, and the label this binary raises that
+/// it does not is marked advice only.
+#[test]
+fn check_runs_the_admitted_ranker() {
+    let scratch = Scratch::new("agent-check-admitted");
+    let (home, root) = repository(&scratch);
+    let (judge_path, dir) = admitting(&scratch, NO_LABEL);
+    install_with(&home, &judge_path, Some(&dir));
+    let (code, _, _) = hook(
+        &home,
+        "session-start",
+        &[],
+        &input("SessionStart", &root, "s1"),
+    );
+    assert_eq!(code, 0);
+    silence_a_lint(&root);
+    let (_, stop, _) = hook(
+        &home,
+        "stop",
+        &[
+            "--judge",
+            judge_path.to_str().unwrap(),
+            "--ranker-dir",
+            dir.to_str().unwrap(),
+        ],
+        &input("Stop", &root, "s1"),
+    );
+    assert_eq!(stop_outcome(&stop), "fail", "{stop}");
+    let doc = check_json(&home, &root, &["--session", "s1"], None);
+    let unit = &doc["units"][0];
+    assert_eq!(unit["outcome"], "fail", "the check is not the stop: {doc}");
+    assert_eq!(
+        unit["ranker"],
+        dir.join("ranker").to_str().unwrap(),
+        "{doc}"
+    );
+    assert_eq!(
+        unit["advice_only"],
+        json!([{"path": "a.rs", "label": "check_suppressed"}]),
+        "{doc}"
+    );
+    assert_eq!(doc["stop"]["whole_answer"], true, "{doc}");
+    let (_, text, _) = check(&home, &root, &["--session", "s1"], None);
+    assert!(
+        text.contains("judged with the ranker the policy admits"),
+        "{text}"
+    );
+    assert!(
+        text.contains("advice only, not judged by the pinned ranker: check_suppressed in \"a.rs\""),
+        "{text}"
+    );
+}
+
+/// F3.f: an admitted ranker that hangs, fails or prints no rank document leaves what is advice
+/// only unknown, and the unit says so: never an empty list by default.
+#[test]
+fn a_ranker_that_hangs_fails_or_is_unreadable_leaves_the_advice_unknown() {
+    for (then, said) in [
+        ("exit 3", "the admitted ranker exited 3"),
+        (
+            "echo not a ranking",
+            "the admitted ranker printed no rank document",
+        ),
+        ("sleep 60", "the admitted ranker gave no ranking"),
+    ] {
+        let scratch = Scratch::new("agent-check-ranker-trouble");
+        let (home, root) = repository(&scratch);
+        let (judge_path, dir) = admitting(&scratch, then);
+        silence_a_lint(&root);
+        let args = [
+            "--judge",
+            judge_path.to_str().unwrap(),
+            "--ranker-dir",
+            dir.to_str().unwrap(),
+        ];
+        let doc = check_json(&home, &root, &args, None);
+        let unit = &doc["units"][0];
+        assert_eq!(unit["outcome"], "fail", "{then}: {doc}");
+        assert_eq!(unit["advice_only"], Value::Null, "{then}: {doc}");
+        assert!(
+            unit["advice_unread"]
+                .as_str()
+                .is_some_and(|why| why.starts_with(said)),
+            "{then}: {doc}"
+        );
+    }
 }

@@ -2283,6 +2283,9 @@ struct Bench<'a> {
     probe: Option<String>,
     candidates: Candidates,
     deadline: Deadline,
+    /// The ranker of the last run of the judge that the policy admitted (not exit 4): written
+    /// here and read by `agent check` alone (F3.f); a stop never reads it.
+    ranked_by: std::cell::RefCell<Option<PathBuf>>,
 }
 
 impl<'a> Bench<'a> {
@@ -2327,6 +2330,7 @@ impl<'a> Bench<'a> {
             probe: probe_patch(&name, &policy),
             candidates: sealed_rankers(args, deadline)?,
             deadline,
+            ranked_by: std::cell::RefCell::new(None),
         })
     }
 
@@ -2415,6 +2419,7 @@ impl<'a> Bench<'a> {
             }
             // Exit 4: the policy does not admit this ranker. Another may be admitted.
             if code != Some(4) {
+                *self.ranked_by.borrow_mut() = Some(ranker.clone());
                 break;
             }
         }
@@ -6764,12 +6769,22 @@ fn place_of(dir: &Path, deadline: Deadline) -> Result<Place, String> {
     }
 }
 
+/// One unit `agent check` judged: `uncommitted`, `staged` or `commit`, the commit's id, the
+/// answer, and when a ranker other than this binary gave it (the policy admits that one), the
+/// ranker with the labels this binary raises on the patch that it does not, or why those could
+/// not be read (F3.f).
+pub(crate) type CheckedUnit = (&'static str, Option<String>, Judged, Option<Admitted>);
+
+/// The ranker the policy admits, when it is not this binary, with the labels this binary
+/// raises that it does not (`(path, label)`), or why those could not be read.
+pub(crate) type Admitted = (PathBuf, Result<Vec<(String, String)>, String>);
+
 /// What `agent check` judged: each unit (`uncommitted`, `staged`, `commit`) with its commit and
 /// answer, the commit the policy was read from, the session's commits (when its list was read)
 /// and whether the project has linked working trees.
 pub(crate) struct Checked {
     pub(crate) base: String,
-    pub(crate) units: Vec<(&'static str, Option<String>, Judged)>,
+    pub(crate) units: Vec<CheckedUnit>,
     pub(crate) session_commits: Option<Vec<String>>,
     pub(crate) linked: bool,
 }
@@ -6837,21 +6852,35 @@ pub(crate) fn check_units(
         };
         let mut units = Vec::new();
         let mut bench: Option<Result<Bench<'_>, String>> = None;
+        let this = std::env::current_exe().and_then(std::fs::canonicalize).ok();
         let mut judge = |patch: &[u8]| {
             let writable = [place.top.as_path(), place.common.as_path()];
             match bench.get_or_insert_with(|| {
                 Bench::new(&place.top, &base, &scratch, args, &writable, deadline)
             }) {
                 Ok(bench) => {
-                    bench
+                    let judged = bench
                         .judge(patch, "change.patch", After::Trees(Duration::ZERO))
-                        .0
+                        .0;
+                    let admitted = bench.ranked_by.borrow_mut().take();
+                    let other =
+                        admitted
+                            .filter(|ranker| Some(ranker) != this.as_ref())
+                            .map(|ranker| {
+                                let advice = advice_beyond(&ranker, patch, deadline);
+                                (ranker, advice)
+                            });
+                    (judged, other)
                 }
-                Err(reason) => Judged::Unjudged {
-                    reason: reason.clone(),
-                },
+                Err(reason) => (
+                    Judged::Unjudged {
+                        reason: reason.clone(),
+                    },
+                    None,
+                ),
             }
         };
+        let unjudged = |reason: String| (Judged::Unjudged { reason }, None);
         match change(
             &place.top,
             &head,
@@ -6859,7 +6888,7 @@ pub(crate) fn check_units(
             &scratch.sub("tree")?,
             deadline,
         ) {
-            Err(reason) => units.push(("uncommitted", None, Judged::Unjudged { reason })),
+            Err(reason) => units.push(("uncommitted", None, unjudged(reason))),
             Ok(Change { patch, .. }) => {
                 if let Some(patch) = &patch {
                     units.push(("uncommitted", None, judge(patch)));
@@ -6870,9 +6899,7 @@ pub(crate) fn check_units(
                     Err(e) => units.push((
                         "staged",
                         None,
-                        Judged::Unjudged {
-                            reason: format!("what is staged cannot be judged: {e}"),
-                        },
+                        unjudged(format!("what is staged cannot be judged: {e}")),
                     )),
                 }
             }
@@ -6881,14 +6908,16 @@ pub(crate) fn check_units(
             let sub = scratch.sub(&format!("commit-{at}"))?;
             let judged =
                 match commit_patch(&place.top, parent.as_deref(), id, &sub, &deadline.git()) {
-                    Ok(bytes) if bytes.is_empty() => Judged::Pass,
+                    Ok(bytes) if bytes.is_empty() => (Judged::Pass, None),
                     Ok(bytes) => judge(&bytes),
-                    Err(e) => Judged::Unjudged {
-                        reason: format!("the commit could not be read from Git: {e}"),
-                    },
+                    Err(e) => unjudged(format!("the commit could not be read from Git: {e}")),
                 };
             units.push(("commit", Some(id.clone()), judged));
         }
+        let units = units
+            .into_iter()
+            .map(|(kind, id, (judged, other))| (kind, id, judged, other))
+            .collect();
         Ok(Checked {
             base: base.clone(),
             units,
@@ -6900,6 +6929,58 @@ pub(crate) fn check_units(
         let _ = std::fs::remove_dir(&place.own);
     }
     checked
+}
+
+/// The labels this binary raises on `patch` that the ranker `ranker` does not, by path: what
+/// is advice only, not judged by the ranker the policy admits (F3.f, N-06). The ranker is run as
+/// the judge is (`--stdin-patch --rank --json`), under the same bounds; one that runs out of
+/// time, fails or prints no rank document gives the reason, never an empty list.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the admitted-ranker door: agent check runs the ranker the policy admits, under the judge's bounds"
+)]
+fn advice_beyond(
+    ranker: &Path,
+    patch: &[u8],
+    deadline: Deadline,
+) -> Result<Vec<(String, String)>, String> {
+    let mut command = std::process::Command::new(ranker);
+    command.args(["--stdin-patch", "--rank", "--json"]);
+    let limits = Limits {
+        time: deadline.left().min(JUDGE_TIME),
+        stdout_bytes: JUDGE_STDOUT,
+        stderr_bytes: JUDGE_STDERR,
+    };
+    let done = run_bounded(&mut command, patch, limits)
+        .map_err(|stopped| format!("the admitted ranker gave no ranking: {stopped}"))?;
+    if !done.status.success() {
+        return Err(format!(
+            "the admitted ranker exited {}",
+            done.status
+                .code()
+                .map_or_else(|| "on a signal".to_owned(), |c| c.to_string())
+        ));
+    }
+    let unread = || "the admitted ranker printed no rank document".to_owned();
+    let document: Value = serde_json::from_slice(&done.stdout).map_err(|_| unread())?;
+    if document["schema"] != "deep-diff-forge.rank.v0" {
+        return Err(unread());
+    }
+    let mut theirs = BTreeSet::new();
+    for file in document["ranked"].as_array().ok_or_else(unread)? {
+        let file_path = file["path"].as_str().ok_or_else(unread)?;
+        for label in file["signals"].as_array().ok_or_else(unread)? {
+            theirs.insert((
+                file_path.to_owned(),
+                label.as_str().ok_or_else(unread)?.to_owned(),
+            ));
+        }
+    }
+    let ours: BTreeSet<(String, String)> = findings(patch)?
+        .into_iter()
+        .map(|finding| (finding.path, finding.label))
+        .collect();
+    Ok(ours.difference(&theirs).cloned().collect())
 }
 
 /// The commit `rev` names in the project at `place`.

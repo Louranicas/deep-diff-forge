@@ -132,7 +132,9 @@ fn check(session: Option<&str>, base: Option<&str>, args: &[String]) -> Value {
     doc["units"] = checked
         .units
         .iter()
-        .map(|(kind, id, judged)| unit(kind, id.as_deref(), judged))
+        .map(|(kind, id, judged, other)| {
+            unit_with_advice(kind, id.as_deref(), judged, other.as_ref())
+        })
         .collect();
     // The units a stop of the session answers for that were not judged here.
     if let Some((Err(why), _)) = &lists {
@@ -146,7 +148,7 @@ fn check(session: Option<&str>, base: Option<&str>, args: &[String]) -> Value {
             checked
                 .units
                 .iter()
-                .any(|(_, at, _)| at.as_ref() == Some(id))
+                .any(|(_, at, _, _)| at.as_ref() == Some(id))
         };
         let left = all.iter().filter(|id| !judged(id)).count();
         if left > 0 {
@@ -178,7 +180,7 @@ fn may_differ(checked: &crate::hook_run::Checked, answered: Option<&[String]>) -
     if checked
         .units
         .iter()
-        .any(|(_, _, judged)| matches!(judged, Judged::Fail { .. }))
+        .any(|(_, _, judged, _)| matches!(judged, Judged::Fail { .. }))
     {
         said.push("a failure blocks a stop once: what has blocked before stands at the stop and does not block again (the session's memory of it is not read here)".to_owned());
     }
@@ -186,7 +188,7 @@ fn may_differ(checked: &crate::hook_run::Checked, answered: Option<&[String]>) -
     let known = checked
         .units
         .iter()
-        .filter(|(_, id, _)| id.as_ref().is_some_and(recorded))
+        .filter(|(_, id, _, _)| id.as_ref().is_some_and(recorded))
         .count();
     if known > 0 {
         said.push(format!("{known} of these commits have an answer an earlier stop recorded: the stop reports that answer and does not ask the judge again"));
@@ -320,8 +322,32 @@ fn unit(kind: &str, commit: Option<&str>, judged: &Judged) -> Value {
         Judged::Fail { rules: r, said } => ("fail", rules(r), &said[..], None),
         Judged::Unjudged { reason } => ("unjudged", json!([]), &[][..], Some(reason.as_str())),
     };
-    json!({"unit": kind, "commit": commit, "outcome": outcome, "rules": rules, "judge_notes": said.len(),
+    json!({"unit": kind, "commit": commit, "ranker": null, "advice_only": null, "advice_unread": null, "outcome": outcome, "rules": rules, "judge_notes": said.len(),
            "judge_note_codes": said.iter().map(|words| note_code(words)).collect::<Vec<_>>(), "reason": reason})
+}
+
+/// [`unit()`], with the ranker the policy admits when it is not this binary, and what it leaves
+/// to advice (F3.f).
+fn unit_with_advice(
+    kind: &str,
+    id: Option<&str>,
+    judged: &Judged,
+    other: Option<&crate::hook_run::Admitted>,
+) -> Value {
+    let mut unit = unit(kind, id, judged);
+    if let Some((ranker, advice)) = other {
+        unit["ranker"] = json!(ranker.to_string_lossy());
+        match advice {
+            Ok(labels) => {
+                unit["advice_only"] = labels
+                    .iter()
+                    .map(|(path, label)| json!({"path": path, "label": label}))
+                    .collect();
+            }
+            Err(why) => unit["advice_unread"] = json!(why),
+        }
+    }
+    unit
 }
 
 /// What kind of thing the judge named beside its rules, as a code and never in its words: the
@@ -358,54 +384,7 @@ fn text(doc: &Value) -> String {
         out.push("Nothing to judge: the working tree and the index equal the commit HEAD names, and no commit was judged.".to_owned());
     }
     for unit in doc["units"].as_array().into_iter().flatten() {
-        let name = match (unit["unit"].as_str(), unit["commit"].as_str()) {
-            (Some("staged"), _) => "The staged change".to_owned(),
-            (Some("commit"), Some(id)) => format!(
-                "Commit {}",
-                display_safe(&id.chars().take(12).collect::<String>())
-            ),
-            _ => "The uncommitted change".to_owned(),
-        };
-        {
-            let outcome = unit["outcome"].as_str().unwrap_or_default().to_uppercase();
-            match unit["reason"].as_str() {
-                Some(reason) => out.push(format!("{name}: {outcome}: {}", display_safe(reason))),
-                None => out.push(format!("{name}: {outcome}")),
-            }
-            for rule in unit["rules"].as_array().into_iter().flatten() {
-                for cited in rule["violations"].as_array().into_iter().flatten() {
-                    out.push(format!(
-                        "  {} {}: {} in {} ({} items)",
-                        if rule["held"] == true {
-                            "held"
-                        } else {
-                            "fails"
-                        },
-                        word(&rule["id"]),
-                        word(&cited["signal"]),
-                        path(&cited["path"]),
-                        cited["items"]
-                    ));
-                }
-            }
-            let notes = unit["judge_notes"].as_u64().unwrap_or(0);
-            let codes: Vec<String> = unit["judge_note_codes"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(word)
-                .collect();
-            if notes > 0 {
-                out.push(format!(
-                    "  the judge also named {notes} thing(s) that are not rules ({}); its words are not repeated: judge_note_codes in the --json form",
-                    codes.join(", ")
-                ));
-            } else if matches!(unit["outcome"].as_str(), Some("hold" | "fail"))
-                && unit["rules"].as_array().is_none_or(Vec::is_empty)
-            {
-                out.push("  the judge named no rule and nothing beside its rules".to_owned());
-            }
-        }
+        unit_text(unit, &mut out);
     }
     out.push(format!("project: {}", path(&doc["project"])));
     out.push(format!(
@@ -432,6 +411,83 @@ fn text(doc: &Value) -> String {
     }
     out.push(word(&doc["stop"]["said"]));
     out.join("\n")
+}
+
+/// The lines of one unit in the text form.
+fn unit_text(unit: &Value, out: &mut Vec<String>) {
+    let word = |value: &Value| display_safe(value.as_str().unwrap_or("none")).into_owned();
+    let path = |value: &Value| {
+        value
+            .as_str()
+            .map_or_else(|| "none".to_owned(), hook::shown_path)
+    };
+    let name = match (unit["unit"].as_str(), unit["commit"].as_str()) {
+        (Some("staged"), _) => "The staged change".to_owned(),
+        (Some("commit"), Some(id)) => format!(
+            "Commit {}",
+            display_safe(&id.chars().take(12).collect::<String>())
+        ),
+        _ => "The uncommitted change".to_owned(),
+    };
+    {
+        let outcome = unit["outcome"].as_str().unwrap_or_default().to_uppercase();
+        match unit["reason"].as_str() {
+            Some(reason) => out.push(format!("{name}: {outcome}: {}", display_safe(reason))),
+            None => out.push(format!("{name}: {outcome}")),
+        }
+        for rule in unit["rules"].as_array().into_iter().flatten() {
+            for cited in rule["violations"].as_array().into_iter().flatten() {
+                out.push(format!(
+                    "  {} {}: {} in {} ({} items)",
+                    if rule["held"] == true {
+                        "held"
+                    } else {
+                        "fails"
+                    },
+                    word(&rule["id"]),
+                    word(&cited["signal"]),
+                    path(&cited["path"]),
+                    cited["items"]
+                ));
+            }
+        }
+        let notes = unit["judge_notes"].as_u64().unwrap_or(0);
+        let codes: Vec<String> = unit["judge_note_codes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(word)
+            .collect();
+        if notes > 0 {
+            out.push(format!(
+                    "  the judge also named {notes} thing(s) that are not rules ({}); its words are not repeated: judge_note_codes in the --json form",
+                    codes.join(", ")
+                ));
+        } else if matches!(unit["outcome"].as_str(), Some("hold" | "fail"))
+            && unit["rules"].as_array().is_none_or(Vec::is_empty)
+        {
+            out.push("  the judge named no rule and nothing beside its rules".to_owned());
+        }
+        if let Some(ranker) = unit["ranker"].as_str() {
+            out.push(format!(
+                "  judged with the ranker the policy admits, {}, not this binary",
+                hook::shown_path(ranker)
+            ));
+        }
+        for advice in unit["advice_only"].as_array().into_iter().flatten() {
+            out.push(format!(
+                "  advice only, not judged by the pinned ranker: {} in {}",
+                word(&advice["label"]),
+                path(&advice["path"])
+            ));
+        }
+        if let Some(why) = unit["advice_unread"].as_str() {
+            out.push(format!(
+                "  what is advice only is not known: {}",
+                display_safe(why)
+            ));
+        }
+    }
 }
 
 #[cfg(test)]

@@ -434,9 +434,19 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   `outcome` `pass`, `hold`, `fail` or `unjudged`, each rule by `id` with `held` and the
   `signal`, `path` and number of `items` of each violation, the number of things the judge
   named beside its rules, `judge_notes`, with their codes, `judge_note_codes`, and the
-  `reason` of an UNJUDGED), `unjudged` (why nothing could be judged: no repository, no
+  `reason` of an UNJUDGED, and `ranker`, `advice_only` and `advice_unread`, below),
+  `unjudged` (why nothing could be judged: no repository, no
   judge, a session with no state or no base, a base or a range that is refused) and `stop`.
   Nothing of the judge's own words is repeated: they can quote the patch.
+  **A ranker the policy admits.** The rankers are offered as a stop offers them (this binary
+  first, then the ranker directory), so when the policy admits another one the unit is judged
+  with that one, as at the stop, and its `ranker` names it ("judged with the ranker the policy
+  admits, …, not this binary"). The check then runs that ranker on the unit's patch (`--stdin-patch
+  --rank --json`, under the judge's bounds: the time left, at most 30 seconds, and its output
+  caps) and lists in `advice_only` each label this binary raises that it does not ("advice
+  only, not judged by the pinned ranker: LABEL in PATH"). A ranker that runs out of time,
+  exits other than 0 or prints no rank document leaves `advice_only` null and says why in
+  `advice_unread`: what is advice only is then not known, which is never an empty list.
   **What it says about a stop.** `stop.same_inputs` is `true` only with a session whose base
   was read, a registered `Stop` hook that runs this binary by its own path and names a judge,
   and no option that replaces its judge, policy or ranker directory. `stop.whole_answer` is
