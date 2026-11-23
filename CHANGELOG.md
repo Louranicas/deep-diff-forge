@@ -143,6 +143,23 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   `evidence/rust-allow-in-comment-and-string`): precision 195 of 220, recall 195 of 272, 105
   declared misses; the floors stay. The risk-ranking reference states F2b's readings of
   `check_suppressed`, `build_hook` and `unsafe_added` and what they do not read (D1).
+- **Stop hook, changed on purpose (owner decision OD-J):** a stop the agent itself can make
+  unjudgeable no longer goes through at no cost. A file of the working tree the hook cannot
+  open (looked for only after staging failed: regular files the index or the untracked listing
+  names, never through a link, never waiting) and paths marked skip-worktree hold the first stop
+  of a turn once, with a sentence that names the escaped paths and nothing of Git's words; they
+  hold again when the file changes, at most three times in a session, and never at a stop that
+  follows a block. After that the stop is UNJUDGED as in 0.10.0. A nested repository stays a
+  note: the hook cannot tell whether the session made it (F12.a).
+- **Stop hook, changed on purpose (OD-J):** a hold whose only cause is a label the judge does
+  not know (every rule passed, every note `unknown_signal`) holds the stop once, naming the label
+  only when it is one of DDF's own; then HOLD as before (F12.b). The ledger records the classes
+  `work.unreadable`, `work.skip_worktree` and `hold.version_gap`, and a fail that stands as
+  `fail_stands` (F12.c). `agent check` gives the stop's sentence for these causes, and `agent
+  doctor --gate` says "a stop here would hold once, then be UNJUDGED".
+- `deep-diff-forge-patch`: `judge_patch_probed` and the type `Opens`; `JudgePatchError` gains the
+  variant `Unreadable { paths, whole, error }` (the enum is not `#[non_exhaustive]`: a match
+  outside the crate that names every variant needs an arm). `judge_patch` is unchanged (F12.a).
 
 ## [0.10.0] - 2026-11-23
 
