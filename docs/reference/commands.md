@@ -65,10 +65,14 @@ the attribute label stands, else it carries `"diff_suppressed": "unread"`. Paths
 in Git's order, each within the budget less every other section as it stands, so a large file
 that does not fit is `unread` and the files after it are still read; once the time limit has
 run out, every binary change not yet read again is `unread`. A binary by content whose text
-form passes the 64 MiB budget is therefore labelled `unread`. The labels hold when the text
-readings are dropped: if the whole patch with them does not parse (more than 1,000,000 lines,
-say), the binary sections stand and a file whose text was read is `unread`, a known cause
-stays (each binary change costs up to
+form passes the 64 MiB budget is therefore labelled `unread`. A binary section stays
+unlabelled only when no attribute covers it and Git's second reading of it succeeded and is
+not valid UTF-8 (nor UTF-16 or UTF-32): positive evidence that it is not text. Every other
+outcome that does not end in a used text section keeps a known cause or is `unread`: a reading
+Git failed or cut, and a valid UTF-8 reading not used for any reason (the parser refused it
+alone, more than 1,000,000 lines say; Git answered it as more than one change, a copy under
+the repository's `diff.renames=copies` say; or the whole patch with the readings did not
+parse) (each binary change costs up to
 two more Git calls, about 8 ms each: 300 changed images took 2.4 s instead of 0.25 s, measured
 2026-11-22). `--stdin-patch` reviews the patch it is given: a binary section a
 caller pipes in cannot be read again. A file pair (below) also shows a file with a NUL byte as

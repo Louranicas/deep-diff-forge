@@ -873,10 +873,13 @@ pub fn acquire(
 /// within the budget less every other section as it stands; one that does not fit is `unread`
 /// and the next is tried. Once the limit has run out, every binary change left is `unread`.
 ///
-/// Labels are monotonic across every fallback (A0100-M1): no path leaves here binary and
-/// unlabelled unless its text reading itself said it is not text (or Git failed it). When the
-/// whole patch with the text readings does not parse (the line budget, say), the binary sections
-/// stand; one whose text was read keeps its known cause, else it is `unread`.
+/// Labels are monotonic across every fallback (A0100-M1, N1): a binary section leaves here
+/// unlabelled only when no attribute covers it, Git's second reading of it succeeded, and that
+/// reading is not valid UTF-8 and shows no wide encoding: positive evidence that it is not text.
+/// Every other outcome that does not end in a used text section keeps the known cause or is
+/// `unread`: a reading Git failed or cut, and a valid UTF-8 reading not used for any reason (the
+/// parser refused it alone, it is not one change, it still says binary, or the whole patch with
+/// the text readings did not parse).
 fn read_binary_again(
     runner: &Runner<'_>,
     first: &StructuredDiff,
