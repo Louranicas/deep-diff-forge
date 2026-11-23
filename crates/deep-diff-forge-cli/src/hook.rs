@@ -1013,8 +1013,74 @@ pub(crate) fn stop_judged(
                     .collect(),
             ],
         },
+        Judged::Hold { rules, said } if rules.is_empty() => match version_gap(verdict) {
+            Some(gap) => gap,
+            None => Judged::Hold { rules, said },
+        },
         answer => answer,
     }
+}
+
+/// A hold whose only cause is a label the judge does not know (F12.b): no rule is held and
+/// every note is `unknown_signal`. It holds the stop once, as [`Judged::Refused`]. The label is
+/// named only when the word between the note's first two backticks is a label of DDF's own
+/// vocabulary; any other word is "a label DDF does not list", and nothing else of the note is
+/// said to the agent or kept.
+fn version_gap(verdict: Option<&Value>) -> Option<Judged> {
+    let notes = verdict?["notes"].as_array()?;
+    if notes.is_empty() || notes.iter().any(|note| note["code"] != "unknown_signal") {
+        return None;
+    }
+    let mut gaps: Vec<(Option<&'static str>, &str)> = notes
+        .iter()
+        .map(|note| {
+            let detail = note["detail"].as_str().unwrap_or_default();
+            let label = detail
+                .split('`')
+                .nth(1)
+                .filter(|_| detail.matches('`').count() >= 2)
+                .and_then(signal_named)
+                .map(deep_diff_forge_graph::RiskSignal::label);
+            (label, note["path"].as_str().unwrap_or_default())
+        })
+        .collect();
+    gaps.sort_unstable();
+    gaps.dedup();
+    let words: Vec<String> = gaps
+        .iter()
+        .map(|(label, path)| format!("\0gap\0{}\0{path}", label.unwrap_or("")))
+        .collect();
+    let named: Vec<String> = gaps
+        .iter()
+        .take(ONCE_PATHS_NAMED)
+        .map(|(label, path)| {
+            let label = label.map_or_else(
+                || "a label DDF does not list".to_owned(),
+                |label| format!("the label {label}"),
+            );
+            if path.is_empty() {
+                label
+            } else {
+                format!("{label} (in {})", shown_path(path))
+            }
+        })
+        .collect();
+    let more = gaps.len().saturating_sub(ONCE_PATHS_NAMED);
+    let more = if more > 0 {
+        format!(" and {more} more")
+    } else {
+        String::new()
+    };
+    let said = said_beside_rules(verdict?, false);
+    Some(Judged::Refused {
+        class: "hold.version_gap",
+        sentence: format!(
+            "the judge does not know {}{more}: the paired forge-warden must be upgraded; tell a person.",
+            named.join(", ")
+        ),
+        reason: said.join("; "),
+        lines: BTreeMap::from([(once_name(&words.join("\n")), 1)]),
+    })
 }
 
 /// The most paths, or labels, a [`Judged::Refused`] names one by one; more are counted.

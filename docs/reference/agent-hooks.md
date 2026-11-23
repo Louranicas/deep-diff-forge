@@ -223,7 +223,8 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   Making the patch writes nothing in the repository: the index and the objects are in a
   scratch directory under the Git directory, removed afterwards. A working tree with paths
   marked skip-worktree (a sparse checkout) is not judged: its absent files would read as
-  deletions, so a stop is UNJUDGED with that reason and advice says so once.
+  deletions, so a stop is UNJUDGED with that reason and advice says so once; from 0.11.0 the
+  marks first hold one stop (see "Causes that hold a stop once" below).
 - **The ranker is this binary first**, then the files in `--ranker-dir DIR` that come first
   by name, eight candidates in all. forge-warden
   admits a ranker only if the policy lists its SHA-256, so a newer DDF than the policy admits
@@ -509,8 +510,10 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   commits when they could not be listed), `outcome` (`pass`, `fail`, `fail_stands`, `hold` or
   `unjudged`), `class` (`pass`, `fail.new`, `fail.stands`, `fail.unsaved_continuing` (a block
   the hook let stand because the client continues after a block and the state cannot be
-  kept), `hold.rule`; null where this build does not class the reason yet: every `unjudged`
-  record and a hold for the judge's notes alone), `blocked_turns` (1 for a unit that blocked
+  kept), `hold.rule`, `hold.version_gap`, `work.unreadable`, `work.skip_worktree` (the
+  causes that hold a stop once, below); null where this build
+  does not class the reason yet: every other `unjudged` record and any other hold for the
+  judge's notes alone), `blocked_turns` (1 for a unit that blocked
   the stop), `agent_checks` (`runs` and `failed`: the records of `agent check --session` of
   this session since its last stop record), `ignored_elsewhere` (null: not counted yet, which
   is never 0) and `seals` (the SHA-256 of the policy and of the ranker the verdict was sealed
@@ -530,7 +533,8 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   like the note that the state could not be kept) and the stop decides as it would have. A
   ledger with a record of a newer build (`v` above 1) is kept as it is: nothing is written to
   it. A stop that ends on its own state (a state that cannot be read, a lock another hook of
-  the session holds) records nothing yet. **The ledger is not a boundary**: it is a file in
+  the session holds) records nothing: 0.11.0 does not change that (it needs a stop that finds
+  the project without its state, which is not built). **The ledger is not a boundary**: it is a file in
   the repository's Git directory with the permissions of whoever works there, the agent
   included, so a record is evidence that a stop decided so, not proof, and a missing or edited
   ledger proves nothing.
@@ -609,7 +613,8 @@ project and not judged at every stop while it is true, as stated above):
   project at a stop, the stop names it as not judged. A submodule with changes that are not
   committed in it is named the same way (the project's patch shows a submodule only as the
   commit it is at). A nested repository in the project's tree (a scratch `git init`, a
-  checkout) is left out of the patch and named. So is a directory there that Git places in
+  checkout) is left out of the patch and named. It never holds a stop: the hook cannot tell
+  whether the session made it (see "Causes that hold a stop once" below). So is a directory there that Git places in
   this repository with a Git directory whose records name another directory (a copy of a
   linked tree made inside the project with `cp -a`): it is no working tree of the project
   by the records, and it is named so. Another working tree of the project that
@@ -787,15 +792,62 @@ project and not judged at every stop while it is true, as stated above):
 - More commits than one stop has time for: the rest are counted as UNJUDGED and judged at
   the next stops.
 
+- **Causes that hold a stop once** (0.11.0, task F12, owner decision OD-J). A stop that the
+  judged agent can make unjudgeable at no cost, and a hold the agent cannot answer, each hold
+  the stop once instead of being let through; after that the stop is UNJUDGED, or HOLD, as in
+  0.10.0, and the ledger records each stop with its class. The hook has no history of a
+  path, so it decides by evidence it has: the cause lies in the working tree as it is at the
+  stop, and holding it once whoever made it is what a failure in work the session did not
+  make already costs; the block's reason says "If this session made it so, undo it; if not,
+  tell a person." The causes and the evidence:
+
+  | Class | Evidence the hook uses | The block names |
+  |---|---|---|
+  | `work.unreadable` | staging the working tree failed, and `File::open` (no final link followed, never waiting) refuses a path that the index or the untracked listing names and `symlink_metadata` says is a regular file; looked for only after the failure, at most 1,000,000 paths and within the stop's Git time | the files, escaped (the first 20; the rest counted; a name that is not UTF-8 is counted, never printed) |
+  | `work.skip_worktree` | the index marks a path skip-worktree (`git ls-files -t`) | that the index has such marks (the paths are not named) |
+  | `hold.version_gap` | the judge held with no rule held and every note `unknown_signal` | the label, only when it is one of DDF's own (else "a label DDF does not list"), and the note's path, escaped |
+
+  What stays as in 0.10.0 because the hook cannot tell it is the agent's: a staging failure
+  where no unreadable file is found (a Git that fails or is out of time, a search cut by its
+  bound: the reason then says "not all names are known"), an unreadable directory (Git lists
+  nothing in it: the stop is silent, a stated limit below), a nested repository (left out
+  and named, as above: whether the session made it cannot be told), a hold for any other note
+  (`unknown_status` included), and every cause of the machine, the clock, the judge's chain,
+  the state or the place (a judge or policy that is missing, a time-out, a lock another hook
+  holds, a damaged state). A stop that ends on its own state still records nothing.
+
+  How "once" is kept: each cause is remembered in the session's state by a name (its class
+  and a digest of its paths) and a state (the inode, size, modification and change times and
+  mode of each of its first 4,096 paths, by `symlink_metadata`). It holds a stop when its
+  name is new, and again when its state changed, at most **three** times for one name in a
+  session; after the third, each stop says "it has held 3 stops of this session, the most
+  one cause holds, so it is let through" and is UNJUDGED, recorded. It never holds a stop
+  that follows a block (the client's `stop_hook_active`): a cause first met there, or changed
+  there, holds the first stop of the next turn ("the first stop of the next turn holds for
+  it"), so one cause holds at most one stop a turn and cannot keep a session from stopping,
+  and the stop's time bound is unchanged. A later turn, and a client restarted on the same
+  session, read the same state: a cause that held stays held. While the state cannot be
+  saved nothing is remembered, so a cause, like a failure, holds the first stop of every turn
+  and never the stop that follows it. A hold for an unknown label has no state: it holds once
+  per set of labels and paths; a commit held so holds the stop that judges it, once, as a
+  commit that fails does. The names and states are kept under the tree's own tag in `blocked`
+  (as `tag/key:count`, so the state's schema is unchanged). `agent check` says the same
+  sentence for these causes, and `agent doctor --gate` says "a stop here would hold once, then
+  be UNJUDGED". What is not closed: while a file stays unreadable or the marks stay, nothing
+  else of that working tree is judged (staging the rest is not built), so failing work added
+  beside it is not held after the first hold, only recorded `unjudged`; a file inside a
+  directory the hook cannot list is not seen.
+
 Deliberate evasion, made visible where that is cheap:
 
 - A clone put at the project's path, a project that was moved, a state file or a list of
   commits that was damaged or replaced, a state directory inside the working tree:
   UNJUDGED, with the reason. A removed state file: the
   next stop says that the session's start was not recorded.
-- An agent can make a stop UNJUDGED by breaking what the judge needs (a file that cannot be
-  read, a path marked skip-worktree). That is never a pass and always visible to the user,
-  and it is never a block either.
+- An agent can make a stop UNJUDGED by breaking what the judge needs. That is never a pass
+  and always visible to the user. From 0.11.0 the causes the hook finds in the working tree
+  (a file that cannot be read, a path marked skip-worktree) hold the first stop once (below);
+  the others (a Git that fails or is slow, a judge or policy that is missing) never block.
 - Git's own administrative files edited by hand (`gitdir`, `commondir`, `core.worktree`,
   a tree's `.git` file) so that one tree is read as another: where a directory the session remembers a failure
   at still stands, the stop is UNJUDGED and both directories are named; otherwise it is a
@@ -869,13 +921,17 @@ Stated limits, which the judge on the pull request covers:
   session, so it is judged as this session's: its failure can hold this stop (measured: a
   session in the main tree that changed nothing was held for a failing commit made in a
   linked tree by another session). Target: F13 (0.11.0).
-- **Some stop outcomes cost the judged agent nothing at its next turn.** A path the hook
-  cannot read makes the stop UNJUDGED, a failure that stands after its one block is said as
-  FAIL STANDS, a hold is for a person and never blocks, a nested repository is left out and
-  named, and advice that is off is said once. Each is said, to the user every time, and none
-  is silent; none holds the agent either. Not a boundary: the user sees each, and the judge
-  on the pull request judges what was committed. Target: F12 (0.11.0), which closes the
-  self-caused ones by rule.
+- **Some stop outcomes cost the judged agent nothing at its next turn.** A failure that
+  stands after its one block is said as FAIL STANDS (and recorded `fail_stands` in the
+  ledger), a hold for a rule is for a person and never blocks, and advice that is off is said
+  once. A nested repository is left out and named, at no cost: the hook cannot tell whether
+  the session made it or it was there before (it has no history of a path, and a directory's
+  times change with any Git command run in it), and holding one that was there before would
+  hold the first stop of every session of a project with a vendored checkout. Each is said,
+  to the user every time, and none is silent; none holds the agent. Not a boundary: the user
+  sees each, and the judge on the pull request judges what was committed. From 0.11.0 a file
+  the hook cannot read, paths marked skip-worktree and a hold for a label the judge does not
+  know cost one blocked turn (below).
 - **A process the judge starts that leaves its process group** (`setsid`, or a double fork
   into a group of its own) is not killed by the hook and runs on after the stop. Claude Code
   2.1.330 ends a timed-out hook's descendants, those in their own group or session too
@@ -910,9 +966,11 @@ Stated limits, which the judge on the pull request covers:
     has and was stopped", 41 seconds), with no run of the judge, at every stop while the file
     is there, also with further failing work added. It is said to the user and never blocks.
   - A path the hook cannot read makes every stop UNJUDGED while it stays so, with no run of
-    the judge: said to the user, never a block. A failure that has blocked once in a path
-    stands after the path is rewritten: when it is readable again and fails the same rule,
-    the stop is judged and says FAIL STANDS; it does not block again.
+    the judge: said to the user, never a block (0.10.0; from 0.11.0 it holds a stop once and
+    again when it changes, at most three times, below). A failure that has blocked once in a
+    path stands after the path is rewritten: when it is readable again and fails the same
+    rule, the stop is judged and says FAIL STANDS; it does not block again (the memory of a
+    failure is by its rule, signal and path, and the number of items the judge cites).
 - The state of a session is up to three files in the user's state directory
   (`deep-diff-forge/hooks` under `$XDG_STATE_HOME`, else under `~/.local/state`), found by
   the session's id: the state, the list of commits that were there when it began, and the

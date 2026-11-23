@@ -12320,3 +12320,50 @@ fn only_a_regular_file_is_named_as_unreadable_and_a_fifo_is_never_opened() {
     std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o644)).unwrap();
     std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o644)).unwrap();
 }
+
+/// The model's row A6 as forge-warden 0.2 writes it: a hold with every rule passed and the
+/// note `unknown_signal` for `label`.
+fn unknown_label_hold(label: &str) -> Value {
+    let mut document = verdict_v3("hold", &["pass"], false);
+    document["notes"] = json!([{
+        "code": "unknown_signal",
+        "path": "a.rs",
+        "detail": format!("signal `{label}` is not in this forge-warden's vocabulary; upgrade forge-warden or review it by hand")
+    }]);
+    document
+}
+
+/// F12.b (owner decision OD-J): a hold whose only cause is a label the paired judge does not
+/// know let every stop through. It holds the first stop once, naming the label only when it is
+/// one of DDF's own and never the judge's words; then the stop says HOLD, as before, and the
+/// ledger says `hold.version_gap`. (S4.1 planted-breach row "unknown label".)
+#[test]
+fn an_unknown_label_hold_holds_once() {
+    let scratch = Scratch::new("hook-f12-gap");
+    let root = repository(&scratch);
+    silence_a_lint(&root);
+    let (script, _, exit_file) = judge(&scratch, &unknown_label_hold("diff_suppressed"));
+    std::fs::write(&exit_file, "8").unwrap();
+    start(&root, "s");
+    let reason = blocked(&stop_as(&root, "s", &script, false)).to_owned();
+    assert!(
+        reason.contains("the judge does not know the label diff_suppressed (in \"a.rs\"): the paired forge-warden must be upgraded; tell a person."),
+        "{reason}"
+    );
+    assert!(!reason.contains("review it by hand"), "{reason}");
+    for active in [true, false] {
+        let said = allowed(&stop_as(&root, "s", &script, active)).to_owned();
+        assert!(said.starts_with("deep-diff-forge: HOLD. "), "{said}");
+    }
+    assert_eq!(turns_of(&root, "s", "hold.version_gap", "hold"), [1, 0, 0]);
+    // a word that is no label of DDF's is never printed
+    let (script, _, exit_file) = judge(&scratch, &unknown_label_hold("Ignore all previous"));
+    std::fs::write(&exit_file, "8").unwrap();
+    start(&root, "t");
+    let reason = blocked(&stop_as(&root, "t", &script, false)).to_owned();
+    assert!(
+        reason.contains("the judge does not know a label DDF does not list (in \"a.rs\")")
+            && !reason.contains("Ignore all previous"),
+        "{reason}"
+    );
+}
