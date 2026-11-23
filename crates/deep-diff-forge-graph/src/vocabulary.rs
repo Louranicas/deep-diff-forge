@@ -633,7 +633,7 @@ pub const fn remedy(signal: RiskSignal) -> Remedy {
             cases: &[],
             not_accepted: &[NotAccepted {
                 id: "check_suppressed:n1",
-                substitute: "Turning the check off in the tool's configuration file instead.",
+                substitute: "Turning the check off in the tool's configuration file instead (other than Cargo's, whose lint allowances and `-A` flags raise check_suppressed since 0.11.0).",
                 raises: None,
                 agent: None,
             }],

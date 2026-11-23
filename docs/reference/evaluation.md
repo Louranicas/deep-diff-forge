@@ -140,8 +140,8 @@ deep-diff-forge eval                          # score the labelled corpus in fix
   | Metric | Right / total | Floor |
   | --- | ---: | ---: |
   | ranking pairs | 12 / 15 | 80.0% |
-  | evidence precision | 186 / 211 | 88.2% |
-  | evidence recall | 186 / 264 | 70.5% |
+  | evidence precision | 189 / 214 | 88.2% |
+  | evidence recall | 189 / 265 | 70.5% |
   | findings verdicts | 33 / 33 | 100% |
 
   The receipt (`--json`) also splits evidence precision and recall by signal (`by_signal`) and by
@@ -152,7 +152,7 @@ deep-diff-forge eval                          # score the labelled corpus in fix
   | Signal | Precision | Recall | Cases |
   | --- | ---: | ---: | ---: |
   | `assertions_removed` | 0 / 0 (-) | 0 / 1 (0.0%) | 1 |
-  | `check_suppressed` | 7 / 7 (100.0%) | 7 / 9 (77.8%) | 5 |
+  | `check_suppressed` | 10 / 10 (100.0%) | 10 / 10 (100.0%) | 5 |
   | `ci_privilege` | 5 / 5 (100.0%) | 5 / 5 (100.0%) | 2 |
   | `dynamic_eval` | 7 / 7 (100.0%) | 7 / 11 (63.6%) | 7 |
   | `error_defaulted` | 0 / 0 (-) | 0 / 2 (0.0%) | 1 |
@@ -176,7 +176,7 @@ deep-diff-forge eval                          # score the labelled corpus in fix
   | `javascript` | 13 / 13 (100.0%) | 13 / 23 (56.5%) | 10 |
   | `none` | 13 / 14 (92.9%) | 13 / 16 (81.2%) | 4 |
   | `python` | 12 / 13 (92.3%) | 12 / 29 (41.4%) | 14 |
-  | `rust` | 132 / 154 (85.7%) | 132 / 175 (75.4%) | 22 |
+  | `rust` | 135 / 157 (86.0%) | 135 / 176 (76.7%) | 22 |
   | `shell` | 6 / 7 (85.7%) | 6 / 7 (85.7%) | 6 |
   | `yaml` | 6 / 6 (100.0%) | 6 / 6 (100.0%) | 2 |
 

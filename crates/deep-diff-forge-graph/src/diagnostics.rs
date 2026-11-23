@@ -324,12 +324,13 @@ mod tests {
     /// A Trojan Source line: `hazardous_text`, which no row locates.
     const BIDI: &str = "--- a/src/b.rs\n+++ b/src/b.rs\n@@ -1,1 +1,3 @@\n ctx\n+let s = 1;\n+let t = \"a\u{202E}b\";\n";
 
-    /// 34 `#[allow(` in comments, which 0.8.3 listed, take all 32 places of the list before an
-    /// `unsafe` and an `#[ignore]` (the `cap_pad` shape).
+    /// 34 `#[allow(` attributes, which 0.8.3 listed, take all 32 places of the list before an
+    /// `unsafe` and an `#[ignore]` (the `cap_pad` shape, in code: since the floor exception of
+    /// OD-E the same text in comments is no evidence).
     fn cap_pad() -> String {
         let mut text = String::from("--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,1 +1,37 @@\n ctx\n");
         for i in 0..34 {
-            let _ = writeln!(text, "+// see #[allow(dead_code)] note {i}");
+            let _ = writeln!(text, "+#[allow(dead_code)] fn f{i}() {{}}");
         }
         text + "+unsafe { f() }\n+#[ignore]\n"
     }
@@ -621,12 +622,13 @@ mod tests {
         assert_eq!(readings(patch), [("unsafe_added", 2, true, true)]);
     }
 
-    /// The readers of this version also read `#[allow(` in a Rust comment (the rule on the raw
-    /// line, `#` then `[allow(`), so it is current, not only 0.8.3's.
+    /// `#[allow(` in a Rust comment switches nothing off: since the listed floor exception of
+    /// OD-E no reading reports it, the reading of 0.8.3 included (until then the rule on the raw
+    /// line read it, and it was current).
     #[test]
-    fn a_rust_allow_in_a_comment_reads_current() {
+    fn a_rust_allow_in_a_comment_is_read_by_no_reader() {
         let patch = "--- a/src/x.rs\n+++ b/src/x.rs\n@@ -1,1 +1,2 @@\n fn a() {}\n+// see #[allow(dead_code)]\n";
-        assert_eq!(readings(patch), [("check_suppressed", 2, true, true)]);
+        assert_eq!(readings(patch), []);
     }
 
     /// An `unsafe` in a raw string over lines, which the scanner of release 0.8.3 took for code:
