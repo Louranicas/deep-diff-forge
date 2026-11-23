@@ -722,12 +722,14 @@ Stated limits, which the judge on the pull request covers:
   into a group of its own) is not killed by the hook and runs on after the stop. Claude Code
   2.1.330 ends a timed-out hook's descendants, those in their own group or session too
   (measured 2026-11-22); one that detaches from them is ended by no one. The judge is the
-  program the person who installed the hooks named.
+  program the person who installed the hooks named. A judge that exits while a process it
+  detached from its group still holds its output is not read: the stop is UNJUDGED when the
+  limit passes, whatever the judge's exit code was; forge-warden starts no such process.
 - **Under a policy that requires verified claims every stop holds** (see the verdict
   section): the hook gives no `--repo`, `--base` or `--head`, and an uncommitted or staged
   change can never be verified. Target: S3.25.b (0.11.0) for commits; never for what is not
   committed.
-- **Four ways the judged agent can make a stop say nothing it should, or judge nothing**,
+- **Six ways the judged agent can make a stop say nothing it should, or judge nothing**,
   each a deliberate act, measured on this release (0.10.0) with a stand-in judge. None is a
   boundary: a person reading the working tree, and the judge on the pull request for what is
   committed, still see the work. Target: F12 and F13 (0.11.0), through the stop model F7.j.

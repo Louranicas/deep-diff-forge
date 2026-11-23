@@ -95,7 +95,7 @@ Strings are RFC 8259-escaped, and valid UTF-8 passes through. A hunk line decode
 marked `"lossy": true`; a header line that is not UTF-8 (a path, a mode, a hunk header) is
 refused with exit 3, because the name it gives would be a substitute; from a Git selection such a
 file name is the change's own input, refused with exit 4, and the daemon's `review.change` answers
-it with code 4; a file pair refuses such a name with exit 4 too. A second reading of a binary change that
+it with code 4; a file pair given such a name as an argument exits 3 (an argument that is not UTF-8). A second reading of a binary change that
 the Git acquisition's byte budget or time limit cuts off refuses nothing: the file is labelled
 `"diff_suppressed": "unread"`. File statuses use one snake-case spelling everywhere: `added`, `modified`,
 `deleted`, `renamed`, `copied`, `type_changed` (a file, a symlink or a submodule became
@@ -118,7 +118,7 @@ On `--stdin-patch` the refusals come in this order: a parse error (4), then `--r
 
 A reader that closes stdout ends a command with exit 0 (`… | head`), except while a
 `--require-*` refusal is pending: each is decided before the output is written and exits 7
-with its reason on stderr even when the reader has gone (since 0.10.0;
+with its reason on stderr even when the reader has gone or stdout cannot be written (since 0.10.0;
 [DDF-2026-010](../advisories/DDF-2026-010.md)). A diagnostic that cannot be written
 (`2>/dev/full`) leaves the exit code as it is; before 0.10.0 it exited 101. A daemon socket path of
 108 bytes or more is a usage error (exit 2) of `daemon path` and `daemon start` since 0.10.0.
