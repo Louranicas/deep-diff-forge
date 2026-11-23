@@ -457,7 +457,14 @@ pub fn process_line(line: &str, engine: &Engine) -> String {
     let response = match outcome {
         Ok(Ok(result)) => {
             metrics.request(method, took, None);
-            success_response(&id, result)
+            let line = success_response(&id, result);
+            // A diagnostics page writes hidden characters of its strings escaped (F5a.2); every
+            // other method's bytes are as released.
+            if request.method == "diff.diagnostics" {
+                crate::pages::escape_hidden(&line).into_owned()
+            } else {
+                line
+            }
         }
         Ok(Err(err)) => {
             metrics.request(method, took, Some(err.code));

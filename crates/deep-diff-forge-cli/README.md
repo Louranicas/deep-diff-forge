@@ -68,7 +68,7 @@ deep-diff-forge --git-range main..HEAD --rank --json --require-files --require-h
 | CLI | `deep-diff-forge …` | Review, rank, cluster, Git selections, file pairs, `semantic`, `structural`, `highlight`, `analyze`, `findings verify`, `bench`, `eval`, `learn`, `council`, `agent setup\|doctor`. |
 | Machine contract | `envelope -- <command…>`, `schema [result\|exit-codes\|signals]`, `explain <code>`, `explain signal <label>` | Any command's result as one `ddf.result.v1` object; the exit-code registry; the signal vocabulary and, for one signal, why it matters and what answers it. |
 | MCP server | `deep-diff-forge mcp [--allow-repo PATH]...` | Eight read-only MCP tools over stdio: `review_outline`, `review_hunks`, `review_change`, `review_patch`, `rank_patch`, `verify_findings`, `explain_exit_code`, `exit_code_registry`. |
-| JSON-RPC over stdio | `deep-diff-forge rpc` | The daemon's protocol (JSON-RPC 2.0, protocol 2) with no daemon. |
+| JSON-RPC over stdio | `deep-diff-forge rpc` | The daemon's protocol (JSON-RPC 2.0, protocol 3) with no daemon. |
 | Optional daemon | `deep-diff-forge daemon {path\|start\|health\|status\|metrics\|stop}` | The same protocol on an owner-private Unix socket; `metrics --format prometheus` writes a node_exporter textfile (since 0.6.0). |
 | Rust SDK | crate `deep-diff-forge-sdk` | `review`, `rank`, the exit registry, and a Unix-socket `Client`. |
 | Python SDK | `sdk/python` in the repository (`python3 -m pip install ./sdk/python`; not on PyPI) | Standard library only; `StdioClient` (over `rpc`) and `SocketClient`. |

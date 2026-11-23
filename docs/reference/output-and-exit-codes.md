@@ -24,7 +24,7 @@ empty.
 | `findings verify`, `findings.verify`, MCP `verify_findings` | `deep-diff-forge.findings.v0` (input: one `deep-diff-forge.finding.v0` object per finding) |
 | `daemon metrics`, `daemon.metrics` | `deep-diff-forge.daemon-metrics.v0` (`--format prometheus`: Prometheus text 0.0.4) |
 | `bench --json` · `eval --json` | `deep-diff-forge.bench.v0` · `deep-diff-forge.eval.v0` (corpus: `deep-diff-forge.eval-manifest.v0`) |
-| `daemon`, `rpc` | JSON-RPC 2.0, protocol 2 |
+| `daemon`, `rpc` | JSON-RPC 2.0, protocol 3 |
 
 **Input sealing.** `review.v0`, `rank.v0`, `cluster.v0`, `semantic.v0` and
 `git-acquisition.v0` carry two members right after `schema`:

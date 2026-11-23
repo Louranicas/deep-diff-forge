@@ -253,7 +253,7 @@ fn short(value: &Value) -> String {
 fn a_protocol_2_transcript_keeps_its_shapes() {
     let records = transcript();
     let answers = replay(&records);
-    let mut found = Vec::new();
+    let (mut found, mut changed) = (Vec::new(), Vec::new());
     if answers.len() != records.len() {
         found.push(format!(
             "{} requests, {} answers",
@@ -277,6 +277,9 @@ fn a_protocol_2_transcript_keeps_its_shapes() {
                 ));
             }
         }
+        if let Some(change) = protocol_3(&record.request, &mut before, &after) {
+            changed.push(format!("transcript line {line} ({method}): {change}"));
+        }
         normalise(&method, &mut before);
         normalise(&method, &mut after);
         let mut here = Vec::new();
@@ -291,5 +294,131 @@ fn a_protocol_2_transcript_keeps_its_shapes() {
         "{} differences from the published protocol 2:\n{}",
         found.len(),
         found.join("\n")
+    );
+    // Every named change of protocol 3 was met, and no other.
+    assert_eq!(changed.len(), PROTOCOL_3_CHANGES, "{}", changed.join("\n"));
+}
+
+/// How many transcript answers protocol 3 changes, each named in [`protocol_3`].
+const PROTOCOL_3_CHANGES: usize = 12;
+
+/// The changes of protocol 3 to a recorded protocol-2 answer (F5a.2, the replay rule's named
+/// members), applied to `recorded` so that the rest is compared exactly: the `protocol` that
+/// `engine.initialize` (when the client names none), `engine.methods`, `daemon.health` and
+/// `daemon.status` report; `diff.diagnostics` added to the lists; the four refusals of a
+/// protocol the daemon does not speak, whose message states the newest it speaks; and the two
+/// requests a protocol-2 daemon refused and this one serves (`protocol: 3` and the method
+/// itself), checked by what they must hold. Returns the change it named.
+fn protocol_3(request: &str, recorded: &mut Value, tree: &Value) -> Option<String> {
+    let request: Value = serde_json::from_str(request).ok()?;
+    let method = request.get("method")?.as_str()?;
+    let asked = request
+        .get("params")
+        .and_then(|p| p.get("protocol"))
+        .cloned();
+    let entry = |m: &deep_diff_forge_daemon::MethodSpec| serde_json::json!({"name": m.name, "params": m.params, "result": m.result, "since": m.since});
+    let added = deep_diff_forge_daemon::METHODS
+        .iter()
+        .find(|m| m.name == "diff.diagnostics")?;
+    let refused = recorded.get("error").is_some();
+    match (method, asked, refused) {
+        ("engine.initialize", None, false) => {
+            recorded["result"]["protocol"] = 3.into();
+            recorded["result"]["methods"]
+                .as_array_mut()?
+                .push(added.name.into());
+            Some("protocol 3; methods lists diff.diagnostics".into())
+        }
+        ("engine.methods", _, false) => {
+            recorded["result"]["protocol"] = 3.into();
+            recorded["result"]["methods"]
+                .as_array_mut()?
+                .push(entry(added));
+            Some("protocol 3; one methods entry, diff.diagnostics since 3".into())
+        }
+        ("daemon.health" | "daemon.status", _, false) => {
+            recorded["result"]["protocol"] = 3.into();
+            Some("protocol 3".into())
+        }
+        ("engine.initialize", Some(asked), true) if asked == 3 => {
+            let served = &tree["result"];
+            assert_eq!(served["protocol"], 3, "{tree}");
+            assert!(
+                served["methods"].as_array()?.contains(&added.name.into()),
+                "{tree}"
+            );
+            *recorded = tree.clone();
+            Some("protocol 3 is served (error 2 before), listing diff.diagnostics".into())
+        }
+        ("engine.initialize", Some(_), true) => {
+            let message = recorded["error"]["message"].as_str()?;
+            let now = message.strip_suffix("this daemon speaks 0 to 2")?;
+            recorded["error"]["message"] = format!("{now}this daemon speaks 0 to 3").into();
+            Some("the refusal names the newest protocol, 3".into())
+        }
+        ("diff.diagnostics", _, true) => {
+            assert_eq!(
+                tree["result"]["schema"], "deep-diff-forge.diagnostics.v0",
+                "{tree}"
+            );
+            *recorded = tree.clone();
+            Some("diff.diagnostics is served (-32601 before)".into())
+        }
+        _ => None,
+    }
+}
+
+/// F5a.2: a client of protocol 3 and a daemon of release 0.10.0. The old daemon is a stub that
+/// answers from the transcript, so no old binary is needed: `engine.initialize` with
+/// `protocol: 3` is error 2 naming the versions it speaks, and `diff.diagnostics` is -32601,
+/// so a client knows the daemon is too old (F5b turns that into `ProtocolTooOld`). This tree's
+/// daemon serves both.
+#[test]
+fn a_new_client_on_a_protocol_2_daemon_gets_a_named_refusal() {
+    let records = transcript();
+    let old = |method: &str, protocol: Option<u64>| -> (&Record, Value) {
+        let record = records
+            .iter()
+            .find(|r| {
+                let request: Value = serde_json::from_str(&r.request).unwrap_or_default();
+                request["method"] == method
+                    && protocol.is_none_or(|p| request["params"]["protocol"] == p)
+            })
+            .unwrap();
+        (record, serde_json::from_str(&record.response).unwrap())
+    };
+    let (init, refused) = old("engine.initialize", Some(3));
+    assert_eq!(
+        refused["error"],
+        serde_json::json!({"code": 2, "message": "protocol 3 is not supported; this daemon speaks 0 to 2"})
+    );
+    let (call, missing) = old("diff.diagnostics", None);
+    assert_eq!(
+        missing["error"],
+        serde_json::json!({"code": -32601, "message": "method not found: diff.diagnostics"})
+    );
+    let shutdown = records.last().unwrap();
+    let new: Vec<Value> = replay(&[
+        Record {
+            request: init.request.clone(),
+            response: String::new(),
+        },
+        Record {
+            request: call.request.clone(),
+            response: String::new(),
+        },
+        Record {
+            request: shutdown.request.clone(),
+            response: String::new(),
+        },
+    ])
+    .iter()
+    .map(|a| serde_json::from_str(a).unwrap())
+    .collect();
+    assert_eq!(new[0]["result"]["protocol"], 3, "{}", new[0]);
+    assert_eq!(
+        new[1]["result"]["schema"], "deep-diff-forge.diagnostics.v0",
+        "{}",
+        new[1]
     );
 }

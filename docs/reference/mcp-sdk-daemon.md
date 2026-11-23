@@ -120,18 +120,35 @@ server on an owner-private Unix domain socket.
 `/tmp` fallback. Without `$XDG_RUNTIME_DIR` (or with a relative one, which the XDG spec makes
 invalid) the daemon fails closed until you pass `--socket PATH`.
 
-**JSON-RPC methods** (protocol 2; `engine.methods` lists them with their parameters and the protocol that added them):
+**JSON-RPC methods** (protocol 3; `engine.methods` lists them with their parameters and the protocol that added them):
 `engine.initialize`, `engine.methods`, `daemon.health`, `daemon.status`,
 `daemon.shutdown`, `diff.plan`, `diff.compute`, `diff.rank`, `review.outline`, `review.hunks`,
 `review.change`, `session.open`, `session.snapshot`, `session.close`, `daemon.metrics`,
-`findings.verify`.
+`findings.verify`, `diff.diagnostics`.
 
 On the daemon, rpc, MCP and SDK surfaces a patch text in which no patch is found ranks nothing and is not an error; `--stdin-patch` on the command line refuses it (exit 4) unless `--allow-empty` is given.
+`diff.diagnostics` answers such a text as `diff.rank` does, with the document of an empty ranking, where `--stdin-patch --diagnostics` refuses it with exit 4 (`no_patch_in_input`); pass `require_files` to have the daemon refuse it (error 7).
+
+**Protocol 3** adds `diff.diagnostics`: one page of the [`diagnostics.v0`](diagnostics.md) document
+`--stdin-patch --diagnostics --json` prints for the same patch (params `patch`, `require_files`,
+`require_hunks`, `max_bytes` from 4 096, `cursor`; paging in [Paging](diagnostics.md#paging)). Every
+page carries `page.document_sha256`, the SHA-256 of the bytes the command prints, which the pages
+written in the document's byte form reproduce. As on `diff.rank`, the message of a patch that does
+not parse quotes the line that failed: it is the one answer of the method that carries text of
+the input beyond the escaped path. `engine.initialize` without `protocol`, or with 3, lists it; with
+`protocol: 2` it does not, and a protocol-2 client that calls it is still served. A daemon of
+release 0.10.0 answers `engine.initialize` with `protocol: 3` with error 2 (`protocol 3 is not
+supported; this daemon speaks 0 to 2`) and `diff.diagnostics` with -32601. Every protocol-2 method
+keeps its params, its result's members, their types and order, its error codes and its messages
+(`tests/protocol_compat.rs` replays a transcript of the published 0.10.0 binary); values differ
+only in the engine's version, in `tool.scorer_sha256`, in the `protocol` the daemon reports and the
+newest it names when it refuses one, in the methods it lists, in values of the run (a process id,
+an uptime, latencies, an admission wait), and in what a release's register names as changed.
 
 ```bash
 deep-diff-forge daemon start --foreground      # terminal 1
 deep-diff-forge daemon health                  # terminal 2
-# {"id":1,"jsonrpc":"2.0","result":{"cache_entries":0,"pid":…,"protocol":2,"retained_bytes":0,"sessions":0,"status":"ok","version":"0.11.0-dev"}}
+# {"id":1,"jsonrpc":"2.0","result":{"cache_entries":0,"pid":…,"protocol":3,"retained_bytes":0,"sessions":0,"status":"ok","version":"0.11.0-dev"}}
 deep-diff-forge daemon stop                    # answers what is in progress, returns once it has exited
 ```
 

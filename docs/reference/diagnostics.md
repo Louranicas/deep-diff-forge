@@ -3,8 +3,8 @@
 `deep-diff-forge.diagnostics.v0` is new in 0.11.0. This page is the contract that the
 builder and every surface that prints it (`--diagnostics`, the daemon method `diff.diagnostics`,
 MCP `diagnose_patch`, the SDKs) are held to. `--diagnostics` prints it
-([On the command line](#on-the-command-line)); the daemon method, MCP and the SDKs are still to
-come, and until they land no other surface prints this schema.
+([On the command line](#on-the-command-line)), and the daemon method `diff.diagnostics` (so
+`rpc`) serves it in pages ([Paging](#paging)); MCP and the SDKs are still to come.
 
 ## What a diagnostics document is
 
@@ -158,6 +158,32 @@ in addition, every bidi control and invisible character is written as `\uXXXX`, 
 reorder or hide text where it is shown. The value of `path` equals the value in `rank.v0`.
 `address` and `body_sha256` are not carried: both are hashes of the change's text.
 
+Exactly, so that a reader can write the same bytes from the parsed document:
+
+- The document is `{`, a line feed, one line per member, and `}` with a final line feed. A
+  member's line is two spaces, `"name": `, the value, and a comma unless it is the last member.
+- `cut`, `diagnostics` and `texts` hold one item per line, each indented four spaces and followed
+  by a comma unless it is the last, between `[` (or `{`) at the end of the member's line and
+  `]` (or `}`) on a line of its own indented two spaces. When empty they are `[]` or `{}` on
+  the member's line.
+- Every other object or array is written on one line: `{"name": value, "name": value}` and
+  `["a", "b"]`, with a colon and a space after a name, a comma and a space between items, and
+  no space inside the brackets.
+- Members stand in the order of the tables above: `tool` is name, version, scorer_sha256;
+  `judge` is state, ranker_sha256; `counts` is files, diagnostics, agent, person, cut_files; a
+  `cut` entry is path, rows_kept. A member marked "only" is written only where it applies, in
+  its place. The `texts` items are sorted by id in byte order.
+- Numbers are decimal integers with no sign, exponent or leading zero; `null`, `true` and
+  `false` are written as such.
+- A string stands between double quotes. `"` is written `\"` and `\` is written `\\`; line feed,
+  carriage return, tab, backspace and form feed are `\n`, `\r`, `\t`, `\b` and `\f`. These are
+  written `\u` and four lowercase hex digits: every other character below U+0020, U+007F to
+  U+009F, U+2028 and U+2029, and every bidi control or invisible character: U+00AD, U+034F,
+  U+061C, U+115F, U+1160, U+17B4, U+17B5, U+180B to U+180F, U+200B to U+200F, U+202A to
+  U+202E, U+2060 to U+2069, U+206A to U+206F, U+3164, U+FE00 to U+FE0F, U+FEFF, U+FFA0, U+FFF0
+  to U+FFFB, U+1BCA0 to U+1BCA3, U+1D173 to U+1D17A and U+E0000 to U+E0FFF, a character above
+  U+FFFF as its two UTF-16 surrogates. Every other character is itself, in UTF-8.
+
 ## Two engines: who advises and who judges
 
 `tool` names the engine that wrote the document. When the agent hooks judge a stop, a policy
@@ -209,25 +235,38 @@ text of the change the text form prints. `judge_sees` is not printed.
 
 ## Paging
 
-**Planned, not built yet** (F5a round 2). This branch's daemon and `rpc` speak engine protocol 2
-and answer `diff.diagnostics` with error -32601, method not found; until the method lands, the
-rest of this section is the design it is held to, not something any surface does.
-
 The daemon method `diff.diagnostics` (engine protocol 3, [the optional daemon](mcp-sdk-daemon.md#the-optional-daemon))
-returns pages of at most `max_bytes` (1 024 to 16 777 216, default 65 536). A page holds whole
-diagnostics. Each page repeats the header, the members from `schema` to `counts`, which holds
-no path and no list and is at most 960 bytes with its `page` member. It holds its part of
-`diagnostics`, the `cut` entries of the files whose first diagnostic is on that page, the
-`texts` its diagnostics name, and `page`: `{first, count, total, next_cursor,
-document_sha256}`. `document_sha256` is the SHA-256 of the whole document as `--diagnostics
---json` prints it: the first page's header without `page`, every page's `cut` entries in order,
-every page's diagnostics in order and the union of `texts`, written in the canonical form, hash
-to it. A cursor belongs to one input and one scorer; a cursor from another patch, another engine
+returns pages of at most `max_bytes` (4 096 to 16 777 216, default 65 536; the views keep 1 024
+to 16 777 216). A page holds whole diagnostics. Each page repeats the header, the members from
+`schema` to `counts`, which holds no path and no list and is at most 960 bytes with its `page`
+member. It holds its part of `diagnostics`, the `cut` entries of the files whose first
+diagnostic is on that page, the `texts` its diagnostics name, and `page`: `{first, count, total,
+next_cursor, document_sha256}`. `document_sha256` is the SHA-256 of the whole document as
+`--diagnostics --json` prints it, the same on every page. To check it, take the first page's
+header without `page`, every page's `cut` entries in order, every page's diagnostics in order and
+the union of `texts`, and write them in the [byte form](#byte-form): the bytes hash to it. A
+page carries no copy of its bytes; the daemon's answer is JSON-RPC, whose members are in name
+order. A cursor belongs to one input and one scorer; a cursor from another patch, another engine
 or outside the document is refused. A `max_bytes` below the header and one diagnostic (with its
 file's `cut` entry when it is that file's first) is refused and names that diagnostic; no page is
 ever over `max_bytes` and no diagnostic is ever split. A client that asks for protocol 3 from a
 daemon that speaks 2 gets error 2 and no document; the SDKs report that as "protocol too old" and
 never build a document from an older daemon's ranking.
+
+`max_bytes` counts the page as the daemon emits it: the `result` value, compact, with the escapes
+of the line. The answer line is that, 33 bytes, the request's `id` as JSON, and a line feed
+(`{"id":…,"jsonrpc":"2.0","result":…}`). In the line of a page, every bidi control, invisible
+character and control character of a string is written as a `\u` escape, so a path cannot
+reorder or hide text where the line is shown; the value is the same. A cursor is
+`dg0.<16 hex of input_sha256>.<16 hex of scorer_sha256>.<index>`; a refusal names why (`invalid
+cursor: it belongs to another patch`, `... another engine`, `... its position is outside the
+document`, or `... it is not a dg0 cursor (N bytes)`) and never repeats the cursor. One
+diagnostic with the texts it names takes up to about 1 000 bytes beside a header of about 600,
+so only a very long path is refused at the smallest budget. Over the 7 421 patches of the
+comparison corpus of 0.11.0 (5 992 that both surfaces answer with a document), no input was
+refused at 4 096, 16 384 or 65 536 bytes; at 4 096 they took 9 918 pages, at 65 536 6 031. At the
+views' 1 024 the first diagnostic of 2 881 of them would not have fitted, which is why this
+method's range starts at 4 096.
 
 ## Gates: `--fail-on`
 
