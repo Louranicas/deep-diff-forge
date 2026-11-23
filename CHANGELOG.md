@@ -44,6 +44,14 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   `RankedFile::floor_only` lists the code labels that only a reading kept for the floor finds
   (F1.a1).
 - `tool.scorer_sha256` moves with no label, row or score change (F1.a1).
+- The diagnostics builder locates `hazardous_text` at each changed line whose text carries the
+  hazard (its place, never its text), within the file's 32 places; a file over that is in `cut`
+  (F1.a2).
+- `explain signal <label> --json` names the id of every repair (`accept_ids`) and substitute
+  (`id`), for both audiences (F1.a2).
+- Library API: `RankedFile::hazard_lines`, `hazard_lines_cut`; `Judge` and `Diagnostics::judged`
+  write `judge` and `judge_sees` (F1.a2).
+- `tool.scorer_sha256` moves with no label, row or score change (F1.a2).
 
 ## [0.10.0] - 2026-11-23
 
