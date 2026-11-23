@@ -216,6 +216,12 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - `agent doctor` checks `diagnostics_parity`: the probe's diagnostics document from the command,
   the daemon's `diff.diagnostics` and MCP's `diagnose_patch` is one document, compared by the
   SHA-256 of the command's bytes and by the pages' bytes (F5c).
+- Hooks: every outcome a stop gives, and every record of the project's ledger, carries a reason
+  class from one registry of 50 codes (`pass`, `fail.*`, `hold.*`, `work.*`, `chain.*`, `time.*`,
+  `state.*`, `place.*`, `input.*`). The ledger writes a code where it wrote `"class": null` (an
+  unjudged unit, a hold with no rule, a stop that judged nothing). A class never decides whether a
+  stop holds. Its meaning never changes, codes are added without a version change, and an unknown
+  code is not a PASS. `docs/reference/agent-hooks.md` "Reason classes" lists them (F7.f).
 
 ## [0.10.0] - 2026-11-23
 
