@@ -131,7 +131,7 @@ On the daemon, rpc, MCP and SDK surfaces a patch text in which no patch is found
 ```bash
 deep-diff-forge daemon start --foreground      # terminal 1
 deep-diff-forge daemon health                  # terminal 2
-# {"id":1,"jsonrpc":"2.0","result":{"cache_entries":0,"pid":…,"protocol":2,"retained_bytes":0,"sessions":0,"status":"ok","version":"0.9.0"}}
+# {"id":1,"jsonrpc":"2.0","result":{"cache_entries":0,"pid":…,"protocol":2,"retained_bytes":0,"sessions":0,"status":"ok","version":"0.10.0"}}
 deep-diff-forge daemon stop                    # answers what is in progress, returns once it has exited
 ```
 
