@@ -235,11 +235,17 @@ fn doctor_reports_every_check_passing() {
         .collect();
     assert_eq!(
         names,
-        ["mcp_handshake", "review_parity", "rank_parity", "views"]
+        [
+            "mcp_handshake",
+            "review_parity",
+            "rank_parity",
+            "diagnostics_parity",
+            "views"
+        ]
     );
     let (code, human, _) = run(&["agent", "doctor"]);
     assert_eq!(code, 0);
-    assert_eq!(human.lines().filter(|l| l.starts_with("ok")).count(), 4);
+    assert_eq!(human.lines().filter(|l| l.starts_with("ok")).count(), 5);
 }
 
 /// F7.h2: a chain that is not ready (here: no Git repository) exits 7 with its `error:` line and

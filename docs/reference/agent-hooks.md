@@ -414,7 +414,8 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   `policy_protects_itself`, `claims_verified`, `patch`, `commits`, `state_directory`, `hooks_enabled`,
   `hooks_registered`,
   `hook_timeout`, `start_hook_registered` and `advice_hook_registered`,
-  after the checks `agent doctor` always makes. It takes the same `--judge`, `--policy` and
+  after the checks `agent doctor` always makes (`mcp_handshake`, `review_parity`, `rank_parity`,
+  `diagnostics_parity` and `views`). It takes the same `--judge`, `--policy` and
   `--ranker-dir` as the stop hook. The start of a session runs the same checks in the time
   it has and says "stops will be judged" only when every one of them is ready, or when the
   only ones that are not are `policy_protects_itself` and `claims_verified`, which it then
