@@ -86,6 +86,16 @@ pub enum JudgePatchError {
     Unmerged,
     /// Git failed or ran out of time or budget, or a file this needs could not be prepared.
     Failed(GitAcquireError),
+    /// Staging the working tree failed (`error`), and files it would stage cannot be opened by
+    /// this account: `paths`, from the top level, as Git lists them (F12). Found only by
+    /// [`judge_patch_probed`], only after the failure, among the paths the index and the
+    /// untracked listing name that `symlink_metadata` says are regular files. `whole` is false
+    /// when a bound of count or time cut the search: then not all names are known.
+    Unreadable {
+        paths: Vec<std::path::PathBuf>,
+        whole: bool,
+        error: GitAcquireError,
+    },
 }
 
 impl std::fmt::Display for JudgePatchError {
@@ -98,7 +108,7 @@ impl std::fmt::Display for JudgePatchError {
             Self::Unmerged => out.write_str(
                 "the index has unmerged paths (a merge, a rebase or a cherry-pick stopped on a conflict), so it holds nothing a commit could record: resolve them and `git add` the files",
             ),
-            Self::Failed(error) => write!(out, "{error}"),
+            Self::Failed(error) | Self::Unreadable { error, .. } => write!(out, "{error}"),
         }
     }
 }
@@ -469,9 +479,9 @@ fn working_tree(
     from: &Source,
     scratch: &Path,
     repository: &Path,
-    options: &GitAcquireOptions,
+    (options, opens): (&GitAcquireOptions, Option<Opens<'_>>),
     deadline: std::time::Instant,
-) -> Result<(String, Vec<std::path::PathBuf>), GitAcquireError> {
+) -> Result<(String, Vec<std::path::PathBuf>), JudgePatchError> {
     let staging = Runner {
         options,
         cwd: from.root.clone(),
@@ -485,7 +495,7 @@ fn working_tree(
         4096,
     )?;
     let nested = leave_nested_out(&staging, repository, &from.indexed)?;
-    staging.run(
+    let added = staging.run(
         "git add",
         &[
             OsStr::new("add"),
@@ -495,7 +505,22 @@ fn working_tree(
         ],
         &[0],
         64 * 1024,
-    )?;
+    );
+    if let Err(error) = added {
+        let (paths, whole) = match opens {
+            Some(opens) => unreadable_paths(from, &staging, opens, deadline),
+            None => (Vec::new(), true),
+        };
+        return Err(if paths.is_empty() {
+            JudgePatchError::Failed(error)
+        } else {
+            JudgePatchError::Unreadable {
+                paths,
+                whole,
+                error,
+            }
+        });
+    }
     // What the repository's index holds is in the next commit, whatever an ignore rule says.
     let staged = staging.run(
         "git ls-files",
@@ -530,6 +555,68 @@ fn working_tree(
     }
     let tree = line(staging.run("git write-tree", &[OsStr::new("write-tree")], &[0], 4096)?)?;
     Ok((tree, nested))
+}
+
+/// The most paths [`unreadable_paths`] looks at.
+const UNREADABLE_LOOKED: usize = 1_000_000;
+
+/// Whether the account can open the regular file at a path, as [`judge_patch_probed`]'s caller
+/// asks it (without following a final link and without waiting).
+pub type Opens<'a> = &'a dyn Fn(&std::path::Path) -> bool;
+
+/// The files `git add --all` would stage that this account cannot open, and whether all were
+/// looked at: of the paths the repository's index lists and the untracked ones `staging`
+/// lists, each that is a regular file by `symlink_metadata` and that `opens` refuses.
+fn unreadable_paths(
+    from: &Source,
+    staging: &Runner,
+    opens: Opens<'_>,
+    deadline: std::time::Instant,
+) -> (Vec<std::path::PathBuf>, bool) {
+    let others = staging
+        .run(
+            "git ls-files",
+            &[
+                OsStr::new("ls-files"),
+                OsStr::new("--others"),
+                OsStr::new("--exclude-standard"),
+                OsStr::new("-z"),
+            ],
+            &[0],
+            INDEX_LISTING_CAP,
+        )
+        .unwrap_or_default();
+    let untracked = others
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty() && !path.ends_with(b"/"));
+    let paths = from.indexed.iter().map(Vec::as_slice).chain(untracked);
+    unreadable_among(&from.root, paths, opens, UNREADABLE_LOOKED, deadline)
+}
+
+/// Of `paths` under `root`, the regular files (by `symlink_metadata`: no link is followed, and
+/// a FIFO, a socket or a device is never opened) that `opens` refuses, and whether every path
+/// was looked at: at most `cap`, and none once `deadline` has passed (checked every 64).
+/// Nothing is read from a file.
+fn unreadable_among<'a>(
+    root: &std::path::Path,
+    paths: impl Iterator<Item = &'a [u8]>,
+    opens: Opens<'_>,
+    cap: usize,
+    deadline: std::time::Instant,
+) -> (Vec<std::path::PathBuf>, bool) {
+    let mut found = Vec::new();
+    for (at, path) in paths.enumerate() {
+        if at >= cap || (at % 64 == 0 && deadline_after(std::time::Duration::ZERO) >= deadline) {
+            return (found, false);
+        }
+        let path = path_from_bytes(path.to_vec());
+        let full = root.join(&path);
+        let file = std::fs::symlink_metadata(&full).is_ok_and(|meta| meta.is_file());
+        if file && !opens(&full) {
+            found.push(path);
+        }
+    }
+    (found, true)
 }
 
 /// A path as an ignore rule that names exactly it, as a directory, from the top level: the
@@ -680,10 +767,37 @@ pub fn judge_patch(
     scratch: &Path,
     options: &GitAcquireOptions,
 ) -> Result<JudgePatch, JudgePatchError> {
+    made(repo, base, scratch, options, None)
+}
+
+/// [`judge_patch`], which, when staging the working tree fails, asks `opens` of each regular
+/// file the index and the untracked listing name, and returns [`JudgePatchError::Unreadable`]
+/// with those it refuses (F12). The patch it makes is [`judge_patch`]'s: `opens` is asked
+/// nothing unless staging has failed.
+///
+/// # Errors
+/// As [`judge_patch`], and [`JudgePatchError::Unreadable`].
+pub fn judge_patch_probed(
+    repo: &Path,
+    base: &str,
+    scratch: &Path,
+    options: &GitAcquireOptions,
+    opens: Opens<'_>,
+) -> Result<JudgePatch, JudgePatchError> {
+    made(repo, base, scratch, options, Some(opens))
+}
+
+fn made(
+    repo: &Path,
+    base: &str,
+    scratch: &Path,
+    options: &GitAcquireOptions,
+    opens: Option<Opens<'_>>,
+) -> Result<JudgePatch, JudgePatchError> {
     let deadline = deadline_after(options.time_limit);
     let from = source(repo, base, options, deadline)?;
     let repository = empty_repository(&from.store, scratch, options, deadline)?;
-    let (tree, nested) = working_tree(&from, scratch, &repository, options, deadline)?;
+    let (tree, nested) = working_tree(&from, scratch, &repository, (options, opens), deadline)?;
     let bytes = diff_outside(&from.base, &tree, scratch, &repository, options, deadline)?;
     Ok(JudgePatch {
         bytes,
@@ -1518,5 +1632,38 @@ mod tests {
         assert_eq!(line(b"abc".to_vec()).unwrap(), "abc");
         assert_eq!(line(b"a\nb\n".to_vec()).unwrap(), "a\nb");
         assert!(line(vec![0xff, b'\n']).is_err());
+    }
+
+    /// F12, the coordinator's conditions 2 and 3: the search for files that cannot be opened
+    /// asks only of regular files (a directory, a missing path are never asked), and a bound of
+    /// count or of time says that not all names are known.
+    #[test]
+    fn the_search_for_unreadable_files_asks_only_of_regular_files_and_says_when_it_was_cut() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let paths: [&[u8]; 4] = [b"Cargo.toml", b"src", b"no such file", b"src/lib.rs"];
+        let asked = std::cell::RefCell::new(Vec::new());
+        let refuses = |path: &Path| {
+            asked.borrow_mut().push(path.to_path_buf());
+            false
+        };
+        let later = deadline_after(std::time::Duration::from_secs(60));
+        let (found, whole) = unreadable_among(root, paths.into_iter(), &refuses, 10, later);
+        assert_eq!(found, [Path::new("Cargo.toml"), Path::new("src/lib.rs")]);
+        assert!(whole);
+        assert_eq!(
+            *asked.borrow(),
+            [root.join("Cargo.toml"), root.join("src/lib.rs")]
+        );
+        // a lowered count bound cuts the search: what was found is kept, and it is not whole
+        let (found, whole) = unreadable_among(root, paths.into_iter(), &refuses, 1, later);
+        assert_eq!(found, [Path::new("Cargo.toml")]);
+        assert!(!whole, "a search cut by its count bound said it was whole");
+        // a deadline that has passed cuts it before the first path
+        let now = deadline_after(std::time::Duration::ZERO);
+        let (found, whole) = unreadable_among(root, paths.into_iter(), &refuses, 10, now);
+        assert!(found.is_empty() && !whole, "{found:?} {whole}");
+        // a file the account opens is not named
+        let (found, whole) = unreadable_among(root, paths.into_iter(), &|_| true, 10, later);
+        assert!(found.is_empty() && whole, "{found:?}");
     }
 }

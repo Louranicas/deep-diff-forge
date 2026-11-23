@@ -52,8 +52,8 @@ use deep_diff_forge_graph::Side;
 use deep_diff_forge_patch::{
     CommitAndParent, GitAcquireError, GitAcquireOptions, HeadState, InputGuards, JudgePatchError,
     Named, RepositoryDirs, SealedReview, Worktree, commit_patch, commits_beyond, dirty_submodules,
-    file_at_commit, has_uncommitted_changes, head_contains, head_state, judge_patch, named_commits,
-    repository_dirs, staged_patch, worktrees,
+    file_at_commit, has_uncommitted_changes, head_contains, head_state, judge_patch_probed,
+    named_commits, repository_dirs, staged_patch, worktrees,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -1809,33 +1809,166 @@ struct Change {
     nested: Vec<PathBuf>,
 }
 
+/// A cause in a working tree that holds a stop once (F12, owner decision OD-J): its class and
+/// the paths it names, from the top level, as Git names them. Skip-worktree marks are not
+/// named: the hook reads only that the index has one. (A nested repository is not one: the
+/// hook cannot tell whether the session made it, so it stays a note.)
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Refusal {
+    class: &'static str,
+    paths: Vec<PathBuf>,
+}
+
+/// Whether this account can open the regular file at `path` for reading, never through a final
+/// link and never waiting (a path that became a FIFO since it was looked at is not waited on).
+fn opens(path: &Path) -> bool {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
+        .open(path)
+        .is_ok()
+}
+
+/// The paths of `refusal` as the agent is told them: the first [`hook::ONCE_PATHS_NAMED`]
+/// escaped, the rest counted; a path that is not UTF-8 is counted and never printed.
+fn refusal_paths(refusal: &Refusal) -> String {
+    let named: Vec<String> = (refusal.paths.iter())
+        .filter_map(|path| path.to_str())
+        .take(hook::ONCE_PATHS_NAMED)
+        .map(hook::shown_path)
+        .collect();
+    match (named.is_empty(), refusal.paths.len() - named.len()) {
+        (true, more) => format!("{more} paths whose names are not UTF-8"),
+        (false, 0) => named.join(", "),
+        (false, more) => format!("{} and {more} more", named.join(", ")),
+    }
+}
+
+/// What the agent is told of a cause that holds once (F12): a fixed sentence for its class,
+/// its paths ([`refusal_paths`]) and the accepted repair. Nothing of Git's words.
+fn refusal_sentence(refusal: &Refusal) -> String {
+    let undo = "If this session made it so, undo it; if not, tell a person.";
+    match refusal.class {
+        "work.unreadable" => format!(
+            "a file in it cannot be read: {}. {undo}",
+            refusal_paths(refusal)
+        ),
+        _ => format!(
+            "the index marks paths skip-worktree, so the working tree is not the whole change. {undo}"
+        ),
+    }
+}
+
+/// A cause that holds once as a unit a stop or a check judged ([`Judged::Refused`]).
+fn refused_judged(refusal: &Refusal, reason: String, lines: Lines) -> Judged {
+    Judged::Refused {
+        class: refusal.class,
+        sentence: refusal_sentence(refusal),
+        reason,
+        lines,
+    }
+}
+
+/// The most paths of a cause whose lstat makes its state ([`refusal_state`]).
+const ONCE_STATE_PATHS: usize = 4096;
+
+/// The state of the paths of `refusal` under `top` (F12): the inode, size, modification and
+/// change times and mode of each of the first [`ONCE_STATE_PATHS`] by `symlink_metadata`, or
+/// "absent". A rewrite or a `chmod` changes the change time, which an unprivileged process
+/// cannot set back. `None` for skip-worktree marks, which name no path.
+fn refusal_state(top: &Path, refusal: &Refusal) -> Option<String> {
+    use std::fmt::Write as _;
+    use std::os::unix::fs::MetadataExt as _;
+    if refusal.paths.is_empty() {
+        return None;
+    }
+    let mut state = String::new();
+    for path in refusal.paths.iter().take(ONCE_STATE_PATHS) {
+        let _ = match std::fs::symlink_metadata(top.join(path)) {
+            Ok(m) => writeln!(
+                state,
+                "{} {} {}.{} {}.{} {:o}",
+                m.ino(),
+                m.size(),
+                m.mtime(),
+                m.mtime_nsec(),
+                m.ctime(),
+                m.ctime_nsec(),
+                m.mode()
+            ),
+            Err(_) => writeln!(state, "absent"),
+        };
+    }
+    Some(state)
+}
+
+/// The words a cause is known by ([`hook::once_name`]): its class and a digest of all its
+/// paths, as Git names them.
+fn refusal_words(refusal: &Refusal) -> String {
+    use std::os::unix::ffi::OsStrExt as _;
+    let mut bytes = Vec::new();
+    for path in &refusal.paths {
+        bytes.extend_from_slice(path.as_os_str().as_bytes());
+        bytes.push(0);
+    }
+    format!(
+        "\0{}\0{}",
+        refusal.class,
+        deep_diff_forge_core::sha256_hex(&bytes)
+    )
+}
+
 /// The working tree at `top` as the patch a judge would be given against the commit `base`,
 /// which a message calls `called`. A tree that equals the base has no patch: only that is "no
 /// change". Every failure is an error with its reason: when one answer stood for "nothing to
 /// judge" and for failures alike, a patch that could not be made let a stop pass in silence.
+/// A failure whose cause is in the working tree and is named whole carries it ([`Refusal`]).
 fn change(
     top: &Path,
     base: &str,
     called: &str,
     work: &Path,
     deadline: Deadline,
-) -> Result<Change, String> {
-    match judge_patch(top, base, work, &deadline.git()) {
+) -> Result<Change, (String, Option<Refusal>)> {
+    let read = |words: String| format!("the change could not be read from Git: {words}");
+    match judge_patch_probed(top, base, work, &deadline.git(), &opens) {
         Ok(patch) => Ok(Change {
             patch: Some(patch.bytes).filter(|bytes| !bytes.is_empty()),
             nested: patch.nested,
         }),
-        Err(JudgePatchError::NoBase) => Err(format!(
-            "{called} ({}) can no longer be read from the repository",
-            base.chars().take(7).collect::<String>()
+        Err(JudgePatchError::NoBase) => Err((
+            format!(
+                "{called} ({}) can no longer be read from the repository",
+                base.chars().take(7).collect::<String>()
+            ),
+            None,
         )),
-        Err(JudgePatchError::Failed(error)) => Err(format!(
-            "the change could not be read from Git: {}",
-            git_words(&error)
+        Err(JudgePatchError::Failed(error)) => Err((read(git_words(&error)), None)),
+        Err(JudgePatchError::Unreadable {
+            paths,
+            whole,
+            error,
+        }) => Err(if whole {
+            let class = "work.unreadable";
+            (read(git_words(&error)), Some(Refusal { class, paths }))
+        } else {
+            let words = git_words(&error);
+            (
+                read(format!(
+                    "{words} (files it cannot read were found, but not all names are known)"
+                )),
+                None,
+            )
+        }),
+        Err(error @ JudgePatchError::SkipWorktree) => Err((
+            read(error.to_string()),
+            Some(Refusal {
+                class: "work.skip_worktree",
+                paths: Vec::new(),
+            }),
         )),
-        Err(error @ (JudgePatchError::SkipWorktree | JudgePatchError::Unmerged)) => {
-            Err(format!("the change could not be read from Git: {error}"))
-        }
+        Err(error @ JudgePatchError::Unmerged) => Err((read(error.to_string()), None)),
     }
 }
 
@@ -1985,7 +2118,8 @@ fn advice_for(
         "the commit this session began from",
         &scratch.sub("work")?,
         deadline,
-    )?;
+    )
+    .map_err(|(reason, _)| reason)?;
     let Some(patch) = changed.patch else {
         return Ok(None);
     };
@@ -2920,6 +3054,9 @@ struct Stopping<'a> {
     number: u64,
     /// The top level of each linked tree something is remembered of ([`State::trees`]).
     recorded: &'a std::collections::BTreeMap<String, String>,
+    /// The client says this stop follows a block (`stop_hook_active`): a cause that holds once
+    /// does not hold here (F12, [`hook::once_lines`]).
+    active: bool,
 }
 
 /// What a stop judged.
@@ -2963,6 +3100,9 @@ struct Judging {
 struct Looked {
     /// Which working tree ([`tree_instance`]).
     id: String,
+    /// What is kept of the causes in it that hold once (F12, [`hook::once_lines`]); `None` when
+    /// nothing is known of them at this stop.
+    once: Option<Lines>,
     /// The lines of its uncommitted change; `None` when that change got no verdict, so
     /// nothing is known of it.
     tree: Option<Lines>,
@@ -3234,7 +3374,16 @@ fn tree_of(entry: &str) -> Option<&str> {
 
 /// Whether the state remembers a failure that has blocked in the working tree `id`.
 fn stands_in(blocked: &[String], id: &str) -> bool {
-    blocked.iter().any(|entry| tree_of(entry) == Some(id))
+    // (what is kept of a cause that holds once, F12, is no failure)
+    let once = |entry: &str| {
+        entry
+            .rsplit_once(':')
+            .and_then(|(line, _)| line.rsplit_once('/'))
+            .is_some_and(|(unit, key)| unit.ends_with("/o") || hook::is_once(key))
+    };
+    blocked
+        .iter()
+        .any(|entry| tree_of(entry) == Some(id) && !once(entry))
 }
 
 /// The tag of a tree's uncommitted (`u`) or staged (`s`) change ([`TreeJudged::tag`]).
@@ -3525,6 +3674,9 @@ enum Staged<T> {
 struct Uncommitted {
     tree: Reading<Vec<u8>>,
     staged: Reading<Staged<Vec<u8>>>,
+    /// A cause in the tree that holds a stop once (F12), with the tree not read: a file that
+    /// cannot be read, skip-worktree marks.
+    refused: Option<Refusal>,
 }
 
 impl Uncommitted {
@@ -3537,6 +3689,7 @@ impl Uncommitted {
                 "it was not looked at, because the working tree's change could not be read ({reason})"
             )),
             tree: Reading::NotRead(reason),
+            refused: None,
         }
     }
 }
@@ -3589,7 +3742,12 @@ fn uncommitted_by(
     );
     let changed = match changed {
         Ok(changed) => changed,
-        Err(reason) => return Ok(Uncommitted::not_read(reason)),
+        Err((reason, refused)) => {
+            return Ok(Uncommitted {
+                refused,
+                ..Uncommitted::not_read(reason)
+            });
+        }
     };
     for nested in &changed.nested {
         beside.extend(left_out(stopping, top, nested));
@@ -3613,6 +3771,7 @@ fn uncommitted_by(
     Ok(Uncommitted {
         tree: changed.patch.map_or(Reading::Nothing, Reading::Found),
         staged,
+        refused: None,
     })
 }
 
@@ -4187,6 +4346,8 @@ fn judge_commits(
         let said = match &judged {
             Judged::Pass => "p".to_owned(),
             Judged::Hold { rules, said } => format!("h:{}", kept_reason(rules, said, false)),
+            // (a hold for a label the judge does not know: a commit's is final, as a hold is)
+            Judged::Refused { .. } => format!("h:{}", kept_reason(&[], &[], false)),
             Judged::Fail { rules, said } => format!("f:{}", kept_reason(rules, said, true)),
             Judged::Unjudged { reason } if proven => format!("x:{}", one_line(reason)),
             Judged::Unjudged { .. } if !ran && stopping.deadline.left() < COMMIT_FLOOR => {
@@ -5078,7 +5239,15 @@ fn tree_units(
         }
         Reading::NotRead(reason) => Reading::NotRead(reason),
     };
-    let (looked, units) = seen(id, &top.to_string_lossy(), tree, index, blocked);
+    let refused = found.refused.as_ref().map(|refusal| (refusal, top));
+    let (looked, units) = seen(
+        id,
+        &top.to_string_lossy(),
+        tree,
+        index,
+        blocked,
+        (refused, tribunal.stop.active),
+    );
     out.trees.push(looked);
     // (the units are the uncommitted change and, when it has one, the staged change)
     for (at, unit) in units.iter().enumerate() {
@@ -5086,7 +5255,10 @@ fn tree_units(
             Some((patch, kind, seals)) if unit.tag.ends_with(&kind[..1]) => {
                 (patch.clone(), *kind, seals.clone())
             }
-            _ => (None, if at == 0 { "uncommitted" } else { "staged" }, None),
+            // (a cause that holds once is the uncommitted change's: F12)
+            _ if unit.tag.ends_with('o') => (named[0].0.clone(), "uncommitted", None),
+            _ if at == 0 => (None, "uncommitted", None),
+            _ => (None, "staged", None),
         };
         let tree = id.to_owned();
         let name = crate::ledger::Name::Tree { patch, kind, tree };
@@ -5112,14 +5284,52 @@ fn seen(
     tree: Reading<Judged>,
     index: Reading<Staged<Judged>>,
     blocked: &[String],
+    (refused, active): (Option<(&Refusal, &Path)>, bool),
 ) -> (Looked, Vec<TreeJudged>) {
+    // F12: a hold for a label the judge does not know is given its lines for this stop
+    let gap =
+        |judged: Judged, tag: &str| once_again(judged, &hook::remembered(blocked, tag), active);
+    let tree = match tree {
+        Reading::Found(judged) => Reading::Found(gap(judged, &unit_tag(id, 'u'))),
+        other => other,
+    };
+    let index = match index {
+        Reading::Found(Staged::Other(judged)) => {
+            Reading::Found(Staged::Other(gap(judged, &unit_tag(id, 's'))))
+        }
+        other => other,
+    };
     // the tree's verdict when it has one: `None` when nothing is known of the tree's change
     let tree_read = !matches!(tree, Reading::NotRead(_));
+    let not_read_why = match &tree {
+        Reading::NotRead(reason) => Some(reason.clone()),
+        _ => None,
+    };
     let tree = match tree {
         Reading::Nothing => None,
         Reading::Found(judged) => Some(judged),
         Reading::NotRead(reason) => Some(Judged::Unjudged { reason }),
     };
+    // F12: a cause in the tree that holds once, under its own tag; what a stop that read the
+    // tree finds no cause in keeps only how often each cause held
+    let once_tag = unit_tag(id, 'o');
+    let before = hook::remembered_as(blocked, &once_tag);
+    let mut once: Option<Lines> = tree_read.then(|| held_counts(&before, None));
+    let refused_unit = refused.map(|(refusal, root)| {
+        let name = hook::once_name(&refusal_words(refusal));
+        let state = refusal_state(root, refusal);
+        let (lines, how) = hook::once_lines(&name, state.as_deref(), &before, active);
+        let mut memory = held_counts(&before, Some(&name));
+        memory.extend(lines.clone());
+        once = Some(memory);
+        let reason = not_read_why.clone().unwrap_or_default();
+        TreeJudged {
+            tag: once_tag.clone(),
+            what: hook::tree_label(top),
+            judged: Some(refused_judged(refusal, reason + &once_said(how), lines)),
+            holds: Holds::WhileNew,
+        }
+    });
     let unknown = |judged: &Option<Judged>| matches!(judged, Some(Judged::Unjudged { .. }));
     let lines = |judged: &Option<Judged>| -> Lines {
         judged.as_ref().map(hook::failure_lines).unwrap_or_default()
@@ -5210,6 +5420,7 @@ fn seen(
     };
     let looked = Looked {
         id: id.to_owned(),
+        once,
         tree: tree_lines,
         index: index_whole.filter(|_| told_apart),
         own: whole(&staged),
@@ -5234,7 +5445,72 @@ fn seen(
             judged: Some(staged),
         });
     }
+    // what holds once stands in for the tree's change that could not be read
+    if let Some(unit) = refused_unit {
+        units[0] = unit;
+    }
     (looked, units)
+}
+
+/// The most causes of one tree whose count of holds a session keeps (F12).
+const ONCE_NAMES_KEPT: usize = 16;
+
+/// Of what a session keeps of a tree's causes that hold once (`before`), how often each held:
+/// the name lines without their states, but `except`'s, at most [`ONCE_NAMES_KEPT`] less one.
+fn held_counts(before: &std::collections::BTreeMap<&str, usize>, except: Option<&str>) -> Lines {
+    (before.iter())
+        .filter(|(key, _)| key.starts_with('w') && Some(**key) != except)
+        .take(ONCE_NAMES_KEPT - 1)
+        .map(|(key, count)| ((*key).to_owned(), *count))
+        .collect()
+}
+
+/// What the user's display is told of how a cause that holds once stands at this stop.
+fn once_said(how: hook::Once) -> String {
+    match how {
+        hook::Once::Holds | hook::Once::Stands => String::new(),
+        hook::Once::Waits => {
+            " (this stop follows a block, so the first stop of the next turn holds for it)"
+                .to_owned()
+        }
+        hook::Once::Spent => format!(
+            " (it has held {} stops of this session, the most one cause holds, so it is let through)",
+            hook::ONCE_BOUND
+        ),
+    }
+}
+
+/// A hold for a label the judge does not know ([`hook::version_gap`]) with the lines it has at
+/// this stop ([`hook::once_lines`]); any other answer as it is.
+fn once_again(
+    judged: Judged,
+    remembered: &std::collections::BTreeMap<&str, usize>,
+    active: bool,
+) -> Judged {
+    let Judged::Refused {
+        class,
+        sentence,
+        reason,
+        lines,
+    } = judged
+    else {
+        return judged;
+    };
+    let Some(name) = lines.keys().find(|key| key.starts_with('w')).cloned() else {
+        return Judged::Refused {
+            class,
+            sentence,
+            reason,
+            lines,
+        };
+    };
+    let (lines, how) = hook::once_lines(&name, None, remembered, active);
+    Judged::Refused {
+        class,
+        sentence,
+        reason: reason + &once_said(how),
+        lines,
+    }
 }
 
 /// Have the session's work judged, unit by unit: the uncommitted and the staged change of the
@@ -5803,6 +6079,9 @@ fn remember_within(
     for looked in &judging.trees {
         if let Some(lines) = &looked.tree {
             keep(&mut state.blocked, &unit_tag(&looked.id, 'u'), lines);
+        }
+        if let Some(lines) = &looked.once {
+            keep(&mut state.blocked, &unit_tag(&looked.id, 'o'), lines);
         }
         if let Some(index) = &looked.index {
             let (own_tag, kept_tag) = (unit_tag(&looked.id, 's'), unit_tag(&looked.id, 'k'));
@@ -6425,6 +6704,7 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, String> {
                         look,
                         number,
                         recorded: &session.state.trees,
+                        active: input.stop_hook_active,
                     };
                     let judging = judge_units(&stopping, &tips, &known, &session.state.blocked)?;
                     // Decided by what had blocked before this stop; then this stop is
@@ -6544,6 +6824,10 @@ fn ledger_units(judging: &Judging, blocks: &[bool]) -> Vec<crate::ledger::Unit> 
             Judged::Fail { .. } => ("fail_stands", Some("fail.stands")),
             Judged::Hold { rules, .. } => ("hold", (!rules.is_empty()).then_some("hold.rule")),
             Judged::Unjudged { .. } => ("unjudged", None),
+            Judged::Refused { class, .. } if class.starts_with("work.") => {
+                ("unjudged", Some(*class))
+            }
+            Judged::Refused { class, .. } => ("hold", Some(*class)),
         };
         let names = if names.is_empty() {
             vec![(Name::Stop, None)]
@@ -7082,7 +7366,13 @@ pub(crate) fn check_units(
             &scratch.sub("tree")?,
             deadline,
         ) {
-            Err(reason) => units.push(("uncommitted", None, unjudged(reason))),
+            // (what a stop holds once for is said as the stop says it: F12)
+            Err((reason, Some(refusal))) => units.push((
+                "uncommitted",
+                None,
+                (refused_judged(&refusal, reason, Lines::new()), None),
+            )),
+            Err((reason, None)) => units.push(("uncommitted", None, unjudged(reason))),
             Ok(Change { patch, .. }) => {
                 if let Some(patch) = &patch {
                     units.push(("uncommitted", None, judge(patch)));
@@ -7389,13 +7679,22 @@ fn patch_check(
         (Some(place), Some(Ok(scratch))) => scratch
             .sub("work")
             .and_then(|work| {
-                judge_patch(&place.top, rev, &work, &deadline.git()).map_err(|error| match error {
-                    JudgePatchError::NoBase => format!("{at} names no commit"),
-                    JudgePatchError::Failed(error) => unjudged(git_words(&error)),
-                    error @ (JudgePatchError::SkipWorktree | JudgePatchError::Unmerged) => {
-                        unjudged(error.to_string())
-                    }
-                })
+                // (a cause a stop holds once for is said so: F12)
+                let once = |why: String| {
+                    format!("a stop here would hold once, then be UNJUDGED: the change could not be read from Git: {why}")
+                };
+                judge_patch_probed(&place.top, rev, &work, &deadline.git(), &opens).map_err(
+                    |error| match error {
+                        JudgePatchError::NoBase => format!("{at} names no commit"),
+                        JudgePatchError::Unreadable {
+                            whole: true, error, ..
+                        } => once(git_words(&error)),
+                        JudgePatchError::Failed(error)
+                        | JudgePatchError::Unreadable { error, .. } => unjudged(git_words(&error)),
+                        error @ JudgePatchError::SkipWorktree => once(error.to_string()),
+                        error @ JudgePatchError::Unmerged => unjudged(error.to_string()),
+                    },
+                )
             })
             // what is staged is a unit of a stop too: an index with unmerged paths has no
             // tree, and a stop then has no verdict on it (HR5-L-6)
@@ -7711,7 +8010,10 @@ fn probe(
             code,
             hook::judged(code, verdict.as_ref(), said.as_deref(), sealed),
         ) {
-            (Some(code), Judged::Pass | Judged::Hold { .. } | Judged::Fail { .. }) => {
+            (
+                Some(code),
+                Judged::Pass | Judged::Hold { .. } | Judged::Fail { .. } | Judged::Refused { .. },
+            ) => {
                 let document = verdict.unwrap_or_default();
                 let read = format!(
                     "{} of forge-warden {}",
@@ -8628,6 +8930,7 @@ mod tests {
         // a tree whose uncommitted change was read, with nothing in its index
         let looked = |id: &str, tree: Option<&[(&str, usize)]>| Looked {
             id: id.to_owned(),
+            once: None,
             tree: tree.map(lines),
             index: Some(Lines::new()),
             own: Lines::new(),
@@ -8686,6 +8989,7 @@ mod tests {
         let staged = |index: &[(&str, usize)], own: &[(&str, usize)]| {
             stop(vec![Looked {
                 id: "t1".to_owned(),
+                once: None,
                 tree: Some(lines(&[("b", 1)])),
                 index: Some(lines(index)),
                 own: lines(own),
@@ -8792,6 +9096,7 @@ mod tests {
             tree.map_or(Reading::Nothing, Reading::Found),
             index,
             blocked,
+            (None, false),
         )
     }
 
@@ -9281,6 +9586,7 @@ mod tests {
                         Reading::NotRead(why()),
                         Reading::NotRead(why()),
                         &state.blocked,
+                        (None, false),
                     )
                 } else if !index_read && !same && next(2) == 0 {
                     // (the tree was read and the index could not be)
@@ -9294,6 +9600,7 @@ mod tests {
                         },
                         Reading::NotRead(why()),
                         &state.blocked,
+                        (None, false),
                     )
                 } else {
                     seen_of(
