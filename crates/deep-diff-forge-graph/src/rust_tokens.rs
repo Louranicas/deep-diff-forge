@@ -909,7 +909,9 @@ fn released_path<'a, I: Iterator<Item = SideLine<'a>>>(
 }
 
 /// `#[allow(` and `#![allow(`, when the current token is `#`: what release 0.8.3 keyed
-/// `check_suppressed` on, with anything between the tokens (a comment, a line end).
+/// `check_suppressed` on, with anything between the tokens (a comment, a line end); and since
+/// 0.11.0 `#[expect(` and `#![expect(`, which switch the lint off as `allow` does (and report
+/// only when it would not have fired).
 fn allowed<'a, I: Iterator<Item = SideLine<'a>>>(window: &Window<'a, I>) -> Option<(usize, usize)> {
     let at = window.at;
     let open = if window.marks(at + 1, b'!') {
@@ -918,7 +920,7 @@ fn allowed<'a, I: Iterator<Item = SideLine<'a>>>(window: &Window<'a, I>) -> Opti
         at + 1
     };
     (window.marks(open, b'[')
-        && window.word(open + 1) == Some(Word::Allow)
+        && matches!(window.word(open + 1), Some(Word::Allow | Word::Expect))
         && window.marks(open + 2, b'('))
     .then_some((at, open + 2))
 }

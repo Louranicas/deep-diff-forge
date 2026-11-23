@@ -547,10 +547,11 @@ const RULES: &[Rule] = &[
         // the code: `#[allow(` in a comment or a string switches nothing off ([`floor_view`])
         View::Code,
         Scope::Languages(RUST),
-        // whatever the spacing: `# [allow(` and `#! [allow(` are the same attributes
+        // whatever the spacing: `# [allow(` and `#! [allow(` are the same attributes; `expect`
+        // switches the lint off as `allow` does
         Match::Spaced {
             heads: &["#"],
-            tails: &["[allow(", "![allow("],
+            tails: &["[allow(", "![allow(", "[expect(", "![expect("],
         },
     ),
     rule(
@@ -8015,13 +8016,53 @@ mod tests {
             signals(&added("src/x.rs", &["#[allow(dead_code)]"])),
             [S::CheckSuppressed]
         );
-        assert_eq!(
-            signals(&added(
-                "src/x.rs",
-                &["#[expect(dead_code, reason = \"r\")]"]
-            )),
-            []
-        );
+        // since 0.11.0 (F2b) an expectation is a suppression, with a reason as without, as an
+        // allowance with a reason is
+        for line in [
+            "#[expect(dead_code, reason = \"r\")]",
+            "#[allow(dead_code, reason = \"r\")]",
+        ] {
+            assert_eq!(signals(&added("src/x.rs", &[line])), [S::CheckSuppressed]);
+        }
+    }
+
+    /// `#[expect(..)]` and `#![expect(..)]` switch a lint off as `allow` does, whatever the
+    /// spacing, through a raw identifier, inside a macro's body, with or without a reason; a
+    /// method `expect`, an attribute named otherwise, one in a comment or with no list are not.
+    #[test]
+    fn an_expectation_is_a_suppression() {
+        let suppressed = [
+            "#[expect(dead_code)]",
+            "#![expect(clippy::all)]",
+            "# [ expect ( unused ) ]",
+            "#! [expect(unused)]",
+            "#[r#expect(dead_code)]",
+            "#[expect(unused, reason = \"kept for the next release\")]",
+            "macro_rules! m { () => { #[expect(dead_code)] fn f() {} } }",
+            "#[expect(",
+        ];
+        for line in suppressed {
+            let file = added("src/x.rs", &[line]);
+            let lines: Vec<u32> = file_evidence(&file)
+                .iter()
+                .filter(|e| e.signal == S::CheckSuppressed)
+                .map(|e| e.line)
+                .collect();
+            assert_eq!(lines, [2], "check_suppressed not on line 2 for {line:?}");
+        }
+        for line in [
+            "let v = x.expect(\"present\");",
+            "#[should_panic(expected = \"x\")]",
+            "// #[expect(dead_code)]",
+            "#[expect]",
+            "#[expected(x)]",
+        ] {
+            let file = added("src/x.rs", &[line]);
+            assert!(
+                !signals(&file).contains(&S::CheckSuppressed),
+                "{line:?} is not a suppression"
+            );
+        }
     }
 
     #[test]
