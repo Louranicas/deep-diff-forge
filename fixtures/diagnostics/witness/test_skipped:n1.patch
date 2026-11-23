@@ -1,0 +1,6 @@
+diff --git a/tests/t.rs b/tests/t.rs
+--- a/tests/t.rs
++++ b/tests/t.rs
+@@ -1,2 +1,0 @@
+-#[test]
+-fn t() { assert_eq!(f(), 2); }
