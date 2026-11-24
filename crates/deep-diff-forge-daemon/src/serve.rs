@@ -2950,6 +2950,39 @@ mod tests {
         );
     }
 
+    /// S3.34.c, the missed mutant of `bounded_response` (`<` to `<=` where the refusal with its id
+    /// is measured): a refusal is sent with its id only while it fits under the cap; one exactly
+    /// as long as the cap would make the line with its newline one byte over, and the refusal
+    /// without the id, shorter, is sent instead. Every cap over a range is tried, so the one where
+    /// the refusal with the id is exactly the cap is among them.
+    #[test]
+    fn a_refusal_as_long_as_the_cap_is_sent_without_its_id() {
+        let id = Value::from("a-request-id-of-some-length");
+        let response = success_response(&id, Value::from("x".repeat(5_000)));
+        let mut at_the_cap = 0;
+        for cap in 100..600 {
+            let answer = bounded_response(&id, response.clone(), cap);
+            let refused: Value = serde_json::from_str(&answer).unwrap();
+            let message = refused["error"]["message"].as_str().unwrap().to_owned();
+            let refusal = RpcError::new(RESOURCE_EXHAUSTED, message);
+            let with_id = error_response(&id, &refusal);
+            let without = error_response(&Value::Null, &refusal);
+            at_the_cap += usize::from(with_id.len() == cap);
+            if with_id.len() >= cap && without.len() < with_id.len() {
+                assert_eq!(
+                    refused["id"],
+                    Value::Null,
+                    "cap {cap}: a refusal of {} bytes was sent with its id though the line is over the cap",
+                    answer.len()
+                );
+            }
+        }
+        assert!(
+            at_the_cap > 0,
+            "no cap of the range equals the refusal's length"
+        );
+    }
+
     /// Bug hunt 2026-11-01: the cap is measured on the line as it is written. A response whose
     /// line separators `json_line_safe` writes in six bytes rather than three is refused when
     /// escaping puts it over, and a refusal whose id alone would put it over drops the id.
