@@ -2,8 +2,20 @@
 
 This document defines how Deep-Diff-Forge moves from commit to public artifact.
 
-## Status of 0.10.0 and the releases before it
+## Status of 0.11.0 and the releases before it
 
+- **0.11.0** is the agent-loop release: the document `deep-diff-forge.diagnostics.v0`, engine
+  protocol 3, a stop that judges the project's frontier and one-parent commits in the judge's
+  bound mode, and one meaning for exit 7. It fixes `eval` and `agent doctor --gate`, which exited
+  0 when the reader of their output had gone in 0.10.0 and earlier
+  ([DDF-2026-011](advisories/DDF-2026-011.md)), and closes the miss
+  [DDF-2026-006](advisories/DDF-2026-006.md) declared; its known issues, contract changes and
+  the order of the cutover with forge-warden are in its [release notes](release-notes/0.11.0.md).
+  It is released as the signed tag `v0.11.0`, published on GitLab, Gitea and Forgejo with a
+  binary built locally for Linux x86_64 and its `RELEASE-MANIFEST.json` signed beside
+  `SHA256SUMS`; GitHub mirrors its release page from the GitLab files, and its crates are
+  published on crates.io from the tag's commit ([Local release](#local-release-from-084),
+  **Publish**).
 - **0.10.0** reads a `diff --git` section only if its headers are a shape Git's own diff
   writes, and fixes six misses of 0.9.0 and earlier
   ([DDF-2026-004](advisories/DDF-2026-004.md) to [DDF-2026-008](advisories/DDF-2026-008.md) and
@@ -61,10 +73,10 @@ This document defines how Deep-Diff-Forge moves from commit to public artifact.
 
 | Channel | Purpose | Today |
 | --- | --- | --- |
-| `main` | Current development branch. | 0.10.0 (from 0.8.4 merged on GitLab; GitHub's `main` is brought level by a pull request); up to 0.8.3 it was reached only through pull requests (branch ruleset). |
-| GitHub Releases | Up to v0.8.3 the primary binary release; from 0.8.4 a mirror of the GitLab release. | `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`, `v0.8.0`, `v0.8.1`, `v0.8.2`, `v0.8.3` built by `release.yml`; `v0.8.4` and `v0.9.0` mirrored (2026-11-22), `v0.10.0` mirrored from its GitLab files. |
+| `main` | Current development branch. | 0.11.0 (from 0.8.4 merged on GitLab; GitHub's `main` is brought level by a pull request); up to 0.8.3 it was reached only through pull requests (branch ruleset). |
+| GitHub Releases | Up to v0.8.3 the primary binary release; from 0.8.4 a mirror of the GitLab release. | `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`, `v0.8.0`, `v0.8.1`, `v0.8.2`, `v0.8.3` built by `release.yml`; `v0.8.4` and `v0.9.0` mirrored (2026-11-22), `v0.10.0` and `v0.11.0` mirrored from their GitLab files. |
 | GitLab | Up to 0.8.3 a mirror; from 0.8.4 the repository of record and the place of release and contribution (merge requests). | Up to 0.8.3 pushed to match GitHub; from 0.8.4 every signed tag and its release files are published here ([local release](#local-release-from-084)). |
-| crates.io | Rust library and CLI distribution. | 0.9.0, fourteen crates (2026-11-23); from 0.10.0 a step of every release, 0.10.0 from its tag. |
+| crates.io | Rust library and CLI distribution. | 0.9.0, fourteen crates (2026-11-23); from 0.10.0 a step of every release, 0.10.0 and 0.11.0 from their tags. |
 | cargo-binstall | Fast binary installation. | Not configured (no binstall metadata in any `Cargo.toml`). |
 | package managers | Later, after CLI stabilizes. | None. |
 
@@ -73,7 +85,7 @@ This document defines how Deep-Diff-Forge moves from commit to public artifact.
 Semantic versioning. The plan below is the original 2026-06 sequence, kept as
 written; the releases did not follow it (`v0.2.0` already held 12 crates,
 including the TUI, daemon and learning crates; the review and SDK crates came
-later; 0.9.0 is the current development line):
+later; 0.11.0 is the newest release):
 
 ```text
 0.1.0: model and CLI bootstrap

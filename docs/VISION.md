@@ -4,7 +4,7 @@
 > going and what it will refuse to become. Written 2026-11-23, after release 0.10.0. Where a
 > sentence describes something not yet released, it says so. For what the code does today, see
 > the [README](../README.md), the [reference](reference/README.md) and the
-> [0.10.0 release notes](release-notes/0.10.0.md).
+> [0.11.0 release notes](release-notes/0.11.0.md).
 >
 > **History.** The text of 2026-11-01 (four product modes, the north star, the differentiation
 > thesis) is in this file's history at the tag `v0.10.0`. Of its four modes, the terminal review
@@ -62,8 +62,8 @@ Each is a property that a test can break.
 |---|---|---|---|
 | 1 | **What you review is what applies.** | For every patch it accepts, a plain `git apply` writes exactly what the review shows, or refuses the whole patch. A header shape Git does not itself write is refused with a named reason. | Released in 0.10.0. |
 | 2 | **Evidence is located, and a release never sees less than the last.** | A label stands on a line, found by a reader whose every step can be replayed. A widened reading may add evidence and never remove it. What a past release found, the next one finds, unless a listed decision says otherwise. | Released; the listed exceptions are in the changelog. |
-| 3 | **Nothing is silent.** | A file that could not be read is labelled unread. A stop that no judge judged is called unjudged and never a pass. Every refusal has one meaning and a name, and survives a closed pipe or a full disk. | Released in part in 0.10.0; completed in 0.11.0 (in development). |
-| 4 | **One answer on every surface.** | The command line, the daemon, the stdio protocol, MCP and the SDKs return the same sealed bytes for the same change, with the identity of the scorer inside them. | Released for the review and the ranking; the diagnostics document follows in 0.11.0. |
+| 3 | **Nothing is silent.** | A file that could not be read is labelled unread. A stop that no judge judged is called unjudged and never a pass. Every refusal has one meaning and a name, and survives a closed pipe or a full disk. | Released in part in 0.10.0 and more in 0.11.0; the silent and unjudged paths that remain are stated limits ([SECURITY](../SECURITY.md)). |
+| 4 | **One answer on every surface.** | The command line, the daemon, the stdio protocol, MCP and the SDKs return the same sealed bytes for the same change, with the identity of the scorer inside them. | Released for the review and the ranking, and from 0.11.0 for the diagnostics document. |
 | 5 | **A claim is worth exactly its evidence.** | Every sentence in the documents is true of the binary, with its exceptions in the same sentence. The reference tables are held word for word by tests. A release is built twice to one hash and signed, and the commands its notes quote are run on it. | Released; the check on the notes' commands was added after 0.10.0's notes quoted one the binary refused. |
 
 ## Designed for an author who optimises
@@ -79,9 +79,9 @@ author who wants the check to pass, and is built so that the two aims meet.
   fix a path. Advice that does not apply teaches an agent to ignore advice.
 - **Cheap exits are closed by rule, not by suspicion.** A stop that the session itself made
   impossible to judge holds once, on evidence the hook has, never on a guess at intent, and is
-  bounded so that it cannot trap a session. *(0.11.0, in development.)*
+  bounded so that it cannot trap a session. *(0.11.0.)*
 - **Probing leaves a trace.** A check run inside a session is recorded beside the stops in a
-  ledger, and the count is described as what it is: a lower bound. *(0.11.0, in development.)*
+  ledger, and the count is described as what it is: a lower bound. *(0.11.0.)*
 - **The judge is someone else.** Verdicts come from forge-warden, against a policy read at the
   session's base and a ranker pinned by its hash. The hooks are advice and say that they are not
   a security boundary ([agent hooks](reference/agent-hooks.md)). The boundary is the judge on
@@ -105,7 +105,7 @@ from the diff is read again and labelled with the cause. Input with no patch is 
 of answered with an empty review. The ranking has one byte form. The stop reads the judge's
 newer verdict and holds an unread failure. Releases are built twice, signed and receipted.
 
-**0.11.0, in development: the loop is honest.** Refusals with one meaning. Diagnostics an agent
+**0.11.0, released: the loop is honest.** Refusals with one meaning. Diagnostics an agent
 can act on, on every surface. The stop's judgement on demand, equal to the stop in its units and
 inputs or saying where it is not. A durable record of what each stop decided. Cheap exits closed
 by rule. Readers widened where a check is switched off by a newer spelling.

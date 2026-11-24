@@ -24,6 +24,13 @@ hardware are under [open items for maintainers](#open-items-for-maintainers).
 
 Release and publication:
 
+- **0.11.0 is released** (the signed tag `v0.11.0`, 2026-11-25): the agent loop (the document
+  `deep-diff-forge.diagnostics.v0`, engine protocol 3, a stop that judges the project's frontier
+  and one-parent commits in the judge's bound mode, one meaning for exit 7) and the fix of
+  [DDF-2026-011](advisories/DDF-2026-011.md), in its [release notes](release-notes/0.11.0.md);
+  published on GitLab, Gitea and Forgejo with a binary built locally for Linux x86_64 and its
+  `RELEASE-MANIFEST.json` signed beside `SHA256SUMS`, its release page mirrored on GitHub and
+  its crates on crates.io.
 - **0.10.0 is released** (the signed tag `v0.10.0`): Git's header shapes as a list, six fixes
   for released versions and the cutover with forge-warden, in its
   [release notes](release-notes/0.10.0.md); published on GitLab, Gitea and Forgejo with a

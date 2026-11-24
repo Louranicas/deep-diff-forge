@@ -6,8 +6,18 @@ an exceptional one. This policy documents the maintained security boundary,
 the controls enforced by the repository, and the limits operators must account
 for.
 
-## Status of 0.10.0 and the releases before it
+## Status of 0.11.0 and the releases before it
 
+- 0.11.0 fixes one miss of 0.10.0 and earlier, with an advisory:
+  [DDF-2026-011](docs/advisories/DDF-2026-011.md) (`eval` and `agent doctor --gate` exited 0
+  when the reader of their output had gone); and it closes the miss
+  [DDF-2026-006](docs/advisories/DDF-2026-006.md) declared (a source file that a stray byte
+  makes binary is read). The advisory is published with the release: as a file in
+  `docs/advisories/` of the signed tag `v0.11.0`, which is published on GitLab (the place of
+  release), Gitea and Forgejo with a binary built locally for Linux x86_64 and its
+  `RELEASE-MANIFEST.json` signed beside `SHA256SUMS`, mirrored on GitHub with its release page,
+  and with its crates on crates.io. Its known issues, its contract changes and the order of the
+  cutover with forge-warden are in its [release notes](docs/release-notes/0.11.0.md).
 - 0.10.0 reads a `diff --git` section only if its headers are a shape Git's own diff writes, and
   fixes six misses of 0.9.0 and earlier, each with an advisory:
   [DDF-2026-004](docs/advisories/DDF-2026-004.md) (one fault during `council import-tuicr
@@ -100,7 +110,8 @@ Fixes land on `main` first and reach users in the next tagged release.
 | Version | State | Security fixes |
 | --- | --- | --- |
 | `main` | Unreleased work after the newest tag | Land here first. |
-| `v0.10.0` (2026-11-23) | Published | While it is the newest released minor line. |
+| `v0.11.0` (2026-11-25) | Published | While it is the newest released minor line. |
+| `v0.10.0` (2026-11-23) | Published, superseded | No. `eval` and `agent doctor --gate` with the reader of their output gone ([DDF-2026-011](docs/advisories/DDF-2026-011.md)), and a source file a stray byte makes binary ([DDF-2026-006](docs/advisories/DDF-2026-006.md), the miss it declared); 0.11.0 fixes them. |
 | `v0.9.0` (2026-11-18) | Published, superseded | No. A journal one fault could block ([DDF-2026-004](docs/advisories/DDF-2026-004.md)), a quoted CI privilege grant ([DDF-2026-005](docs/advisories/DDF-2026-005.md)), a source change an attribute made unreadable ([DDF-2026-006](docs/advisories/DDF-2026-006.md)), GitLab and fine-grained GitHub tokens ([DDF-2026-007](docs/advisories/DDF-2026-007.md)), a judge's leftover process ([DDF-2026-008](docs/advisories/DDF-2026-008.md)) and a findings gate with its reader gone ([DDF-2026-010](docs/advisories/DDF-2026-010.md)); 0.10.0 fixes them. |
 | `v0.8.4` (2026-11-17) | Published, superseded | No. A process spawn cut across two sections of one path, and the cost of one long word or run of secret prefixes ([DDF-2026-003](docs/advisories/DDF-2026-003.md)); 0.9.0 fixes them. |
 | `v0.8.3` (2026-11-11 UTC) | Published, superseded | No. G1/G2 ([DDF-2026-001](docs/advisories/DDF-2026-001.md)) and the Rust code view ([DDF-2026-002](docs/advisories/DDF-2026-002.md)); 0.8.4 fixes them. |

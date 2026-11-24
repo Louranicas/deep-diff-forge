@@ -10,7 +10,7 @@ single-user tool for Linux and macOS
 
 ## Install
 
-- **From crates.io** (0.9.0 since 2026-11-23; 0.10.0 from its tag):
+- **From crates.io** (0.9.0 since 2026-11-23; 0.10.0 and 0.11.0 from their tags):
   `cargo install deep-diff-forge-cli --locked`.
 - **Release binaries:** the [GitLab releases](https://gitlab.com/lukeomahoney/deep-diff-forge/-/releases),
   the place of release from 0.8.4, ship `deep-diff-forge-<tag>-<target>.tar.gz` archives with

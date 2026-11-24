@@ -23,7 +23,7 @@ The framework is designed for:
 
 ## Status 2026-10-28 (0.3.0), rechecked 2026-11-01
 
-- Workspace version 0.11.0 (the 0.11.0 line); the newest release is 0.10.0, the signed tag `v0.10.0` (published on GitLab, Gitea and Forgejo; binaries built locally for Linux x86_64; GitHub mirrors the release page); the tag before it is `v0.9.0` (2026-11-18). 14 crates under `crates/`
+- Workspace version 0.11.0, released as the signed tag `v0.11.0` (published on GitLab, Gitea and Forgejo; binaries built locally for Linux x86_64, with `RELEASE-MANIFEST.json` signed beside `SHA256SUMS`; GitHub mirrors the release page); the tag before it is `v0.10.0` (2026-11-23). 14 crates under `crates/`
   (core, patch, projection, pipeline, syntax, graph, agent, tui, cluster,
   learning, daemon, review, sdk, cli); edition 2024, MSRV 1.88, toolchain
   1.99.1. Internal edges: [`crate-edges.txt`](crate-edges.txt).
@@ -148,7 +148,7 @@ The codebase is at L9 (learning): every engine layer L0-L8 is implemented plus
 the L9 local-only learning loop. `v0.1.0` and `v0.2.0` were tagged and released
 to GitHub (binary + checksums via `release.yml`) and both git remotes. `0.2.1`
 was never tagged; 0.8.3 is tagged `v0.8.3` (2026-11-11 UTC), and 0.8.4 `v0.8.4` (2026-11-17),
-the tag before 0.9.0; 0.9.0 is `v0.9.0` (2026-11-18) and 0.10.0 `v0.10.0`. crates.io was on
+the tag before 0.9.0; 0.9.0 is `v0.9.0` (2026-11-18), 0.10.0 `v0.10.0` (2026-11-23) and 0.11.0 `v0.11.0` (2026-11-25). crates.io was on
 hold by owner decision until 2026-11-23: 0.9.0's crates were published on 2026-11-23, and from 0.10.0 publishing is a step of the release. The `publish` job of
 `release.yml` runs only when the repository variable `DDF_CRATES_IO` is `open`, and a
 configured `CARGO_REGISTRY_TOKEN` does not open it (corrected 2026-10-28; the earlier text
