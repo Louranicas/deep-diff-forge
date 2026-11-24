@@ -56,3 +56,8 @@ panic_path_added:a1
 panic_path_added:a2
 panic_path_added:n1
 diff_suppressed:a3
+panic_path_added:a3
+test_removed:n3
+stub_added:n2
+error_swallowed:n2
+panic_path_added:n2

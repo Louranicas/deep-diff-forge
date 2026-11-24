@@ -1038,7 +1038,7 @@
       "id": "evidence/independent-review-20261114",
       "kind": "evidence",
       "patch": "evidence/independent-review-20261114.patch",
-      "origin": "internal: an independent review by a Claude subagent, 2026-11-14 (docs/reviews/claude-independent-review-20261114.md), findings IR-H-1, IR-H-2, IR-M-2, IR-M-3, IR-L-2 and IR-L-3, each reproduced before it was counted. Expected: a production panic path on the line of a proved test function (named as a function, and inside a macro's arguments); a panic path in a new file whose first line the grammar reads as a shebang and the compiler as an attribute and an opened comment, so that the cfg(test) under it is comment text; the trivial assertion and the placeholder written over lines inside another macro's body (declared misses, marked syntax_unchecked, until 2026-11-14: the tokens of a hunk are now read across its lines); a conditional skip whose condition changed from miri to all(); unwrap and expect passed as functions or called by a path; a spaced allow attribute. Negatives: an ignore that belongs to a serde attribute; unwrap_or_default passed as a function. Declared false positives: a method named expect on a hand-written parser and on a mock, and a Python name that begins with unittest.skip; and since 2026-11-14 two that were negatives until then: the panic path in the cfg(test) module of a file created whole, read inside a macro's arguments (the parser never removes evidence any more; it is reported with test_likely), and the conditional skip of which only the reason changed (an attribute that starts on an unchanged line is the same as before only if its whole text is, second independent review IR2-M-1, and the reason is part of the text). Declared misses: cfg(any()) on a test; and respellings in Python, JavaScript and Go, where no parser backs the token rules (a skip raised as an exception, assertions with a message, with parentheses or with inner spaces, chained skip modifiers, a spaced call, an empty error check with the operands reversed). Since 2026-11-15 the first line of src/shebang.rs is read for what it is as well: `#!`, a comment and `[allow(unused)]` are the inner attribute `#![allow(unused)]` to the compiler, and the reader of tokens, which now reads release 0.8.3's `#[allow(` with anything between its tokens, reports the suppressed lint",
+      "origin": "internal: an independent review by a Claude subagent, 2026-11-14 (docs/reviews/claude-independent-review-20261114.md), findings IR-H-1, IR-H-2, IR-M-2, IR-M-3, IR-L-2 and IR-L-3, each reproduced before it was counted. Expected: a production panic path on the line of a proved test function (named as a function, and inside a macro's arguments); a panic path in a new file whose first line the grammar reads as a shebang and the compiler as an attribute and an opened comment, so that the cfg(test) under it is comment text; the trivial assertion and the placeholder written over lines inside another macro's body (declared misses, marked syntax_unchecked, until 2026-11-14: the tokens of a hunk are now read across its lines); a conditional skip whose condition changed from miri to all(); unwrap and expect passed as functions or called by a path; a spaced allow attribute. Negatives: an ignore that belongs to a serde attribute; unwrap_or_default passed as a function. Declared false positives: a method named expect on a hand-written parser and on a mock, and a Python name that begins with unittest.skip; and since 2026-11-14 two that were negatives until then: the panic path in the cfg(test) module of a file created whole, read inside a macro's arguments (the parser never removes evidence any more; it is reported with test_likely), and the conditional skip of which only the reason changed (an attribute that starts on an unchanged line is the same as before only if its whole text is, second independent review IR2-M-1, and the reason is part of the text). Declared misses: cfg(any()) on a test; and respellings in Python, JavaScript and Go, where no parser backs the token rules (a skip raised as an exception, assertions with a message, with parentheses or with inner spaces, chained skip modifiers, a spaced call, an empty error check with the operands reversed). Since 2026-11-15 the first line of src/shebang.rs is read for what it is as well: `#!`, a comment and `[allow(unused)]` are the inner attribute `#![allow(unused)]` to the compiler, and the reader of tokens, which now reads release 0.8.3's `#[allow(` with anything between its tokens, reports the suppressed lint. Since 0.11.0 (F2a.d) a test compiled out by  is read: tests/any.rs line 2 is expected",
       "expect": [
         {
           "path": "src/shared_line.rs",
@@ -1111,15 +1111,15 @@
           "signal": "check_suppressed",
           "side": "new",
           "line": 3
-        }
-      ],
-      "known_miss": [
+        },
         {
           "path": "tests/any.rs",
           "signal": "test_skipped",
           "side": "new",
           "line": 2
-        },
+        }
+      ],
+      "known_miss": [
         {
           "path": "tests/test_respelled.py",
           "signal": "test_skipped",
@@ -2502,6 +2502,179 @@
         }
       ],
       "sha256": "612e71f0a6765c3b3dd5950ec499bca36abb7089dd907511b56a499d23310d1e"
+    },
+    {
+      "id": "evidence/rust-assertion-class",
+      "kind": "evidence",
+      "patch": "evidence/rust-assertion-class.patch",
+      "origin": "synthetic: F2a.a (0.11.0), assertions that cannot fail read as a class, each beside a near miss that can fail or fails on every run: a condition true by its tokens (`!false`; literals compared under `&&`), the same field on both sides of assert_eq, two unequal literals in assert_ne and debug_assert_ne, the same operand on both sides of `==` under `||`. Near misses that are no item: `f64::NAN` on both sides (fails), the same call on both sides (a determinism check: it can fail). Declared miss: two equal strings (the code view blanks a string's text, so two strings are never compared)",
+      "expect": [
+        {
+          "path": "tests/class.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "tests/class.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "tests/class.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 7
+        },
+        {
+          "path": "tests/class.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 9
+        },
+        {
+          "path": "tests/class.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 11
+        },
+        {
+          "path": "tests/class.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 13
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "tests/class.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 16
+        }
+      ],
+      "sha256": "74a4f99853ac5eddfee476366ebba023268a68f73d356cee5f7931f6c2b1fa0b"
+    },
+    {
+      "id": "evidence/rust-dropped-result",
+      "kind": "evidence",
+      "patch": "evidence/rust-dropped-result.patch",
+      "origin": "synthetic: F2a.b (0.11.0): a `Result` of the standard library dropped with `let _ =` or `_ =` (remove_dir_all, kill, send) where the error was passed up before, each beside a near miss the reader cannot tell from it and does not read: a `String` written with `writeln!` (no error exists) and a function of the patch's own. Declared misses: a name that only begins with `_` (`let _unused =`) and `.ok();`",
+      "expect": [
+        {
+          "path": "src/cleanup.rs",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/cleanup.rs",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/cleanup.rs",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 7
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "src/cleanup.rs",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "src/cleanup.rs",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 8
+        }
+      ],
+      "sha256": "3b7964096b77328e0a24dec2bb367b8a0eaa4af64c2455976c481fe8558efdfc"
+    },
+    {
+      "id": "evidence/rust-panic-macros",
+      "kind": "evidence",
+      "patch": "evidence/rust-panic-macros.patch",
+      "origin": "synthetic: F2a.c (0.11.0): `panic!` and `unreachable!` added in a match where a conversion was, each a panic path; near miss: `panic!` in a comment. Declared miss: `assert!(false, …)`, which panics on every run it is reached and is read by no rule as a panic path",
+      "expect": [
+        {
+          "path": "src/parse.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/parse.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 7
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "src/parse.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 5
+        }
+      ],
+      "sha256": "97f5d939791a9d7ce99903f798b0c9d679d8d83722a658f05fe700aceaf7c09b"
+    },
+    {
+      "id": "evidence/rust-tests-module-compiled-out",
+      "kind": "evidence",
+      "patch": "evidence/rust-tests-module-compiled-out.patch",
+      "origin": "synthetic: F2a.d as a class (0.11.0, coordinator's ruling 2): `#[cfg(test)]` replaced by `#[cfg(any())]` on a module of tests, and `#![cfg(feature = \"never\")]` at the top of a file of tests, each a skipped test; near misses: the same `cfg` on a module of another name (production code) and `#![cfg(any())]` at the top of a file that is not a test file by its path",
+      "expect": [
+        {
+          "path": "src/lib.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/it.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 1
+        }
+      ],
+      "sha256": "477bb91c771bde291b238f582e139f40513926215791e49a80c81176132f0e86"
+    },
+    {
+      "id": "evidence/rust-test-compiled-out",
+      "kind": "evidence",
+      "patch": "evidence/rust-test-compiled-out.patch",
+      "origin": "synthetic: F2a.d (0.11.0): a test compiled out by `#[cfg(…)]` whose predicate holds in no build of the tests (`any()`, `not(test)`), before or after its `#[test]` (the item is on the first changed line of the two attributes); near miss: `#[cfg(unix)]`, a platform's predicate. Declared miss: a `cfg` that compiles out a module whose name does not say it holds tests (`#[cfg(any())] mod more`)",
+      "expect": [
+        {
+          "path": "tests/slow.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "tests/slow.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 9
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "tests/slow.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 12
+        }
+      ],
+      "sha256": "9f53c25e353aeed24e30ec2b4eda126e381b9fda97df6672e1f7497478de61ad"
     }
   ]
 }

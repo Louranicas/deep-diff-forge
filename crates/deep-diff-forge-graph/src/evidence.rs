@@ -268,6 +268,50 @@ pub struct Evidence {
     /// kept for the floor does (0.8.3's of a Rust hunk, the frozen 0.8.4 one). By reader, not
     /// by `released`: a diagnostic's `reading` (`floor_only` when false). Not printed.
     pub read_now: bool,
+    /// On [`EvidenceSignal::PanicPathAdded`] only, since 0.11.0 (F2a): the forms of the panic
+    /// paths on this line, the case of its diagnostic, whose repairs differ. Not printed.
+    pub panic_forms: PanicForms,
+}
+
+/// The forms of the panic paths on one line ([`Evidence::panic_forms`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PanicForms {
+    /// Not a panic path, or one no reading says the form of.
+    #[default]
+    None,
+    /// A call that panics on failure: `unwrap`, `expect`.
+    Call,
+    /// A macro that panics where it is reached: `panic!`, `unreachable!`.
+    Macro,
+    /// Both on one line.
+    Both,
+}
+
+impl PanicForms {
+    /// The forms the bits of the reader of tokens name (`BY_CALL`, `BY_MACRO`).
+    const fn of(bits: u8) -> Self {
+        match (
+            bits & rust_tokens::BY_CALL != 0,
+            bits & rust_tokens::BY_MACRO != 0,
+        ) {
+            (true, true) => Self::Both,
+            (true, false) => Self::Call,
+            (false, true) => Self::Macro,
+            (false, false) => Self::None,
+        }
+    }
+
+    /// A call is among them.
+    #[must_use]
+    pub const fn call(self) -> bool {
+        matches!(self, Self::Call | Self::Both)
+    }
+
+    /// A macro is among them.
+    #[must_use]
+    pub const fn by_macro(self) -> bool {
+        matches!(self, Self::Macro | Self::Both)
+    }
 }
 
 /// One finding of a hunk's scan: the side, the signal, the line, and whether the reading every
@@ -1314,6 +1358,11 @@ pub(crate) fn file_evidence_marked(file: &ReviewFile, share: Share) -> (Vec<Evid
                 test_likely: hit.signal == S::PanicPathAdded && hit.side == Side::New && hit.likely,
                 released: hit.released,
                 read_now: hit.read_now,
+                panic_forms: if hit.signal == S::PanicPathAdded {
+                    PanicForms::of(hit.forms)
+                } else {
+                    PanicForms::None
+                },
             });
         }
     }
@@ -1374,6 +1423,7 @@ fn hits_of_items(hunk: &PatchHunk, items: &[Item]) -> Vec<Hit> {
                 from_code: false,
                 released,
                 read_now: false,
+                forms: rust_tokens::BY_CALL,
             });
         }
     }
@@ -1960,6 +2010,18 @@ fn hinted_joins(
 /// ([`FileKind::readings`]): for each hunk, in line order and then the order of
 /// [`EvidenceSignal::ALL`], an item once however many kinds, texts and readings find it.
 fn file_found(file: &ReviewFile, joined: &[Text], only: Option<usize>) -> Vec<Vec<Hit>> {
+    let mut found = file_found_of_kinds(file, joined, only);
+    // an inner `#![cfg(…)]` taken to be its file's skips tests only in a file of tests (F2a)
+    if !crate::risk::is_test(&file.path) {
+        for hits in &mut found {
+            hits.retain(|hit| hit.signal != S::TestSkipped || hit.forms != rust_tokens::IN_A_FILE);
+        }
+    }
+    found
+}
+
+/// [`file_found`] before a file's own path is applied.
+fn file_found_of_kinds(file: &ReviewFile, joined: &[Text], only: Option<usize>) -> Vec<Vec<Hit>> {
     let mut found: Vec<Vec<Hit>> = Vec::new();
     for (place, kind) in FileKind::readings(file).iter().enumerate() {
         let rules: Vec<&Rule> = RULES.iter().filter(|r| kind.admits(r.scope)).collect();
@@ -2191,6 +2253,7 @@ fn legacy_hits(hunk: &PatchHunk, rules: &[&Rule], views: &Views) -> Vec<Hit> {
                     from_code: false,
                     released: true,
                     read_now: false,
+                    forms: rust_tokens::BY_CALL,
                 });
             }
         }
@@ -2431,6 +2494,9 @@ pub(crate) struct Hit {
     /// [`Evidence::read_now`]: true where `text_hits` makes it, false where the readings kept
     /// for the floor make theirs (`legacy_hits`, `hits_of_items`); [`unite`] ORs it.
     read_now: bool,
+    /// The forms of a panic path ([`rust_tokens::Item::forms`]): a rule of a table reads only
+    /// calls; [`unite`] ORs it.
+    forms: u8,
 }
 
 /// Every signal found on a changed line of the text `lines` (`top`: Git must put its first
@@ -2606,6 +2672,7 @@ fn unite(one: &[Hit], other: &[Hit]) -> Vec<Hit> {
                 from_code: x.from_code || y.from_code,
                 released: x.released || y.released,
                 read_now: x.read_now || y.read_now,
+                forms: x.forms | y.forms,
                 ..*x
             }),
         };
@@ -2724,6 +2791,7 @@ fn view_matches(
                 .map(|r| r.matches.basis())
                 .max();
             let mut likely = false;
+            let mut forms = u8::from(basis.is_some()) * rust_tokens::BY_CALL;
             // The reader's items are in the order this loop goes in: by line, then by signal.
             while read
                 .get(*read_to)
@@ -2736,6 +2804,7 @@ fn view_matches(
             {
                 basis = basis.max(Some(item.basis));
                 likely = item.test_likely && side == Side::New;
+                forms |= item.forms;
             }
             if let Some(basis) = basis {
                 found.push(Hit {
@@ -2748,6 +2817,7 @@ fn view_matches(
                     from_code,
                     released: false,
                     read_now: true,
+                    forms,
                 });
             }
         }
@@ -4228,6 +4298,7 @@ mod tests {
                     // release 0.8.3 reported both
                     released: true,
                     read_now: true,
+                    panic_forms: PanicForms::None,
                 },
                 Evidence {
                     signal: S::ProcessSpawn,
@@ -4240,6 +4311,7 @@ mod tests {
                     // release 0.8.3 reported both
                     released: true,
                     read_now: true,
+                    panic_forms: PanicForms::None,
                 },
             ]
         );
@@ -5847,6 +5919,11 @@ mod tests {
                     test_likely: false,
                     released,
                     read_now: false,
+                    panic_forms: if signal == S::PanicPathAdded {
+                        PanicForms::Call
+                    } else {
+                        PanicForms::None
+                    },
                 });
             }
         }
@@ -9574,6 +9651,207 @@ mod tests {
         }
     }
 
+    /// One widened form of the reader of tokens (F2a) in places that mislead a lexer (ruling 5,
+    /// N89): each `(lines, signals)` read from a hunk of `src/w.rs`.
+    fn misled(cases: &[(&[&str], &[EvidenceSignal])]) {
+        for (lines, signals) in cases {
+            let read: Vec<EvidenceSignal> = found(&hunk_of("src/w.rs", lines))
+                .iter()
+                .map(|item| item.0)
+                .collect();
+            assert_eq!(read, *signals, "{lines:?}");
+        }
+    }
+
+    /// F2a, ruling 5 (N89): each widened form of the reader of tokens, in the places that mislead
+    /// a lexer. In a comment, a doc comment's code block, a string or a raw string over lines it
+    /// is no code and no item (a doc test's assertion is a stated limit); after a quote
+    /// character literal or a lifetime, inside a macro's body, split over lines, behind a path
+    /// or written as a raw identifier it is read. A name bound by `use … as` is not the word.
+
+    #[test]
+    fn an_assertion_that_cannot_fail_is_read_where_a_lexer_could_be_misled() {
+        misled(&[
+            (&["+// assert_eq!(x, x);"], &[]),
+            (&["+/// assert_eq!(x, x);"], &[]),
+            (&["+/** assert_eq!(x, x); */"], &[]),
+            (&["+/* /* */ assert_eq!(x, x); */"], &[]),
+            (&["+let s = \"assert_eq!(x, x);\";"], &[]),
+            (&["+let s = r#\"", "+assert_eq!(x, x);", "+\"#;"], &[]),
+            (&["+let s = \"\\\"assert_eq!(x, x);\";"], &[]),
+            (&["+/* */ assert_eq!(x, x);"], &[S::TrivialAssert]),
+            (&["+let q = '\"'; assert_eq!(x, x);"], &[S::TrivialAssert]),
+            (&["+let q = '\\''; assert_ne!(1, 2);"], &[S::TrivialAssert]),
+            (
+                &["+fn f<'a>(x: &'a u8) { assert_eq!(x, x); }"],
+                &[S::TrivialAssert],
+            ),
+            (
+                &["+macro_rules! m { () => { assert!(!false) } }"],
+                &[S::TrivialAssert],
+            ),
+            (
+                &["+assert_eq!(", "+    x,", "+    x", "+);"],
+                &[S::TrivialAssert],
+            ),
+            (&["+std::assert_eq!(x, x);"], &[S::TrivialAssert]),
+            (&["+core::assert_ne!(1, 2);"], &[S::TrivialAssert]),
+            (&["+::std::debug_assert!(1 == 1);"], &[S::TrivialAssert]),
+            (&["+r#assert_eq!(x, x);"], &[S::TrivialAssert]),
+            (&["+use std::assert_eq as same;", "+same!(x, x);"], &[]),
+        ]);
+    }
+
+    /// F2a.b: as `an_assertion_that_cannot_fail_is_read_where_a_lexer_could_be_misled`.
+
+    #[test]
+    fn a_dropped_result_is_read_where_a_lexer_could_be_misled() {
+        misled(&[
+            (&["+// let _ = std::fs::remove_file(p);"], &[]),
+            (&["+/// let _ = std::fs::remove_file(p);"], &[]),
+            (&["+let s = \"let _ = std::fs::remove_file(p);\";"], &[]),
+            (
+                &[
+                    "+let s = r#\"",
+                    "+let _ = std::fs::remove_file(p);",
+                    "+\"#;",
+                ],
+                &[],
+            ),
+            (
+                &["+let q = '\"'; let _ = std::fs::remove_file(p);"],
+                &[S::ErrorSwallowed],
+            ),
+            (
+                &["+fn f<'a>(p: &'a str) { let _ = std::fs::remove_file(p); }"],
+                &[S::ErrorSwallowed],
+            ),
+            (
+                &["+macro_rules! m { () => { let _ = std::fs::remove_file(p); } }"],
+                &[S::ErrorSwallowed],
+            ),
+            (
+                &["+let _ =", "+    std::fs::remove_file(p);"],
+                &[S::ErrorSwallowed],
+            ),
+            (
+                &["+let _ = ::std::fs::remove_file(p);"],
+                &[S::ErrorSwallowed],
+            ),
+            (&["+let r#_x = std::fs::remove_file(p);"], &[]),
+            (
+                &["+let _ = std::fs::r#remove_file(p);"],
+                &[S::ErrorSwallowed],
+            ),
+        ]);
+    }
+
+    /// F2a.c: as `an_assertion_that_cannot_fail_is_read_where_a_lexer_could_be_misled`.
+
+    #[test]
+    fn a_panic_macro_is_read_where_a_lexer_could_be_misled() {
+        misled(&[
+            (&["+// panic!(\"x\");"], &[]),
+            (&["+/// unreachable!();"], &[]),
+            (&["+let s = \"panic!(\\\"x\\\")\";"], &[]),
+            (&["+let s = r#\"", "+unreachable!();", "+\"#;"], &[]),
+            (&["+let q = '\"'; panic!(\"x\");"], &[S::PanicPathAdded]),
+            (
+                &["+fn f<'a>(x: &'a u8) { unreachable!() }"],
+                &[S::PanicPathAdded],
+            ),
+            (
+                &["+macro_rules! m { () => { panic!() } }"],
+                &[S::PanicPathAdded],
+            ),
+            (&["+panic", "+!(", "+\"x\")"], &[S::PanicPathAdded]),
+            (&["+std::panic!(\"x\");"], &[S::PanicPathAdded]),
+            (&["+core::unreachable!();"], &[S::PanicPathAdded]),
+            (&["+::core::panic!();"], &[S::PanicPathAdded]),
+            (&["+r#panic!(\"x\");"], &[S::PanicPathAdded]),
+            (&["+use std::panic as stop;", "+stop!(\"x\");"], &[]),
+        ]);
+    }
+
+    /// F2a.d: as `an_assertion_that_cannot_fail_is_read_where_a_lexer_could_be_misled`.
+
+    #[test]
+    fn a_test_compiled_out_is_read_where_a_lexer_could_be_misled() {
+        misled(&[
+            (&["+// #[cfg(any())]", "+#[test]"], &[]),
+            (&["+/// #[cfg(any())]", "+#[test]"], &[]),
+            (&["+let s = \"#[cfg(any())]\";", "+#[test]"], &[]),
+            (
+                &["+let q = '\"'; #[cfg(any())]", "+#[test]"],
+                &[S::TestSkipped],
+            ),
+            (
+                &["+#[cfg(not(test))] // '", "+#[test] fn f<'a>() {}"],
+                &[S::TestSkipped],
+            ),
+            (
+                &["+macro_rules! m { () => { #[cfg(any())] #[test] fn t() {} } }"],
+                &[S::TestSkipped],
+            ),
+            (
+                &["+#[cfg(", "+    any()", "+)]", "+#[test]"],
+                &[S::TestSkipped],
+            ),
+            (&["+#[cfg(any())]", "+#[::core::prelude::v1::test]"], &[]),
+            (&["+#[r#cfg(r#any())]", "+#[r#test]"], &[S::TestSkipped]),
+            (
+                &["+#[cfg(feature = \"a b\")]", "+#[test]"],
+                &[S::TestSkipped],
+            ),
+        ]);
+    }
+
+    /// Ruling 2 on F2a.d: an inner `#![cfg(…)]` that compiles out its file is a skipped test in a
+    /// file of tests by its path and nowhere else; a module of tests compiled out is one wherever
+    /// it stands; in a comment or a string neither is code.
+    #[test]
+    fn a_module_or_a_file_of_tests_compiled_out_is_read_where_a_lexer_could_be_misled() {
+        let read = |path: &str, lines: &[&str]| -> Vec<EvidenceSignal> {
+            found(&hunk_of(path, lines))
+                .iter()
+                .map(|item| item.0)
+                .collect()
+        };
+        let skip: &[EvidenceSignal] = &[S::TestSkipped];
+        let cases: &[(&str, &[&str], &[EvidenceSignal])] = &[
+            ("tests/it.rs", &["+#![cfg(any())]"], skip),
+            (
+                "crates/x/tests/it.rs",
+                &["+#![cfg(feature = \"never\")]"],
+                skip,
+            ),
+            ("src/lib.rs", &["+#![cfg(any())]"], &[]),
+            (
+                "src/lib.rs",
+                &["-#[cfg(test)]", "+#[cfg(any())]", " mod tests {"],
+                skip,
+            ),
+            ("src/lib.rs", &["+#[cfg(any())]", " mod parser {"], &[]),
+            ("src/lib.rs", &[" mod tests {", "+    #![cfg(any())]"], skip),
+            ("tests/it.rs", &["+// #![cfg(any())]"], &[]),
+            ("tests/it.rs", &["+let s = \"#![cfg(any())]\";"], &[]),
+            (
+                "src/lib.rs",
+                &["+let q = '\"'; #[cfg(any())]", " mod tests {"],
+                skip,
+            ),
+            (
+                "src/lib.rs",
+                &["+#[cfg(", "+    any()", "+)]", " mod tests {"],
+                skip,
+            ),
+            ("tests/it.rs", &["+#![r#cfg(r#any())]"], skip),
+        ];
+        for (path, lines, signals) in cases {
+            assert_eq!(read(path, lines), *signals, "{path} {lines:?}");
+        }
+    }
+
     /// Review V3 round 8, VD3R8-M-1: `r#unwrap` is the identifier `unwrap` to the compiler
     /// (checked there with rustc), and `x.r#unwrap()` and `X::r#unwrap(x)` left neither an item
     /// nor a mark. A raw identifier is read as the identifier it is: the code view the tokens
@@ -11475,6 +11753,7 @@ mod tests {
             from_code,
             released: false,
             read_now: from_code,
+            forms: 0,
         };
         let key = |hits: &[Hit]| -> Vec<(usize, S, Basis, bool)> {
             hits.iter()

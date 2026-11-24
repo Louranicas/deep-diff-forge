@@ -1,0 +1,14 @@
+diff --git a/src/cleanup.rs b/src/cleanup.rs
+--- a/src/cleanup.rs
++++ b/src/cleanup.rs
+@@ -1,3 +1,9 @@
+ fn cleanup(dir: &Path, child: &mut Child, out: &mut String, tx: &Sender<u8>) {
+-    fs::remove_dir_all(dir)?;
++    let _ = fs::remove_dir_all(dir);
++    let _ = child.kill();
++    let _ = writeln!(out, "done");
++    let _unused = child.wait();
++    let _ = render(dir);
++    _ = tx.send(1);
++    child.wait().ok();
+ }

@@ -1,0 +1,28 @@
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,4 +1,4 @@
+ fn f() {}
+-#[cfg(test)]
++#[cfg(any())]
+ mod tests {
+     #[test]
+@@ -10,3 +10,4 @@
+ fn g() {}
++#[cfg(any())]
+ mod parser {
+ }
+diff --git a/tests/it.rs b/tests/it.rs
+--- a/tests/it.rs
++++ b/tests/it.rs
+@@ -1,2 +1,3 @@
++#![cfg(feature = "never")]
+ #[test]
+ fn t() {}
+diff --git a/src/gen.rs b/src/gen.rs
+--- a/src/gen.rs
++++ b/src/gen.rs
+@@ -1,2 +1,3 @@
++#![cfg(any())]
+ fn generated() {}
+ fn more() {}

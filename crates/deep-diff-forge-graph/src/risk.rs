@@ -412,7 +412,7 @@ fn is_public_api(path: &str) -> bool {
     matches!(basename(path), "lib.rs" | "mod.rs") || path.contains("/api/")
 }
 
-fn is_test(path: &str) -> bool {
+pub(crate) fn is_test(path: &str) -> bool {
     path.contains("/tests/")
         || path.starts_with("tests/")
         || path.contains("/test/")

@@ -45,7 +45,7 @@ One diagnostic, members in this order:
 | `occurrence` | 0, or the count of earlier diagnostics with the same path, label, anchor, side and line (a patch can repeat a section of one path) |
 | `reading` | `current` when a current reading of this version finds it, or `floor_only` when only a reading kept for the floor finds it (see Readings) |
 | `audience` | `agent`, or `person` for a `floor_only` reading |
-| `cases` | only on `hazardous_text` and `diff_suppressed`: the case the engine found, which decides the repairs (see Repairs by case) |
+| `cases` | only on `hazardous_text`, `diff_suppressed` and `panic_path_added@line`: the case the engine found, which decides the repairs (see Repairs by case) |
 | `repairs` | ids of the changes that answer the label, in its case where `cases` is given |
 | `not_accepted` | ids of substitutes that do not answer it and that this engine raises a label for |
 | `test_likely` | only on `panic_path_added@line`: the hunk shows the panic inside an item marked as a test |
@@ -64,14 +64,15 @@ order. A file keeps at most 32 located diagnostics, rows first; a file over that
 
 ## Repairs by case
 
-Two labels have repairs for different cases, and the engine knows the case when it raises them.
-A diagnostic of either carries `cases` and lists only the repairs (and substitutes) of its case;
-every other diagnostic lists all of its label's repairs.
+Three labels have repairs for different cases, and the engine knows the case when it raises them
+(for `panic_path_added`, at a row only). A diagnostic that knows it carries `cases` and lists only
+the repairs (and substitutes) of its case; every other diagnostic lists all of its label's repairs.
 
 | Label | `cases` | Repairs |
 | --- | --- | --- |
 | `hazardous_text` | the kinds of hazard: `bidi_control`, `invisible`, `control` (characters, in a line or a path); `path_traversal`, `git_internal` (a path, or the path a rename or copy leaves) | characters: `hazardous_text:a1`; a path: `hazardous_text:a2` |
 | `diff_suppressed` | the cause, as `rank.v0` gives it: `attribute`, `content`, `encoding` or `unread` | `attribute`: `diff_suppressed:a1`; `content`: `diff_suppressed:a2`; `encoding`: `diff_suppressed:a3`; `unread`: all three |
+| `panic_path_added` (`@line`, since 0.11.0) | the forms on the row's line: `call` (`unwrap`, `expect`), `panic_macro` (`panic!`, `unreachable!`), or both | `call`: `panic_path_added:a1`, `a2`; `panic_macro`: `a1`, `a3`; both: all three; `@file` (past the list's 32 rows): all three |
 
 A `hazardous_text@line` holds the kinds of its line and, when the file's path also raises the
 label, the path's kinds too: while a line locates the label the path has no diagnostic of its own.
