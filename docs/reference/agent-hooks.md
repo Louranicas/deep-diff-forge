@@ -83,7 +83,11 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   session's: left or merged since the project was first recorded)", and a block for one says
   that it may not be the session's work, that it is not to be rewritten, and to tell a person
   and make any repair a new commit; the count of commits with no verdict names the two kinds
-  apart. A session's start that writes the baseline says so: "This start is the first record
+  apart. Measured with forge-warden (`db4c580e`, its starter policy) on a desktop: 300 small
+  commits left after the baseline and one commit of the session's own: the first stop took
+  39 seconds and judged the own commit and 297 of the others (about 0.13 seconds a commit);
+  the second took 1 second and judged the last 3. A judge that takes longer a commit drains
+  over more stops, each within the stop's 45 seconds. A session's start that writes the baseline says so: "This start is the first record
   of this project in its ledger: the project is recorded from commit <id>, and commits that
   were in the repository before it are not judged by these hooks." (so a ledger removed between
   sessions is visible at the next start). A commit the session finds in its own
