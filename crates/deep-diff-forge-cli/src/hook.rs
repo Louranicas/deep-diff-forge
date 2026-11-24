@@ -119,15 +119,70 @@ pub(crate) struct Finding {
     pub(crate) side: String,
     pub(crate) line: u32,
     pub(crate) basis: String,
-    /// What makes this finding the same finding after other lines moved: the SHA-256 of the
-    /// path, the label and the text of the line. A hunk address or a line number cannot be the
-    /// key, because both change with every edit above the line.
+    /// What makes this finding the same finding after other lines moved: the keyed digest
+    /// ([`keyed_hex`]) of the path, the label and the text of the line. A hunk address or a line
+    /// number cannot be the key, because both change with every edit above the line.
     pub(crate) key: String,
 }
 
 /// The key of a finding: see [`Finding::key`].
 pub(crate) fn finding_key(path: &str, label: &str, line_text: &str) -> String {
-    deep_diff_forge_core::sha256_hex(format!("{path}\0{label}\0{line_text}").as_bytes())
+    keyed_hex(
+        "finding",
+        format!("{path}\0{label}\0{line_text}").as_bytes(),
+    )
+}
+
+/// The key every digest the hooks keep is made with (rule V8 of the hook-state policy): 32
+/// bytes of the user's key file, given by [`use_key`] before a hook computes any digest. A
+/// copy of a state file without the key confirms no guessed line, rule or path; whoever can
+/// read the key file (the same user, the agent included) can still test a guess.
+static KEY: std::sync::OnceLock<[u8; 32]> = std::sync::OnceLock::new();
+
+/// Make `key` the key of this process's digests ([`keyed_hex`]). `false` when another key was
+/// given first: one hook uses one key.
+pub(crate) fn use_key(key: [u8; 32]) -> bool {
+    KEY.get_or_init(|| key) == &key
+}
+
+/// The key of this process's digests: the one given by [`use_key`], else one drawn now for
+/// this process alone, which matches nothing any state remembers (more is said and blocked
+/// again, never less), and is never written.
+fn key() -> &'static [u8; 32] {
+    KEY.get_or_init(|| {
+        use std::hash::{BuildHasher as _, Hasher as _};
+        let mut key = [0_u8; 32];
+        for chunk in key.chunks_mut(8) {
+            let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+            hasher.write_u32(std::process::id());
+            chunk.copy_from_slice(&hasher.finish().to_le_bytes());
+        }
+        key
+    })
+}
+
+/// What a key is known by: the first 16 hex digits of SHA-256(`ddf-hook-key\0` ‖ key), which
+/// says whether two states were kept under one key and gives nothing of the key away.
+pub(crate) fn key_id(key: &[u8; 32]) -> String {
+    let mut bytes = b"ddf-hook-key\0".to_vec();
+    bytes.extend_from_slice(key);
+    deep_diff_forge_core::sha256_hex(&bytes)[..16].to_owned()
+}
+
+/// The id of this process's key ([`key_id`]).
+pub(crate) fn current_key_id() -> String {
+    key_id(key())
+}
+
+/// A keyed digest, in hex: HMAC-SHA-256(key, `tag` ‖ 0x00 ‖ `bytes`). Every digest the hooks
+/// keep of text (a finding, a failing line, a cause that holds once, what was said once) is
+/// one of these, never a plain SHA-256 that anyone could compute from a guess.
+pub(crate) fn keyed_hex(tag: &str, bytes: &[u8]) -> String {
+    let mut message = Vec::with_capacity(tag.len() + 1 + bytes.len());
+    message.extend_from_slice(tag.as_bytes());
+    message.push(0);
+    message.extend_from_slice(bytes);
+    deep_diff_forge_core::hmac_sha256_hex(key(), &message)
 }
 
 /// The findings not yet reported in this session, in the order given.
@@ -1282,9 +1337,12 @@ pub(crate) fn commit_label(id: &str) -> String {
 /// is remembered as one line, the digest of all of them: its parts are then not told apart.
 pub(crate) const LINES_KEPT: usize = 256;
 
-/// The digest a failing line is known by.
+/// The digest a failing line is known by: keyed ([`keyed_hex`]), cut to 24 hex digits. Every
+/// form `blocked` keeps is made from it: a rule, a violation (rule, signal, path), what the
+/// judge said beside its rules, a cause that holds once by its name and its state
+/// ([`once_name`], [`once_state`]) and the mark of many lines ([`mark_of`]).
 fn line_key(words: &str) -> String {
-    deep_diff_forge_core::sha256_hex(words.as_bytes())[..24].to_owned()
+    keyed_hex("line", words.as_bytes())[..24].to_owned()
 }
 
 /// The words of the line a violation of `rule` belongs to: the rule, the signal and the path.
@@ -2401,6 +2459,69 @@ pub(crate) const STOP_CUT: &str =
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Rule V8 (lane H3): every form of digest the hooks keep is keyed. For each form, the
+    /// digest is not the plain SHA-256 that anyone could compute from a guess: a finding's key
+    /// (`reported`), each line of a failure (a rule, a violation, what the judge said beside
+    /// its rules), the name and the state of a cause that holds once, the name of a hold for an
+    /// unknown label, the mark of many lines, and what was said once (`noticed`).
+    #[test]
+    fn every_kept_digest_is_keyed() {
+        use deep_diff_forge_core::sha256_hex;
+        let plain = |words: &str| sha256_hex(words.as_bytes());
+        // a finding
+        let finding = finding_key("a.rs", "check_suppressed", "#[allow(x)]");
+        assert_ne!(finding, plain("a.rs\0check_suppressed\0#[allow(x)]"));
+        assert_eq!(finding.len(), 64);
+        // the lines of a failure
+        let failed = Judged::Fail {
+            rules: vec![
+                RuleOutcome {
+                    id: "r".to_owned(),
+                    why: String::new(),
+                    held: false,
+                    violations: vec![("s".to_owned(), "p".to_owned(), 1)],
+                },
+                RuleOutcome {
+                    id: "bare".to_owned(),
+                    why: String::new(),
+                    held: false,
+                    violations: Vec::new(),
+                },
+            ],
+            said: vec!["note x at p: words".to_owned()],
+        };
+        let lines = lines_whole(&failed);
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        for unkeyed in [
+            plain("r\0s\0p"),
+            plain("bare"),
+            plain("\0said\0note x at p: words"),
+        ] {
+            assert!(!lines.contains_key(&unkeyed[..24]), "{unkeyed}");
+        }
+        assert!(lines.keys().all(|key| key.len() == 24));
+        // a cause that holds once: its name and its state
+        let name = once_name("\0work.unreadable\0d");
+        assert_ne!(name, format!("w{}", &plain("\0work.unreadable\0d")[..23]));
+        let state = once_state(&name, "1 2 3.4 5.6 644");
+        assert_ne!(
+            state,
+            format!("v{}{}", &name[1..12], &plain("1 2 3.4 5.6 644")[..12])
+        );
+        // the mark of many lines
+        let (mark, _) = mark_of(&lines);
+        let all: Vec<String> = lines
+            .iter()
+            .map(|(key, count)| format!("{key}:{count}"))
+            .collect();
+        assert_ne!(mark, format!("all{}", &plain(&all.join("\n"))[..21]));
+        // what was said once
+        assert_ne!(keyed_hex("noticed", b"a note"), plain("a note"));
+        // one key, one digest; the tag keeps one use apart from another
+        assert_eq!(keyed_hex("line", b"x"), keyed_hex("line", b"x"));
+        assert_ne!(keyed_hex("line", b"x"), keyed_hex("noticed", b"x"));
+    }
 
     /// The design's rule for reason classes (N91, ruling 2 of lane H2): a class says why, and
     /// no decision of a stop reads it. A unit with no verdict decides the same stop, block or

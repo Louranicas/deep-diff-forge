@@ -859,14 +859,18 @@ struct State {
     /// [`POINTER_BYTES`], and the paths past [`TREES_BYTES`] in all, are not recorded: such a
     /// tree is forgotten when it is no longer listed, as before.
     trees: std::collections::BTreeMap<String, String>,
+    /// The id of the key the digests of `reported`, `noticed` and `blocked` were made with
+    /// ([`hook::key_id`]), as the file holds it; empty when no key is named (a state migrated
+    /// from v11, or none yet). A state is written with the id of the key its hook used.
+    key_id: String,
 }
 
 /// The schema this build writes: `deep-diff-forge.hook-state.v` and [`STATE_OWN`].
-const STATE_SCHEMA: &str = "deep-diff-forge.hook-state.v11";
+const STATE_SCHEMA: &str = "deep-diff-forge.hook-state.v12";
 /// What every schema of a state is named by, before its number ([`schema_number`]).
 const STATE_SCHEMA_PREFIX: &str = "deep-diff-forge.hook-state.v";
 /// The number of [`STATE_SCHEMA`].
-const STATE_OWN: u32 = 11;
+const STATE_OWN: u32 = 12;
 /// The oldest schema read: the one the last release wrote (0.9.0 and 0.10.0 write v10). A
 /// state of a schema below it is refused by its name ([`StateRefusal::Older`]); v9 was
 /// written only by builds before any release and is not read since 0.11.0.
@@ -876,7 +880,7 @@ const STATE_FLOOR: u32 = 10;
 /// migration from its own number on, and the first hook that keeps state writes it in
 /// [`STATE_SCHEMA`] ([`Session::keep`]). Any change to the members of a state, to a member's
 /// type, grammar or meaning, or to the lines of the files beside it is a new number.
-const STATE_MIGRATIONS: &[(u32, Migration)] = &[(11, from_v10)];
+const STATE_MIGRATIONS: &[(u32, Migration)] = &[(11, from_v10), (12, from_v11)];
 /// A change from a state of one schema to one of the next ([`STATE_MIGRATIONS`]): the JSON
 /// of the state, or why it cannot be made (a damaged state).
 type Migration = fn(Value) -> Result<Value, &'static str>;
@@ -892,6 +896,25 @@ type Migration = fn(Value) -> Result<Value, &'static str>;
     reason = "a migration's form: a later one can find a state it cannot carry over"
 )]
 fn from_v10(value: Value) -> Result<Value, &'static str> {
+    Ok(value)
+}
+
+/// v11 to v12: every digest the hooks keep is keyed (rule V8), so the members that hold
+/// unkeyed ones are emptied: an unkeyed digest cannot be keyed without its text. A finding
+/// already said may be said once more; a failure that already blocked may block once more; a
+/// cause that holds once holds again with its count begun anew. That is more said and more
+/// blocked, never less. `key_id` names no key yet; the file of judged commits is written anew
+/// in v12's words by the first hook that keeps state ([`judged_line_v12`]). All else is as it
+/// was.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "a migration's form: a later one can find a state it cannot carry over"
+)]
+fn from_v11(mut value: Value) -> Result<Value, &'static str> {
+    for member in ["reported", "noticed", "blocked"] {
+        value[member] = json!([]);
+    }
+    value["key_id"] = json!("");
     Ok(value)
 }
 
@@ -1169,8 +1192,14 @@ fn state_members(value: &Value) -> Result<State, &'static str> {
     }
     let trees =
         trees_from(&value["trees"]).ok_or("what it says of the working trees is not whole")?;
+    let key_id = value["key_id"]
+        .as_str()
+        .filter(|id| id.is_empty() || (id.len() == 16 && id.bytes().all(|b| b.is_ascii_hexdigit())))
+        .ok_or("what it says of its key is not whole")?
+        .to_owned();
     Ok(State {
         trees,
+        key_id,
         project,
         stops: value["stops"].as_u64().ok_or(MEMBER)?,
         reported: list("reported", REPORTED_CAP)?.into_iter().collect(),
@@ -1200,8 +1229,104 @@ fn state_text(state: &State) -> String {
         "judged_sha256": state.judged_sha256,
         "judged_count": state.judged_count,
         "trees": state.trees,
+        "key_id": state.key_id,
     })
     .to_string()
+}
+
+/// Make the keyed members of `state` this hook's: when they were kept under another key (or
+/// none), they are emptied, as a migration empties them ([`from_v11`]), and nothing else is
+/// touched. `true` when they were.
+fn align_key(state: &mut State) -> bool {
+    let current = hook::current_key_id();
+    if state.key_id == current {
+        return false;
+    }
+    state.reported.clear();
+    state.noticed.clear();
+    state.blocked.clear();
+    state.key_id = current;
+    true
+}
+
+/// The name of the hooks' key file in the state directory (rule V10: the same in every
+/// version).
+const KEY_FILE: &str = "key";
+
+/// The key of the hooks' digests in the state directory `dir`, and whether it is new: the 32
+/// bytes of the file `key`, opened without following a final link and without waiting on a
+/// FIFO, and taken only as a regular file of exactly 32 bytes; or, where there is none (no
+/// file, or no directory yet), 32 new bytes from `random`, which [`keep_key`] puts in place
+/// when the state is first kept. `Err` says why the file there is no key; it never holds any
+/// byte of a key.
+fn hook_key(
+    dir: &Path,
+    random: impl FnOnce() -> std::io::Result<[u8; 32]>,
+) -> Result<([u8; 32], bool), String> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let path = dir.join(KEY_FILE);
+    let refused = |why: String| format!("the hooks' key file {} {why}", shown(&path));
+    let mut file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
+        .open(&path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let key = random()
+                .map_err(|e| format!("no key could be made for the hooks' digests: {e}"))?;
+            return Ok((key, true));
+        }
+        Err(error) => return Err(refused(format!("cannot be opened ({error})"))),
+    };
+    let found = file
+        .metadata()
+        .map_err(|e| refused(format!("cannot be read ({e})")))?;
+    if !found.is_file() {
+        return Err(refused("is not a regular file".to_owned()));
+    }
+    if found.len() != 32 {
+        return Err(refused("is not 32 bytes long".to_owned()));
+    }
+    let mut key = [0_u8; 32];
+    file.read_exact(&mut key)
+        .map_err(|e| refused(format!("cannot be read ({e})")))?;
+    Ok((key, false))
+}
+
+/// 32 bytes from `/dev/urandom`.
+fn urandom_key() -> std::io::Result<[u8; 32]> {
+    let mut key = [0_u8; 32];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut key)?;
+    Ok(key)
+}
+
+/// Put the new key `key` in place in `dir` (made already): written to a partial file of its
+/// own (mode 0600, made new, no link followed), then linked as `key`, which refuses a name
+/// that is there. When another hook put its key there first, that key is the hooks' key and is
+/// returned; a state this hook writes then names its own key, which the next hook finds is
+/// not the file's, and empties its keyed members ([`align_key`]).
+fn keep_key(dir: &Path, key: &[u8; 32]) -> Result<[u8; 32], String> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let partial = dir.join(format!("{KEY_FILE}.{}.partial", random_hex()));
+    let made = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(nix::libc::O_NOFOLLOW)
+        .open(&partial)
+        .and_then(|mut file| file.write_all(key))
+        .and_then(|()| std::fs::hard_link(&partial, dir.join(KEY_FILE)));
+    let _ = std::fs::remove_file(&partial);
+    match made {
+        Ok(()) => Ok(*key),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            hook_key(dir, || Err(std::io::Error::other("the key file went away")))
+                .map(|(there, _)| there)
+        }
+        Err(error) => Err(format!("the hooks' key could not be kept: {error}")),
+    }
 }
 
 /// The member `trees` of a state ([`State::trees`]): an object whose keys are trees as
@@ -1462,6 +1587,9 @@ struct Session {
     tips: Option<Vec<String>>,
     /// The judged commits with what this hook added, not written yet.
     judged: Option<Vec<String>>,
+    /// A key this hook drew because the state directory has none, put in place by the first
+    /// [`Session::keep`] ([`keep_key`]).
+    new_key: Option<[u8; 32]>,
 }
 
 impl Session {
@@ -1488,7 +1616,11 @@ impl Session {
         let read = load_read(&file)
             .map_err(|refusal| Why::new(refusal.class(), refused_text(&file, &refusal)))?;
         let (kept, upgrade) = read.map_or((None, false), |(state, before)| (Some(state), before));
-        Ok(Self {
+        // the key every digest of this hook is made with, before any is made
+        let (key, new) = hook_key(&dir, urandom_key)
+            .map_err(|text| Why::new(ReasonClass::StateDamaged, text))?;
+        hook::use_key(key);
+        let mut session = Self {
             dir,
             file,
             state: kept.clone().unwrap_or_default(),
@@ -1496,7 +1628,30 @@ impl Session {
             upgrade,
             tips: None,
             judged: None,
-        })
+            new_key: new.then_some(key),
+        };
+        if session.kept.is_some() {
+            align_key(&mut session.state);
+        }
+        // A state older than v12 has a file of judged commits in the words before v12: it is
+        // written anew in v12's ([`judged_line_v12`]), with its digest and count, at the next
+        // keep. A list that cannot be read is left as it is, and the stop says so as before.
+        if session.upgrade && session.state.judged_count > 0 {
+            let list = (
+                session.state.judged_sha256.clone(),
+                session.state.judged_count,
+            );
+            if let Ok(lines) = load_list(
+                &judged_file(&session.file),
+                (&list.0, list.1),
+                false,
+                is_judged_entry,
+                "the judged commits",
+            ) {
+                session.set_judged(lines.iter().map(|line| judged_line_v12(line)).collect());
+            }
+        }
+        Ok(session)
     }
 
     /// Write the state if this hook changed it, or if the file holds an older schema,
@@ -1524,6 +1679,11 @@ impl Session {
                 newer_written(&self.file, number)
             ));
         }
+        if let Some(key) = self.new_key.take() {
+            keep_key(&self.dir, &key).map_err(|e| format!("its state could not be saved: {e}"))?;
+        }
+        // (the state names the key its digests were made with)
+        self.state.key_id = hook::current_key_id();
         let lists = [
             (tips_file(&self.file), &self.tips),
             (judged_file(&self.file), &self.judged),
@@ -1576,6 +1736,10 @@ impl Session {
         self.upgrade = upgrade;
         self.kept.clone_from(&now);
         self.state = now.unwrap_or_default();
+        // what this hook said is keyed with its key: the state as it is now is made this key's
+        if self.kept.is_some() {
+            align_key(&mut self.state);
+        }
         if self.state.project.is_none() {
             self.state.project = mine.project;
         } else {
@@ -2245,7 +2409,7 @@ enum Said {
 }
 
 fn say_once(state: &mut State, what: &str) -> Said {
-    let key = deep_diff_forge_core::sha256_hex(what.as_bytes());
+    let key = hook::keyed_hex("noticed", what.as_bytes());
     if state.noticed.contains(&key) {
         Said::Before
     } else if state.noticed.len() < NOTICED_CAP {
@@ -3373,6 +3537,9 @@ struct Judging {
     /// The top level of each linked tree this stop knows, by which tree it is: what
     /// [`State::trees`] records.
     tops: std::collections::BTreeMap<String, PathBuf>,
+    /// The class the ledger records for a unit, by its place in `units`, where its outcome alone
+    /// does not say it: a commit held at an earlier stop, whose class its line keeps.
+    classes: std::collections::BTreeMap<usize, ReasonClass>,
     /// What the ledger names each unit by, with the seals of its verdict (F11): the unit's place
     /// in `units`, or `None` for a commit that passed at this stop, which is no unit. A unit
     /// with no name here is recorded as the stop's ([`crate::ledger::Name::Stop`]).
@@ -4239,12 +4406,13 @@ fn answer(entry: &str) -> Option<(&str, Answer<'_>)> {
 /// of each name, and the most of the first thing the judge said beside its rules.
 const RULES_KEPT: usize = 8;
 const RULE_NAME_KEPT: usize = 64;
-const SAID_KEPT_CHARS: usize = 100;
 
 /// What is kept of the reason a commit was held or failed, on its line of the file of judged
 /// commits: the names of its rules (those that fail, and after a `;` those the judge holds
-/// for; `+N` for the names beyond [`RULES_KEPT`]), and after a `|` the first thing the judge
-/// said beside its rules, with the number of the others.
+/// for; `+N` for the names beyond [`RULES_KEPT`]). Since v12 nothing the judge said beside
+/// its rules is kept: a hold's line ends with its class code after a `|` instead
+/// ([`judged_line_v12`]); before, the first 100 characters of the judge's first note were
+/// kept in clear.
 ///
 /// The rules of a commit were said at the stop that judged it and not kept, so a commit the
 /// judge held was "held" with no rule for the rest of the session (sixth independent review
@@ -4255,8 +4423,7 @@ const SAID_KEPT_CHARS: usize = 100;
 /// A `:` in a name is kept: the line is read up to its second `:` and the rest is the reason,
 /// so only `,`, `;` and `|` separate. A built-in rule of forge-warden, `builtin:<name>`, was
 /// named `builtin_<name>` at the later stops, a rule the judge does not have (S3.21.d).
-fn kept_reason(rules: &[hook::RuleOutcome], said: &[String], failed: bool) -> String {
-    use std::fmt::Write as _;
+fn kept_reason(rules: &[hook::RuleOutcome], failed: bool) -> String {
     let plain = |text: &str, most: usize| -> String {
         text.chars()
             .take(most)
@@ -4282,37 +4449,20 @@ fn kept_reason(rules: &[hook::RuleOutcome], said: &[String], failed: bool) -> St
         }
         kept.join(",")
     };
-    let mut kept = if failed {
+    if failed {
         match (names(false), names(true)) {
             (failing, held) if held.is_empty() => failing,
             (failing, held) => format!("{failing};{held}"),
         }
     } else {
         names(true)
-    };
-    if let Some(first) = said.first() {
-        let words: String = first
-            .chars()
-            .take(SAID_KEPT_CHARS)
-            .map(|c| match c {
-                '|' => '/',
-                c if c.is_control() => ' ',
-                c => c,
-            })
-            .collect();
-        kept.push('|');
-        kept.push_str(words.trim_end());
-        if said.len() > 1 {
-            let _ = write!(kept, " (+{} more)", said.len() - 1);
-        }
     }
-    kept
 }
 
 /// The rules of a commit judged at an earlier stop, and what the judge said beside them,
 /// from what its line keeps ([`kept_reason`]): no explanation and no path, which were said
 /// at that stop.
-fn reason_kept(kept: &str, all_held: bool) -> (Vec<hook::RuleOutcome>, Vec<String>) {
+fn reason_kept(kept: &str, all_held: bool) -> (Vec<hook::RuleOutcome>, ReasonClass) {
     let (names, said) = kept.split_once('|').unwrap_or((kept, ""));
     let (failing, held) = names.split_once(';').unwrap_or((names, ""));
     let rules = |names: &str, held: bool| -> Vec<hook::RuleOutcome> {
@@ -4328,21 +4478,58 @@ fn reason_kept(kept: &str, all_held: bool) -> (Vec<hook::RuleOutcome>, Vec<Strin
             })
             .collect()
     };
-    let said = if said.is_empty() {
-        Vec::new()
+    let rules = [rules(failing, all_held), rules(held, true)].concat();
+    // the class of a hold: its code since v12; before, read from what was kept beside it
+    let class = ReasonClass::from_code(said).unwrap_or(if !rules.is_empty() {
+        ReasonClass::HoldRule
+    } else if said.starts_with("note claims_unverified") {
+        ReasonClass::HoldClaimsUnverified
+    } else if said.is_empty()
+        || said.starts_with("note unknown_signal")
+        || said.starts_with("note unknown_status")
+    {
+        // (an empty hold is the one F12.b wrote for a label the judge does not know)
+        ReasonClass::HoldVersionGap
     } else {
-        vec![said.to_owned()]
-    };
-    ([rules(failing, all_held), rules(held, true)].concat(), said)
+        ReasonClass::HoldNotes
+    });
+    (rules, class)
 }
 
-/// A reason as one line of the file of judged commits holds it.
-fn one_line(reason: &str) -> String {
-    reason
-        .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .take(200)
-        .collect()
+/// The class a reason of the file of judged commits names: its code since v12; before, the
+/// class its words say ([`crate::hook::reason::class_of_words`]).
+fn class_kept(reason: &str) -> ReasonClass {
+    ReasonClass::from_code(reason).unwrap_or_else(|| crate::hook::reason::class_of_words(reason))
+}
+
+/// One line of the file of judged commits in v12's words: the commit, its letter, then only
+/// rule ids, and for a hold its class code after a `|`; a commit with no verdict keeps only
+/// its class code. A line in the words before v12 (the judge's first note, the judge's or
+/// Git's words for a missing verdict) is written so by the first hook that keeps a migrated
+/// state ([`Session::open`]); the words are not kept.
+fn judged_line_v12(line: &str) -> String {
+    let Some((id, said)) = answer(line) else {
+        return line.to_owned();
+    };
+    let names = |kept: &str| {
+        kept.split_once('|')
+            .map_or(kept, |(names, _)| names)
+            .to_owned()
+    };
+    match said {
+        Answer::Pass => format!("{id}:p"),
+        Answer::Hold(kept) => {
+            let class = reason_kept(kept, true).1;
+            format!("{id}:h:{}|{}", names(kept), class.as_str())
+        }
+        Answer::Fail(kept) => format!("{id}:f:{}", names(kept)),
+        Answer::NoVerdict {
+            attempts,
+            last,
+            reason,
+        } => format!("{id}:n{attempts}@{last}:{}", class_kept(reason).as_str()),
+        Answer::Final(reason) => format!("{id}:x:{}", class_kept(reason).as_str()),
+    }
 }
 
 /// The commits at the edge of a shallow clone: the repository does not have their parents
@@ -4431,10 +4618,10 @@ fn sorted_commits(
 ) -> (Vec<Option<TreeJudged>>, Vec<Ask>) {
     let known: std::collections::BTreeMap<&str, Answer<'_>> =
         known.iter().filter_map(|entry| answer(entry)).collect();
-    // (a commit from before keeps the words of its reason, which say its class)
-    let no_verdict = |reason: &str| Judged::Unjudged {
+    // (a commit from before keeps the class of its reason, and is said by the class's words)
+    let no_verdict = |class: ReasonClass, reason: &str| Judged::Unjudged {
         reason: reason.to_owned(),
-        class: crate::hook::reason::class_of_words(reason),
+        class,
     };
     let mut units: Vec<Option<TreeJudged>> = vec![None; listed.len()];
     let mut never: Vec<Ask> = Vec::new();
@@ -4445,14 +4632,25 @@ fn sorted_commits(
         match known.get(id.as_str()) {
             Some(Answer::Pass) => {}
             Some(Answer::Fail(kept)) => {
-                let (rules, said) = reason_kept(kept, false);
+                let (rules, _) = reason_kept(kept, false);
+                let said = Vec::new();
                 units[at] = Some(from_before(id, Judged::Fail { rules, said }));
             }
             Some(Answer::Hold(kept)) => {
-                let (rules, said) = reason_kept(kept, true);
-                units[at] = Some(from_before(id, Judged::Hold { rules, said }));
+                let (rules, class) = reason_kept(kept, true);
+                let named = rules.is_empty();
+                let said = Vec::new();
+                let mut unit = from_before(id, Judged::Hold { rules, said });
+                // (with no rule, a later stop names it by its class, not by the judge's words)
+                if named {
+                    unit.what = format!("{} (held: {})", unit.what, class.meaning());
+                }
+                units[at] = Some(unit);
             }
-            Some(Answer::Final(reason)) => units[at] = Some(from_before(id, no_verdict(reason))),
+            Some(Answer::Final(reason)) => {
+                let class = class_kept(reason);
+                units[at] = Some(from_before(id, no_verdict(class, class.meaning())));
+            }
             Some(Answer::NoVerdict {
                 attempts,
                 last,
@@ -4463,12 +4661,13 @@ fn sorted_commits(
                     attempts: Some(*attempts),
                     reserved: false,
                 };
+                let class = class_kept(reason);
                 let reason = if ask.in_turn() {
-                    in_turn(*attempts, reason)
+                    in_turn(*attempts, class.meaning())
                 } else {
-                    (*reason).to_owned()
+                    class.meaning().to_owned()
                 };
-                units[at] = Some(from_before(id, no_verdict(&reason)));
+                units[at] = Some(from_before(id, no_verdict(class, &reason)));
                 if ask.in_turn() {
                     turns.push((*last, ask));
                 } else {
@@ -4594,8 +4793,8 @@ fn judge_commits(
     let (mut waiting, mut failed) = (0_usize, 0_usize);
     // the stop's time is what makes the commits from here on wait
     let mut out_of_time = false;
-    // (the commit, its attempts, whether they are final whatever the chain did, the reason)
-    let mut tried: Vec<(usize, u32, bool, String)> = Vec::new();
+    // (the commit, its attempts, whether they are final whatever the chain did, the class)
+    let mut tried: Vec<(usize, u32, bool, ReasonClass)> = Vec::new();
     // for the ledger (F11): the seals of each commit judged, and the commits left waiting
     let mut sealed: std::collections::BTreeMap<usize, crate::ledger::Seals> =
         std::collections::BTreeMap::new();
@@ -4658,11 +4857,15 @@ fn judge_commits(
         }
         let said = match &judged {
             Judged::Pass => "p".to_owned(),
-            Judged::Hold { rules, said } => format!("h:{}", kept_reason(rules, said, false)),
+            Judged::Hold { rules, .. } => format!(
+                "h:{}|{}",
+                kept_reason(rules, false),
+                hook::class_of(&judged, false).as_str()
+            ),
             // (a hold for a label the judge does not know: a commit's is final, as a hold is)
-            Judged::Refused { .. } => format!("h:{}", kept_reason(&[], &[], false)),
-            Judged::Fail { rules, said } => format!("f:{}", kept_reason(rules, said, true)),
-            Judged::Unjudged { reason, .. } if proven => format!("x:{}", one_line(reason)),
+            Judged::Refused { class, .. } => format!("h:|{}", class.as_str()),
+            Judged::Fail { rules, .. } => format!("f:{}", kept_reason(rules, true)),
+            Judged::Unjudged { class, .. } if proven => format!("x:{}", class.as_str()),
             Judged::Unjudged { .. } if !ran && stopping.deadline.left() < COMMIT_FLOOR => {
                 // The stop's time ended the asking before the judge was run for this
                 // commit: not an attempt, and no turn is used. An ask the judge WAS run
@@ -4683,7 +4886,7 @@ fn judge_commits(
                 // written down as asked at this stop, with the attempts it had.
                 failed += 1;
                 let attempts = ask.attempts.unwrap_or(0);
-                tried.push((at, attempts, true, reason.clone()));
+                tried.push((at, attempts, true, *class));
                 units[at] = Some(commit_unit(
                     id,
                     if ask.in_turn() {
@@ -4698,7 +4901,7 @@ fn judge_commits(
                 // asked in its turn: the ask counts, whatever the chain did, and the commit
                 // is said as what it is
                 let attempts = ask.attempts.unwrap_or(ATTEMPTS).saturating_add(1);
-                tried.push((at, attempts, true, reason.clone()));
+                tried.push((at, attempts, true, *class));
                 units[at] = Some(commit_unit(
                     id,
                     no_verdict(&in_turn(attempts, reason), *class),
@@ -4707,7 +4910,7 @@ fn judge_commits(
             }
             Judged::Unjudged { reason, class } => {
                 failed += 1;
-                tried.push((at, ask.attempts.unwrap_or(0), false, reason.clone()));
+                tried.push((at, ask.attempts.unwrap_or(0), false, *class));
                 if tribunal.chain != Some(true) && failed >= FIRST_ASKS && !tribunal.chain_answers()
                 {
                     waits = Some(Why::new(*class, reason.clone()));
@@ -4738,17 +4941,29 @@ fn judge_commits(
         tribunal.chain_answers();
     }
     let counts = u32::from(tribunal.chain == Some(true));
-    for (at, attempts, counted, reason) in tried {
+    for (at, attempts, counted, class) in tried {
         let attempts = if counted { attempts } else { attempts + counts };
         out.commits.push((
             listed[at].0.clone(),
-            format!("n{attempts}@{}:{}", stopping.number, one_line(&reason)),
+            format!("n{attempts}@{}:{}", stopping.number, class.as_str()),
         ));
     }
     let first = out.units.len();
     let present = units.iter().enumerate().filter(|(_, unit)| unit.is_some());
+    // (the class of a commit held before is in its line: the ledger records that one)
+    let held: std::collections::BTreeMap<&str, ReasonClass> = known
+        .iter()
+        .filter_map(|entry| match answer(entry)? {
+            (id, Answer::Hold(kept)) => Some((id, reason_kept(kept, true).1)),
+            _ => None,
+        })
+        .collect();
     for (place, (at, _)) in present.enumerate() {
-        let name = crate::ledger::Name::Commit(listed[at].0.clone());
+        let id = &listed[at].0;
+        if let Some(class) = held.get(id.as_str()) {
+            out.classes.insert(first + place, *class);
+        }
+        let name = crate::ledger::Name::Commit(id.clone());
         out.ledger
             .push((Some(first + place), name, sealed.remove(&at)));
     }
@@ -6782,7 +6997,7 @@ fn notes_of(state: &mut State, mut beside: Vec<Note>, room: usize) -> Vec<String
     // (the name, and in how many working trees the note has a failure that stands)
     let mut before: Vec<(String, usize)> = Vec::new();
     for note in beside {
-        let key = deep_diff_forge_core::sha256_hex(note.text.as_bytes());
+        let key = hook::keyed_hex("noticed", note.text.as_bytes());
         let needs = note.text.chars().count() + 1;
         // (a session that cannot remember more counts a new one with the others: the line
         // that counts them is at every stop, so nothing true at a stop goes unsaid)
@@ -7187,9 +7402,10 @@ fn ledger_units(judging: &Judging, blocks: &[bool]) -> Vec<crate::ledger::Unit> 
         }
     }
     let mut out = Vec::new();
-    for ((unit, names), blocks) in judging.units.iter().zip(by_unit).zip(blocks) {
+    for (at, ((unit, names), blocks)) in judging.units.iter().zip(by_unit).zip(blocks).enumerate() {
         let Some(judged) = &unit.judged else { continue };
-        let class = hook::class_of(judged, *blocks);
+        let class =
+            (judging.classes.get(&at).copied()).unwrap_or_else(|| hook::class_of(judged, *blocks));
         let outcome = match judged {
             Judged::Pass => "pass",
             Judged::Fail { .. } if *blocks => "fail",
@@ -8462,6 +8678,226 @@ fn probe(
 mod tests {
     use super::*;
 
+    /// Lane H3: what a hook says once is remembered by a keyed digest (`noticed`), by an advice
+    /// hook's reason (`say_once`) and by a stop's note (`notes_of`): never the plain SHA-256 of
+    /// the words, which hold paths and Git's words.
+    #[test]
+    fn what_is_said_once_is_keyed() {
+        use deep_diff_forge_core::sha256_hex;
+        let mut state = State::default();
+        let _ = say_once(&mut state, "a reason with a path \"a.rs\"");
+        let note = Note {
+            name: "a note".to_owned(),
+            text: "The working tree \"/w\" has changes.".to_owned(),
+            standing: 0,
+        };
+        let _ = notes_of(&mut state, vec![note], 4096);
+        assert_eq!(state.noticed.len(), 2, "{:?}", state.noticed);
+        for words in [
+            "a reason with a path \"a.rs\"",
+            "The working tree \"/w\" has changes.",
+        ] {
+            assert!(
+                !state.noticed.contains(&sha256_hex(words.as_bytes())),
+                "{words}"
+            );
+            assert!(
+                state
+                    .noticed
+                    .contains(&hook::keyed_hex("noticed", words.as_bytes()))
+            );
+        }
+    }
+
+    /// Lane H3, ruling 5: one probe per way out of the function that gets the key. A key is
+    /// read only as a regular file of exactly 32 bytes, never through a final link and never
+    /// waiting on a FIFO; where there is none (no file, or no directory yet) one is drawn and
+    /// put in place by a link that refuses a name that is there, so of two first hooks the
+    /// second reads the first's key; a source of random bytes that fails makes no key. No
+    /// refusal holds a byte of a key.
+    #[test]
+    fn the_key_file_is_read_only_as_a_key() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-key-file");
+        let drawn = [7_u8; 32];
+        let fixed = || Ok(drawn);
+        let shows_no_key = |text: &str, key: &[u8; 32]| {
+            let hex = key.iter().fold(String::new(), |mut hex, b| {
+                use std::fmt::Write as _;
+                let _ = write!(hex, "{b:02x}");
+                hex
+            });
+            !text.contains(&hex) && !text.contains(&*String::from_utf8_lossy(key))
+        };
+        // no directory, then no file: a key is drawn, nothing is written
+        let dir = scratch.join("hooks");
+        assert_eq!(hook_key(&dir, fixed), Ok((drawn, true)));
+        assert!(!dir.exists());
+        std::fs::create_dir(&dir).unwrap();
+        assert_eq!(hook_key(&dir, fixed), Ok((drawn, true)));
+        // the random source fails: no key, and the refusal names the source's error only
+        let failed = hook_key(&dir, || Err(std::io::Error::other("no random bytes"))).unwrap_err();
+        assert!(failed.contains("no key could be made") && failed.contains("no random bytes"));
+        // put in place, then read back
+        assert_eq!(keep_key(&dir, &drawn), Ok(drawn));
+        assert_eq!(
+            hook_key(&dir, || Err(std::io::Error::other("unused"))),
+            Ok((drawn, false))
+        );
+        let mode = std::fs::metadata(dir.join(KEY_FILE))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+        // the second of two first hooks: its own key is refused by the link, the first's is
+        // the key, and no partial file is left
+        let other = [9_u8; 32];
+        assert_eq!(keep_key(&dir, &other), Ok(drawn));
+        let left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(left, [KEY_FILE]);
+        // what is not a key
+        let key = dir.join(KEY_FILE);
+        let refused = |why: &str| {
+            let said = hook_key(&dir, fixed).unwrap_err();
+            assert!(said.contains(why), "{said}");
+            assert!(shows_no_key(&said, &drawn), "{said}");
+        };
+        std::fs::remove_file(&key).unwrap();
+        std::fs::write(&key, [1_u8; 31]).unwrap();
+        refused("is not 32 bytes long");
+        std::fs::write(&key, [1_u8; 33]).unwrap();
+        refused("is not 32 bytes long");
+        std::fs::remove_file(&key).unwrap();
+        std::fs::create_dir(&key).unwrap();
+        refused("is not a regular file");
+        std::fs::remove_dir(&key).unwrap();
+        let elsewhere = scratch.join("elsewhere");
+        std::fs::write(&elsewhere, drawn).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &key).unwrap();
+        refused("cannot be opened");
+        std::fs::remove_file(&key).unwrap();
+        nix::unistd::mkfifo(&key, nix::sys::stat::Mode::S_IRWXU).unwrap();
+        refused("is not a regular file");
+        std::fs::remove_file(&key).unwrap();
+        std::fs::write(&key, drawn).unwrap();
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&key).is_err() {
+            refused("cannot be opened");
+        }
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        // a key replaced between two hooks: what was kept under the other is emptied, and
+        // nothing else of the state
+        let mut state = State {
+            stops: 3,
+            reported: ["r".to_owned()].into(),
+            noticed: ["n".to_owned()].into(),
+            blocked: vec!["m/u/x:1".to_owned()],
+            judged_sha256: "d".repeat(64),
+            judged_count: 1,
+            key_id: hook::key_id(&other),
+            ..State::default()
+        };
+        assert!(align_key(&mut state));
+        assert!(state.reported.is_empty() && state.noticed.is_empty() && state.blocked.is_empty());
+        assert_eq!((state.stops, state.judged_count), (3, 1));
+        assert_eq!(state.key_id, hook::current_key_id());
+        assert!(!align_key(&mut state));
+    }
+
+    /// Lane H3: the file of judged commits keeps codes, never words. Each line in the words
+    /// before v12 becomes the commit, its letter, its rule ids and a class code (a hold) or a
+    /// class code alone (no verdict), with the class its words say, unknown words
+    /// `chain.judge_exit`; the judge's note, the judge's stderr and Git's words are gone.
+    #[test]
+    fn a_judged_line_keeps_codes_never_words() {
+        let id = "0123456789abcdef0123456789abcdef01234567";
+        for (before, after) in [
+            ("p", "p".to_owned()),
+            ("f:no-secrets", "f:no-secrets".to_owned()),
+            (
+                "f:|exit 7 is the judge's fail, so the stop is held",
+                "f:".to_owned(),
+            ),
+            (
+                "h:quiet|note patch_unverifiable: x",
+                "h:quiet|hold.rule".to_owned(),
+            ),
+            (
+                "h:|note claims_unverified at \"a.rs\": x",
+                "h:|hold.claims_unverified".to_owned(),
+            ),
+            ("h:|note other: QUOTED words", "h:|hold.notes".to_owned()),
+            ("h:", "h:|hold.version_gap".to_owned()),
+            (
+                "h:|note unknown_signal at \"a.rs\": signal `x`",
+                "h:|hold.version_gap".to_owned(),
+            ),
+            (
+                "n0@1:the judge could not read its inputs or its environment (exit 3): judge broke: QUOTED",
+                "n0@1:chain.judge_environment".to_owned(),
+            ),
+            (
+                "n5@9:no verdict in 5 attempts; it is asked about again in its turn, one such commit at each stop; the last reason: the judge exited 9, which is not a verdict",
+                "n5@9:chain.judge_exit".to_owned(),
+            ),
+            (
+                "x:the commit could not be read from Git: Git output exceeds the 8-byte budget",
+                "x:chain.patch_too_large".to_owned(),
+            ),
+            ("x:words no build wrote", "x:chain.judge_exit".to_owned()),
+        ] {
+            let line = judged_line_v12(&format!("{id}:{before}"));
+            assert_eq!(line, format!("{id}:{after}"), "{before}");
+            assert!(is_judged_entry(&line), "{line}");
+            assert!(
+                !line.contains("QUOTED") && !line.contains("broke"),
+                "{line}"
+            );
+            // and written again it is the same line
+            assert_eq!(judged_line_v12(&line), line);
+        }
+        // a later stop says a commit from before by its rules and its class, never words
+        assert_eq!(
+            reason_kept("|hold.version_gap", true).1,
+            ReasonClass::HoldVersionGap
+        );
+        assert_eq!(
+            class_kept("chain.judge_refused"),
+            ReasonClass::ChainJudgeRefused
+        );
+    }
+
+    /// Lane H3: v11 to v12 empties the members that held unkeyed digests, names no key yet and
+    /// keeps everything else; read through the chain from v10.
+    #[test]
+    fn a_v11_state_is_read_as_v12_with_its_digests_emptied() {
+        let v11 = json!({"schema": "deep-diff-forge.hook-state.v11", "project": null,
+                         "stops": 4, "reported": ["a"], "noticed": ["b"],
+                         "blocked": ["m/u/0123456789abcdef01234567:1"],
+                         "judged_sha256": "e".repeat(64), "judged_count": 2,
+                         "trees": {"0123456789abcdef": "/w"}});
+        for schema in [
+            "deep-diff-forge.hook-state.v10",
+            "deep-diff-forge.hook-state.v11",
+        ] {
+            let mut text = v11.clone();
+            text["schema"] = json!(schema);
+            let (state, older) = state_read(&text.to_string()).unwrap();
+            assert!(older, "{schema}");
+            assert!(
+                state.reported.is_empty() && state.noticed.is_empty() && state.blocked.is_empty()
+            );
+            assert_eq!((state.stops, state.judged_count), (4, 2));
+            assert_eq!(state.judged_sha256, "e".repeat(64));
+            assert_eq!(state.trees.len(), 1);
+            assert_eq!(state.key_id, "");
+        }
+    }
+
     /// Each reason a unit of a stop can be UNJUDGED for carries the class its row names
     /// (lane H2, the design's F7-W3a): a patch that could not be made (`not_made`,
     /// `patch_error_class`: the two causes F12 holds once by the patch maker's evidence, and
@@ -8656,6 +9092,7 @@ mod tests {
             upgrade: false,
             tips: None,
             judged: None,
+            new_key: None,
         };
         let input = hook::Input {
             session: "s".to_owned(),
@@ -8772,7 +9209,7 @@ mod tests {
         fn with_project(project: &Value) -> String {
             json!({"schema": STATE_SCHEMA, "project": project, "stops": 0,
                    "reported": ["a"], "noticed": [], "blocked": [],
-                   "judged_sha256": "", "judged_count": 0, "trees": {}})
+                   "judged_sha256": "", "judged_count": 0, "trees": {}, "key_id": ""})
             .to_string()
         }
         let state = State {
@@ -8784,6 +9221,7 @@ mod tests {
             judged_sha256: "d".repeat(64),
             judged_count: 2,
             trees: [("0123456789abcdef".to_owned(), "/w/feature".to_owned())].into(),
+            key_id: "0123456789abcdef".to_owned(),
         };
         assert_eq!(state_from(&state_text(&state)), Ok(state));
         for base in [Base::NoCommit, Base::Orphan, Base::Commit("a".repeat(64))] {
@@ -8929,6 +9367,7 @@ mod tests {
                     (hex(n, 16), "/".to_owned() + &"t".repeat(long))
                 })
                 .collect(),
+            key_id: hex(0, 16),
         };
         assert_eq!(
             full.trees.values().map(String::len).sum::<usize>(),
@@ -9062,7 +9501,7 @@ mod tests {
             assert_eq!(
                 said,
                 format!(
-                    "no verdict in {attempts} attempts; it is asked about again in its turn, one such commit at each stop; the last reason: r"
+                    "no verdict in {attempts} attempts; it is asked about again in its turn, one such commit at each stop; the last reason: the judge exited with a code that is not a verdict"
                 )
             );
         }
@@ -9455,10 +9894,6 @@ mod tests {
     /// held or failed commit keeps the names of its rules (round 15, HR6-M-2), and a commit
     /// with no verdict any number of attempts (round 15, VD4R14-M-1: the count ended at 5).
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one list: every form of a line, and what is kept of a reason"
-    )]
     fn a_line_of_the_judged_file_is_an_id_and_an_answer() {
         let id = "a".repeat(40);
         for line in [
@@ -9511,9 +9946,9 @@ mod tests {
             rule("a:b,c;d|e\n", false),
             rule("quiet", true),
         ];
-        assert_eq!(kept_reason(&both, &[], true), "no-secrets,a:b_c_d_e_;quiet");
-        assert_eq!(kept_reason(&both[2..], &[], false), "quiet");
-        assert_eq!(kept_reason(&[], &[], true), "");
+        assert_eq!(kept_reason(&both, true), "no-secrets,a:b_c_d_e_;quiet");
+        assert_eq!(kept_reason(&both[2..], false), "quiet");
+        assert_eq!(kept_reason(&[], true), "");
         let names = |kept: &str, all_held: bool| -> Vec<(String, bool)> {
             reason_kept(kept, all_held)
                 .0
@@ -9530,34 +9965,33 @@ mod tests {
             ]
         );
         assert!(names("quiet", true).iter().all(|(_, held)| *held));
-        assert_eq!(reason_kept("", false), (Vec::new(), Vec::new()));
-        // A hold for a note and a failure by an expired waiver are no rule: the first thing
-        // the judge said is kept, with the number of the others. Nothing was kept, and the
-        // later stops of the session named the commit with no reason (HR7-L-6).
-        let said = [
-            "note patch_unverifiable: unsupported file mode 160000 (a submodule); coverage cannot be verified\n".to_owned(),
-            "note other: x".to_owned(),
-        ];
-        let kept = kept_reason(&[], &said, false);
+        // Since v12 nothing the judge said is kept (HR7-L-6 kept its first note in clear): a
+        // hold keeps its class, and a hold with no rule is named by it at the later stops. A
+        // line in the words before v12 gives its class from them.
         assert_eq!(
-            kept,
-            "|note patch_unverifiable: unsupported file mode 160000 (a submodule); coverage cannot be verified (+1 more)"
+            reason_kept("|hold.claims_unverified", true),
+            (Vec::new(), ReasonClass::HoldClaimsUnverified)
         );
         assert_eq!(
-            reason_kept(&kept, true),
-            (Vec::new(), vec![kept[1..].to_owned()])
+            reason_kept("|note claims_unverified at \"a.rs\": x", true),
+            (Vec::new(), ReasonClass::HoldClaimsUnverified)
         );
         assert_eq!(
-            kept_reason(&both[..1], &said[..1], true).split('|').next(),
-            Some("no-secrets")
+            reason_kept("|note patch_unverifiable: unsupported file mode", true),
+            (Vec::new(), ReasonClass::HoldNotes)
         );
+        assert_eq!(
+            reason_kept("", true),
+            (Vec::new(), ReasonClass::HoldVersionGap)
+        );
+        assert_eq!(reason_kept("quiet", true).1, ReasonClass::HoldRule);
         // bounded: eight names of each kind and the number of the others, sixty-four
-        // characters of each name, a hundred of what the judge said
+        // characters of each name
         let many: Vec<hook::RuleOutcome> = (0..20)
             .map(|n| rule(&format!("{n}{}", "r".repeat(100)), false))
             .collect();
-        let line = kept_reason(&many, &["s".repeat(500)], true);
-        let (rules, words) = line.split_once('|').unwrap();
+        let rules = kept_reason(&many, true);
+        assert!(!rules.contains('|'), "{rules}");
         assert_eq!(rules.split(',').count(), RULES_KEPT + 1);
         assert_eq!(rules.split(',').next_back(), Some("+12"));
         assert!(
@@ -9566,8 +10000,7 @@ mod tests {
                 .take(RULES_KEPT)
                 .all(|name| name.chars().count() == RULE_NAME_KEPT)
         );
-        assert_eq!(words.len(), SAID_KEPT_CHARS);
-        assert_eq!(names(rules, false).len(), RULES_KEPT + 1);
+        assert_eq!(names(&rules, false).len(), RULES_KEPT + 1);
     }
 
     /// Third independent review of the hooks, HR3-M-3, and the fourth, HR4-L-3. A failure of
@@ -10699,12 +11132,13 @@ mod tests {
                          "judged_sha256": "", "judged_count": 0, "trees": {}})
         .to_string();
         let (state, older) = state_read(&v10).unwrap();
-        assert!(older, "a v10 state is written back in v11");
-        assert_eq!(state.blocked, std::slice::from_ref(&entry));
+        assert!(older, "a v10 state is written back in v12");
+        // (its unkeyed digests are emptied on the way: lane H3)
+        assert_eq!(state.blocked, Vec::<String>::new());
         assert_eq!(state.stops, 3);
         let text = state_text(&state);
         assert!(
-            text.contains("\"schema\":\"deep-diff-forge.hook-state.v11\""),
+            text.contains("\"schema\":\"deep-diff-forge.hook-state.v12\""),
             "{text}"
         );
         assert_eq!(state_read(&text), Ok((state, false)));
@@ -10719,7 +11153,8 @@ mod tests {
         ] {
             let text = json!({"schema": STATE_SCHEMA, "project": null, "stops": 0,
                               "reported": [], "noticed": [], "blocked": [],
-                              "judged_sha256": "", "judged_count": 0, "trees": trees})
+                              "judged_sha256": "", "judged_count": 0, "trees": trees,
+                              "key_id": ""})
             .to_string();
             assert!(state_from(&text).is_err(), "{text}");
         }
@@ -10856,7 +11291,7 @@ mod tests {
         let dir = scratch.join("hooks");
         std::fs::create_dir(&dir).unwrap();
         let file = state_file(&dir, "s");
-        let newer = r#"{"schema":"deep-diff-forge.hook-state.v12","what":"a newer build's"}"#;
+        let newer = r#"{"schema":"deep-diff-forge.hook-state.v13","what":"a newer build's"}"#;
         std::fs::write(&file, newer).unwrap();
         let mut session = Session {
             dir: dir.clone(),
@@ -10867,6 +11302,7 @@ mod tests {
             },
             kept: Some(State::default()),
             upgrade: false,
+            new_key: None,
             tips: Some(vec!["0123456789abcdef0123456789abcdef01234567".to_owned()]),
             judged: Some(vec![
                 "0123456789abcdef0123456789abcdef01234567:p".to_owned(),
@@ -10874,7 +11310,7 @@ mod tests {
         };
         let said = session.keep().unwrap_err();
         assert!(
-            said.contains("is now of schema v12, written by a newer deep-diff-forge")
+            said.contains("is now of schema v13, written by a newer deep-diff-forge")
                 && said.contains("nothing was written over it"),
             "{said}"
         );
@@ -10897,7 +11333,7 @@ mod tests {
         })
         .unwrap_err();
         assert!(written.get());
-        assert!(said.to_string().contains("schema v12"), "{said}");
+        assert!(said.to_string().contains("schema v13"), "{said}");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), newer);
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         // and a state of this schema there is written over as before
@@ -11462,16 +11898,12 @@ mod tests {
                 .collect()
         };
         assert_eq!(
-            kept_reason(&rules(RULES_KEPT), &[], true),
+            kept_reason(&rules(RULES_KEPT), true),
             "r0,r1,r2,r3,r4,r5,r6,r7"
         );
         assert_eq!(
-            kept_reason(&rules(RULES_KEPT + 1), &[], true),
+            kept_reason(&rules(RULES_KEPT + 1), true),
             "r0,r1,r2,r3,r4,r5,r6,r7,+1"
-        );
-        assert_eq!(
-            kept_reason(&rules(1), &["a\tb\u{1b}c|d\n".to_owned()], true),
-            "r0|a b c/d"
         );
     }
 
@@ -11492,11 +11924,8 @@ mod tests {
             rule("builtin:quiet", true),
         ];
         for (line, failed) in [
-            (format!("{id}:f:{}", kept_reason(&both, &[], true)), true),
-            (
-                format!("{id}:h:{}", kept_reason(&both[1..], &[], false)),
-                false,
-            ),
+            (format!("{id}:f:{}", kept_reason(&both, true)), true),
+            (format!("{id}:h:{}", kept_reason(&both[1..], false)), false),
         ] {
             assert!(is_judged_entry(&line), "{line}");
             let kept = match answer(&line) {

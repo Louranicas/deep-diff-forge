@@ -909,7 +909,14 @@ bounded form.** What it holds to:
   its name and never written over, and its refusal advises no removal; where file locks do
   not keep two hooks of a session apart, a newer build that writes between a hook's last
   read of the file and its write is not seen, and is written over: the read narrows that
-  race and does not close it (`docs/reference/agent-hooks.md`, "The state's schema").
+  race and does not close it (`docs/reference/agent-hooks.md`, "The state's schema"). Since
+  0.11.0 (hook state v12) no file of the state directory holds text from the patch, the
+  judge or Git: every digest the hooks keep is an HMAC under the user's key file, and the
+  file of judged commits keeps rule ids and class codes only. A copy of a state file, a
+  ledger or a log without the key no longer confirms a guessed line, rule or path; whoever
+  can read the key file (the same user, the agent included) can still compute the digest of
+  a guess. The key is not a boundary against the judged agent: it bounds what a copied file
+  gives away.
 - **Not a boundary:** the agent runs as the user. It can edit the settings that install the
   hooks, the state file, or the judge on `PATH`. An agent that edits Git's own
   administrative files (`gitdir`, `commondir`, `core.worktree`, a tree's `.git` file) can make one tree be read

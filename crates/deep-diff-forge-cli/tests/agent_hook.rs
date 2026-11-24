@@ -3067,9 +3067,10 @@ fn the_state_of_a_session_is_in_the_users_state_directory_or_the_hook_says_it_ha
         command.env("XDG_STATE_HOME", &xdg);
     });
     assert!(stdout.contains("check_suppressed"), "{stdout}");
-    // three files: the state, the list of commits that were there when the session began,
-    // and the session's lock, which a hook holds while it writes
-    assert_eq!(files(&xdg.join("deep-diff-forge/hooks")), 3);
+    // four files: the state, the list of commits that were there when the session began,
+    // the session's lock, which a hook holds while it writes, and (since hook state v12) the
+    // user's key its digests are made with
+    assert_eq!(files(&xdg.join("deep-diff-forge/hooks")), 4);
     assert_eq!(files(&sessions()), 0);
     let (_, stdout, _) = hook_in("post-tool", &[], &event, |command| {
         command
@@ -3077,7 +3078,7 @@ fn the_state_of_a_session_is_in_the_users_state_directory_or_the_hook_says_it_ha
             .current_dir(&root);
     });
     assert!(stdout.contains("check_suppressed"), "{stdout}");
-    assert_eq!(files(&sessions()), 3);
+    assert_eq!(files(&sessions()), 4);
     assert!(!root.join("relative").exists());
     // nothing of a session is kept in the repository
     assert_eq!(files(&root.join(".git/deep-diff-forge")), 0);
@@ -8705,8 +8706,16 @@ fn fixtures() -> Vec<(String, std::collections::BTreeMap<String, Vec<u8>>)> {
             if ["json", "tips", "judged"].contains(&kind.as_ref()) {
                 files.insert(kind.into_owned(), std::fs::read(&file).unwrap());
             }
+            // (the key the state's digests were made with, kept from v12 on)
+            if file.file_name().is_some_and(|name| name == "key") {
+                files.insert("key".to_owned(), std::fs::read(&file).unwrap());
+            }
         }
-        assert_eq!(files.len(), 3, "{}: {files:?}", dir.display());
+        assert!(
+            files.len() == 3 || (files.len() == 4 && files.contains_key("key")),
+            "{}: {files:?}",
+            dir.display()
+        );
         all.push((
             dir.file_name().unwrap().to_string_lossy().into_owned(),
             files,
@@ -8753,6 +8762,11 @@ fn place_fixture(files: &std::collections::BTreeMap<String, Vec<u8>>, root: &Pat
     std::fs::write(dir.join(format!("{name}.json")), text).unwrap();
     std::fs::write(dir.join(format!("{name}.tips")), &files["tips"]).unwrap();
     std::fs::write(dir.join(format!("{name}.judged")), &files["judged"]).unwrap();
+    if let Some(key) = files.get("key") {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::write(dir.join("key"), key).unwrap();
+        std::fs::set_permissions(dir.join("key"), std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
     dir.join(format!("{name}.json"))
 }
 
@@ -8763,12 +8777,14 @@ fn three_files(state: &Path) -> [Vec<u8>; 3] {
 
 /// Rule V3: a state of every schema since the last release is read, here the state, the list of
 /// commits and the list of judged commits that the published 0.9.0 and 0.10.0 binaries wrote
-/// in the middle of a session (v10: a failure that blocked, a commit judged FAIL), and one this
-/// build wrote (v11) (`tests/fixtures/hook-state/`, each directory's `ORIGIN` says which
-/// binary, by its SHA-256). A v10 state is migrated to v11 at the first stop with its base, its
-/// memory of what blocked and its judged commits kept: the failure that blocked does not block
-/// again and the commit is not judged again (one run of the judge at each stop, for the
-/// working tree), at that stop and at the next turn's.
+/// in the middle of a session (v10: a failure that blocked, a commit judged FAIL), one a build
+/// of this tree wrote in v11, and one in v12 with the key its digests were made with
+/// (`tests/fixtures/hook-state/`, each directory's `ORIGIN` says which binary, by its
+/// SHA-256). Each is written as v12 at the first stop with its base, its list of commits and
+/// its judged commits kept: the commit is not judged again (one run of the judge at each
+/// stop, for the working tree). A state before v12 kept unkeyed digests, which v12 empties
+/// (lane H3): the failure that blocked under it blocks once more, and then stands; the v12
+/// state, read under its own key, says FAIL STANDS at once.
 #[test]
 fn every_schema_since_the_last_release_is_read() {
     for (name, files) in fixtures() {
@@ -8783,18 +8799,27 @@ fn every_schema_since_the_last_release_is_read() {
         let state = place_fixture(&files, &root);
         let (script, log, _) = failing_judge(&scratch);
         let decision = stop_from(&root, FIXTURE_SESSION, &script);
-        let said = allowed(&decision);
-        assert!(
-            said.starts_with("deep-diff-forge: FAIL STANDS. "),
-            "{name}: a state of an earlier release was not read: {said}"
-        );
+        let keyed = captured["schema"] == "deep-diff-forge.hook-state.v12";
+        if keyed {
+            let said = allowed(&decision);
+            assert!(
+                said.starts_with("deep-diff-forge: FAIL STANDS. "),
+                "{name}: a state of this schema was not read: {said}"
+            );
+        } else {
+            let reason = blocked(&decision);
+            assert!(
+                reason.starts_with("deep-diff-forge: the judge fails this change ("),
+                "{name}: {reason}"
+            );
+        }
         assert_eq!(
             runs(&log),
             1,
             "{name}: the commit judged before was asked again"
         );
         let now: Value = serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap();
-        assert_eq!(now["schema"], "deep-diff-forge.hook-state.v11", "{name}");
+        assert_eq!(now["schema"], "deep-diff-forge.hook-state.v12", "{name}");
         assert_eq!(
             now["project"]["base"], captured["project"]["base"],
             "{name}"
@@ -8803,17 +8828,20 @@ fn every_schema_since_the_last_release_is_read() {
             now["project"]["tips_sha256"],
             captured["project"]["tips_sha256"]
         );
-        assert_eq!(now["blocked"], captured["blocked"], "{name}");
-        assert_eq!(now["reported"], captured["reported"], "{name}");
         assert_eq!(
             std::fs::read(state.with_extension("tips")).unwrap(),
             files["tips"]
         );
         assert_eq!(
             std::fs::read(state.with_extension("judged")).unwrap(),
-            files["judged"]
+            files["judged"],
+            "{name}: the judged commit's line is in v12's words already"
         );
-        // the next turn: the same, from the migrated state
+        if keyed {
+            assert_eq!(now["blocked"], captured["blocked"], "{name}");
+            assert_eq!(now["key_id"], captured["key_id"], "{name}");
+        }
+        // the next turn: the failure stands, from the migrated state
         let said = allowed(&stop_from(&root, FIXTURE_SESSION, &script)).to_owned();
         assert!(
             said.starts_with("deep-diff-forge: FAIL STANDS. "),
@@ -8848,7 +8876,7 @@ fn a_state_older_than_the_last_release_is_refused_with_its_name() {
         said.starts_with(
             "deep-diff-forge: UNJUDGED. The stop hook did not run: this session's state file "
         ) && said.contains(
-            "is of schema v9, written by a deep-diff-forge older than the last release; this one reads v10 to v11, and nothing is recorded over it ("
+            "is of schema v9, written by a deep-diff-forge older than the last release; this one reads v10 to v12, and nothing is recorded over it ("
         ) && said.contains(REMOVING_COSTS),
         "{said}"
     );
@@ -8868,7 +8896,7 @@ fn a_state_older_than_the_last_release_is_refused_with_its_name() {
     assert_eq!(runs(&log), 0);
 }
 
-/// Rules V5 and V1: a state of a newer schema (here v12 with a member this build does not
+/// Rules V5 and V1: a state of a newer schema (here v13 with a member this build does not
 /// know, and v999999) is refused by its name with the range this build reads; no hook writes
 /// the state, its list of commits or its list of judged commits (a stop, a continuing stop, an
 /// advice hook, a session's start), none leaves a partial file, and none advises removing
@@ -8881,7 +8909,7 @@ fn a_newer_state_is_refused_and_kept_byte_for_byte() {
     let root = captured_repository(&scratch);
     let state = place_fixture(&files, &root);
     let (script, log, _) = failing_judge(&scratch);
-    for number in [12_u32, 999_999] {
+    for number in [13_u32, 999_999] {
         let mut newer: Value =
             serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap();
         newer["schema"] = json!(format!("deep-diff-forge.hook-state.v{number}"));
@@ -8889,7 +8917,7 @@ fn a_newer_state_is_refused_and_kept_byte_for_byte() {
         std::fs::write(&state, newer.to_string()).unwrap();
         let before = three_files(&state);
         let refused = format!(
-            "is of schema v{number}, written by a newer deep-diff-forge; this one reads v10 to v11, and nothing was written over it"
+            "is of schema v{number}, written by a newer deep-diff-forge; this one reads v10 to v12, and nothing was written over it"
         );
         for active in [false, true] {
             let (code, stdout, _) = hook(
@@ -8965,7 +8993,7 @@ fn a_hook_never_writes_over_a_newer_state_placed_while_it_runs() {
     let root = captured_repository(&scratch);
     let state = place_fixture(&files, &root);
     let mut newer: Value = serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap();
-    newer["schema"] = json!("deep-diff-forge.hook-state.v12");
+    newer["schema"] = json!("deep-diff-forge.hook-state.v13");
     let newer_file = scratch.join("newer.json");
     std::fs::write(&newer_file, newer.to_string()).unwrap();
     let (script, log, exit_file) = (
@@ -9004,7 +9032,7 @@ fn a_hook_never_writes_over_a_newer_state_placed_while_it_runs() {
         + decision["reason"].as_str().unwrap_or_default();
     assert!(
         said.contains("The hook could not keep its state (its state could not be saved: this session's state file ")
-            && said.contains("is now of schema v12, written by a newer deep-diff-forge"),
+            && said.contains("is now of schema v13, written by a newer deep-diff-forge"),
         "{decision}"
     );
     assert_eq!(runs(&log), 2);
@@ -9091,10 +9119,11 @@ fn state_and_lock_names_are_the_documented_ones() {
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     names.sort();
-    assert_eq!(
-        names,
-        ["json", "judged", "lock", "tips"].map(|kind| format!("{stem}.{kind}"))
-    );
+    let mut documented: Vec<String> = ["json", "judged", "lock", "tips"]
+        .map(|kind| format!("{stem}.{kind}"))
+        .into();
+    documented.insert(0, "key".to_owned());
+    assert_eq!(names, documented);
 }
 
 /// Copy the files of the commit `HEAD` names in `tree` into `into`, as `git archive` would.
@@ -10124,8 +10153,11 @@ fn a_commit_whose_patch_git_cannot_make_keeps_its_attempts() {
         "{said}"
     );
     let written = judged_lines();
+    // (since hook state v12 the line keeps the class, never Git's words: lane H3)
     assert!(
-        written[&id].starts_with("n0@") && written[&id].contains("made to fail by the test"),
+        written[&id].starts_with("n0@")
+            && written[&id].ends_with(":place.git_failed")
+            && !written[&id].contains("made to fail by the test"),
         "{written:?}"
     );
     // the probe was asked, and nothing else
@@ -10440,7 +10472,10 @@ fn a_run_that_had_all_that_was_left_is_written_with_that_time() {
     let said = allowed(&stop_from(&root, "s", &judge)).to_owned();
     let written = judged_lines();
     let line = &written[&id];
-    let had: f64 = line
+    // (the time the run had is said at the stop that ran it; the line keeps the class only,
+    // since hook state v12: lane H3)
+    assert!(line.ends_with(":time.judge_stopped"), "{line}");
+    let had: f64 = said
         .split_once("(this run had ")
         .and_then(|(_, rest)| rest.split_once(" seconds, all that was left of the stop's judging)"))
         .and_then(|(seconds, _)| seconds.parse().ok())
@@ -10979,8 +11014,9 @@ fn a_judge_that_hangs_on_two_commits_does_not_keep_a_third_from_being_asked() {
     let written = judged_lines();
     assert!(written[&key].starts_with("f:"), "{written:?}");
     for (id, line) in [(&turn, "n7@"), (&fewer, "n4@")] {
+        // (the time each run had is said at the stop; the line keeps the class: lane H3)
         assert!(
-            written[id].starts_with(line) && written[id].contains("this run had "),
+            written[id].starts_with(line) && written[id].ends_with(":time.judge_stopped"),
             "{written:?}"
         );
     }
@@ -11362,10 +11398,12 @@ fn what_a_commit_is_held_for_is_said_at_every_stop() {
     );
     for _ in 0..2 {
         let later = allowed(&stop_from(&root, "s", &script)).to_owned();
+        // (since hook state v12 a later stop says it by its class, never by the judge's
+        // words, which were said at the stop that judged it: lane H3)
         assert!(
             later.contains(&format!(
-                "1 held by the judge, for a person: Commit {noted} (the judge's words: "
-            )) && later.contains("patch_unverifiable"),
+                "1 held by the judge, for a person: Commit {noted} (held: the judge holds with no rule held, for its notes)"
+            )) && !later.contains("patch_unverifiable"),
             "{later}"
         );
     }
@@ -13200,4 +13238,228 @@ fn every_reachable_class_is_in_the_ledger() {
     reached.sort();
     reached.dedup();
     assert!(reached.len() >= 18, "{reached:?}");
+}
+
+/// Every file under `dir`, with its bytes, for a search of text.
+fn files_under(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut found = Vec::new();
+    let mut walk = vec![dir.to_path_buf()];
+    while let Some(at) = walk.pop() {
+        for entry in std::fs::read_dir(&at).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk.push(path);
+            } else if let Ok(bytes) = std::fs::read(&path) {
+                found.push((path, bytes));
+            }
+        }
+    }
+    found
+}
+
+/// The design's V8, lane H3's acceptance test: in a session whose patch has a line with 32
+/// random hex digits, which the judge also writes on its stderr and in a note, no file of the
+/// state directory holds the line, any eight characters of it, the judge's words, or a plain
+/// SHA-256 anyone could compute from a guess: of (path, label, line) as a finding is known by,
+/// of a rule, of (rule, signal, path), of what the judge said, of a signal or of a path. The
+/// project's ledger is searched for the same.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one session and one search of every file it leaves, with every unkeyed form"
+)]
+fn no_state_file_confirms_a_line_of_the_patch() {
+    use deep_diff_forge_core::sha256_hex;
+    let scratch = Scratch::new("hook-keyed-history");
+    let root = repository(&scratch);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let hex = sha256_hex(format!("{nanos}-{}", std::process::id()).as_bytes())[..32].to_owned();
+    let line = format!("#[allow(dead_code)] // {hex}");
+    let marker = format!("judge-words-{}", &hex[..12]);
+    let mut document = verdict_v3("fail", &["fail"], false);
+    let detail = format!("{marker}: the line `{line}` is suspect");
+    document["notes"] = json!([{"code": "quoted", "path": "a.rs", "detail": detail}]);
+    let (judge_path, log, exit_file) = (
+        scratch.join("judge"),
+        scratch.join("judge.log"),
+        scratch.join("judge.exit"),
+    );
+    std::fs::write(&exit_file, "7").unwrap();
+    let body = judge_script(&log, &exit_file, &document).replacen(
+        "#!/bin/sh\n",
+        &format!("#!/bin/sh\nprintf '%s\\n' '{marker} saw {hex}' >&2\n"),
+        1,
+    );
+    write_program(&judge_path, &body);
+    start(&root, "s");
+    std::fs::write(
+        root.join("a.rs"),
+        format!("fn a() {{}}\n{line}\nfn b() {{}}\n"),
+    )
+    .unwrap();
+    let advice = hook("post-tool", &[], &input("PostToolUse", &root, "s", false)).1;
+    assert!(advice.contains("check_suppressed"), "{advice}");
+    blocked(&stop_as(&root, "s", &judge_path, false));
+    let _ = stop_as(&root, "s", &judge_path, true);
+    git(
+        &root,
+        &["commit", "--quiet", "-am", "the change with the line"],
+    );
+    let _ = stop_as(&root, "s", &judge_path, false);
+    let _ = stop_as(&root, "s", &judge_path, false);
+    // what a guess could be held against
+    let mut forbidden: Vec<(String, String)> = vec![
+        ("the line".to_owned(), line.clone()),
+        ("the judge's words".to_owned(), marker.clone()),
+        ("the note".to_owned(), detail.clone()),
+    ];
+    for at in 0..=line.len() - 8 {
+        if line.is_char_boundary(at) && line.is_char_boundary(at + 8) {
+            forbidden.push((
+                format!("eight characters at {at}"),
+                line[at..at + 8].to_owned(),
+            ));
+        }
+    }
+    let mut unkeyed = |what: &str, words: &str| {
+        let digest = sha256_hex(words.as_bytes());
+        forbidden.push((format!("SHA-256 of {what}"), digest.clone()));
+        forbidden.push((format!("SHA-256 of {what}, cut"), digest[..24].to_owned()));
+    };
+    unkeyed("the finding", &format!("a.rs\0check_suppressed\0{line}"));
+    unkeyed(
+        "the note said",
+        &format!("\0said\0note quoted at \"a.rs\": {detail}"),
+    );
+    unkeyed(
+        "the note said (path plain)",
+        &format!("\0said\0note quoted at a.rs: {detail}"),
+    );
+    for rule in document["rules"].as_array().unwrap() {
+        let id = rule["id"].as_str().unwrap();
+        unkeyed(&format!("the rule {id}"), id);
+        for violation in rule["violations"].as_array().unwrap() {
+            let signal = violation["signal"].as_str().unwrap_or_default();
+            let path = violation["path"].as_str().unwrap_or_default();
+            unkeyed(
+                &format!("{id}, {signal}, {path}"),
+                &format!("{id}\0{signal}\0{path}"),
+            );
+            unkeyed(&format!("the signal {signal}"), signal);
+            unkeyed(&format!("the path {path}"), path);
+        }
+    }
+    unkeyed("the path a.rs", "a.rs");
+    unkeyed("the signal check_suppressed", "check_suppressed");
+    let state_files = files_under(&sessions());
+    assert!(state_files.len() >= 4, "{state_files:?}");
+    let ledger = root.join(".git/deep-diff-forge/ledger.jsonl");
+    let ledger_file = (ledger.clone(), std::fs::read(&ledger).unwrap_or_default());
+    for (path, bytes) in state_files.iter().chain(std::iter::once(&ledger_file)) {
+        let text = String::from_utf8_lossy(bytes);
+        for (what, words) in &forbidden {
+            assert!(
+                !text.contains(words.as_str()),
+                "{} holds {what}",
+                path.display()
+            );
+        }
+    }
+    // the state says which key it was kept under, and the key is no part of any state
+    let key = std::fs::read(sessions().join("key")).unwrap();
+    assert_eq!(key.len(), 32);
+    let key_hex = key.iter().fold(String::new(), |mut hex, b| {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{b:02x}");
+        hex
+    });
+    for (path, bytes) in &state_files {
+        if path.file_name().is_some_and(|name| name != "key") {
+            let text = String::from_utf8_lossy(bytes);
+            assert!(!text.contains(&key_hex), "{} holds the key", path.display());
+        }
+    }
+    assert_eq!(the_state()["schema"], "deep-diff-forge.hook-state.v12");
+}
+
+/// Lane H3, ruling 1: what emptying the keyed members costs (a migration, or a key that was
+/// replaced or lost), and that it never turns a stop that held or blocked into one that does
+/// not: a finding already said is said once more (`reported`), a failure that blocked blocks
+/// once more and then stands (`blocked`), and a cause that holds once holds again, its count
+/// begun anew (the once lines of `blocked`). Each after a new key; no stop that held lets
+/// through.
+#[test]
+fn a_new_key_says_and_blocks_again_and_never_less() {
+    let scratch = Scratch::new("hook-key-replaced");
+    let root = repository(&scratch);
+    let (script, _, _) = failing_judge(&scratch);
+    start(&root, "s");
+    silence_a_lint(&root);
+    let advice = || hook("post-tool", &[], &input("PostToolUse", &root, "s", false)).1;
+    let replace_key = |byte: u8| std::fs::write(sessions().join("key"), [byte; 32]).unwrap();
+    assert!(advice().contains("check_suppressed"));
+    assert_eq!(advice(), "");
+    blocked(&stop_as(&root, "s", &script, false));
+    assert!(
+        allowed(&stop_as(&root, "s", &script, false)).starts_with("deep-diff-forge: FAIL STANDS. ")
+    );
+    replace_key(1);
+    // the finding is said once more, and then not
+    assert!(
+        advice().contains("check_suppressed"),
+        "a new key forgot nothing"
+    );
+    assert_eq!(advice(), "");
+    // the failure blocks once more, and then stands
+    blocked(&stop_as(&root, "s", &script, false));
+    assert!(
+        allowed(&stop_as(&root, "s", &script, false)).starts_with("deep-diff-forge: FAIL STANDS. ")
+    );
+    // a cause that holds once: held, then not; a new key: held again
+    git(&root, &["checkout", "--quiet", "--", "a.rs"]);
+    git(&root, &["update-index", "--skip-worktree", "a.rs"]);
+    blocked(&stop_as(&root, "s", &script, false));
+    allowed(&stop_as(&root, "s", &script, false));
+    replace_key(2);
+    blocked(&stop_as(&root, "s", &script, false));
+    allowed(&stop_as(&root, "s", &script, false));
+    assert_eq!(the_state()["key_id"].as_str().map(str::len), Some(16));
+}
+
+/// Lane H3, ruling 5, through the binary: a key file that is no key (here a link to one) ends
+/// every hook as a state it cannot use does (`state.damaged`): the stop is UNJUDGED and did
+/// not run, nothing is judged or written, and no byte of a key is said.
+#[test]
+fn a_key_file_that_is_no_key_judges_nothing_and_says_no_key() {
+    let scratch = Scratch::new("hook-key-link");
+    let root = repository(&scratch);
+    let (script, log, _) = failing_judge(&scratch);
+    start(&root, "s");
+    let key = sessions().join("key");
+    let real = std::fs::read(&key).unwrap();
+    let elsewhere = scratch.join("a-key-elsewhere");
+    std::fs::write(&elsewhere, &real).unwrap();
+    std::fs::remove_file(&key).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, &key).unwrap();
+    silence_a_lint(&root);
+    let state = states_in(&sessions()).remove(0);
+    let before = std::fs::read(&state).unwrap();
+    let said = allowed(&stop_as(&root, "s", &script, false)).to_owned();
+    assert!(
+        said.starts_with(
+            "deep-diff-forge: UNJUDGED. The stop hook did not run: the hooks' key file "
+        ) && said.contains("cannot be opened"),
+        "{said}"
+    );
+    let hex = real.iter().fold(String::new(), |mut hex, b| {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{b:02x}");
+        hex
+    });
+    assert!(!said.contains(&hex) && !said.contains(&*String::from_utf8_lossy(&real)));
+    assert_eq!(runs(&log), 0);
+    assert_eq!(std::fs::read(&state).unwrap(), before);
 }

@@ -10,7 +10,8 @@
 #
 # BINARY must have the SHA-256 given, or nothing is captured. DEST is made new (it must not
 # exist) and receives the state, its list of commits (`.tips`) and its list of judged commits
-# (`.judged`), byte for byte, and a file `ORIGIN` with the binary's version, its SHA-256 and
+# (`.judged`), byte for byte (and from v12 on the hooks' `key`), and a file `ORIGIN` with
+# the binary's version, its SHA-256 and
 # the sentence ORIGIN (say which build it is: the published release artefact, or a build of a
 # named commit). Fixtures are captured once and never edited: a new schema is a new directory.
 #
@@ -117,6 +118,11 @@ for ext in json tips judged; do
   }
   cp "${files[0]}" "$dest/"
 done
+# from hook state v12 on, the key the state's digests were made with: without it the state is
+# read as one kept under another key (its digests emptied)
+if [ -f "$state/key" ]; then
+  cp "$state/key" "$dest/"
+fi
 {
   printf 'binary: %s\n' "$("$binary" --version)"
   printf 'sha256: %s\n' "$found"
