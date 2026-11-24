@@ -915,6 +915,19 @@ Stated limits, which the judge on the pull request covers:
 - Advice after a tool call covers the project's working tree against the session's base
   only: not a linked working tree the session is in, and not commits that are no longer in
   the tree. The stop has both judged.
+- What the advice never notices (F6.c). It reads the change the hooks' patch is made of,
+  which leaves out files Git ignores (`.gitignore`, the user's excludes file, and what
+  `.git/info/exclude` hides) unless they are in the index, and holds nothing of the Git
+  directory: an edit of `.git/info/attributes`, `.git/info/exclude` or `.git/config` gets no
+  item and no guard notice, and neither does an ignored guard file (often
+  `.claude/settings.local.json`). Each of these can change what Git shows or runs; a stop's
+  judge sees no more of them than the advice does.
+- The advice's `--policy` and the stop's are each the one their command in the client's
+  settings names. `agent setup` from 0.11.0 gives both the same; settings printed before
+  0.11.0 give the post-tool command none, and settings edited by hand can give another. The
+  advice then names an edit of `warden.toml` (or of its own `--policy`) as the policy file
+  while the stops judge with another, and an edit of the stops' policy file gets no notice as
+  one. The stops read their policy at the session's base whatever the advice said.
 - "No repository here" is read from Git's own English message, with `LC_ALL=C` set for that
   call. A Git that words it otherwise is read as a failure, which is said, not as silence.
 - The scratch directory of a hook that was killed is removed only where the file system has
