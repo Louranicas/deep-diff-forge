@@ -49,7 +49,6 @@ use crate::hook::{
 };
 use deep_diff_forge_core::PatchLineKind;
 use deep_diff_forge_core::process::{Limits, run_bounded};
-use deep_diff_forge_graph::Side;
 use deep_diff_forge_patch::{
     CommitAndParent, GitAcquireError, GitAcquireOptions, HeadState, InputGuards, JudgePatchError,
     Named, RepositoryDirs, SealedReview, Worktree, commit_patch, commits_beyond, dirty_submodules,
@@ -2107,14 +2106,9 @@ fn subject(work: &Work, deadline: Deadline) -> Subject {
     }
 }
 
-/// Every piece of evidence in `patch`, files in ranking order, each with the key that names it;
-/// before each file's rows, one finding of the file as a whole for each signal that has no row of
-/// evidence: `hazardous_text`, `executable_bit`, `symlink_change` and `diff_suppressed`, which
-/// read no line a ranking points at, and a code signal the cap on a file's rows left without one
-/// (`evidence_truncated`). The advice read the rows only, so it never named these (S3.17a.i).
-fn findings(patch: &[u8]) -> Result<Vec<Finding>, String> {
-    use deep_diff_forge_graph::RiskSignal;
-    let review = SealedReview::new(
+/// `patch` read for the hooks: whole files and hunks are not required.
+fn review_of(patch: &[u8]) -> Result<SealedReview, String> {
+    SealedReview::new(
         patch,
         InputGuards {
             files: false,
@@ -2122,64 +2116,222 @@ fn findings(patch: &[u8]) -> Result<Vec<Finding>, String> {
         },
         env!("CARGO_PKG_VERSION"),
     )
-    .map_err(|e| format!("the change could not be read as a patch: {e}"))?;
-    let files = review.files();
-    let mut out = Vec::new();
-    for ranked in deep_diff_forge_graph::rank(files) {
-        let Some(file) = files.iter().find(|f| f.path == ranked.path) else {
-            continue;
-        };
-        // first, so that the cap on what one advice lists does not cut them after the rows
+    .map_err(|e| format!("the change could not be read as a patch: {e}"))
+}
+
+/// Every (path, label) the engine raises in `patch` that a stop compares with the admitted
+/// ranker's `signals[]`: each row's label, and each label of `hazardous_text`,
+/// `executable_bit`, `symlink_change`, `diff_suppressed` and the code labels of a file. It is
+/// what the advice listed before F6, kept as it was for the stop.
+fn engine_labels(patch: &[u8]) -> Result<BTreeSet<(String, String)>, String> {
+    use deep_diff_forge_graph::RiskSignal;
+    let review = review_of(patch)?;
+    let mut out = BTreeSet::new();
+    for ranked in deep_diff_forge_graph::rank(review.files()) {
         for signal in &ranked.signals {
-            let unrowed = match signal {
+            if matches!(
+                signal,
                 RiskSignal::HazardousText
-                | RiskSignal::ExecutableBit
-                | RiskSignal::SymlinkChange
-                | RiskSignal::DiffSuppressed => true,
-                RiskSignal::Code(code) => !ranked.evidence.iter().any(|e| e.signal == *code),
-                _ => false,
-            };
-            if unrowed {
-                out.push(Finding {
-                    label: signal.label().to_owned(),
-                    path: ranked.path.clone(),
-                    side: String::new(),
-                    line: 0,
-                    basis: deep_diff_forge_graph::facts(*signal).basis().join(" or "),
-                    key: hook::finding_key(&ranked.path, signal.label(), ""),
-                });
+                    | RiskSignal::ExecutableBit
+                    | RiskSignal::SymlinkChange
+                    | RiskSignal::DiffSuppressed
+                    | RiskSignal::Code(_)
+            ) {
+                out.insert((ranked.path.clone(), signal.label().to_owned()));
             }
         }
         for evidence in &ranked.evidence {
-            let line = file
-                .patch_twin
-                .hunks
-                .iter()
-                .find(|h| h.id == evidence.hunk)
-                .and_then(|h| {
-                    h.lines.iter().find(|l| match evidence.side {
-                        Side::New => {
-                            l.kind == PatchLineKind::Added && l.new_line == Some(evidence.line)
-                        }
-                        Side::Old => {
-                            l.kind == PatchLineKind::Removed && l.old_line == Some(evidence.line)
-                        }
-                    })
-                })
-                .map_or("", |l| l.text.as_str());
-            out.push(Finding {
-                label: evidence.signal.label().to_owned(),
-                path: ranked.path.clone(),
-                side: evidence.side.label().to_owned(),
-                line: evidence.line,
-                // the rung that found the item, as the ranking gives it: an item read across
-                // the lines of a hunk was said to be "read as lexical" (S3.17a.f)
-                basis: evidence.basis.label().to_owned(),
-                key: hook::finding_key(&ranked.path, evidence.signal.label(), line),
-            });
+            out.insert((ranked.path.clone(), evidence.signal.label().to_owned()));
         }
     }
     Ok(out)
+}
+
+/// What the advice says when the change was not ranked in the advice hook's time.
+const ADVICE_CUT: &str = "advice cut short: the change was not ranked within the advice hook's time, so it was not read for findings";
+
+/// The advice's items for `patch` ([`excerpt`]), ranked on a thread of its own for what is left
+/// of `deadline`: past it the hook says so ([`ADVICE_CUT`]) instead of being cut off by the
+/// client with nothing said (N-19). The thread ends with the process.
+fn findings(patch: &[u8], deadline: Deadline) -> Result<hook::Excerpt, String> {
+    let (send, receive) = std::sync::mpsc::channel();
+    let patch = patch.to_vec();
+    std::thread::spawn(move || {
+        let _ = send.send(excerpt(&patch));
+    });
+    receive
+        .recv_timeout(deadline.left())
+        .map_err(|_| ADVICE_CUT.to_owned())?
+}
+
+/// The file sections of a Git patch: each starts at a `diff --git ` line.
+fn sections(patch: &[u8]) -> Vec<&[u8]> {
+    let mut starts: Vec<usize> = patch
+        .split_inclusive(|b| *b == b'\n')
+        .scan(0, |at, line| {
+            let start = *at;
+            *at += line.len();
+            Some((start, line))
+        })
+        .filter(|(_, line)| line.starts_with(b"diff --git "))
+        .map(|(start, _)| start)
+        .collect();
+    if starts.first() != Some(&0) {
+        starts.insert(0, 0);
+    }
+    starts.push(patch.len());
+    starts.windows(2).map(|w| &patch[w[0]..w[1]]).collect()
+}
+
+/// The advice's items for `patch`: the diagnostics of `deep-diff-forge.diagnostics.v0` whose
+/// audience is the agent, in the document's order, each with what the document wrote for it
+/// (code, class, path, line, side, cases, repairs) and the sentences of the ids it names. A
+/// diagnostic whose audience is a person (a `floor_only` reading) is not advised.
+///
+/// When the patch as a whole cannot be read, each file section is read alone: a file this
+/// version cannot read (a name that is not UTF-8) is one item that names it, first, and the
+/// other files are still advised (N-11). One reason for the whole patch is given when no
+/// section alone is refused.
+fn excerpt(patch: &[u8]) -> Result<hook::Excerpt, String> {
+    let (review, mut items) = match review_of(patch) {
+        Ok(review) => (review, Vec::new()),
+        Err(whole) => {
+            let (mut kept, mut refused) = (Vec::new(), Vec::new());
+            for section in sections(patch) {
+                if review_of(section).is_ok() {
+                    kept.extend_from_slice(section);
+                } else {
+                    refused.push(refused_item(section));
+                }
+            }
+            if refused.is_empty() {
+                return Err(whole);
+            }
+            if kept.is_empty() {
+                return Ok(hook::Excerpt {
+                    items: refused,
+                    ..hook::Excerpt::default()
+                });
+            }
+            (review_of(&kept)?, refused)
+        }
+    };
+    let ranked = deep_diff_forge_graph::rank(review.files());
+    let document = deep_diff_forge_graph::diagnostics(review.seal(), &ranked).to_json();
+    let document: Value = serde_json::from_str(&document)
+        .map_err(|e| format!("the diagnostics document could not be read back: {e}"))?;
+    let text = |value: &Value| value.as_str().unwrap_or_default().to_owned();
+    let ids = |value: &Value| -> Vec<String> {
+        value.as_array().into_iter().flatten().map(&text).collect()
+    };
+    let mut seen = std::collections::HashMap::new();
+    for d in document["diagnostics"].as_array().into_iter().flatten() {
+        if d["audience"] != "agent" {
+            continue;
+        }
+        let (path, label) = (text(&d["path"]), text(&d["label"]));
+        let (side, line) = (text(&d["side"]), d["line"].as_u64().unwrap_or(0));
+        let line = u32::try_from(line).unwrap_or(u32::MAX);
+        let (words, basis) = line_and_basis(&review, &ranked, &path, &label, &side, line);
+        // the same label on two lines of one text is two items
+        let n = seen
+            .entry((path.clone(), label.clone(), words.clone()))
+            .or_insert(0_u32);
+        let key = if *n == 0 {
+            hook::finding_key(&path, &label, &words)
+        } else {
+            hook::finding_key(&path, &label, &format!("{words}\0{n}"))
+        };
+        *n += 1;
+        items.push(Finding {
+            code: text(&d["code"]),
+            class: text(&d["class"]),
+            cases: d.get("cases").map(ids),
+            repairs: ids(&d["repairs"]),
+            label,
+            path,
+            side,
+            line,
+            basis,
+            key,
+        });
+    }
+    // Each file's items at the file first, as the advice listed them before F6: the cap on
+    // what one advice lists must not cut them after 32 located ones (S3.17a.i). The order of
+    // the files and, within each kind, of the items is the document's.
+    let refused = items.iter().filter(|i| i.code.is_empty()).count();
+    let mut order = std::collections::HashMap::new();
+    for item in &items[refused..] {
+        let next = order.len();
+        order.entry(item.path.clone()).or_insert(next);
+    }
+    items[refused..].sort_by_key(|i| (order[&i.path], !i.side.is_empty()));
+    let texts = document["texts"].as_object().into_iter().flatten();
+    let cut = document["cut"].as_array().into_iter().flatten();
+    Ok(hook::Excerpt {
+        items,
+        texts: texts.map(|(id, t)| (id.clone(), text(t))).collect(),
+        cut: cut
+            .map(|c| (text(&c["path"]), c["rows_kept"].as_u64().unwrap_or(0)))
+            .collect(),
+    })
+}
+
+/// The item of a file section this version cannot read: its names as Git quoted them on its
+/// `diff --git` line (Git quotes a name that is not plain ASCII), shown escaped.
+fn refused_item(section: &[u8]) -> Finding {
+    let head = section.split(|b| *b == b'\n').next().unwrap_or_default();
+    let names = String::from_utf8_lossy(head.strip_prefix(b"diff --git ").unwrap_or(head));
+    Finding {
+        code: String::new(),
+        label: String::new(),
+        class: String::new(),
+        key: hook::finding_key(&names, "", "unreadable"),
+        path: names.into_owned(),
+        side: String::new(),
+        line: 0,
+        basis: String::new(),
+        cases: None,
+        repairs: Vec::new(),
+    }
+}
+
+/// The text of the changed line a diagnostic stands on (empty at a file), which keeps its key
+/// when other lines move, and how it was read: the row's rung, else the label's basis.
+fn line_and_basis(
+    review: &SealedReview,
+    ranked: &[deep_diff_forge_graph::RankedFile],
+    path: &str,
+    label: &str,
+    side: &str,
+    line: u32,
+) -> (String, String) {
+    if side.is_empty() {
+        let basis = deep_diff_forge_graph::signal_named(label)
+            .map(|s| deep_diff_forge_graph::facts(s).basis().join(" or "));
+        return (String::new(), basis.unwrap_or_default());
+    }
+    let words = review
+        .files()
+        .iter()
+        .filter(|f| f.path == path)
+        .flat_map(|f| &f.patch_twin.hunks)
+        .flat_map(|h| &h.lines)
+        .find(|l| match side {
+            "new" => l.kind == PatchLineKind::Added && l.new_line == Some(line),
+            _ => l.kind == PatchLineKind::Removed && l.old_line == Some(line),
+        })
+        .map_or_else(String::new, |l| l.text.clone());
+    // the rung that found the item, as the ranking gives it: an item read across the lines
+    // of a hunk was said to be "read as lexical" (S3.17a.f); a line no row stands on
+    // (`hazardous_text`) was read by its text
+    let row = ranked
+        .iter()
+        .filter(|r| r.path == path)
+        .flat_map(|r| &r.evidence)
+        .find(|e| e.signal.label() == label && e.side.label() == side && e.line == line);
+    let basis = row.map_or("lexical", |e| e.basis.label()).to_owned();
+    (words, basis)
 }
 
 /// A working tree as the patch a judge would be given, with the nested repositories that were
@@ -2549,9 +2701,9 @@ fn advice_for(
     let Some(patch) = changed.patch else {
         return Ok(None);
     };
-    let all = findings(&patch)?;
-    let fresh = hook::fresh(&all, &state.reported);
-    let Some(advice) = hook::advice(&fresh, &range) else {
+    let all = findings(&patch, deadline)?;
+    let fresh = hook::fresh(&all.items, &state.reported);
+    let Some(advice) = hook::advice(&fresh, &all, &range) else {
         return Ok(None);
     };
     let said: Vec<String> = fresh
@@ -8095,10 +8247,7 @@ fn advice_beyond(
             ));
         }
     }
-    let ours: BTreeSet<(String, String)> = findings(patch)?
-        .into_iter()
-        .map(|finding| (finding.path, finding.label))
-        .collect();
+    let ours = engine_labels(patch)?;
     Ok(ours.difference(&theirs).cloned().collect())
 }
 
@@ -13064,7 +13213,7 @@ mod tests {
     #[test]
     fn findings_carry_the_text_of_their_line_only_in_the_key() {
         let patch = b"diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,2 +1,3 @@\n fn a() {}\n+#[allow(dead_code)]\n fn b() {}\n";
-        let found = findings(patch).unwrap();
+        let found = excerpt(patch).unwrap().items;
         assert_eq!(found.len(), 1);
         let f = &found[0];
         assert_eq!(
@@ -13077,16 +13226,16 @@ mod tests {
         );
         // the same line further down the file is the same finding
         let moved = b"diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,2 +1,4 @@\n fn a() {}\n+\n+#[allow(dead_code)]\n fn b() {}\n";
-        let again = findings(moved).unwrap();
+        let again = excerpt(moved).unwrap().items;
         assert_eq!(again[0].line, 3);
         assert_eq!(again[0].key, f.key);
-        assert_eq!(findings(b"").unwrap(), Vec::<Finding>::new());
+        assert_eq!(excerpt(b"").unwrap().items, Vec::<Finding>::new());
         // A finding on the old side has the text of the removed line it names in its key: not
         // of another removed line, and not of a line that stays (a mutation run left the
         // reading of the old side alive).
         let old = ["fn a() {}", "// gone", "#[test]", "fn t() {}", "fn b() {}"];
         let removed = b"diff --git a/tests/t.rs b/tests/t.rs\n--- a/tests/t.rs\n+++ b/tests/t.rs\n@@ -1,5 +1,2 @@\n fn a() {}\n-// gone\n-#[test]\n-fn t() {}\n fn b() {}\n";
-        let found = findings(removed).unwrap();
+        let found = excerpt(removed).unwrap().items;
         let on_old: Vec<&Finding> = found.iter().filter(|f| f.side == "old").collect();
         assert!(!on_old.is_empty(), "{found:?}");
         for f in on_old {

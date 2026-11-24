@@ -264,7 +264,7 @@ fn post_tool_says_a_new_finding_once_and_changes_nothing_in_the_work_tree() {
         .unwrap();
     assert!(
         advice.contains(
-            "- check_suppressed at \"a.rs\" line 2 (new side, read as lexical). Accepted: "
+            "- \"a.rs\":2: check_suppressed@line (integrity, new side, read as lexical); repairs: check_suppressed:a1, check_suppressed:a2.\n"
         ),
         "{advice}"
     );
@@ -2262,7 +2262,7 @@ fn work_and_policy_the_session_committed_are_judged_from_where_it_began() {
     // advice is about the same range: a finding in committed work is said
     let (_, stdout, _) = hook("post-tool", &[], &input("PostToolUse", &root, "s", false));
     assert!(
-        stdout.contains("check_suppressed at \\\"a.rs\\\"") && stdout.contains(&since),
+        stdout.contains("\\\"a.rs\\\":2: check_suppressed@line") && stdout.contains(&since),
         "{stdout}"
     );
 
@@ -2676,7 +2676,7 @@ fn a_file_added_to_the_index_is_judged_even_when_an_ignore_rule_names_it() {
     blocked(&stop_from(&root, "s", &script));
     let (_, stdout, _) = hook("post-tool", &[], &input("PostToolUse", &root, "s", false));
     assert!(
-        stdout.contains("check_suppressed at \\\"build/gen.rs\\\""),
+        stdout.contains("\\\"build/gen.rs\\\":1: check_suppressed@line"),
         "{stdout}"
     );
 
@@ -2685,7 +2685,7 @@ fn a_file_added_to_the_index_is_judged_even_when_an_ignore_rule_names_it() {
     git(&root, &["add", "-f", "hidden.rs"]);
     let (_, stdout, _) = hook("post-tool", &[], &input("PostToolUse", &root, "s", false));
     assert!(
-        stdout.contains("check_suppressed at \\\"hidden.rs\\\""),
+        stdout.contains("\\\"hidden.rs\\\":1: check_suppressed@line"),
         "{stdout}"
     );
     let seen = std::fs::read_to_string(&log).unwrap();
@@ -5462,7 +5462,7 @@ fn a_commit_that_was_there_before_the_session_is_not_judged_and_that_is_said() {
     git(&root, &["merge", "--quiet", "--ff-only", "origin/main"]);
     let (_, advice, _) = hook("post-tool", &[], &input("PostToolUse", &root, "a1", false));
     assert!(
-        advice.contains("secret_like at \\\"k.rs\\\"") && advice.contains(ALREADY),
+        advice.contains("\\\"k.rs\\\":1: secret_like@line") && advice.contains(ALREADY),
         "{advice}"
     );
     assert_eq!(stop_from(&root, "a1", &script), Value::Null);
@@ -12009,7 +12009,8 @@ fn advice_says_the_basis_the_ranking_gives() {
     assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
     let advice = advice_of(&stdout);
     assert!(
-        advice.contains("- process_spawn at \"a.rs\" line 2 (new side, read as hunk). Accepted: "),
+        advice.contains("- \"a.rs\":2: process_spawn@line (")
+            && advice.contains("new side, read as hunk); repairs: "),
         "the hunk item is not said as read across the hunk: {advice}"
     );
 }
@@ -12128,12 +12129,13 @@ fn advice_names_a_signal_that_has_no_line() {
     let (code, stdout, stderr) = hook("post-tool", &[], &event);
     assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
     let advice = advice_of(&stdout);
-    for (label, path) in [
-        ("hazardous_text", "bidi.rs"),
-        ("executable_bit", "run.sh"),
-        ("symlink_change", "link"),
+    // the hidden character is in a line, which locates it (F6: the item is the document's)
+    for (code, path) in [
+        ("hazardous_text@line", "bidi.rs\":1"),
+        ("executable_bit@file", "run.sh\""),
+        ("symlink_change@file", "link\""),
     ] {
-        let item = format!("- {label} in \"{path}\" (the file, read as ");
+        let item = format!("- \"{path}: {code} (");
         assert_eq!(advice.matches(&item).count(), 1, "{item}: {advice}");
     }
     assert!(
@@ -12164,19 +12166,244 @@ fn advice_names_a_signal_the_row_cap_left_without_a_row() {
     assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
     let advice = advice_of(&stdout);
     assert!(
-        advice.contains("- unsafe_added in \"spawns.rs\" (the file, read as "),
+        advice.contains("- \"spawns.rs\": unsafe_added@file ("),
         "the signal the cap left without a row is not told: {advice}"
     );
-    assert!(!advice.contains("- unsafe_added at "), "{advice}");
+    assert!(!advice.contains("unsafe_added@line"), "{advice}");
+    // the file's located items were cut, and the advice says so as the document does
+    assert!(
+        advice.contains("- \"spawns.rs\": 32 places listed; the rest were cut at 32.\n"),
+        "{advice}"
+    );
 }
 
-/// S3.17a.l: when the advice after a tool call is off for a reason told once in the session, the
-/// model is told as well as the user: it was told nothing, and advice that stops without a word
-/// reads as a change with nothing to say.
+/// One advice item or one diagnostic for an agent, as the two compare (F6.a): path as shown,
+/// line, side, code, cases and repair ids.
+type Item = (
+    String,
+    Option<u64>,
+    Option<String>,
+    String,
+    Vec<String>,
+    Vec<String>,
+);
+
+/// The items of an advice: each line `- "PATH"[:LINE]: CODE (CLASS[, SIDE side], read as
+/// BASIS)[; case: …][; …]; repairs: ID, ID.`; a line that counts a file's cut is not an item.
+fn advice_items(advice: &str) -> Vec<Item> {
+    let mut items = Vec::new();
+    for line in advice.lines() {
+        let Some(rest) = line.strip_prefix("- \"") else {
+            continue;
+        };
+        if line.contains(" places listed; the rest were cut at 32.") {
+            continue;
+        }
+        let (mut path, mut escaped, mut end) = (String::new(), false, 0);
+        for (at, c) in rest.char_indices() {
+            match (escaped, c) {
+                (false, '\\') => escaped = true,
+                (false, '"') => {
+                    end = at + 1;
+                    break;
+                }
+                _ => {
+                    if escaped && c != '"' && c != '\\' {
+                        path.push('\\');
+                    }
+                    escaped = false;
+                    path.push(c);
+                }
+            }
+        }
+        let rest = &rest[end..];
+        let (number, rest) = match rest.strip_prefix(':').map(|r| r.split_once(": ")) {
+            Some(Some((n, r))) if n.bytes().all(|b| b.is_ascii_digit()) => {
+                (Some(n.parse().unwrap()), r)
+            }
+            _ => (None, rest.strip_prefix(": ").unwrap_or(rest)),
+        };
+        let (code, rest) = rest.split_once(" (").unwrap_or_else(|| panic!("{line}"));
+        let (how, rest) = rest.split_once(')').unwrap_or_else(|| panic!("{line}"));
+        let side = ["new", "old"]
+            .into_iter()
+            .find(|s| how.contains(&format!(", {s} side")))
+            .map(str::to_owned);
+        let list = |words: &str| -> Vec<String> { words.split(", ").map(str::to_owned).collect() };
+        let (mut cases, mut repairs) = (Vec::new(), Vec::new());
+        for part in rest.trim_end_matches('.').split("; ") {
+            if let Some(c) = part.strip_prefix("case: ") {
+                cases = list(c);
+            } else if let Some(r) = part.strip_prefix("repairs: ") {
+                repairs = list(r);
+            }
+        }
+        items.push((path, number, side, code.to_owned(), cases, repairs));
+    }
+    items.sort();
+    items
+}
+
+/// The diagnostics for an agent of `--diagnostics --json` of `patch`, with each path as an
+/// advice shows it (a right-to-left override escaped).
+fn document_items(patch: &[u8]) -> Vec<Item> {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .args(["--stdin-patch", "--diagnostics", "--json"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(patch).unwrap();
+    let out = child.wait_with_output().unwrap();
+    let document: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let strings = |v: &Value| -> Vec<String> {
+        v.as_array()
+            .into_iter()
+            .flatten()
+            .map(|s| s.as_str().unwrap().to_owned())
+            .collect()
+    };
+    let mut items: Vec<Item> = document["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["audience"] == "agent")
+        .map(|d| {
+            (
+                d["path"].as_str().unwrap().replace('\u{202E}', "\\u{202e}"),
+                d["line"].as_u64(),
+                d["side"].as_str().map(str::to_owned),
+                d["code"].as_str().unwrap().to_owned(),
+                strings(&d["cases"]),
+                strings(&d["repairs"]),
+            )
+        })
+        .collect();
+    items.sort();
+    items
+}
+
+/// F6.a, the acceptance (N76): what the advice tells an agent after tool calls, item by item,
+/// is what `--diagnostics --json` of the same tree gives it, in path, line, side, code, case and
+/// repair ids, for each kind of case the document tells apart that the hook can meet: a located
+/// row; a label no row locates (an executable bit, a new file); `hazardous_text` by a hidden
+/// character in a line and by one in a path (each with the character repair alone); a file whose
+/// located diagnostics were cut at 32. The hook's patch is made without the repository's
+/// attributes, so a file the attributes call binary is read as text and carries no
+/// `diff_suppressed`; the engine's `unread` is never met here (the advice's words for a case
+/// it cannot tell are tested in `hook.rs`).
 #[test]
-fn advice_off_is_told_to_the_model() {
+fn every_advice_item_equals_its_diagnostic() {
+    use std::fmt::Write as _;
+    let scratch = Scratch::new("hook-advice-equals-diagnostics");
+    let root = repository(&scratch);
+    std::fs::write(root.join("run.sh"), "echo hi\n").unwrap();
+    git(&root, &["add", "run.sh"]);
+    git(&root, &["commit", "--quiet", "-m", "script"]);
+    let event = input("PostToolUse", &root, "s1", false);
+    let rlo = char::from_u32(0x202E).unwrap();
+    std::fs::write(
+        root.join("a.rs"),
+        "fn a() {}\n#[allow(dead_code)]\nfn b() {}\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        root.join("run.sh"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("bidi.rs"),
+        format!("fn z() {{ let s = \"{rlo}\"; }}\n"),
+    )
+    .unwrap();
+    std::fs::write(root.join(format!("n{rlo}m.rs")), "fn n() {}\n").unwrap();
+    std::fs::write(root.join(".gitattributes"), "t.rs -diff\n").unwrap();
+    std::fs::write(root.join("t.rs"), "#[allow(unused)]\nfn t() {}\n").unwrap();
+    let mut spawns = String::from("fn f(q: *const u8) {\n");
+    for n in 0..33 {
+        let _ = writeln!(
+            spawns,
+            "    let c{n} = std::process::Command::new(\"true\");"
+        );
+    }
+    spawns.push_str("    let p = unsafe { *q };\n}\n");
+    std::fs::write(root.join("spawns.rs"), spawns).unwrap();
+    // every item, over as many tool calls as the advice's caps take
+    let (mut said, mut advices) = (Vec::new(), Vec::new());
+    loop {
+        let (code, stdout, stderr) = hook("post-tool", &[], &event);
+        assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
+        if stdout.is_empty() {
+            break;
+        }
+        let advice = advice_of(&stdout);
+        said.extend(advice_items(&advice));
+        advices.push(advice);
+        assert!(advices.len() < 10, "{advices:#?}");
+    }
+    said.sort();
+    let all = advices.concat();
+    // the same tree as the hook's patch: every file, without the repository's attributes
+    git(&root, &["add", "--all"]);
+    let empty = git(&root, &["hash-object", "-t", "tree", "/dev/null"]);
+    let patch = Command::new("git")
+        .current_dir(&root)
+        .envs(ISOLATE)
+        .args([
+            &format!("--attr-source={}", empty.trim()),
+            "-c",
+            "core.attributesFile=/dev/null",
+            "-c",
+            "core.quotePath=true",
+            "diff",
+            "--cached",
+            "--binary",
+            "--no-renames",
+            "--full-index",
+            "HEAD",
+        ])
+        .output()
+        .unwrap()
+        .stdout;
+    assert_eq!(said, document_items(&patch), "{all}");
+    for (what, wanted) in [
+        ("a located row", "- \"a.rs\":2: check_suppressed@line ("),
+        ("no row", "- \"run.sh\": executable_bit@file ("),
+        (
+            "a hidden character in a line",
+            "- \"bidi.rs\":1: hazardous_text@line (security, new side, read as lexical); case: bidi_control; repairs: hazardous_text:a1.\n",
+        ),
+        (
+            "a hidden character in a path",
+            "- \"n\\u{202e}m.rs\": hazardous_text@file (security, read as path or lexical); case: bidi_control; repairs: hazardous_text:a1.\n",
+        ),
+        (
+            "a cut file",
+            "- \"spawns.rs\": 32 places listed; the rest were cut at 32.\n",
+        ),
+        (
+            "attributes ignored",
+            "- \"t.rs\":1: check_suppressed@line (",
+        ),
+    ] {
+        assert!(all.contains(wanted), "{what}: {all}");
+    }
+    assert!(!all.contains("diff_suppressed"), "{all}");
+    assert!(
+        agent_facing_faults(&all).is_empty(),
+        "{:?}",
+        agent_facing_faults(&all)
+    );
+}
+
+/// F6.a (N-11): a file whose name this version cannot read (not UTF-8) is one item that names
+/// it as Git quoted it, and the other files of the change are still advised. The whole advice
+/// was off for the session.
+#[test]
+fn a_refused_path_does_not_silence_the_others() {
     use std::os::unix::ffi::OsStrExt as _;
-    let scratch = Scratch::new("hook-advice-off");
+    let scratch = Scratch::new("hook-advice-refused-path");
     let root = repository(&scratch);
     let event = input("PostToolUse", &root, "s1", false);
     std::fs::write(
@@ -12184,6 +12411,37 @@ fn advice_off_is_told_to_the_model() {
         "fn n() {}\n",
     )
     .unwrap();
+    std::fs::write(
+        root.join("a.rs"),
+        "fn a() {}\n#[allow(dead_code)]\nfn b() {}\n",
+    )
+    .unwrap();
+    let (code, stdout, stderr) = hook("post-tool", &[], &event);
+    assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
+    let advice = advice_of(&stdout);
+    assert!(
+        advice.contains("- \"\\\"a/n\\377m.rs\\\" \\\"b/n\\377m.rs\\\"\": this version could not read this file's change (its names as Git quoted them); nothing in it is advised.\n"),
+        "{advice}"
+    );
+    assert!(
+        advice.contains("- \"a.rs\":2: check_suppressed@line ("),
+        "the other file is not advised: {advice}"
+    );
+    assert!(!advice.contains("did not run"), "{advice}");
+    // said once
+    assert_eq!(hook("post-tool", &[], &event).1, "");
+}
+
+/// S3.17a.l: when the advice after a tool call is off for a reason told once in the session, the
+/// model is told as well as the user: it was told nothing, and advice that stops without a word
+/// reads as a change with nothing to say.
+#[test]
+fn advice_off_is_told_to_the_model() {
+    let scratch = Scratch::new("hook-advice-off");
+    let root = repository(&scratch);
+    let event = input("PostToolUse", &root, "s1", false);
+    // a lasting reason (F6: a file name that is not UTF-8 no longer turns the advice off)
+    git(&root, &["update-index", "--skip-worktree", "a.rs"]);
     let (code, stdout, stderr) = hook("post-tool", &[], &event);
     assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
     let out: Value = serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{e}: {stdout:?}"));
