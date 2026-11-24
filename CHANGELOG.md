@@ -406,11 +406,14 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   written (A0110-M1, 0.11.0 tree review). It checked a record's `v` and `kind` only, so a stop
   record with no `outcome`, an outcome this build does not write, or no `unit` was neither
   refused nor counted, and a branch whose commit a stop had passed still verified beside it.
-  Every member this build writes for a record's kind must now be there, of its type and with a
-  value this build writes (the documented clearance needs `v`, `kind` and a commit `unit`),
-  and a stop's members must agree as a stop writes them (a `pass` whose class says `fail.new`
-  verified the branch too); else the ledger is refused whole, naming the line. The frontier's reader, which passes over
-  such a record and so judges more, is unchanged, and so is what is written.
+  Every member this build writes for a record's kind must now be there and of its type, with a
+  `unit`, `outcome`, `class`, ids and counters this build writes (the documented clearance
+  needs `v`, `kind` and a commit `unit`), and a stop's members must agree as a stop writes
+  them (a `pass` whose class says `fail.new` verified the branch too); else the ledger is
+  refused whole, naming the line. Not checked: the form and content of the digests in
+  `seals` (any string), and damage that leaves a whole record, such as another full commit
+  id: the ledger has no checksum. The frontier's reader, which passes over such a record and
+  so judges more, is unchanged, and so is what is written.
 - A session's start says what its stops then do (C2, 0.11.0 tree review). With its state
   unusable (damaged, older, newer, a key file that is no key, no directory of its own) it said
   "the stops of this session will not be judged and no advice will be given", while each stop
@@ -418,7 +421,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   be given and each stop judges the working tree without the session's memory. With its lists
   of commits unusable it says the same without the advice clause (advice is given). Git
   missing or refusing, the project moved, replaced or gone, and a state directory inside the
-  tree keep "will not be judged": their stops are UNJUDGED. The stateless stop's block no longer
+  tree keep "will not be judged": their stops are UNJUDGED. (One place where the new sentence
+  is not true: with such a state in a directory that is no Git repository, or a repository
+  with no commit, the stop is UNJUDGED.) The stateless stop's block no longer
   ends with "a failure that has blocked does not block again" (or its sentence for a hold),
   false without a state: the stop after the block lets it through, and the next turn's stop
   blocks again while the tree still fails or is held.
@@ -427,6 +432,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   they are, a release that adds a variant or a public field says so under the Rust API breaks
   of its notes, and `#[non_exhaustive]`, `Error::source` and the SDK gaps are taken up for 1.0.
   No code changes.
+- A stated limit of the frontier (0.11.0 tree review, C5 and its re-read): a commit that a
+  session left without a stop is judged by the next fresh session under the policy at that
+  session's base, which can be the left commit, so the whole of its own edit of the policy
+  applies to it. Where the edit also removes the policy's protection of its own file, the
+  commit can pass and `agent verify-branch` verifies it; `agent doctor --gate`'s link
+  `policy_protects_itself` cannot tell under a policy that requires verified claims. Not
+  changed in this release: the judge on the pull request is the boundary.
 
 ## [0.10.0] - 2026-11-23
 

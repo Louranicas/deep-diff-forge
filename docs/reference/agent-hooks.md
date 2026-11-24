@@ -101,10 +101,18 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   records), not from `HEAD`: a policy the earlier conversation loosened in a commit does not
   judge that commit. With `startup` it begins at `HEAD`, as before. A frontier commit is
   judged under the policy at the base of the session that judges it, and after a `startup`
-  that base can be the commit itself, so its own edit of the policy can apply: a policy that
-  protects its own file (forge-warden's starter policy does, in `ci-is-owned`) holds such a
-  commit, and `agent doctor --gate` checks that link (`policy_protects_itself`). Judging
-  frontier commits under the policy at the ledger's baseline is not built.
+  that base can be the commit itself, so the whole of its own edit of the policy applies to
+  it. Where the edit leaves the policy's protection of its own file in place (forge-warden's
+  starter policy has it in `ci-is-owned`), the commit is held. Where the edit also removes
+  that protection, nothing of the old policy judges the commit: a commit that deletes the
+  rule against secrets and the protection, adds a secret, and is left without a stop passes
+  the next fresh session's stop without a word, is recorded `pass`, and `agent verify-branch`
+  verifies it (measured in the 0.11.0 tree review). `agent doctor --gate` does not see this:
+  under a policy that requires verified claims its link `policy_protects_itself` reads "held
+  or fails" whether the policy protects its file or not, because the probe is held for its
+  claims either way. The judge on the pull request, which reads the policy of the target
+  branch, is the boundary. Judging frontier commits under the policy at the ledger's
+  baseline is not built.
 - **Which commits of others are judged.** A commit that was already in the repository when
   the project's ledger first recorded the project (else when the session began), named by any
   ref (remote-tracking refs included) or by a reflog, or that was made before the session
@@ -286,7 +294,9 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   policy it is judged by, and committing the loosened policy does not make it the policy
   either, for as long as the session lasts. The exception is a commit of the frontier (one a
   session left without its stop): it is judged under the policy at the base of the session
-  that judges it, so its own policy edit can apply (the project's frontier, above). A
+  that judges it, so the whole of its own policy edit can apply, the removal of the policy's
+  protection of its own file included, and such a commit can pass (the project's frontier,
+  above). A
   conversation that goes on under a new session
   id with `source` `resume`, `compact` or `clear` keeps the base of the last session of its
   working tree (the project's frontier, below), so it is judged under the policy at that
@@ -694,10 +704,17 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   (verify-branch)` (class `branch_unverified`); a reader that has gone still gets exit 7. A
   ledger with a line that is not a record of this build, a record of a newer build, a last
   line that is not whole, more than 64 MiB, or anything but a regular file at its name is
-  refused whole: a damaged record never reads as a missing one. A record of this build has
-  every member this build writes for its kind (above), each of its type and with a value this
-  build writes (a stop's `unit` and `outcome` among them; a member the build does not write
-  is passed over), and a stop's members agree as a stop writes them: the outcome is the one of
+  refused whole. What makes a line a record of this build is checked as follows, and a record
+  that fails a check refuses the ledger instead of being passed over: every member this build
+  writes for the record's kind is there and of its type; a session key, a commit id and a
+  tree's digest have their form; a stop's `unit`, `outcome` and `class` are ones this build
+  writes; the counters are numbers in their range; a member the build does not write is
+  passed over. The digests in a stop's `seals` are checked as strings or nulls only: their
+  form and what they are digests of are not. The ledger has no checksum, so damage that
+  leaves a line whole by these checks is not seen: a record whose commit id is changed to
+  another full id reads as that other commit's record, and the first commit loses it (a fail
+  so damaged no longer speaks against its commit). A stop's members must also agree as a
+  stop writes them: the outcome is the one of
   its class (`pass` for `pass`, `fail` for `fail.new`, `fail_stands` for the other `fail.*`,
   `hold` for `hold.*`, else `unjudged`), a blocked turn only for a class that holds a stop and
   always for `fail`, `worktree` a string only for a tree, and no seals on the unit `stop`, a
@@ -735,7 +752,11 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   tree without the session's memory (…)". The same holds for the lists of commits beside the
   state when one is missing or is not the list the state names, except that advice is still
   given; a start says "this session's lists of commits cannot be used, so each stop judges the
-  working tree without the session's memory (…)".
+  working tree without the session's memory (…)". That sentence is not true in one place: the
+  state's trouble is found before the place is looked at, so in a directory that is no Git
+  repository, or in a repository with no commit, such a session is told that each stop judges
+  the working tree and its stop is UNJUDGED (nothing can be judged there; 0.10.0's start said
+  "will not be judged", which was true of this place and false of every repository).
   At most five such things are said in full at one stop, and a session remembers 32 as
   said in full; the others are in the line that counts them, at every stop. Everything else is said: Git
   missing or refusing the repository (another owner), a directory inside `.git`, a base that
@@ -1013,6 +1034,11 @@ Deliberate evasion, made visible where that is cheap:
 
 Stated limits, which the judge on the pull request covers:
 
+- A commit that a session left without its stop is judged by the next fresh session under
+  the policy at that session's base, which can be the left commit itself: the whole of its
+  own policy edit applies to it, and where that edit removes the policy's protection of its
+  own file the commit can pass and `agent verify-branch` verifies it; `agent doctor --gate`
+  cannot tell under a policy that requires verified claims ("The project's frontier", above).
 - A commit that only a remote-tracking ref names (fetched and never pulled; or made with
   plumbing and pushed without ever being on `HEAD` or under a local ref) is not judged.
 - A commit that is gone from every ref and from the reflogs (the reflog expired or was

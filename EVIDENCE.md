@@ -1700,8 +1700,9 @@ under the rule that there is one fix round: Astra (a Codex model) and a fresh Cl
   record of a stop (no outcome, an outcome this build does not write, no unit) as no record, so
   a branch still verified, against the reference's "a damaged record never reads as a missing
   one". From `0d5577c8` and `b8532c32` the reader that verifies a branch accepts a record only
-  when the members its kind requires are there, of the right type, with a value this build
-  writes, and agreeing with one another as a stop writes them (the coordinator's probe of the
+  when the members its kind requires are there, of the right type, with a unit, outcome,
+  class, ids and counters this build writes, and agreeing with one another as a stop writes
+  them (the coordinator's probe of the
   first fix found a record with outcome `pass` and a failing class still verifying; the second
   commit closes that). Checked on the fixed binary: of 30 records of the coordinator's making
   the 27 that this build never writes refuse the ledger and the three valid ones still verify;
@@ -1714,8 +1715,9 @@ under the rule that there is one fix round: Astra (a Codex model) and a fresh Cl
 - **A claim narrowed (C5).** "A change cannot loosen the policy it is judged by" does not hold
   for one case, which the reference now states: a commit that a session left without a stop is
   judged by the next fresh session under the policy at that session's base, which can hold the
-  left commit's own edit of the policy. A policy that protects its own file holds such a commit,
-  and `agent doctor --gate` checks that link. Not changed in code.
+  left commit's own edit of the policy. Not changed in code. (The first form of this narrowing
+  said that a policy which protects its own file holds such a commit and that
+  `agent doctor --gate` checks that link: the re-read showed both untrue in general, below.)
 - **Documents corrected to the code** (`9ec3c3b6`): the sentences of the references, of
   `SECURITY.md` and of the changelog that still described 0.10.0 (the ledger's `class`, the
   ledger's read bound, what a stop with a newer state or a bad key does, what a later stop says
@@ -1744,4 +1746,31 @@ under the rule that there is one fix round: Astra (a Codex model) and a fresh Cl
   stops will be judged; the guard table omits Cargo `[lints]`, a nested `.cargo/config.toml` and
   `.github/actions`.
 - **Gate.** 36 steps passed on `b8532c32`; the gate is run on this commit before it is pushed.
-- **Pending when this was written:** both reviewers' re-read of the fix round.
+- **The re-read of the fix round (2026-11-25), on `9c4f6099`.** Astra: GO-WITH-FIXES, the
+  medium closed as a class (101 cases of its own; 46 existing ledgers, twelve of real client
+  sessions among them, read whole), one low finding of wording. A fresh Claude reviewer:
+  NO-GO on one medium to be closed by cutting the claim, and two low findings of wording.
+  Under the review's rule there is no second fix round: what follows is documents only, and
+  each reviewer re-reads it.
+  - *The narrowed claim was still too wide (the medium).* A left commit's whole policy edit
+    applies to it, the removal of the policy's protection of its own file included: a commit
+    that deletes the rule against secrets and that protection, adds a secret and is left
+    without a stop passes the next fresh session's stop without a word, is recorded `pass`
+    and is verified by `agent verify-branch`; with the protection kept it holds, and with
+    `source` `resume` it fails. `agent doctor --gate`'s link `policy_protects_itself` reads
+    "held or fails" for a policy that does not protect its file when the policy requires
+    verified claims. Reproduced by the coordinator with the reviewer's script. The reference,
+    the changelog and the register now say this; the judge on the pull request is the
+    boundary; judging such commits under the ledger baseline's policy is the first item
+    after this release.
+  - *What the ledger's reader checks (both reviewers).* The sentences said every member has
+    "a value this build writes". The digests in a stop's seals are checked as strings only,
+    and damage that leaves a whole record is not seen (a fail whose commit id is damaged into
+    another full id no longer speaks against its commit: 69 of 2,302 single-byte damages in
+    the Claude reviewer's run; 1,351 refuse the ledger; 882 change nothing a verdict reads).
+    The sentences are narrowed to what is checked, and "a damaged record never reads as a
+    missing one" is gone.
+  - *One place where the new start sentence is untrue.* With a state that cannot be used, in
+    a directory that is no Git repository or a repository with no commit, the start says each
+    stop judges the working tree and the stop is UNJUDGED. Stated in the reference and the
+    changelog; not changed.
