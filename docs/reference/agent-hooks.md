@@ -108,11 +108,13 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   that protection, nothing of the old policy judges the commit: a commit that deletes the
   rule against secrets and the protection, adds a secret, and is left without a stop passes
   the next fresh session's stop without a word, is recorded `pass`, and `agent verify-branch`
-  verifies it (measured in the 0.11.0 tree review). `agent doctor --gate` does not see this:
-  under a policy that requires verified claims its link `policy_protects_itself` reads "held
-  or fails" whether the policy protects its file or not, because the probe is held for its
-  claims either way. The judge on the pull request, which reads the policy of the target
-  branch, is the boundary. Judging frontier commits under the policy at the ledger's
+  verifies it (measured in the 0.11.0 tree review). From 0.11.1 `agent doctor --gate` names
+  the policy such a commit leaves at `HEAD`: its link `policy_protects_itself` is ready only
+  when a rule of the judge's verdict holds or fails the probe, also under a policy that
+  requires verified claims (in 0.11.0 the link read "held or fails" whether the policy
+  protected its file or not, because the probe is held for its claims either way). The link
+  reads the policy at `HEAD` and says nothing of a commit that a stop has already passed. The
+  judge on the pull request, which reads the policy of the target branch, is the boundary. Judging frontier commits under the policy at the ledger's
   baseline is not built.
 - **Which commits of others are judged.** A commit that was already in the repository when
   the project's ledger first recorded the project (else when the session began), named by any
@@ -510,8 +512,11 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   verdict with a ranker this machine has; the link names the verdict schema and the
   forge-warden version the judge's document gives and the schemas this build reads, v2 and
   v3, and a judge that writes a schema this build does not read is this link, not ready,
-  named with its version), whether the policy protects its own file (a policy
-  that lets the probe pass can be loosened by any change), whether the judge holds the probe
+  named with its version), whether the policy protects its own file
+  (`policy_protects_itself`: ready only when a rule of the judge's verdict holds or fails the
+  probe; a verdict that does not pass for another reason, a hold for claims the judge cannot
+  verify or an expired waiver, is not protection, and before 0.11.1 it counted as protection;
+  a policy that lets the probe pass can be loosened by any change), whether the judge holds the probe
   for claims it cannot verify (`claims_verified`: a note `claims_unverified` in its verdict;
   then stops here hold and never pass, see above), the patch (the one a stop would
   judge is made, and the one of what is staged, so a path marked skip-worktree, an untracked
@@ -1037,8 +1042,10 @@ Stated limits, which the judge on the pull request covers:
 - A commit that a session left without its stop is judged by the next fresh session under
   the policy at that session's base, which can be the left commit itself: the whole of its
   own policy edit applies to it, and where that edit removes the policy's protection of its
-  own file the commit can pass and `agent verify-branch` verifies it; `agent doctor --gate`
-  cannot tell under a policy that requires verified claims ("The project's frontier", above).
+  own file the commit can pass and `agent verify-branch` verifies it; from 0.11.1
+  `agent doctor --gate` reports the policy at `HEAD` that does not protect its file, also
+  under a policy that requires verified claims, and still says nothing of the commit a stop
+  passed ("The project's frontier", above).
 - A commit that only a remote-tracking ref names (fetched and never pulled; or made with
   plumbing and pushed without ever being on `HEAD` or under a local ref) is not judged.
 - A commit that is gone from every ref and from the reflogs (the reflog expired or was

@@ -6,6 +6,17 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+- `agent doctor --gate` and a session's start: the link `policy_protects_itself` is ready only
+  when a rule of the judge's verdict holds or fails the probe (a one-line edit of the policy
+  file). In 0.11.0 any verdict that did not pass made the link ready, so a policy that does not
+  protect its own file was reported as protecting it whenever the probe was held for claims the
+  judge cannot verify (every policy with `require_verified`, forge-warden's starter policy among
+  them) or failed for an expired waiver. Such a policy now reads `FAIL … does not pass, but no
+  rule holds or fails it`, the gate exits 7 for it, and a session's start names the link as
+  weak. A protected policy reads `ok … is held or fails under a rule` (the words "under a rule"
+  are new). The gate reads the policy at `HEAD`, a session's start the policy at the session's
+  base; what a stop judges by is unchanged in this entry.
+
 ## [0.11.0] - 2026-11-25
 
 **The agent-loop release.** 0.11.0 is built for an agent that works under Deep-Diff-Forge's
