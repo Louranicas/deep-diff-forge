@@ -1923,7 +1923,23 @@ hash and commit of those sections and of `fixtures/corpus/compare-v1.sha256` is.
   - `review controller mutation and fuzz evidence` was cancelled after 75 minutes.
   The counts are of the lines `test … FAILED` in the failed jobs' logs, each test once.
 - **Still not measured.** No independent rescore of 0.11.0. No mutation run over what 0.11.0
-  changed; the run over what 0.10.0 changed had 545 mutants in its list of those judged caught
-  on 2026-11-24 at 19:53Z. forge-warden's published 0.2.1 binary was not run against this build.
-  No binary was built for `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin` or
-  `aarch64-apple-darwin`.
+  changed. forge-warden's published 0.2.1 binary was not run against this build. No binary was
+  built for `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin` or `aarch64-apple-darwin`.
+- **The mutation counts above are upper bounds (found on 2026-11-25).** This file says of the
+  run over what 0.10.0 changed that 450, and later 538, of its 729 mutants were "judged
+  caught". Neither figure measures what the tests catch. The run tested each mutant with the
+  tests of the whole workspace, four mutants at a time, and counted a mutant as caught when any
+  test failed. Four or five time-bound tests of the CLI's hooks fail under that load whatever
+  the mutant is. The run also started again whenever a gate ran (348 starts), and each start
+  tested again every mutant not yet on its list of caught mutants. So a mutant that the tests
+  miss was tested until one of those tests failed beside it: 29 mutants were reported missed or
+  timed out at some start, 28 of them were on the list of caught mutants on 2026-11-25, and the
+  lists of missed and timed-out mutants were empty. The one start whose logs were kept shows
+  it: four mutants of the patch parser, each reported missed before, were recorded caught on
+  failures of hook tests that do not reach the parser. A mutant recorded caught at its first
+  start may have been recorded the same way; how many were is not known. The run was put on
+  hold on 2026-11-25 with 615 mutants on that list (`wc -l` of its `previously_caught.txt`).
+  What this file says about a named mutant and the test written for it does not rest on those
+  counts. A run that tests a mutant with the tests of its own crate and of the crates that use
+  it, without the tests named in `crates/deep-diff-forge-cli/tests/LOAD_SENSITIVE`, and that
+  keeps every start's outcome, is being prepared; no count from it exists yet.
