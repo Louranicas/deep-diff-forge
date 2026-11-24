@@ -2935,16 +2935,16 @@ fn session_start(input: &Input, args: &[String]) -> Option<String> {
     let turn = session_lock(&input.session, START_LOCK_WAIT);
     let mut session = match Session::open(&input.session) {
         Ok(session) => session,
-        Err(why) => return Some(hook::contract_trouble(&why.text)),
+        Err(why) => return Some(hook::contract_trouble(&why)),
     };
     let mut work = match locate(input, &mut session, deadline) {
         Located::Nowhere => return None,
-        Located::Trouble(reason) => return Some(hook::contract_trouble(&reason.text)),
+        Located::Trouble(reason) => return Some(hook::contract_trouble(&reason)),
         Located::Here(work) => work,
     };
     let deadline = deadline.with_project(&work.place);
     if let Some(why) = session.inside(&work.place.top) {
-        return Some(hook::contract_trouble(&why.text));
+        return Some(hook::contract_trouble(&why));
     }
     let first_record =
         !matches!(turn, Turn::Taken) && begin_in_ledger(input, &mut session, &mut work, deadline);
@@ -2954,6 +2954,7 @@ fn session_start(input: &Input, args: &[String]) -> Option<String> {
     if !work.fresh
         && let Err(why) = session.tips(&work.project).and_then(|_| session.judged())
     {
+        let why = Why::new(ReasonClass::StateListsDamaged, why);
         return Some(hook::contract_trouble(&why));
     }
     if work.fresh
@@ -8292,6 +8293,12 @@ fn stateless_stop(
     let judging = judge_units(&stopping, &Tips::Stateless, &[], &[]).map_err(scratch_failed)?;
     let words = "the working tree's changes against the commit HEAD names, judged without this session's state";
     let mut decision = hook::decide_stop_trees(&judging.units, &[], words);
+    // nothing remembers what blocked: the closing sentence says what happens without it
+    if let StopDecision::Block { reason } = &mut decision {
+        let again = "Then stop again: the stop that follows this block lets it through; with no state to remember it, a working tree that still fails or is held blocks again at the next turn's stop.";
+        *reason =
+            (reason.replacen(hook::AGAIN_FAILED, again, 1)).replacen(hook::AGAIN_HELD, again, 1);
+    }
     let blocks: Vec<bool> = (judging.units.iter())
         .map(|unit| hook::blocks_now(unit, &[]))
         .collect();

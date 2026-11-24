@@ -1681,7 +1681,8 @@ fn the_state_is_kept_in_a_directory_of_its_own_and_read_with_a_bound() {
 /// read as a state is never "no state". Read as that, it made the next hook the session's
 /// first, and what had been committed until then passed in silence. A link is not followed,
 /// and nothing is recorded over what stands there: a stop is UNJUDGED and says so every time,
-/// the start says that stops will not be judged, and advice says it once.
+/// the start says that stops judge without the state (C2 of the 0.11.0 tree review; it said
+/// they would not be judged), and advice says it once.
 #[test]
 fn a_state_file_that_cannot_be_read_is_never_no_state() {
     let scratch = Scratch::new("hook-state-unreadable");
@@ -1755,7 +1756,7 @@ fn a_state_file_that_cannot_be_read_is_never_no_state() {
     );
     let started = start(&root, "s");
     assert!(
-        started.starts_with("deep-diff-forge: the stops of this session will not be judged")
+        started.starts_with("deep-diff-forge: this session's state cannot be used, so no advice will be given and each stop judges the working tree")
             && started.contains("is of schema v1"),
         "{started}"
     );
@@ -13230,9 +13231,27 @@ fn every_state_that_cannot_be_used_still_judges_the_tree() {
         if case == "unreadable" && std::fs::read(&state).is_ok() {
             continue; // (run as root: nothing is unreadable)
         }
+        // C2 (the 0.11.0 tree review): a start says what the stops then do, never that they
+        // will not be judged; advice stops only when the state itself cannot be used
+        let started = start(&root, "s");
+        let what = if class == "state.lists_damaged" {
+            "deep-diff-forge: this session's lists of commits cannot be used, so each stop judges the working tree without the session's memory"
+        } else {
+            "deep-diff-forge: this session's state cannot be used, so no advice will be given and each stop judges the working tree without the session's memory"
+        };
+        assert!(
+            started.starts_with(what) && !started.contains("will not be judged"),
+            "{case}: {started}"
+        );
         let before = tree_digest_lenient(&sessions());
         let said = blocked(&stop_from(&root, "s", &script)).to_owned();
         assert!(said.starts_with(&stateless(class)), "{case}: {said}");
+        // ... and the block says nothing a stop with no state cannot keep
+        assert!(
+            !said.contains("does not block again")
+                && said.contains("with no state to remember it, a working tree that still fails or is held blocks again at the next turn's stop"),
+            "{case}: {said}"
+        );
         assert!(
             said.contains("check_suppressed in \"a.rs\""),
             "{case}: {said}"
