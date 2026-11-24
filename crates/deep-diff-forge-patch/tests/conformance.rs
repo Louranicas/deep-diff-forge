@@ -730,10 +730,10 @@ fn row_traditional() {
     s.refused(|e| matches!(e, PatchParseError::SectionWithoutPatch { .. }));
 }
 
-/// Open difference S3.4.b2 (L4): a traditional section with neither side `/dev/null` whose one
+/// S3.4.b2 (L4), closed in 0.11.0: a traditional section with neither side `/dev/null` whose one
 /// hunk has no old line (`@@ -0,0`). Git leaves `is_new` open (`parse_single_patch`) and
 /// `--summary` says create; apply creates an absent file and refuses a present one (the hunk at
-/// line 0 does not apply). DDF reads `modified`, written in place, as released.
+/// line 0 does not apply). DDF reads `added`, a creation (0.10.0 read `modified`).
 #[test]
 fn row_traditional_open_creation() {
     let r = rig("traditional-creation");
@@ -741,11 +741,11 @@ fn row_traditional_open_creation() {
     let s = see(&r, "--- a/n\n+++ b/n\n@@ -0,0 +1 @@\n+stored\n");
     assert!(says(&s, " create n"), "{:?}", s.reading);
     assert_eq!(s.git_tree()["n"], file("stored\n", false));
-    assert_eq!(s.status(), ("n".into(), FileStatus::Modified));
+    assert_eq!(s.status(), ("n".into(), FileStatus::Added));
     let s = see(&r, "--- a/x\n+++ b/x\n@@ -0,0 +1 @@\n+z\n");
     assert!(says(&s, " create x"), "{:?}", s.reading);
     s.git_writes_nothing();
-    assert_eq!(s.status(), ("x".into(), FileStatus::Modified));
+    assert_eq!(s.status(), ("x".into(), FileStatus::Added));
 }
 
 /// Open difference S3.4.b2, the deletion twin (`@@ -1 +0,0`, no `/dev/null`): `--summary` says

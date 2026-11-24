@@ -989,7 +989,8 @@ mod tests {
     /// S3.4: a binary creation, deletion or rename has Git's status (`added`, `deleted`,
     /// `renamed`), and keeps every signal and the score 0.9.0 gave it as `binary_changed`
     /// (measured on the frozen 0.8.4 and 0.9.0 binaries, beside each case); the `binary_change`
-    /// signal comes from the marker, not the status.
+    /// signal comes from the marker, not the status. A traditional creation with no `/dev/null`
+    /// (`@@ -0,0`), `modified` before, scores at least what it scored then (N14).
     #[test]
     fn a_binary_status_change_keeps_every_signal_and_score() {
         use RiskSignal::{BinaryChange, DeletedFile, ExecutableBit, NewFile, TestOnly};
@@ -1022,6 +1023,15 @@ mod tests {
             assert_eq!(f.status, status, "{text}");
             assert_eq!(score_file(&f), expected, "{text}");
         }
+        // The traditional creation: `modified` and 2 in 0.8.3 to 0.9.0; 5 for `build.rs`.
+        let created =
+            file("--- a/src/x.rs\n+++ b/src/x.rs\n@@ -0,0 +1,2 @@\n+fn main() {}\n+// x\n");
+        assert_eq!(created.status, FileStatus::Added);
+        let (score, signals) = score_file(&created);
+        assert!(score >= 2 && signals == [NewFile], "{score} {signals:?}");
+        let build = file("--- a/build.rs\n+++ b/build.rs\n@@ -0,0 +1 @@\n+fn main() {}\n");
+        assert_eq!(build.status, FileStatus::Added);
+        assert!(score_file(&build).0 >= 5, "{:?}", score_file(&build));
     }
 
     /// Review of 0.8.4, R84B-L-1 and VR84B-M-1: the names on the binary line are not read, as

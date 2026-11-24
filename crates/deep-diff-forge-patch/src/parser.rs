@@ -1932,12 +1932,31 @@ impl FileBuf {
             Writes::Moved
         } else if says("new file mode ")
             || (!self.git && self.old_raw.as_deref() == Some("/dev/null"))
+            || self.creates_without_dev_null()
         {
             Writes::Created
         } else {
             Writes::InPlace
         };
         (None, Some((path, writes)))
+    }
+
+    /// A traditional section with neither side `/dev/null` whose one hunk is `@@ -0,0 +1,N @@`,
+    /// added lines only: Git leaves `is_new` open (`parse_single_patch`: only old lines or a
+    /// second hunk close it), `--summary` names a creation, and apply creates the file (on a
+    /// present file the hunk does not apply). Since 0.11.0 (S3.4.b2) it is `added`; until 0.10.0
+    /// it was `modified` with no `new_file` (L4). A hunk after line 1 (`@@ -1,0`) inserts into an
+    /// existing file and is no creation. The deletion twin (`+0,0`) stays `modified`: apply
+    /// leaves an empty file there, though `--summary` says delete (`CONFORMANCE.md`).
+    fn creates_without_dev_null(&self) -> bool {
+        let real = |side: &Option<String>| side.as_deref().is_some_and(|s| s != "/dev/null");
+        !self.git
+            && real(&self.old_raw)
+            && real(&self.new_raw)
+            && matches!(self.hunks.as_slice(), [hunk] if hunk.old_start == Some(0)
+                && hunk.new_start == Some(1)
+                && !hunk.lines.is_empty()
+                && hunk.lines.iter().all(|l| l.kind == PatchLineKind::Added))
     }
 
     /// The section's mode headers are its only content, and Git reads no mode change in them:
@@ -1993,7 +2012,7 @@ impl FileBuf {
             FileStatus::BinaryChanged
         } else if has("copy from ") || has("copy to ") {
             FileStatus::Copied
-        } else if new_file {
+        } else if new_file || self.creates_without_dev_null() {
             FileStatus::Added
         } else if deleted {
             FileStatus::Deleted
@@ -3894,26 +3913,39 @@ diff --git a/x b/x
                 "x",
                 FileStatus::Added,
             ),
-            // Not the epoch: a fraction, an hour off, no tab, a CRLF line, or a Git diff.
+            // Not the epoch: a fraction, an hour off, no tab, a CRLF line, or a Git diff. Since
+            // 0.10.0 a traditional `@@ -0,0` with no epoch is `added` too, Git's summary word for
+            // its open creation (S3.4); the deletion rows below still tell the epoch apart, and so
+            // does the Git diff.
+            (
+                format!("--- a/x\t{later}\n+++ b/x\t1970-01-01 00:00:00.5 +0000\n{gone}"),
+                "x",
+                FileStatus::Modified,
+            ),
+            (
+                format!("--- a/x\t{later}\n+++ b/x\t1970-01-01 01:00:00 +0000\n{gone}"),
+                "x",
+                FileStatus::Modified,
+            ),
             (
                 format!("--- a/x\t1970-01-01 00:00:00.5 +0000\n+++ b/x\n{new}"),
                 "x",
-                FileStatus::Modified,
+                FileStatus::Added,
             ),
             (
                 format!("--- a/x\t1970-01-01 01:00:00 +0000\n+++ b/x\n{new}"),
                 "x",
-                FileStatus::Modified,
+                FileStatus::Added,
             ),
             (
                 format!("--- a/x 1970-01-01 00:00:00 +0000\n+++ b/x\n{new}"),
                 "x",
-                FileStatus::Modified,
+                FileStatus::Added,
             ),
             (
                 format!("--- a/x\t{epoch}\r\n+++ b/x\t{later}\r\n{new}"),
                 "x",
-                FileStatus::Modified,
+                FileStatus::Added,
             ),
             (
                 format!("diff --git a/x b/x\n--- a/x\t{epoch}\n+++ b/x\n{new}"),
