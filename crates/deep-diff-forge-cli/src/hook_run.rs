@@ -1963,6 +1963,65 @@ fn record(place: &Place, deadline: Deadline) -> Result<(Project, Option<Vec<Stri
     Ok((project, tips))
 }
 
+/// The sources of a `SessionStart` that go on with a conversation (F13.b): such a session that
+/// has no record of its own begins from the commit the last session of its working tree began
+/// from, as the project's ledger records it, not from `HEAD`, so that a policy a commit of
+/// that conversation loosened does not judge what follows.
+const CONTINUING: [&str; 3] = ["resume", "compact", "clear"];
+
+/// What the project's ledger records of a session whose hook found the project now (F13.b):
+/// the project's baseline when the ledger has none (what the repository named then, and the
+/// commit `HEAD` named), and a `start` record with the commit the session begins from. A
+/// session that goes on with a conversation ([`CONTINUING`]) takes that commit from the last
+/// `start` record of its working tree, when that commit is still in the repository. Nothing
+/// of it decides anything when it fails: the session's own state still holds its base.
+fn begin_in_ledger(input: &Input, session: &mut Session, work: &mut Work, deadline: Deadline) {
+    if !work.fresh || own_directory(&work.place.own).is_err() {
+        return;
+    }
+    let own = &work.place.own;
+    let worktree = tree_instance(&work.place);
+    let head = match &work.project.base {
+        Base::Commit(id) => Some(id.clone()),
+        Base::NoCommit | Base::Orphan => None,
+    };
+    if CONTINUING.contains(&input.source.as_str()) {
+        let key = crate::ledger::key_of(&input.session);
+        let starts = crate::ledger::frontier(own)
+            .map(|f| f.starts)
+            .unwrap_or_default();
+        let before = starts
+            .into_iter()
+            .rev()
+            .find(|(session, tree, _)| *tree == worktree && *session != key)
+            .map(|(_, _, base)| base)
+            .filter(|base| commit_of(&work.place, deadline, base).as_deref() == Ok(base));
+        if let Some(base) = before {
+            work.project.base = Base::Commit(base.clone());
+            if let Some(project) = &mut session.state.project {
+                project.base = Base::Commit(base);
+            }
+        }
+    }
+    let base = match &work.project.base {
+        Base::Commit(id) => Some(id.as_str()),
+        Base::NoCommit | Base::Orphan => None,
+    };
+    let baseline = session
+        .tips
+        .clone()
+        .map(|tips| crate::ledger::Baseline { tips, head });
+    let wait = LEDGER_WAIT.min(deadline.left());
+    let _ = crate::ledger::append_start(
+        own,
+        &input.session,
+        &worktree,
+        base,
+        baseline.as_ref(),
+        wait,
+    );
+}
+
 /// What to do about a project that is not what was recorded: nothing in the session's state
 /// can be moved to another repository, so the remedy is a new session.
 const NEW_SESSION: &str = "start a new session to have the work there judged";
@@ -2719,10 +2778,11 @@ fn post_tool(input: &Input, args: &[String]) -> Option<String> {
     let (own, advice) = match locate(input, &mut session, deadline) {
         Located::Nowhere => return None,
         Located::Trouble(reason) => (None, Err(reason.text)),
-        Located::Here(work) => {
+        Located::Here(mut work) => {
             if let Some(why) = session.inside(&work.place.top) {
                 return said_beside(Some(&work.place.own), &input.session, &why.text);
             }
+            begin_in_ledger(input, &mut session, &mut work, deadline);
             let advice = advice_for(
                 &work,
                 &mut session.state,
@@ -2844,7 +2904,7 @@ fn session_start(input: &Input, args: &[String]) -> Option<String> {
         Ok(session) => session,
         Err(why) => return Some(hook::contract_trouble(&why.text)),
     };
-    let work = match locate(input, &mut session, deadline) {
+    let mut work = match locate(input, &mut session, deadline) {
         Located::Nowhere => return None,
         Located::Trouble(reason) => return Some(hook::contract_trouble(&reason.text)),
         Located::Here(work) => work,
@@ -2852,6 +2912,9 @@ fn session_start(input: &Input, args: &[String]) -> Option<String> {
     let deadline = deadline.with_project(&work.place);
     if let Some(why) = session.inside(&work.place.top) {
         return Some(hook::contract_trouble(&why.text));
+    }
+    if !matches!(turn, Turn::Taken) {
+        begin_in_ledger(input, &mut session, &mut work, deadline);
     }
     // A session that is resumed with its list of commits gone, or its list of judged commits,
     // is not one whose stops will be judged: say so now, not only at the stop (fifth
@@ -3766,6 +3829,9 @@ struct Stopping<'a> {
     /// The client says this stop follows a block (`stop_hook_active`): a cause that holds once
     /// does not hold here (F12, [`hook::once_lines`]).
     active: bool,
+    /// What the project's ledger says of its commits (F13.b): the baseline and the commits a
+    /// stop has judged.
+    frontier: &'a crate::ledger::Frontier,
 }
 
 /// What a stop judged.
@@ -4527,6 +4593,96 @@ fn session_commits(stopping: &Stopping<'_>, tips: &[String]) -> Result<Vec<Commi
         &stopping.deadline.git(),
     )
     .map_err(|e| words(&e))
+}
+
+/// The commits a stop judges (F13.b): the session's `listed`, and before them every commit the
+/// same sources lead to that the project's baseline does not and that no stop record of the
+/// ledger gave a verdict, whichever session made it (a session that ended before its stop, one
+/// whose state was removed). With no baseline, or when Git cannot list them, `listed` alone, as
+/// before, and the second is said. Nothing is ever taken out of `listed`: a commit another
+/// session judged is judged by this one too when it is the session's own (a commit found by
+/// several sessions holds each once, L11).
+fn with_frontier(
+    stopping: &Stopping<'_>,
+    listed: Vec<CommitAndParent>,
+    beside: &mut Vec<Note>,
+) -> Vec<CommitAndParent> {
+    let Some(baseline) = &stopping.frontier.baseline else {
+        return listed;
+    };
+    let top = &stopping.work.place.top;
+    let git = stopping.deadline.git();
+    let wider = named_commits(top, Named::Own, &git).and_then(|sources| {
+        let list = stopping.scratch.0.join("frontier.list");
+        commits_beyond(top, &sources, &baseline.tips, &list, &git)
+    });
+    let wider = match wider {
+        Ok(wider) => wider,
+        Err(error) => {
+            beside.push(Note {
+                name: "the project's frontier".to_owned(),
+                text: format!(
+                    "The commits made since the project's ledger first recorded it could not be listed ({}): only this session's commits were judged.",
+                    git_words(&error)
+                ),
+                standing: 0,
+            });
+            return listed;
+        }
+    };
+    let own: BTreeSet<&str> = listed.iter().map(|(id, _)| id.as_str()).collect();
+    let mut out: Vec<CommitAndParent> = wider
+        .into_iter()
+        .filter(|(id, _)| !own.contains(id.as_str()) && !stopping.frontier.judged.contains(id))
+        .collect();
+    out.extend(listed);
+    out
+}
+
+/// What a stop says when the project's ledger has no baseline: its session's own commits are
+/// judged, as before the frontier, and the commits that were there when it began are recorded
+/// as the project's baseline.
+const NO_RECORD: &str = "No record of this project was found in its ledger (the ledger is new to this build, or it was removed): this stop judged the commits made since this session began, as before, and the commits that were there when it began are now the project's baseline. The ledger is a file the agent can write; the pull request's judge is the boundary.";
+
+/// The project's ledger as a stop reads it (F13.b), with what must be said of it: a ledger
+/// with no baseline gets the commits there when the session began as one ([`NO_RECORD`]); a
+/// ledger that cannot be read gives none, which judges as before.
+fn project_frontier(
+    work: &Work,
+    tips: &Tips,
+    base: &str,
+    deadline: Deadline,
+) -> (crate::ledger::Frontier, Option<Note>) {
+    let own = &work.place.own;
+    let note = |text: String| {
+        Some(Note {
+            name: "the project's ledger".to_owned(),
+            text,
+            standing: 0,
+        })
+    };
+    match crate::ledger::frontier(own) {
+        Ok(frontier) if frontier.baseline.is_some() => (frontier, None),
+        Ok(frontier) => {
+            if let Tips::Listed(tips) = tips {
+                let baseline = crate::ledger::Baseline {
+                    tips: tips.clone(),
+                    head: Some(base.to_owned()),
+                };
+                let wait = LEDGER_WAIT.min(deadline.left());
+                let _ = own_directory(own)
+                    .and_then(|()| crate::ledger::append_baseline(own, &baseline, wait));
+            }
+            (frontier, note(NO_RECORD.to_owned()))
+        }
+        Err(why) => (
+            crate::ledger::Frontier::default(),
+            note(format!(
+                "The project's ledger could not be read ({}): this stop judged the commits made since this session began, as before.",
+                deep_diff_forge_core::display_safe(&why)
+            )),
+        ),
+    }
 }
 
 /// A number of commits as a message names them.
@@ -6438,7 +6594,8 @@ fn judge_units(
     // others, and that is said at every stop; what is not committed was judged above all
     // the same.
     let listed = match tips {
-        Tips::Listed(tips) => session_commits(stopping, tips),
+        Tips::Listed(tips) => session_commits(stopping, tips)
+            .map(|listed| with_frontier(stopping, listed, &mut out.beside)),
         // What follows from it stands first, and the whole has room in what a message shows
         // of a reason ([`hook::REASON_CHARS`]): the cause stood first, and every stop of
         // such a session read "… cannot be told from them: they are not." (eleventh
@@ -7481,7 +7638,7 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, Why> {
         return Ok(Some(hook::unjudged_output(&LOCK_BUSY.text)));
     }
     let mut session = Session::open(&input.session)?;
-    let work = match locate(input, &mut session, deadline) {
+    let mut work = match locate(input, &mut session, deadline) {
         Located::Nowhere => return Ok(None),
         Located::Trouble(reason) => return Ok(Some(hook::unjudged_output(&reason.text))),
         Located::Here(work) => work,
@@ -7490,6 +7647,7 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, Why> {
     if let Some(why) = session.inside(&work.place.top) {
         return Ok(Some(hook::unjudged_output(&why.text)));
     }
+    begin_in_ledger(input, &mut session, &mut work, deadline);
     // The project and the base are recorded before anything else can fail.
     let mut unsaved = session.keep().err();
     let mut beside: Vec<Note> = Vec::new();
@@ -7532,6 +7690,7 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, Why> {
                     }
                 }
                 Ok((tips, mut known)) => {
+                    let (frontier, said) = project_frontier(&work, &tips, &base, deadline);
                     let scratch = Scratch::new(&work.place.own).map_err(scratch_failed)?;
                     let number = session.state.stops.saturating_add(1);
                     let (judging, look) = stop_deadlines(&work.place, deadline);
@@ -7546,6 +7705,7 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, Why> {
                         number,
                         recorded: &session.state.trees,
                         active: input.stop_hook_active,
+                        frontier: &frontier,
                     };
                     let judging = judge_units(&stopping, &tips, &known, &session.state.blocked)
                         .map_err(scratch_failed)?;
@@ -7574,6 +7734,7 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, Why> {
                         session.set_judged(known);
                     }
                     beside = judging.beside;
+                    beside.extend(said);
                     decision
                 }
             }
@@ -8099,6 +8260,42 @@ pub(crate) fn installed_stop(top: &Path) -> Option<(PathBuf, hook::StopCommand)>
 /// The working tree around `dir`: its top level and which repository it is.
 pub(crate) fn project_of(dir: &Path) -> Result<(PathBuf, String), String> {
     place_of(dir, Deadline::after(GATE_LIMIT)).map(|place| (place.top, place.id))
+}
+
+/// How many commits a stop of a session at `top` judges by the project's frontier (F13.b) that
+/// are not among `mine`, the session's own: those the project's sources lead to that its
+/// ledger's baseline does not and that have no stop's verdict there. Zero with no baseline, and
+/// when anything cannot be read (`agent check` then says nothing of them).
+pub(crate) fn frontier_left(top: &Path, mine: &[String]) -> usize {
+    let deadline = Deadline::after(GATE_LIMIT);
+    let Ok(place) = place_of(top, deadline) else {
+        return 0;
+    };
+    let Ok(frontier) = crate::ledger::frontier(&place.own) else {
+        return 0;
+    };
+    let Some(baseline) = &frontier.baseline else {
+        return 0;
+    };
+    let Ok(scratch) = own_directory(&place.own).and_then(|()| Scratch::new(&place.own)) else {
+        return 0;
+    };
+    let git = deadline.git();
+    let wider = named_commits(&place.top, Named::Own, &git).and_then(|sources| {
+        commits_beyond(
+            &place.top,
+            &sources,
+            &baseline.tips,
+            &scratch.0.join("frontier.list"),
+            &git,
+        )
+    });
+    wider.map_or(0, |wider| {
+        wider
+            .iter()
+            .filter(|(id, _)| !mine.contains(id) && !frontier.judged.contains(id))
+            .count()
+    })
 }
 
 fn place_of(dir: &Path, deadline: Deadline) -> Result<Place, String> {
@@ -9351,6 +9548,7 @@ mod tests {
             session: "s".to_owned(),
             cwd: gone.to_string_lossy().into_owned(),
             stop_hook_active: false,
+            source: String::new(),
         };
         match locate(&input, &mut session, deadline) {
             Located::Trouble(why) => assert_eq!(why.class, ReasonClass::PlaceDirectoryGone),

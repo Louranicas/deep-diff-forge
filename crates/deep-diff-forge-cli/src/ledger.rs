@@ -248,6 +248,164 @@ fn append(
         .map_err(|e| format!("it could not be written: {e}"))
 }
 
+/// The most commits a `baseline` record lists; a project that names more has none, and its
+/// stops judge the commits of a session as before the frontier (F13.b).
+pub(crate) const BASELINE_TIPS: usize = 100_000;
+
+/// What was already there when a session of the project first found it (F13.b): every commit
+/// the repository named then (its refs, each working tree's `HEAD`, the reflogs), and the commit
+/// `HEAD` named (`None`: none yet).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Baseline {
+    pub(crate) tips: Vec<String>,
+    pub(crate) head: Option<String>,
+}
+
+/// What a stop reads of the ledger (F13.b): the project's baseline, the commits a stop record
+/// gave a verdict (`pass`, `fail`, `fail_stands`, `hold`), and the `start` records, each a
+/// session's key, its working tree and the commit it began from, in the ledger's order.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Frontier {
+    pub(crate) baseline: Option<Baseline>,
+    pub(crate) judged: std::collections::BTreeSet<String>,
+    pub(crate) starts: Vec<(String, String, String)>,
+}
+
+/// The SHA-256 of `tips` one a line, as a `baseline` record names them.
+fn tips_sha256(tips: &[String]) -> String {
+    let text = tips.iter().fold(String::new(), |mut text, tip| {
+        text.push_str(tip);
+        text.push('\n');
+        text
+    });
+    deep_diff_forge_core::sha256_hex(text.as_bytes())
+}
+
+/// A commit id as Git writes one: 40 or 64 lowercase hex digits.
+fn is_commit_id(text: &str) -> bool {
+    matches!(text.len(), 40 | 64) && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// The baseline a `baseline` record states, when it is whole: its commits are ids, as many as
+/// it counts and with the digest it names, and its `head` is an id or null.
+fn baseline_of(record: &Value) -> Option<Baseline> {
+    let tips: Vec<String> = record["tips"]
+        .as_array()?
+        .iter()
+        .map(|tip| tip.as_str().filter(|t| is_commit_id(t)).map(str::to_owned))
+        .collect::<Option<_>>()?;
+    let counted = record["tips_count"].as_u64()? == u64::try_from(tips.len()).ok()?;
+    let sealed = record["tips_sha256"] == tips_sha256(&tips).as_str();
+    let head = match &record["head"] {
+        Value::Null => None,
+        head => Some(head.as_str().filter(|h| is_commit_id(h))?.to_owned()),
+    };
+    (counted && sealed && tips.len() <= BASELINE_TIPS).then_some(Baseline { tips, head })
+}
+
+/// What the ledger in `own` gives a stop ([`Frontier`]); an empty one when there is no ledger.
+/// A line that is not a record, a record of another version and a record that is not whole are
+/// passed over: each can only leave a commit unjudged-by-record, so judged again, never the
+/// reverse. The first whole `baseline` record is the project's. `Err`: the ledger is not a
+/// regular file, is larger than the most a reader reads, or cannot be read.
+pub(crate) fn frontier(own: &Path) -> Result<Frontier, String> {
+    let mut out = Frontier::default();
+    let Some(text) = whole_text(own)? else {
+        return Ok(out);
+    };
+    for line in text.lines() {
+        let Some(record) = record(line).filter(|r| r["v"] == VERSION) else {
+            continue;
+        };
+        match record["kind"].as_str() {
+            Some("baseline") if out.baseline.is_none() => out.baseline = baseline_of(&record),
+            Some("stop")
+                if matches!(
+                    record["outcome"].as_str(),
+                    Some("pass" | "fail" | "fail_stands" | "hold")
+                ) =>
+            {
+                if let Some(id) = record["unit"]
+                    .as_str()
+                    .and_then(|unit| unit.strip_prefix("commit:"))
+                    .filter(|id| is_commit_id(id))
+                {
+                    out.judged.insert(id.to_owned());
+                }
+            }
+            Some("start") => {
+                let field = |name: &str| record[name].as_str().map(str::to_owned);
+                if let (Some(session), Some(tree), Some(base)) =
+                    (field("session"), field("worktree"), field("base"))
+                    && is_commit_id(&base)
+                {
+                    out.starts.push((session, tree, base));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
+/// Record that the session `session` found the project in the working tree `worktree` and
+/// began from `base` (a `start` record, F13.b), and, when the ledger has no baseline yet, the
+/// project's baseline first. `Ok(true)` when the baseline was written by this call.
+pub(crate) fn append_start(
+    own: &Path,
+    session: &str,
+    worktree: &str,
+    base: Option<&str>,
+    baseline: Option<&Baseline>,
+    wait: Duration,
+) -> Result<bool, String> {
+    let baseline = baseline.filter(|b| b.tips.len() <= BASELINE_TIPS);
+    let needs = baseline.filter(|_| matches!(frontier(own), Ok(f) if f.baseline.is_none()));
+    let key = session_key(session);
+    append(own, wait, |_| {
+        let mut out = Vec::new();
+        if let Some(baseline) = needs {
+            out.push(json!({
+                "v": VERSION, "kind": "baseline", "head": baseline.head,
+                "tips_count": baseline.tips.len(), "tips_sha256": tips_sha256(&baseline.tips),
+                "tips": baseline.tips,
+            }));
+        }
+        if let Some(base) = base {
+            out.push(json!({
+                "v": VERSION, "kind": "start", "session": key, "worktree": worktree, "base": base,
+            }));
+        }
+        out
+    })?;
+    Ok(needs.is_some())
+}
+
+/// Write the project's baseline when the ledger in `own` has none: at a stop whose session
+/// began before the ledger had one, or after the ledger was removed. `Ok(true)` when written.
+pub(crate) fn append_baseline(
+    own: &Path,
+    baseline: &Baseline,
+    wait: Duration,
+) -> Result<bool, String> {
+    if frontier(own)?.baseline.is_some() || baseline.tips.len() > BASELINE_TIPS {
+        return Ok(false);
+    }
+    append(own, wait, |_| {
+        vec![json!({
+            "v": VERSION, "kind": "baseline", "head": baseline.head,
+            "tips_count": baseline.tips.len(), "tips_sha256": tips_sha256(&baseline.tips),
+            "tips": baseline.tips,
+        })]
+    })?;
+    Ok(true)
+}
+
+/// The key of a session in the ledger ([`session_key`]), for a reader of `start` records.
+pub(crate) fn key_of(session: &str) -> String {
+    session_key(session)
+}
+
 /// One line of the ledger as a record: a JSON object that gives no key twice, else `None`.
 fn record(line: &str) -> Option<Value> {
     if crate::hook::has_duplicate_key(line) {
@@ -453,29 +611,10 @@ fn verify_text(doc: &Value) -> String {
 /// whole, a ledger over [`WHOLE`] or anything but a regular file at its name: refused whole, so
 /// a damaged record never reads as a missing one.
 fn whole(own: &Path) -> Result<Vec<Value>, String> {
-    use std::os::unix::fs::OpenOptionsExt as _;
-    let path = own.join(FILE);
-    let shown = crate::hook::shown_path(&path.to_string_lossy());
-    let file = match std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
-        .open(&path)
-    {
-        Ok(file) => file,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(format!("the ledger {shown} could not be opened: {e}")),
+    let shown = crate::hook::shown_path(&own.join(FILE).to_string_lossy());
+    let Some(text) = whole_text(own)? else {
+        return Ok(Vec::new());
     };
-    match file.metadata() {
-        Ok(found) if found.is_file() && found.len() <= WHOLE => {}
-        Ok(found) if found.is_file() => {
-            return Err(format!("the ledger {shown} is larger than {WHOLE} bytes"));
-        }
-        _ => return Err(format!("the ledger {shown} is not a regular file")),
-    }
-    let mut text = String::new();
-    file.take(WHOLE)
-        .read_to_string(&mut text)
-        .map_err(|e| format!("the ledger {shown} could not be read: {e}"))?;
     if !text.is_empty() && !text.ends_with('\n') {
         return Err(format!("the last line of the ledger {shown} is not whole"));
     }
@@ -503,11 +642,40 @@ fn whole(own: &Path) -> Result<Vec<Value>, String> {
         }
         if !matches!(
             record["kind"].as_str(),
-            Some("stop" | "check" | "clearance")
+            Some("stop" | "check" | "clearance" | "baseline" | "start")
         ) {
             return Err(damaged());
         }
         records.push(record);
     }
     Ok(records)
+}
+
+/// The text of the ledger in `own`, read whole; `None` when there is none. Anything but a
+/// regular file at its name, one over [`WHOLE`] or one that cannot be read is an error.
+fn whole_text(own: &Path) -> Result<Option<String>, String> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let path = own.join(FILE);
+    let shown = crate::hook::shown_path(&path.to_string_lossy());
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
+        .open(&path)
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("the ledger {shown} could not be opened: {e}")),
+    };
+    match file.metadata() {
+        Ok(found) if found.is_file() && found.len() <= WHOLE => {}
+        Ok(found) if found.is_file() => {
+            return Err(format!("the ledger {shown} is larger than {WHOLE} bytes"));
+        }
+        _ => return Err(format!("the ledger {shown} is not a regular file")),
+    }
+    let mut text = String::new();
+    file.take(WHOLE)
+        .read_to_string(&mut text)
+        .map_err(|e| format!("the ledger {shown} could not be read: {e}"))?;
+    Ok(Some(text))
 }
