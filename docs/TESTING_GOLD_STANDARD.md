@@ -309,6 +309,37 @@ The test classes a module usually needs, as a checklist rather than a quota:
 The numbers are typical, not required. A module adds the tests its risk profile
 and its surviving mutants demand.
 
+### What mutation does not see (S3.34.d, measured 2026-11-24)
+
+An outside review said cargo-mutants skips six routes it cannot see. Checked with
+`cargo mutants --no-config --list` (cargo-mutants 27.1.0) on the graph and CLI
+crates at `319799d1`, the commit of the 0.10.0 mutation run, against every function
+of the 22 files of those crates that 0.10.0 changed:
+
+- Of 759 functions outside test code, 752 have mutants. Three of the seven without
+  are compiled only for tests (`unplaced.rs`, declared `#[cfg(test)] mod unplaced`).
+  Four are production code with no mutant: the tool replaces the body of no
+  function that never returns (`-> !`) and of no function named `new`, and these
+  four have no operator or deletable match arm besides. They are `git_input.rs`
+  `usage` (the usage refusal), `HunkLabels::new` (one call of
+  `HunkLabels::sharing`, which is mutated) and, in `hook_run.rs`, `Scratch::new`
+  and `Bench::new`. Those two are on the stop hook's path (the scratch directory of
+  a judgement; finding the judge, reading the policy and hashing the rankers), so
+  mutation evidence says nothing about them; only their own tests do. The other
+  never-returning functions (`fail`, `refuse_now`, `refuse_withdrawn`) have
+  mutants inside them.
+- The run's `--in-diff` keeps a mutant only when it lies on a changed line, so a
+  function whose change is only its signature has none: `eval.rs` `ranking` and
+  `findings` (2 of the 77 functions outside test code that 0.10.0 changed), which
+  the full list mutates.
+- No `const fn` is skipped (34 are listed), no function sits in a macro body or
+  under a configuration other than tests, and the tree has no `mutants::skip` and
+  no mutants configuration (the run passes `--no-config` in any case).
+
+That is six functions in all, four not seen at all and two not seen by a
+diff-scoped run; the review did not name its six, so whether they are these is not
+known.
+
 ## Module Test Targets
 
 | Module or crate | Required focus |
