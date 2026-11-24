@@ -1407,18 +1407,18 @@ fn doctor_gate_names_the_link_that_is_missing() {
     );
 }
 
-/// A non-pass probe proves that the policy protects its own file only when a rule actually
-/// holds or fails that edit. `claims_unverified` and an expired waiver both make a real
-/// forge-warden verdict non-pass without such a rule; before this test, the gate reported the
-/// self-protection link ready from the exit code alone.
+/// The policy-protection link follows the rule outcomes, not merely the verdict's exit code.
+/// In particular, verified-claims mode and expired waivers can make a real forge-warden
+/// verdict non-pass without any rule protecting the policy file. A rule whose severity is
+/// `fail` protects it just as a holding rule does.
 #[test]
-fn doctor_gate_does_not_mistake_non_rule_reasons_for_policy_self_protection() {
+fn doctor_gate_reads_policy_self_protection_from_rule_outcomes() {
     let scratch = Scratch::new("doctor-gate-rule-protection");
     let root = repository(&scratch);
     let home = home();
     std::fs::create_dir(root.join(".claude")).unwrap();
 
-    let non_rule_verdict = |notes: Value, expired_waivers: Value| {
+    let non_rule_verdict = |require_verified: bool, expired: bool| {
         json!({
             "schema": "forge-warden.verdict.v2",
             "tool": {"name": "forge-warden", "version": "0.2.0"},
@@ -1434,54 +1434,70 @@ fn doctor_gate_does_not_mistake_non_rule_reasons_for_policy_self_protection() {
                 "why": "This unrelated rule does not protect the policy file.",
                 "violations": []
             }],
-            "expired_waivers": expired_waivers,
+            "expired_waivers": if expired {
+                json!([{"index": 0, "rule": "unrelated", "owner": "reviewer",
+                        "expires": "2020-01-01"}])
+            } else {
+                json!([])
+            },
             "unused_waivers": [],
-            "notes": notes,
+            "notes": if require_verified {
+                json!([{"code": "claims_unverified",
+                        "detail": "the patch claims were not bound to a repository"}])
+            } else {
+                json!([])
+            },
         })
     };
 
-    let claims = non_rule_verdict(
-        json!([{"code": "claims_unverified",
-                "detail": "the patch claims were not bound to a repository"}]),
-        json!([]),
-    );
-    let (claims_judge, _, claims_exit) = judge(&scratch, &claims);
-    std::fs::write(&claims_exit, "8").unwrap();
-    std::fs::write(
-        root.join(".claude/settings.local.json"),
-        stop_hook_settings(&claims_judge),
-    )
-    .unwrap();
-    let (code, doc, _) = doctor_gate(&root, &home, &["--judge", claims_judge.to_str().unwrap()]);
-    assert_eq!(
-        (code, gate_checks(&doc)),
-        (7, gate_but(&["policy_protects_itself"]))
-    );
-    assert!(
-        detail(&doc, "policy_protects_itself").contains("no rule holds or fails it"),
-        "{doc:#}"
-    );
+    let assert_non_rule = |name: &str, require_verified: bool, expired: bool, exit: &str| {
+        let judge_scratch = Scratch::new(name);
+        let (script, _, exit_file) =
+            judge(&judge_scratch, &non_rule_verdict(require_verified, expired));
+        std::fs::write(&exit_file, exit).unwrap();
+        std::fs::write(
+            root.join(".claude/settings.local.json"),
+            stop_hook_settings(&script),
+        )
+        .unwrap();
+        let (code, doc, _) = doctor_gate(&root, &home, &["--judge", script.to_str().unwrap()]);
+        assert_eq!(
+            (code, gate_checks(&doc)),
+            (7, gate_but(&["policy_protects_itself"])),
+            "{name}: {doc:#}"
+        );
+        assert!(
+            detail(&doc, "policy_protects_itself").contains("no rule holds or fails it"),
+            "{name}: {doc:#}"
+        );
+    };
 
-    let expired = non_rule_verdict(
-        json!([]),
-        json!([{"index": 0, "rule": "unrelated", "owner": "reviewer",
-                "expires": "2020-01-01"}]),
+    // require_verified=true: the claims note holds the probe, but no rule protects the file.
+    assert_non_rule("doctor-gate-claims-only", true, false, "8");
+    // An expired waiver is not protection, whether verified claims are required or not.
+    assert_non_rule("doctor-gate-expired-verified", true, true, "7");
+    assert_non_rule("doctor-gate-expired-unverified", false, true, "7");
+
+    let fail_scratch = Scratch::new("doctor-gate-failing-protection");
+    let (fail_judge, _, fail_exit) = judge(
+        &fail_scratch,
+        &verdict(
+            "fail",
+            "policy-is-protected",
+            "protected_path",
+            "warden.toml",
+        ),
     );
-    let expired_scratch = Scratch::new("doctor-gate-expired-waiver");
-    let (expired_judge, _, expired_exit) = judge(&expired_scratch, &expired);
-    std::fs::write(&expired_exit, "7").unwrap();
+    std::fs::write(&fail_exit, "7").unwrap();
     std::fs::write(
         root.join(".claude/settings.local.json"),
-        stop_hook_settings(&expired_judge),
+        stop_hook_settings(&fail_judge),
     )
     .unwrap();
-    let (code, doc, _) = doctor_gate(&root, &home, &["--judge", expired_judge.to_str().unwrap()]);
-    assert_eq!(
-        (code, gate_checks(&doc)),
-        (7, gate_but(&["policy_protects_itself"]))
-    );
+    let (code, doc, _) = doctor_gate(&root, &home, &["--judge", fail_judge.to_str().unwrap()]);
+    assert_eq!((code, gate_checks(&doc)), (0, gate_but(&[])), "{doc:#}");
     assert!(
-        detail(&doc, "policy_protects_itself").contains("expired waiver"),
+        detail(&doc, "policy_protects_itself").contains("held or fails under a rule"),
         "{doc:#}"
     );
 }
@@ -13684,8 +13700,9 @@ fn unverified_hold() -> Value {
 }
 
 /// S3.25.a: under a policy that requires verified claims a stop here can at best hold. The gate
-/// called that chain ready (the probe is held, so the policy seemed to protect itself); its link
-/// `claims_verified`, read from the verdict's notes, says it, and so does a session's start.
+/// called that chain ready (the probe is held, so the policy seemed to protect itself); both
+/// `claims_verified` and `policy_protects_itself`, read from the verdict, say why it is not
+/// ready, and so does a session's start.
 #[test]
 fn doctor_gate_says_stops_hold_when_the_policy_requires_verified_claims() {
     let (scratch, root, home, script, _log, exit_file) = gate_fixture("doctor-gate-claims");
@@ -13722,6 +13739,17 @@ fn doctor_gate_says_stops_hold_when_the_policy_requires_verified_claims() {
             && said.contains("An uncommitted or staged change can never be verified, so it can at best hold: commit first."),
         "{said}"
     );
+    assert!(
+        !doc["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["name"] == "policy_protects_itself")
+            .unwrap()["ok"]
+            .as_bool()
+            .unwrap(),
+        "{doc:#}"
+    );
     assert_eq!((code, doc["ok"].as_bool()), (7, Some(false)), "{stderr}");
     // the start of a session tells the agent: judged, and held
     let (_, stdout, _) = hook(
@@ -13730,7 +13758,8 @@ fn doctor_gate_says_stops_hold_when_the_policy_requires_verified_claims() {
         &input("SessionStart", &root, "s1", false),
     );
     assert!(
-        stdout.contains("- Stops will be judged. One link is weak: claims_verified: stops here will hold, never pass: "),
+        stdout.contains("- Stops will be judged. Some links are weak: policy_protects_itself: ")
+            && stdout.contains("claims_verified: stops here will hold, never pass: "),
         "{stdout}"
     );
 }
