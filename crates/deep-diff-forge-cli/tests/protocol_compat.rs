@@ -51,6 +51,44 @@ const RUN_DEPENDENT: &[(&str, &[&str])] = &[
     ),
 ];
 
+/// Values of the build, not of the protocol, each by its exact path in a method's `result`: the
+/// session-memory estimates, `files.capacity() * size_of::<ReviewFile>()` plus the heap the
+/// model holds, so they move whenever a type of the review model grows or shrinks (0.11.0's
+/// `PatchTwin::stray_text`, S3.27.h, moved them by 24 bytes a file). One binary gives one value,
+/// so `scripts/record_protocol_transcript.sh --check` (two recordings of the published binary)
+/// cannot show them; they are named here instead. Where the recorded answer has one, the answer
+/// must have it too, a number, greater than zero where the recorded one is; then it becomes its
+/// placeholder.
+const BUILD_DEPENDENT: &[(&str, &[&str])] = &[
+    ("daemon.health", &["retained_bytes"]),
+    ("daemon.metrics", &["engine", "peak_retained_bytes"]),
+];
+
+/// The member of `value` at `path`, when it has one.
+fn member<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    path.iter().try_fold(value, |at, name| at.get(*name))
+}
+
+/// [`BUILD_DEPENDENT`]'s checks of one answer against the recorded one: what does not hold.
+fn build_dependent(method: &str, recorded: &Value, answer: &Value) -> Vec<String> {
+    let mut wrong = Vec::new();
+    for (_, path) in BUILD_DEPENDENT.iter().filter(|(m, _)| *m == method) {
+        // an answer that is an error (a refused request) has no result to hold
+        let Some(was) = recorded.get("result").and_then(|r| member(r, path)) else {
+            continue;
+        };
+        let Some(now) = answer.get("result").and_then(|r| member(r, path)) else {
+            wrong.push(format!(".result.{}: missing", path.join(".")));
+            continue;
+        };
+        let positive = |v: &Value| v.as_u64().is_some_and(|n| n > 0);
+        if !now.is_number() || (positive(was) && !positive(now)) {
+            wrong.push(format!(".result.{}: {was} -> {now}", path.join(".")));
+        }
+    }
+    wrong
+}
+
 /// The placeholder of a run-dependent value: 0 for a number, each item's for an array.
 fn placeholder(value: &mut Value) {
     match value {
@@ -139,7 +177,7 @@ fn method(request: &str) -> String {
 /// The normalisations the replay rule names: every `tool.version` (and the `version` of
 /// [`VERSIONED_RESULTS`]) becomes a placeholder, every `tool.scorer_sha256` is dropped, in a
 /// `canonical_json` text (a rank document's exact bytes) the same two members of its `tool` line,
-/// and each [`RUN_DEPENDENT`] value becomes its placeholder.
+/// and each [`RUN_DEPENDENT`] and [`BUILD_DEPENDENT`] value becomes its placeholder.
 fn normalise(method: &str, answer: &mut Value) {
     let Some(result) = answer.get_mut("result") else {
         return;
@@ -149,7 +187,11 @@ fn normalise(method: &str, answer: &mut Value) {
     {
         *version = Value::from("<version>");
     }
-    for (_, path) in RUN_DEPENDENT.iter().filter(|(m, _)| *m == method) {
+    for (_, path) in RUN_DEPENDENT
+        .iter()
+        .chain(BUILD_DEPENDENT)
+        .filter(|(m, _)| *m == method)
+    {
         at_path(result, path);
     }
     normalise_tools(result);
@@ -280,6 +322,11 @@ fn a_protocol_2_transcript_keeps_its_shapes() {
         if let Some(change) = protocol_3(&record.request, &mut before, &after) {
             changed.push(format!("transcript line {line} ({method}): {change}"));
         }
+        found.extend(
+            build_dependent(&method, &before, &after)
+                .into_iter()
+                .map(|d| format!("transcript line {line} ({method}) {d}")),
+        );
         normalise(&method, &mut before);
         normalise(&method, &mut after);
         let mut here = Vec::new();
