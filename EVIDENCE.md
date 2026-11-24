@@ -1577,9 +1577,10 @@ by its SHA-256 or by its place in the comparison corpus.
 
 - **Binaries by name.** `704f66e9…` is the release-profile Cargo build of commit `5030ae9b`
   (the first candidate). `b329a52b…` is the release-profile Cargo build of commit `b337eb2c`,
-  one commit later (the fix this section's first item led to, and a gate step). The two give the
-  same stdout, stderr and exit code on all 7,715 corpus patches in `--json`, `--rank --json` and
-  `--diagnostics --json`. Neither is a release build (`scripts/release_local.sh`); the version
+  one commit later (the fix this section's first item led to, and a gate step), and
+  `6e49cb19…` that of `4ad1ca73` (that fix corrected: the candidate the reviewers read). The
+  three give the same stdout, stderr and exit code on all 7,715 corpus patches in `--json`,
+  `--rank --json` and `--diagnostics --json`. None is a release build (`scripts/release_local.sh`); the version
   they print is `0.11.0-dev`. The published 0.10.0 binary is `121503a8…`. The judge is a build
   of forge-warden's hub main `005a1959` (`2451dd11…`; it prints `forge-warden 0.2.1`, its
   version member not yet raised for 0.3.0).
@@ -1588,8 +1589,8 @@ by its SHA-256 or by its place in the comparison corpus.
   `.claude/settings.json` is the hooks object `agent setup --client claude --hooks` prints and
   whose `warden.toml` is forge-warden's starter policy (`forge-warden init`) admitting this
   build as ranker. The client started every hook; the driver only gave the prompts. Three
-  sessions, run on `704f66e9…` (10:47Z to 10:51Z) and again on `b329a52b…` (10:56Z to
-  10:57Z), with the same outcome at every stop:
+  sessions, run on `704f66e9…` (10:47Z to 10:51Z), again on `b329a52b…` (10:56Z to 10:57Z)
+  and on `6e49cb19…` (11:26Z to 11:28Z), with the same outcome at every stop:
   - *A, a judge that is found.* A plain change with its test, not committed: no advice; the
     stop says HOLD with the judge's note `claims_unverified` (an uncommitted change cannot be
     verified under `require_verified`). Then a silenced lint and a credential-shaped constant:
@@ -1612,9 +1613,11 @@ by its SHA-256 or by its place in the comparison corpus.
     which units can pass (357 characters, added in this release) was cut at a bound of 300
     without a word. No test read the end of that text. Commit `b337eb2c` raises the bound to
     400, holds by a test that both of the hook's own link texts are said to their last word,
-    and makes a longer detail end with a line that says it is cut. On `b329a52b…` the five
-    starts under that policy end "… can never be verified, so they can at best hold: commit
-    first."
+    and makes a longer detail end with a line that says it is cut. On `b329a52b…` and on
+    `6e49cb19…` the five starts under that policy end "… can never be verified, so they can at
+    best hold: commit first." The first form of that line named `agent doctor` by a bare name;
+    the test that no text for an agent names a command it cannot see by its path turned the
+    gate red, and `4ad1ca73` writes "[cut here]".
   - *Not exercised by these sessions:* an agent that repairs after a block (it left both
     failures to a person, as the block's text allows for work its user asked for); a Codex
     client; an interactive client and its permission prompts; the user's own settings and hooks
@@ -1625,8 +1628,8 @@ by its SHA-256 or by its place in the comparison corpus.
     notice for `.claude/settings.json`; advice at its caps. The contract matrix (71 rows) and
     the hook tests hold those by stand-in and real judges; no real client was in them.
   - Records: the three transcripts with every hook answer in full, SHA-256 `d916ed92…`
-    (A and B on `704f66e9…`), `01443a45…` (C on `704f66e9…`) and `f2d6b97d…` (A, B and C on
-    `b329a52b…`), with the clients' event streams, the registered settings, the policies and
+    (A and B on `704f66e9…`), `01443a45…` (C on `704f66e9…`), `f2d6b97d…` (A, B and C on
+    `b329a52b…`) and `adb3eda5…` (A, B and C on `6e49cb19…`), with the clients' event streams, the registered settings, the policies and
     the three ledgers.
 - **One run of every surface (condition C9),** on `704f66e9…`, two inputs (a one-line Rust edit;
   three files with ten diagnostics, among them a path holding U+202E and U+200B), every
@@ -1657,7 +1660,7 @@ by its SHA-256 or by its place in the comparison corpus.
   that ran. Run alone before the gate: it passes; with one test's name changed it fails ("not
   exactly one passing test"); asked for a check the doctor does not list it fails.
 - **Comparison.** The corpus (`fixtures/corpus/compare-v1.sha256`: 7,715 patches, 72 planted
-  Git repositories, manifest `8a21922a…`) on `b329a52b…`: against itself nothing lost or
+  Git repositories, manifest `c0c4f785…`) on `6e49cb19…`: against itself nothing lost or
   gained; against the published 0.10.0, 106 patches with a lost item, every one the listed
   floor exception of this release (`#[allow(` inside a Rust comment or a string is no
   `check_suppressed`; `r#unsafe` is no `unsafe_added`), read item by item, and 1,002 with a
@@ -1665,6 +1668,12 @@ by its SHA-256 or by its place in the comparison corpus.
   repository loses an item; in two history ranges 49 `check_suppressed` of the same exception
   and 30 `panic_path_added` rows that fall behind the 32-row bound of a file's evidence list,
   each file keeping the label. The file has the figures against 0.9.0, 0.8.4 and 0.8.3.
+- **Gate.** `scripts/ci_local.sh`, 36 steps, with forge-warden `005a1959` as the matrix's judge
+  beside two older builds and the published 0.9.0 and 0.10.0. Two gates on earlier commits of
+  this branch were red, each on the commits above: one step on `7bdd31cd` (a test that bounds
+  a start with many long links), two on `39a9b96c` (the bare command name; a lint on that
+  test's length). Before the first only the changed test had been run, not its module. The
+  gate is run on this commit before it is pushed.
 - **Mutation.** No mutation run over what 0.11.0 changed has been made; the required CI check
   `scripts/diff_mutation.sh` runs at a pull request. The run over what 0.10.0 changed (729
   mutants) had 450 judged caught when this was written (11:05Z) and restarts whenever a gate

@@ -11,10 +11,10 @@
 # makes binary by content (27 repositories; the 45 earlier ones rebuild unchanged), the
 # published 0.10.0 binary and the binaries below.
 #
-# Whole-tree record for the candidate of the tree review, commit b337eb2c (version 0.11.0-dev;
-# binary sha256 b329a52b8f89cbfde8e8dfd71a31eb72848eb76051fca5093abb08a7620db9b7, the
-# release-profile Cargo build of that commit), run 2026-11-24T10:59Z, record
-# runs/20261124T105927Z-b329a52b8f89 of the corpus:
+# Whole-tree record for the candidate of the tree review, commit 4ad1ca73 (version 0.11.0-dev;
+# binary sha256 6e49cb194eab253ef99844184b09afcb7fe9364acf9195af1ccf98f75feee6ea, the
+# release-profile Cargo build of that commit), run 2026-11-24T11:30Z, record
+# runs/20261124T113029Z-6e49cb194eab of the corpus:
 #   identity control                               lost 0    gained 0
 #   against the published 0.10.0 (121503a8…)       lost 106  gained 1002  (see note 3)
 #   against v0.9.0 code (5ba0a366…)                lost 160  gained 1244  (note 3: 106; note 2: 54)
@@ -34,10 +34,12 @@
 #   items read line by line (38 in a line comment, 149 in a string, 1 in a block comment, 3
 #   `r#unsafe`) and 11 patches that lose the label on a file whose list 0.10.0 had cut, where
 #   every added line with `allow` is a comment or a string.
-# The same record was first taken on the commit before (5030ae9b, binary 704f66e9…, record
-#   runs/20261124T103801Z-704f66e94b68): every result file is the same but for the binary's name,
-#   and the two binaries give the same stdout, stderr and exit code on all 7,715 patches in
-#   --json, --rank --json and --diagnostics --json.
+# The same record was first taken on 5030ae9b (binary 704f66e9…, record
+#   runs/20261124T103801Z-704f66e94b68) and on b337eb2c (binary b329a52b…, record
+#   runs/20261124T105927Z-b329a52b8f89), which differ from this commit in the text a session's
+#   start prints: every result file is the same in the three but for the binary's name, and the
+#   three binaries give the same stdout, stderr and exit code on all 7,715 patches in --json,
+#   --rank --json and --diagnostics --json.
 #
 # 0.10.0 (corpus digest a6e6baff0360a41860ce9c1d24a7bdc3a58b0989c2cd3f6c8f1e57adb0674ec2: 7,421
 # patches, 45 planted Git repositories).
@@ -65,4 +67,4 @@
 # Note 2: all 54 are trivial_assert on Python lines where "assert True" is followed by more
 #   (for example "assert True == False"), which 0.9.0 labelled though they can fail: the narrowing
 #   of task S3.16, a recorded exception to the floor.
-8a21922ae9ce409528969e6b4339165847498159ba5fff009a0e7e129bb0a1f5  MANIFEST.sha256
+c0c4f785f3d745a29ce2f7cb64616fbc72e9197a641dad2c75e8fafd04459100  MANIFEST.sha256
