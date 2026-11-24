@@ -100,3 +100,31 @@ fn a_finding_outside_rust_of_a_signal_release_had_is_marked_released() {
         "a signal release 0.8.3 did not have was marked released"
     );
 }
+
+/// S3.34.c, the mutant of `score_path_and_shape` (`+=` to `-=` where a generated or vendored file's
+/// suppressed diff is weighed): the 0.10.0 mutation run timed it out, but the workspace's tests
+/// pass on it in 496 seconds, so it was a missed mutant; no test ranked a vendored file whose diff
+/// Git suppressed. Such a file ranks above the same file with its diff shown, by the signal's
+/// weight, and says why.
+#[test]
+fn a_vendored_file_whose_diff_is_suppressed_ranks_above_the_same_file_shown() {
+    use deep_diff_forge_core::DiffSuppression;
+    let patch = "diff --git a/vendor/lib/a.txt b/vendor/lib/a.txt\n--- a/vendor/lib/a.txt\n+++ b/vendor/lib/a.txt\n@@ -1 +1 @@\n-a\n+b\n";
+    let shown = parse(patch).unwrap();
+    let mut hidden = shown.clone();
+    hidden[0].patch_twin.diff_suppressed = Some(DiffSuppression::Attribute);
+    let (shown, hidden) = (&rank(&shown)[0], &rank(&hidden)[0]);
+    assert!(
+        shown.signals.contains(&RiskSignal::GeneratedOrVendored),
+        "{shown:?}"
+    );
+    assert!(
+        hidden.signals.contains(&RiskSignal::DiffSuppressed),
+        "{hidden:?}"
+    );
+    assert_eq!(
+        hidden.score,
+        shown.score + RiskSignal::DiffSuppressed.weight(),
+        "a vendored file whose diff Git suppressed did not rank above it shown by the signal's weight"
+    );
+}
