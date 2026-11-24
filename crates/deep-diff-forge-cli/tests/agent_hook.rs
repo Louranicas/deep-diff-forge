@@ -4180,7 +4180,7 @@ fn a_state_that_cannot_be_kept_is_said_once_by_advice_and_always_by_a_stop() {
             system_message(&run("stop", "Stop", "6a", &no_home)).starts_with(&format!(
                 "{}{}",
                 stateless("state.no_directory"),
-                "commits made in this session are judged when"
+                "no commit was judged: the project's ledger has no baseline"
             ))
         );
     }
@@ -4603,8 +4603,13 @@ fn a_list_of_commits_that_is_gone_or_was_changed_is_never_another_list() {
             Some(text) => std::fs::write(&tips, text).unwrap(),
             None => std::fs::remove_file(&tips).unwrap(),
         }
+        // F12.d with the ledger: the first such stop judges the session's commit and blocks
         let decision = stop_from(&root, "s", &script);
-        let said = allowed(&decision);
+        let said = if what == "longer" {
+            blocked(&decision)
+        } else {
+            allowed(&decision)
+        };
         assert!(
             said.starts_with(&stateless("state.lists_damaged"))
                 && said.contains("list of the commits that were there when it began")
@@ -4612,10 +4617,12 @@ fn a_list_of_commits_that_is_gone_or_was_changed_is_never_another_list() {
             "{what}: {said}"
         );
     }
-    assert_eq!(runs(&log), 0);
-    // as it was recorded it is believed, and the commit is judged
+    assert_eq!(runs(&log), 1);
+    // as it was recorded it is believed, and the commit is judged: once more, since the
+    // session's own list of judged commits does not have the stateless stop's verdict
     std::fs::write(&tips, recorded).unwrap();
     blocked(&stop_from(&root, "s", &script));
+    assert_eq!(runs(&log), 2);
 }
 
 /// Third independent review of the hooks, HR3-H-2: the first 4,096 refs by name were
@@ -4806,6 +4813,9 @@ fn a_commit_is_judged_by_its_own_change_on_an_older_branch_after_a_pull_and_a_re
     assert_eq!(runs(&log), before + 2);
 }
 
+/// What follows the id of a commit a stop judges by the project's frontier.
+const NOT_OURS: &str = " (not this session's: left or merged since the project was first recorded)";
+
 /// The hook input of `event` with the `source` a `SessionStart` gives (`resume`, `compact`, …).
 fn input_from(event: &str, cwd: &Path, session: &str, source: &str) -> Value {
     let mut value = input(event, cwd, session, false);
@@ -4842,8 +4852,12 @@ fn a_commit_made_before_a_crash_is_judged_by_the_next_session() {
     // session a ends here, before any stop; a new conversation begins
     start(&root, "b");
     let reason = blocked(&stop_from(&root, "b", &script)).to_owned();
+    // it is said not to be this session's own, and not to be rewritten
     assert!(
-        reason.contains(&format!("Commit {}: FAIL\n", &work[..12])),
+        reason.contains(&format!("Commit {}{NOT_OURS}: FAIL\n", &work[..12]))
+            && reason.contains(
+                "Do not rewrite it or its history: tell a person, and make any repair a new commit."
+            ),
         "{reason}"
     );
     // it held once: the next stop lets the session stop
@@ -4870,7 +4884,7 @@ fn a_commit_made_before_a_crash_is_judged_by_the_next_session() {
     assert!(said.contains(&format!("(commit {}", &begun[..7])), "{said}");
     let reason = blocked(&stop_from(&root, "e", &script)).to_owned();
     assert!(
-        reason.contains(&format!("Commit {}: FAIL\n", &loosened[..12])),
+        reason.contains(&format!("Commit {}{NOT_OURS}: FAIL\n", &loosened[..12])),
         "{reason}"
     );
     assert_eq!(
@@ -4915,9 +4929,11 @@ fn a_session_that_removes_the_ledger_is_judged_as_before() {
     );
 }
 
-/// F13.b, ruling 3 (N92): an ended session can leave more commits than one stop has time for.
-/// The next session's stop judges the oldest first within its time, says the rest are judged
-/// at the next stop, and the next stop does; no stop runs past its bound.
+/// F13.b, ruling 3 (N92) and the closing round's ruling 1: an ended session can leave more
+/// commits than one stop has time for. The session's own work is judged first: its own commit
+/// has its verdict at its first stop; the frontier's commits get the time that is left, the
+/// oldest first, and what does not fit is counted as left or merged since the project was first
+/// recorded and judged at later stops. No stop runs past its bound.
 ///
 /// This test takes about forty seconds: one stop runs up to its deadline with a judge that
 /// takes thirteen seconds for each patch.
@@ -4933,6 +4949,8 @@ fn commits_an_ended_session_left_are_judged_over_later_stops_within_their_bound(
         commit_all(&root, name);
     }
     start(&root, "b");
+    secret(&root, "own.rs");
+    let own = commit_all(&root, "the session's own work");
     std::fs::write(scratch.join("judge.sleep"), "13").unwrap();
     let began = std::time::Instant::now();
     let decision = stop_from(&root, "b", &script);
@@ -4941,22 +4959,40 @@ fn commits_an_ended_session_left_are_judged_over_later_stops_within_their_bound(
         "{:?}",
         began.elapsed()
     );
-    let said = allowed(&decision);
-    let first = shown(&log);
+    let reason = blocked(&decision).to_owned();
     assert!(
-        !first.is_empty() && first.len() < names.len(),
-        "{first:?}: {said}"
+        reason.contains(&format!("Commit {own}: FAIL\n")),
+        "{reason}"
     );
-    assert_eq!(first[..], names[..first.len()], "not the oldest first");
-    assert!(said.contains("they are judged at the next stop"), "{said}");
+    let first = shown(&log);
+    assert_eq!(
+        first.first().map(String::as_str),
+        Some("own.rs"),
+        "not the session's own first"
+    );
+    assert!(first.len() < names.len() + 1, "{first:?}");
+    assert_eq!(
+        first[1..],
+        names[..first.len() - 1],
+        "the frontier not the oldest first"
+    );
+    assert!(
+        reason.contains("commits left or merged since the project was first recorded: UNJUDGED"),
+        "{reason}"
+    );
     std::fs::remove_file(scratch.join("judge.sleep")).unwrap();
-    assert_eq!(stop_from(&root, "b", &script), Value::Null);
+    // the backlog drains over the next stops; the own commit's failure stands
+    let said = allowed(&stop_from(&root, "b", &script)).to_owned();
+    assert!(
+        said.contains(&format!("Commit {own}: FAIL, which stands")),
+        "{said}"
+    );
     let all = shown(&log);
     for name in &names {
         assert!(all.contains(name), "{name} was never judged: {all:?}");
     }
     let before = runs(&log);
-    assert_eq!(stop_from(&root, "b", &script), Value::Null);
+    let _ = stop_from(&root, "b", &script);
     assert_eq!(runs(&log), before);
 }
 
@@ -5504,8 +5540,11 @@ fn a_commit_with_no_verdict_never_stops_the_judging_of_later_commits() {
     assert!(
         reason.contains(&format!("Commit {key}: FAIL\n"))
             // F13.b: n1's three commits still have no verdict in the project's ledger, so
-            // n2's stop asks about them too
-            && reason.contains("6 commits of this session have no verdict: "),
+            // n2's stop asks about them too, and counts them apart
+            && reason.contains("3 commits of this session have no verdict: ")
+            && reason.contains(
+                "3 commits left or merged since the project was first recorded have no verdict: "
+            ),
         "{reason}"
     );
 
@@ -5673,7 +5712,8 @@ fn a_commit_that_was_there_before_the_session_is_not_judged_and_that_is_said() {
     // F13.b: the branch's commit was made after the project's ledger first recorded the
     // project (at a1's start) and no stop gave it a verdict: a4's stop judges it, the oldest
     // first; the merge brings the same patch, whose answer is the one already given
-    assert_eq!(shown(&log), ["w.rs", "own.rs"]);
+    // (the closing round: the session's own commit first, then the frontier's)
+    assert_eq!(shown(&log), ["own.rs", "w.rs"]);
 }
 
 /// The fourth review's weak tests: no test needed the refs as a source, because every commit
@@ -9268,8 +9308,14 @@ fn a_damaged_state_says_what_removing_it_costs() {
         "{",
     ] {
         std::fs::write(&state, damage).unwrap();
-        // (F12.d: the tree is clean, so the stateless stop has nothing to judge)
-        let said = allowed(&stop_from(&root, "s", &script)).to_owned();
+        // F12.d with the ledger (the closing round's ruling 3): the session's commit is judged
+        // by the first such stop and blocks once; the ledger keeps its verdict
+        let decision = stop_from(&root, "s", &script);
+        let said = if runs(&log) == 1 && decision.get("decision").is_some() {
+            blocked(&decision).to_owned()
+        } else {
+            allowed(&decision).to_owned()
+        };
         assert!(
             said.starts_with(&stateless("state.damaged"))
                 && said.contains("Why: this session's state file ")
@@ -9279,20 +9325,16 @@ fn a_damaged_state_says_what_removing_it_costs() {
         );
         assert_eq!(std::fs::read_to_string(&state).unwrap(), damage);
     }
-    assert_eq!(runs(&log), 0);
-    // what removing it costs, as the next hook finds it: F13.b, the project's ledger finds
-    // the commit made before the state was removed, and it is judged
+    assert_eq!(runs(&log), 1, "the session's commit was not judged once");
+    // what removing it costs, as the next hook finds it: the commit has its verdict in the
+    // project's ledger, so it is not judged again
     std::fs::remove_file(&state).unwrap();
-    let said = blocked(&stop_from(&root, "s", &script)).to_owned();
+    let said = allowed(&stop_from(&root, "s", &script)).to_owned();
     assert!(
         said.contains("This session's start was not recorded"),
         "{said}"
     );
-    assert_eq!(
-        runs(&log),
-        1,
-        "the commit made before the state was removed was not judged"
-    );
+    assert_eq!(runs(&log), 1, "the commit was judged twice");
 }
 
 /// Rule V10: the names of a session's files and its lock are the documented ones, and do not
@@ -13039,7 +13081,8 @@ fn a_damaged_state_still_judges_the_tree_once() {
         "{first}"
     );
     assert!(!first.contains("TEXT-OF-THE-DAMAGED-STATE"), "{first}");
-    assert_eq!(runs(&log), 1);
+    // the tree, and the session's commit, which the ledger has no verdict for
+    assert_eq!(runs(&log), 2);
     assert_eq!(last_policy(&log), "# the policy at the base commit");
     // the stop that follows the block: the failure stands
     let (code, stdout, _) = hook(
@@ -13214,6 +13257,76 @@ fn tree_digest_lenient(dir: &Path) -> Vec<(PathBuf, Vec<u8>, u64)> {
     }
     out.sort();
     out
+}
+
+/// Closing round, ruling 3: with the project's ledger, a stop whose state cannot be used judges
+/// the frontier's commits too (the session's own among them, which it cannot tell apart, so none
+/// is marked), records each in the ledger, and blocks on a failing one; the ledger keeps its
+/// verdict, so the next stops do not judge it again.
+#[test]
+fn a_damaged_state_after_a_failing_commit_still_judges_the_commit() {
+    let scratch = Scratch::new("hook-stateless-commit");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    start(&root, "s");
+    secret(&root, "k.rs");
+    let key = commit_all(&root, "a key");
+    let state = states_in(&sessions()).remove(0);
+    std::fs::write(&state, "{}").unwrap();
+    let before = tree_digest(&sessions());
+    let first = blocked(&stop_from(&root, "s", &script)).to_owned();
+    assert!(
+        first.starts_with(&stateless("state.damaged"))
+            && first.contains("so were the commits the project's ledger has no verdict for")
+            && first.contains(&format!("Commit {key}: FAIL\n")),
+        "{first}"
+    );
+    assert!(!first.contains(NOT_OURS), "{first}");
+    let judged = runs(&log);
+    for _ in 0..2 {
+        let said = allowed(&stop_from(&root, "s", &script)).to_owned();
+        assert!(said.starts_with(&stateless("state.damaged")), "{said}");
+    }
+    assert_eq!(runs(&log), judged, "the commit was judged again");
+    assert_eq!(
+        tree_digest(&sessions()),
+        before,
+        "the state directory was written"
+    );
+    let ledger = std::fs::read_to_string(root.join(".git/deep-diff-forge/ledger.jsonl")).unwrap();
+    let full = git(&root, &["rev-parse", "HEAD"]);
+    assert!(
+        ledger.lines().any(
+            |line| line.contains(&format!("\"unit\":\"commit:{}\"", full.trim()))
+                && line.contains("\"outcome\":\"fail\"")
+        ),
+        "{ledger}"
+    );
+}
+
+/// Closing round, ruling 4: a session's start that writes the project's baseline says so: the
+/// project is recorded from this commit, and commits before it are not judged by the hooks.
+/// Removing the ledger between sessions is then visible at the next start.
+#[test]
+fn a_start_that_records_the_project_says_so() {
+    const FIRST: &str = "- This start is the first record of this project in its ledger: the project is recorded from commit ";
+    let scratch = Scratch::new("hook-first-record");
+    let root = repository(&scratch);
+    let said = start(&root, "a");
+    assert!(said.contains(FIRST), "{said}");
+    assert!(
+        said.contains(
+            "commits that were in the repository before it are not judged by these hooks"
+        ),
+        "{said}"
+    );
+    assert!(!start(&root, "b").contains(FIRST));
+    silence_a_lint(&root);
+    commit_all(&root, "work of a session that ended");
+    std::fs::remove_file(root.join(".git/deep-diff-forge/ledger.jsonl")).unwrap();
+    let head = short(&root, "HEAD");
+    let said = start(&root, "c");
+    assert!(said.contains(&format!("{FIRST}{}", &head[..7])), "{said}");
 }
 
 /// S3.17a.l: when the advice after a tool call is off for a reason told once in the session, the

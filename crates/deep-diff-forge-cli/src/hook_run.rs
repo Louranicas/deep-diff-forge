@@ -1992,9 +1992,15 @@ const CONTINUING: [&str; 3] = ["resume", "compact", "clear"];
 /// session that goes on with a conversation ([`CONTINUING`]) takes that commit from the last
 /// `start` record of its working tree, when that commit is still in the repository. Nothing
 /// of it decides anything when it fails: the session's own state still holds its base.
-fn begin_in_ledger(input: &Input, session: &mut Session, work: &mut Work, deadline: Deadline) {
+/// `true` when this call wrote the project's baseline: the project is recorded from now.
+fn begin_in_ledger(
+    input: &Input,
+    session: &mut Session,
+    work: &mut Work,
+    deadline: Deadline,
+) -> bool {
     if !work.fresh || own_directory(&work.place.own).is_err() {
-        return;
+        return false;
     }
     let own = &work.place.own;
     let worktree = tree_instance(&work.place);
@@ -2029,14 +2035,24 @@ fn begin_in_ledger(input: &Input, session: &mut Session, work: &mut Work, deadli
         .clone()
         .map(|tips| crate::ledger::Baseline { tips, head });
     let wait = LEDGER_WAIT.min(deadline.left());
-    let _ = crate::ledger::append_start(
+    crate::ledger::append_start(
         own,
         &input.session,
         &worktree,
         base,
         baseline.as_ref(),
         wait,
-    );
+    )
+    .unwrap_or(false)
+}
+
+/// What a session's start says when it wrote the project's baseline (F13.b): the project is
+/// recorded from the commit `HEAD` names, and what was there before is not judged.
+fn first_record_words(id: &str) -> String {
+    let short: String = id.chars().take(7).collect();
+    format!(
+        "- This start is the first record of this project in its ledger: the project is recorded from commit {short}, and commits that were in the repository before it are not judged by these hooks. The ledger is a file of the repository's Git directory that the agent can write; the pull request's judge is the boundary.\n"
+    )
 }
 
 /// What to do about a project that is not what was recorded: nothing in the session's state
@@ -2799,7 +2815,7 @@ fn post_tool(input: &Input, args: &[String]) -> Option<String> {
             if let Some(why) = session.inside(&work.place.top) {
                 return said_beside(Some(&work.place.own), &input.session, &why.text);
             }
-            begin_in_ledger(input, &mut session, &mut work, deadline);
+            let _ = begin_in_ledger(input, &mut session, &mut work, deadline);
             let advice = advice_for(
                 &work,
                 &mut session.state,
@@ -2930,9 +2946,8 @@ fn session_start(input: &Input, args: &[String]) -> Option<String> {
     if let Some(why) = session.inside(&work.place.top) {
         return Some(hook::contract_trouble(&why.text));
     }
-    if !matches!(turn, Turn::Taken) {
-        begin_in_ledger(input, &mut session, &mut work, deadline);
-    }
+    let first_record =
+        !matches!(turn, Turn::Taken) && begin_in_ledger(input, &mut session, &mut work, deadline);
     // A session that is resumed with its list of commits gone, or its list of judged commits,
     // is not one whose stops will be judged: say so now, not only at the stop (fifth
     // independent review of the hooks, HR5-L-6).
@@ -2986,7 +3001,7 @@ fn session_start(input: &Input, args: &[String]) -> Option<String> {
         .filter(|check| !check.ok && !check.detail.starts_with(NOT_CHECKED))
         .map(|check| (check.name.to_owned(), check.detail.clone()))
         .collect();
-    Some(hook::contract(
+    let mut said = hook::contract(
         &top,
         StartBase::Commit {
             id,
@@ -2995,7 +3010,12 @@ fn session_start(input: &Input, args: &[String]) -> Option<String> {
         &not_ready,
         gate.dirty,
         unsaved.as_deref(),
-    ))
+    );
+    // (F13.b: a start that writes the project's baseline says so, under the first line)
+    if first_record && let Some(at) = said.find('\n') {
+        said.insert_str(at + 1, &first_record_words(id));
+    }
+    Some(said)
 }
 
 fn policy_name(args: &[String]) -> String {
@@ -3857,6 +3877,8 @@ struct Judging {
     /// The uncommitted and the staged change of each working tree first, then the session's
     /// commits that did not pass, the oldest first.
     units: Vec<TreeJudged>,
+    /// The commits the project's frontier gave this stop beside the session's own (F13.b).
+    frontier: BTreeSet<String>,
     /// What must be said beside the verdict, at every stop while it is true.
     beside: Vec<Note>,
     /// The commits this stop has an answer for, each with it as the session's file writes it.
@@ -4623,6 +4645,7 @@ fn with_frontier(
     stopping: &Stopping<'_>,
     listed: Vec<CommitAndParent>,
     beside: &mut Vec<Note>,
+    ids: &mut BTreeSet<String>,
 ) -> Vec<CommitAndParent> {
     let Some(baseline) = &stopping.frontier.baseline else {
         return listed;
@@ -4648,11 +4671,14 @@ fn with_frontier(
         }
     };
     let own: BTreeSet<&str> = listed.iter().map(|(id, _)| id.as_str()).collect();
-    let mut out: Vec<CommitAndParent> = wider
+    let theirs: Vec<CommitAndParent> = wider
         .into_iter()
         .filter(|(id, _)| !own.contains(id.as_str()) && !stopping.frontier.judged.contains(id))
         .collect();
-    out.extend(listed);
+    ids.extend(theirs.iter().map(|(id, _)| id.clone()));
+    // the session's own work first; the frontier gets the time that is left
+    let mut out = listed;
+    out.extend(theirs);
     out
 }
 
@@ -4708,6 +4734,37 @@ fn commits_label(count: usize) -> String {
         "1 commit of this session".to_owned()
     } else {
         format!("{count} commits of this session")
+    }
+}
+
+/// [`commits_label`] for `own` commits of the session and `frontier` commits left or merged
+/// since the project was first recorded (F13.b).
+fn commits_of(own: usize, frontier: usize) -> String {
+    let theirs = |count: usize| {
+        if count == 1 {
+            "1 commit left or merged since the project was first recorded".to_owned()
+        } else {
+            format!("{count} commits left or merged since the project was first recorded")
+        }
+    };
+    match (own, frontier) {
+        (_, 0) => commits_label(own),
+        (0, _) => theirs(frontier),
+        _ => format!("{} and {}", commits_label(own), theirs(frontier)),
+    }
+}
+
+/// Mark each commit of `units` that the project's frontier gave the stop ([`hook::FRONTIER_MARK`]),
+/// after its id.
+fn mark_frontier(units: &mut [TreeJudged], frontier: &BTreeSet<String>) {
+    for unit in units.iter_mut().filter(|unit| unit.tag.is_empty()) {
+        let Some(rest) = unit.what.strip_prefix("Commit ") else {
+            continue;
+        };
+        let short: String = rest.chars().take(12).collect();
+        if short.len() == 12 && frontier.iter().any(|id| id.starts_with(&short)) {
+            unit.what = format!("Commit {short}{}{}", hook::FRONTIER_MARK, &rest[12..]);
+        }
     }
 }
 
@@ -5398,13 +5455,18 @@ fn judge_commits(
     }
     out.units.extend(units.into_iter().flatten());
     if waiting > 0 {
+        let theirs = waited
+            .iter()
+            .filter(|id| out.frontier.contains(*id))
+            .count();
+        let label = commits_of(waiting - theirs, theirs);
         for id in waited {
             let name = crate::ledger::Name::Commit(id);
             out.ledger.push((Some(out.units.len()), name, None));
         }
         out.units.push(TreeJudged {
             tag: String::new(),
-            what: commits_label(waiting),
+            what: label,
             judged: Some({
                 let waits = waits.unwrap_or_else(not_yet);
                 Judged::Unjudged {
@@ -6616,12 +6678,19 @@ fn judge_units(
     // the same.
     let listed = match tips {
         Tips::Listed(tips) => session_commits(stopping, tips)
-            .map(|listed| with_frontier(stopping, listed, &mut out.beside)),
+            .map(|listed| with_frontier(stopping, listed, &mut out.beside, &mut out.frontier)),
         // What follows from it stands first, and the whole has room in what a message shows
         // of a reason ([`hook::REASON_CHARS`]): the cause stood first, and every stop of
         // such a session read "… cannot be told from them: they are not." (eleventh
         // independent review of the hooks, HR11-L-3).
-        Tips::Stateless => Ok(Vec::new()),
+        // with the ledger's baseline, the frontier's commits; without, none (the base is
+        // unknown). Which of them are the session's own cannot be told: none is marked.
+        Tips::Stateless => Ok(with_frontier(
+            stopping,
+            Vec::new(),
+            &mut out.beside,
+            &mut BTreeSet::new(),
+        )),
         Tips::Unavailable(why) => Err(Why::new(
             ReasonClass::StateNoBaseline,
             format!(
@@ -6631,7 +6700,13 @@ fn judge_units(
         )),
     };
     match listed {
-        Ok(listed) => judge_commits(stopping, &mut tribunal, &listed, known, &mut out)?,
+        Ok(listed) => {
+            let first = out.units.len();
+            judge_commits(stopping, &mut tribunal, &listed, known, &mut out)?;
+            let frontier = std::mem::take(&mut out.frontier);
+            mark_frontier(&mut out.units[first..], &frontier);
+            out.frontier = frontier;
+        }
         Err(reason) => out.units.push(TreeJudged {
             tag: String::new(),
             what: "The commits of this session".to_owned(),
@@ -7672,7 +7747,7 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, Why> {
     if let Some(why) = session.inside(&work.place.top) {
         return Ok(Some(hook::unjudged_output(&why.text)));
     }
-    begin_in_ledger(input, &mut session, &mut work, deadline);
+    let _ = begin_in_ledger(input, &mut session, &mut work, deadline);
     // The project and the base are recorded before anything else can fail.
     let mut unsaved = session.keep().err();
     let mut beside: Vec<Note> = Vec::new();
@@ -7834,7 +7909,11 @@ fn attribute(place: &Place, units: &mut [TreeJudged]) {
             && unit.holds == Holds::Now
             && matches!(unit.judged, Some(Judged::Fail { .. }))
     }) {
-        let Some(short) = unit.what.strip_prefix("Commit ").map(str::to_owned) else {
+        let Some(short) = unit
+            .what
+            .strip_prefix("Commit ")
+            .map(|rest| rest.chars().take(12).collect::<String>())
+        else {
             continue;
         };
         if let Some(top) = reflog_holder(place, &short) {
@@ -7906,14 +7985,25 @@ fn reflog_holder(place: &Place, short: &str) -> Option<PathBuf> {
 }
 
 /// What heads the message of a stop whose session state could not be used ([`stateless_stop`]).
-fn stateless_head(why: &Why, no_record: bool) -> String {
+fn stateless_head(why: &Why, no_record: bool, commits: bool) -> String {
     let policy = if no_record {
         " No record of this project was found in its ledger, so the tree was judged under the policy at HEAD, which a commit of this session can have changed."
     } else {
         ""
     };
+    let commits = match (commits, why.class) {
+        (true, _) => {
+            "so were the commits the project's ledger has no verdict for (this session's own among them), each once: the ledger keeps their verdicts"
+        }
+        (false, ReasonClass::StateLockBusy) => {
+            "no commit was judged: the hook that holds the session's lock answers for them"
+        }
+        (false, _) => {
+            "no commit was judged: the project's ledger has no baseline to find them from, so they are judged at a stop that has its state"
+        }
+    };
     format!(
-        "deep-diff-forge: this session's state could not be used ({}): the working tree was judged without it; commits made in this session are judged when the project's ledger finds them, at a stop that has its state. Left as it is, the working tree is judged like this at every stop with no memory of what blocked: a failing tree blocks once in each turn.{policy} Why: {}.",
+        "deep-diff-forge: this session's state could not be used ({}): the working tree was judged without it; {commits}. Left as it is, the working tree is judged like this at every stop with no memory of what blocked: a failing tree blocks once in each turn.{policy} Why: {}.",
         why.class.as_str(),
         deep_diff_forge_core::display_safe(&why.text)
     )
@@ -7928,8 +8018,11 @@ fn stateless_head(why: &Why, no_record: bool) -> String {
 /// the commit the project's ledger names as its baseline (at `HEAD` when the ledger has none,
 /// which is said). Nothing that blocked before is known, so a failing tree blocks; at a stop
 /// that follows a block (`stop_hook_active`) the failure stands instead, so the session is not
-/// trapped. No commit is judged (the session's base is unknown): they wait for a stop that has
-/// its state, which the project's frontier makes judge them (F13.b). The ledger records it.
+/// trapped. With the ledger's baseline it then judges the frontier's commits (F13.b): every
+/// commit after the baseline that no stop record gave a verdict, this session's own among
+/// them, each once, since the ledger keeps the verdict it records; a failing one blocks under
+/// the same rule. Without a baseline no commit is judged (the session's base is unknown): they
+/// wait for a stop that has its state. The ledger records what was judged.
 fn stateless_stop(
     input: &Input,
     args: &[String],
@@ -7956,10 +8049,14 @@ fn stateless_stop(
             Base::NoCommit | Base::Orphan => return Ok(Some(hook::unjudged_output(&why.text))),
         },
     };
-    let head = stateless_head(why, no_record);
+    // With the session's lock held by another hook, that hook answers for the commits (when it
+    // is a stop): judging them here too would judge each twice at once, and block twice.
+    let commits = frontier.baseline.is_some() && why.class != ReasonClass::StateLockBusy;
+    let head = stateless_head(why, no_record, commits);
     let scratch = Scratch::new(&work.place.own).map_err(scratch_failed)?;
     let (judging, look) = stop_deadlines(&work.place, deadline);
     let none = std::collections::BTreeMap::new();
+    let no_commits = crate::ledger::Frontier::default();
     let stopping = Stopping {
         work: &work,
         cwd: &input.cwd,
@@ -7971,7 +8068,7 @@ fn stateless_stop(
         number: 1,
         recorded: &none,
         active: input.stop_hook_active,
-        frontier: &frontier,
+        frontier: if commits { &frontier } else { &no_commits },
     };
     let judging = judge_units(&stopping, &Tips::Stateless, &[], &[]).map_err(scratch_failed)?;
     let words = "the working tree's changes against the commit HEAD names, judged without this session's state";
@@ -7980,7 +8077,7 @@ fn stateless_stop(
         .map(|unit| hook::blocks_now(unit, &[]))
         .collect();
     let mut records = ledger_units(&judging, &blocks);
-    // the session's commits, which this stop could not judge
+    // the stop's own record: the session's state was not used, for this class
     records.push(crate::ledger::Unit {
         name: crate::ledger::Name::Stop,
         outcome: "unjudged",

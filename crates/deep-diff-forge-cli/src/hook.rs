@@ -1474,6 +1474,11 @@ pub(crate) fn tree_label(top: &str) -> String {
     format!("Uncommitted changes in {}", shown_path(top))
 }
 
+/// What follows the id of a commit a stop judges by the project's frontier (F13.b): it is not
+/// the session's own.
+pub(crate) const FRONTIER_MARK: &str =
+    " (not this session's: left or merged since the project was first recorded)";
+
 /// A commit as a message names it: by the first twelve digits of its id. An id is hex, so
 /// nothing a ref is called reaches a message: the name of a branch that somebody else pushed
 /// stood in a block's reason, which the model reads (third independent review of the hooks,
@@ -2208,11 +2213,34 @@ fn blocking_text(trees: &[TreeJudged], blocked: &[String], room: usize) -> (Stri
 /// with no mark, in the middle of a word, while the README said that a cut reason ends with
 /// "…" (twelfth independent review of the hooks, HR12-L-3). Empty when there is none.
 fn no_verdict_line(trees: &[TreeJudged]) -> String {
+    let unjudged = |frontier: bool| -> Vec<&TreeJudged> {
+        trees
+            .iter()
+            .filter(|unit| is_commit(unit) && matches!(unit.judged, Some(Judged::Unjudged { .. })))
+            .filter(|unit| unit.what.contains(FRONTIER_MARK) == frontier)
+            .collect()
+    };
+    let words = |one: bool| {
+        if one {
+            "commit of this session has no verdict"
+        } else {
+            "commits of this session have no verdict"
+        }
+    };
+    let mut text = no_verdict_of(&unjudged(false), words);
+    text.push_str(&no_verdict_of(&unjudged(true), |one| {
+        if one {
+            "commit left or merged since the project was first recorded has no verdict"
+        } else {
+            "commits left or merged since the project was first recorded have no verdict"
+        }
+    }));
+    text
+}
+
+/// [`no_verdict_line`] for one kind of commit: `words` gives the words for one or many.
+fn no_verdict_of(unjudged: &[&TreeJudged], words: impl Fn(bool) -> &'static str) -> String {
     let mut text = String::new();
-    let unjudged: Vec<&TreeJudged> = trees
-        .iter()
-        .filter(|unit| is_commit(unit) && matches!(unit.judged, Some(Judged::Unjudged { .. })))
-        .collect();
     if !unjudged.is_empty() {
         let names: Vec<String> = unjudged
             .iter()
@@ -2232,15 +2260,15 @@ fn no_verdict_line(trees: &[TreeJudged]) -> String {
                 } else {
                     reason.into_owned()
                 };
-                format!("{} ({reason})", unit.what.trim_start_matches("Commit "))
+                let what = unit.what.replace(FRONTIER_MARK, "");
+                format!("{} ({reason})", what.trim_start_matches("Commit "))
             })
             .collect();
-        let words = if unjudged.len() == 1 {
-            "commit of this session has no verdict"
-        } else {
-            "commits of this session have no verdict"
-        };
-        text.push_str(&count_line(unjudged.len(), words, &names));
+        text.push_str(&count_line(
+            unjudged.len(),
+            words(unjudged.len() == 1),
+            &names,
+        ));
     }
     text
 }
@@ -2501,7 +2529,12 @@ pub(crate) fn decide_stop_trees(
             blocks_now(tree, blocked)
                 && matches!(&tree.judged, Some(Judged::Fail { rules, .. }) if rules.iter().any(|rule| !rule.held))
         });
-        let ask = if names_a_rule {
+        let not_ours = trees
+            .iter()
+            .any(|tree| blocks_now(tree, blocked) && tree.what.contains(FRONTIER_MARK));
+        let ask = if names_a_rule && not_ours {
+            "What the rules name in this session's own work is this session's to repair; what they name in work it did not make is for a person: tell them. A commit that fails cannot be made good by a later one: tell the person. A commit marked \"not this session's\" was left by a session that ended before its stop, or merged since the project was first recorded: it may not be this session's work. Do not rewrite it or its history: tell a person, and make any repair a new commit. Then stop again: a failure that has blocked does not block again while it stays as it is."
+        } else if names_a_rule {
             "What the rules name in this session's own work is this session's to repair; what they name in work it did not make is for a person: tell them. A commit that fails cannot be made good by a later one: tell the person. Then stop again: a failure that has blocked does not block again while it stays as it is."
         } else {
             "No rule of the change failed: what the judge names below is for a person to settle and is not repaired by editing the change. Tell them, then stop again."

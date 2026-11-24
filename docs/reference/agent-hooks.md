@@ -76,9 +76,17 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   baseline does not and that no stop record of the ledger gave a verdict (`pass`, `fail`,
   `fail_stands`, `hold`), whichever session made it: a session that ended before its stop (a
   crash, a closed terminal, a conversation that went on under a new record), one whose state
-  was removed, one whose stops ran out of time. They are judged before the session's own, the
-  oldest first, within the stop's time; what does not fit waits for the next stop with the
-  usual words ("they are judged at the next stop"). A commit the session finds in its own
+  was removed, one whose stops ran out of time. The session's own work is judged first; these
+  commits get the time that is left, the oldest first, and what does not fit is counted ("N
+  commits left or merged since the project was first recorded: UNJUDGED … they are judged at
+  the next stop") and judged at later stops. In the messages each is marked "(not this
+  session's: left or merged since the project was first recorded)", and a block for one says
+  that it may not be the session's work, that it is not to be rewritten, and to tell a person
+  and make any repair a new commit; the count of commits with no verdict names the two kinds
+  apart. A session's start that writes the baseline says so: "This start is the first record
+  of this project in its ledger: the project is recorded from commit <id>, and commits that
+  were in the repository before it are not judged by these hooks." (so a ledger removed between
+  sessions is visible at the next start). A commit the session finds in its own
   range is judged by it even when another session has judged it (a commit found by several
   sessions holds each once, below). A project whose ledger has no baseline (a ledger of an
   earlier build, or one that was removed) is judged as before, by the session's own range,
@@ -227,7 +235,13 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
 - **The policy is the one at the commit the session began from** (`warden.toml`, or
   `--policy NAME`), read from Git, never from the working tree: a change cannot loosen the
   policy it is judged by, and committing the loosened policy does not make it the policy
-  either, for as long as the session lasts.
+  either, for as long as the session lasts. A conversation that goes on under a new session
+  id with `source` `resume`, `compact` or `clear` keeps the base of the last session of its
+  working tree (the project's frontier, below), so it is judged under the policy at that
+  base, as the same session would have been: a policy a commit of that conversation
+  tightened does not apply to it either. The other half: the base and the ledger that carries
+  it are kept where the agent can write; the pull request's judge, which reads the policy at
+  the base of the pull request, is the boundary.
 - **The patch is the one a judge would be given for the commit.** The working tree, with
   untracked files and without ignored ones, is staged and diffed against the commit its
   `HEAD` names (advice after a tool call: against the commit the session began from) in a
@@ -390,14 +404,23 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   with no memory: a failing tree blocks. At a stop that follows a block (`stop_hook_active`)
   the failure stands instead (FAIL STANDS), so the session is not trapped; at the next turn's
   stop it blocks again, since nothing remembers that it blocked: a state that stays unusable
-  blocks once in each turn while the tree fails. No commit is judged (the session's base is
-  unknown): they wait for a stop that has its state, which the frontier makes judge them. The
-  message begins "deep-diff-forge: this session's state could not be used (<class>): the
-  working tree was judged without it; commits made in this session are judged when the
-  project's ledger finds them, at a stop that has its state. Left as it is, the working tree
-  is judged like this at every stop with no memory of what blocked: a failing tree blocks once
-  in each turn." and then gives the refusal, with what removing the state costs. No byte of
-  a key and no text of a damaged state is said.
+  blocks once in each turn while the tree fails. When the project's ledger has a baseline it
+  then judges the frontier's commits, this session's own among them (which it cannot tell
+  apart, so none is marked), records each in the ledger and blocks on a failing one under the
+  same rule; the ledger keeps their verdicts, so each is judged once by such stops (a session
+  whose lists come back as the state names them judges its own commits once more at its next
+  stop, since its own list of judged commits does not have those verdicts). When another hook
+  of the session holds its lock, only the tree is judged: that hook, when it is a stop,
+  answers for the commits. Without a baseline no commit is judged (the session's base is
+  unknown): they wait for a stop that has its state.
+  The message begins "deep-diff-forge: this session's state could not be used (<class>): the
+  working tree was judged without it; so were the commits the project's ledger has no verdict
+  for (this session's own among them), each once: the ledger keeps their verdicts. Left as it
+  is, the working tree is judged like this at every stop with no memory of what blocked: a
+  failing tree blocks once in each turn." (without a baseline: "… no commit was judged: the
+  project's ledger has no baseline to find them from, so they are judged at a stop that has
+  its state.") and then gives the refusal, with what removing the state costs. No byte of a
+  key and no text of a damaged state is said.
 - **What the judge names beside its rules is passed on.** forge-warden also fails a change
   for a waiver that has expired and holds one for a note, with every rule passed. The message
   then carries the judge's own words for it (bounded, escaped, marked as the judge's text and
@@ -592,8 +615,8 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   hook finds the project (an advice hook or a session's start included). A stop reads the
   whole ledger (at most 64 MiB) for the frontier; a line that is not a record of this build
   is passed over there, which can only judge more. A stop whose state cannot be used records
-  the units it judged and one `stop` record `unjudged` with the state's class for the commits
-  it did not judge. **The ledger is not a boundary**: it is a file in
+  the units it judged and one `stop` record `unjudged` with the state's class (the session's
+  state was not used). **The ledger is not a boundary**: it is a file in
   the repository's Git directory with the permissions of whoever works there, the agent
   included, so a record is evidence that a stop decided so, not proof, and a missing or edited
   ledger proves nothing.
