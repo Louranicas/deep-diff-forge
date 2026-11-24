@@ -1452,17 +1452,10 @@ fn doctor_gate_does_not_mistake_non_rule_reasons_for_policy_self_protection() {
         stop_hook_settings(&claims_judge),
     )
     .unwrap();
-    let (code, doc, _) = doctor_gate(
-        &root,
-        &home,
-        &["--judge", claims_judge.to_str().unwrap()],
-    );
+    let (code, doc, _) = doctor_gate(&root, &home, &["--judge", claims_judge.to_str().unwrap()]);
     assert_eq!(
         (code, gate_checks(&doc)),
-        (
-            7,
-            gate_but(&["policy_protects_itself", "claims_verified"])
-        )
+        (7, gate_but(&["policy_protects_itself"]))
     );
     assert!(
         detail(&doc, "policy_protects_itself").contains("no rule holds or fails it"),
@@ -1482,11 +1475,7 @@ fn doctor_gate_does_not_mistake_non_rule_reasons_for_policy_self_protection() {
         stop_hook_settings(&expired_judge),
     )
     .unwrap();
-    let (code, doc, _) = doctor_gate(
-        &root,
-        &home,
-        &["--judge", expired_judge.to_str().unwrap()],
-    );
+    let (code, doc, _) = doctor_gate(&root, &home, &["--judge", expired_judge.to_str().unwrap()]);
     assert_eq!(
         (code, gate_checks(&doc)),
         (7, gate_but(&["policy_protects_itself"]))

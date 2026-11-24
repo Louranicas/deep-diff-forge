@@ -9290,7 +9290,10 @@ fn chain_checks(name: &str, verdict: &Result<ProbeVerdict, String>, bound: bool)
                     hook::shown_path(name)
                 ),
                 Ok((_, _, _, _, true)) => {
-                    format!("a change to {} is held or fails under a rule", hook::shown_path(name))
+                    format!(
+                        "a change to {} is held or fails under a rule",
+                        hook::shown_path(name)
+                    )
                 }
                 Ok(_) => format!(
                     "a change to {} does not pass, but no rule holds or fails it: a note or an expired waiver does not prove that the policy protects its file",
@@ -9688,9 +9691,9 @@ fn probe(
                     notes.iter().any(|note| note["code"] == "claims_unverified")
                 });
                 let rule_stops_probe = document["rules"].as_array().is_some_and(|rules| {
-                    rules.iter().any(|rule| {
-                        matches!(rule["outcome"].as_str(), Some("hold" | "fail"))
-                    })
+                    rules
+                        .iter()
+                        .any(|rule| matches!(rule["outcome"].as_str(), Some("hold" | "fail")))
                 });
                 return Ok((ranker, code, read, unverified, rule_stops_probe));
             }
