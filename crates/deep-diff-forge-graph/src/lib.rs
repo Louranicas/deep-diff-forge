@@ -18,6 +18,8 @@ mod rank;
 mod risk;
 mod rust_tokens;
 #[cfg(test)]
+mod scan_cost;
+#[cfg(test)]
 mod unplaced;
 mod vocabulary;
 

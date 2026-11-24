@@ -2549,6 +2549,7 @@ mod rust {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scan_cost::doubling;
 
     /// F2b: the strings of a TOML line, with their escapes read, a comment and a string that
     /// does not close ending the reading.
@@ -2853,15 +2854,25 @@ mod tests {
     }
 
     /// A line that defeats every probe stays linear: one failed regex probe ends probing, and
-    /// whitespace before a shell word is trimmed only at `case` and `esac`.
+    /// whitespace before a shell word is trimmed only at `case` and `esac` (3fb88568: both were
+    /// quadratic). The cost bound is the ratio of each line's time at `n` and `2n` repeats
+    /// ([`doubling`]); the deadline of [`within_deadline`] only guards against a hang.
     #[test]
     fn hostile_lines_scan_in_linear_time() {
-        within_deadline(|| {
-            let regexes = "x = [/".repeat(100_000);
-            assert_eq!(view(Language::JavaScript, &regexes).len(), regexes.len());
-            let spaces = format!("V=\"$({}curl x)\"", " ".repeat(200_000));
-            assert!(view(Language::Shell, &spaces).ends_with("curl x)\""));
+        let [regexes, spaces] = within_deadline(|| {
+            [
+                doubling(400_000, |n| {
+                    let line = "x = [/".repeat(n);
+                    move || assert_eq!(view(Language::JavaScript, &line).len(), line.len())
+                }),
+                doubling(2_560_000, |n| {
+                    let line = format!("V=\"$({}curl x)\"", " ".repeat(n));
+                    move || assert!(view(Language::Shell, &line).ends_with("curl x)\""))
+                }),
+            ]
         });
+        regexes.assert_linear("a JavaScript line of failed regex probes");
+        spaces.assert_linear("spaces before a shell word");
     }
 
     /// The keyword test reads a bounded suffix and answers as the released walk over the whole
@@ -2945,33 +2956,43 @@ mod tests {
         }
     }
 
-    /// One JavaScript word of 200,000 letters scans in linear time (FINDING-5: the released
-    /// scan walked back over the word at each of its bytes).
+    /// One JavaScript word scans in linear time, alone and before a keyword (FINDING-5: the
+    /// released scan walked back over the word at each of its bytes). The cost bound is the
+    /// ratio of each line's time at `n` and `2n` letters ([`doubling`]).
     #[test]
     fn a_long_javascript_word_scans_in_linear_time() {
-        within_deadline(|| {
-            let word = "a".repeat(200_000);
-            assert_eq!(view(Language::JavaScript, &word), word);
-            let keyword_after = format!("{word}return\"x\"");
-            assert_eq!(view(Language::JavaScript, &keyword_after), keyword_after);
+        let [word, keyword_after] = within_deadline(|| {
+            [
+                doubling(640_000, |n| {
+                    let word = "a".repeat(n);
+                    move || assert_eq!(view(Language::JavaScript, &word), word)
+                }),
+                doubling(640_000, |n| {
+                    let line = format!("{}return\"x\"", "a".repeat(n));
+                    move || assert_eq!(view(Language::JavaScript, &line), line)
+                }),
+            ]
         });
+        word.assert_linear("one JavaScript word");
+        keyword_after.assert_linear("a JavaScript word before a keyword");
     }
 
-    /// Run `work` on its own thread and fail if it takes more than ten seconds: a linear scan
-    /// of these lines takes milliseconds, so a quadratic regression fails here instead of
-    /// hanging the suite (and a diff-mutation run reports it as caught, not as a timeout). A panic
-    /// of the work is raised again here, with its own message.
+    /// Run `work` on its own thread and fail if it takes more than two minutes of wall time.
+    /// This bound only keeps a hang from stalling the suite, so a diff-mutation run reports a
+    /// looping mutant as caught rather than as a timeout; the cost of a scan is bounded by
+    /// [`doubling`] inside the work (a bound of ten seconds failed on a busy host). A panic of
+    /// the work is raised again here, with its own message.
     fn within_deadline<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
         let (done, wait) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
             let _ = done.send(work());
         });
-        match wait.recv_timeout(std::time::Duration::from_secs(10)) {
+        match wait.recv_timeout(std::time::Duration::from_secs(120)) {
             // The work panicked, which dropped its sender: raise its own panic, not this one.
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                 std::panic::resume_unwind(worker.join().expect_err("the work sent no answer"))
             }
-            answer => answer.expect("a long line was scanned within ten seconds"),
+            answer => answer.expect("a long line was scanned within two minutes"),
         }
     }
 
@@ -4032,22 +4053,33 @@ mod tests {
         }
     }
 
-    /// Two megabytes of each opener the Rust scanner knows, on one line and one to a line,
-    /// scan in time linear in their length (a scan of them takes milliseconds; each has the
-    /// deadline to itself).
+    /// Each opener the Rust scanner knows, repeated on one line (up to 18 MiB) and one to a line
+    /// (up to 819,200 lines), scans in time linear in its length: the cost bound is the ratio of
+    /// the times at sizes that double ([`doubling`]); each opener has the deadline of
+    /// [`within_deadline`], a guard against a hang, to itself.
     #[test]
     fn hostile_rust_lines_scan_in_linear_time() {
         for unit in [
             "/*", "'", "\"", "r#", "'\\u{", "b'", "r#\"", "1e", "é", "'a",
         ] {
-            within_deadline(move || {
-                let line = unit.repeat(2 * 1024 * 1024 / unit.len());
-                assert!(lexer_view(&line).len() <= line.len(), "{unit}");
-                let mut state = RustLexerState::default();
-                for _ in 0..100_000 {
-                    assert!(rust_lexer_view(unit, &mut state).len() <= unit.len());
-                }
+            let [line, lines] = within_deadline(move || {
+                [
+                    doubling(9 * 1024 * 1024, |bytes| {
+                        let line = unit.repeat(bytes / unit.len());
+                        move || assert!(lexer_view(&line).len() <= line.len(), "{unit}")
+                    }),
+                    doubling(409_600, |count| {
+                        move || {
+                            let mut state = RustLexerState::default();
+                            for _ in 0..count {
+                                assert!(rust_lexer_view(unit, &mut state).len() <= unit.len());
+                            }
+                        }
+                    }),
+                ]
             });
+            line.assert_linear(&format!("{unit:?} repeated on one line"));
+            lines.assert_linear(&format!("{unit:?} one to a line"));
         }
     }
     /// The carried reading of the shared scanner, which drops each reading's view before it
