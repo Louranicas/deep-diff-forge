@@ -13,7 +13,11 @@
 # also holds ./D/deep-diff-forge (another binary, which `tar -xzf` leaves in place of the good
 # one), with its checksums recomputed and signed by the good key, fails verify; 8 the gate's SBOM
 # step (scripts/ci_local.sh --sbom-gate), stopped after the generator ran or run to its end, leaves
-# sbom.spdx.json untouched. Case 1 also checks the receipt's gate result and artefact checks.
+# sbom.spdx.json untouched; 9 a manifest without the verdict schemas it reads (or another
+# member), with its checksums recomputed and both files signed by the good key, fails verify
+# naming the member, and a manifest signed in the namespace of SHA256SUMS fails verify. Case 1
+# also checks the receipt's gate result and artefact checks, and that every member of the
+# manifest carries the binary's value (1d).
 #
 # Run it where cargo builds (here: in the fedora-toolbox-44 toolbox), from a clean checkout:
 #   scripts/test_release_local.sh
@@ -22,6 +26,7 @@ set -euo pipefail
 
 export GIT_ALLOW_PROTOCOL=file GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 ns=deep-diff-forge-release-sha256sums
+ns_manifest=deep-diff-forge-release-manifest
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 tool="$here/release_local.sh"
 repo="$(git -C "$here" rev-parse --show-toplevel)"
@@ -77,6 +82,22 @@ r = json.load(open(sys.argv[1])); g = r["gate"]
 assert (g["result"], g["commit"], g["steps"], len(r["checks_on_artefact"])) == ("pass", sys.argv[2], 1, 5), r
 print("gate", g["result"])' "$t/out/release-receipt.json" "$head"
 ssh-keygen -q -Y sign -f "$t/keys/good" -n "$ns" "$t/out/SHA256SUMS"
+ssh-keygen -q -Y sign -f "$t/keys/good" -n "$ns_manifest" "$t/out/RELEASE-MANIFEST.json"
+expect "1d the manifest carries the binary's values" 0 "manifest ok" python3 -I -c '
+import hashlib, json, sys, tarfile
+m = json.load(open(sys.argv[1])); r = json.load(open(sys.argv[2]))
+with tarfile.open(sys.argv[3]) as t:
+    binary = [x for x in t.getmembers() if x.name.endswith("/deep-diff-forge")][0]
+    h = hashlib.sha256(t.extractfile(binary).read()).hexdigest()
+want = {"version": sys.argv[5], "commit": sys.argv[4], "binary_sha256": h}
+assert all(m[k] == v for k, v in want.items()) and r["build_sha256"][0] == h, (m, want)
+assert m["reads"]["verdict_schemas"] == ["forge-warden.verdict.v2", "forge-warden.verdict.v3"], m["reads"]
+assert m["writes"]["rank_schema"] == "deep-diff-forge.rank.v0" and len(m["scorer_sha256"]) == 64, m
+assert m["reads"]["hook_state_schemas"]["to"] == m["writes"]["hook_state_schema"], m
+assert isinstance(m["engine"]["protocol"], int) and "diff.diagnostics" in m["engine"]["methods"], m["engine"]
+assert r["artefacts_sha256"]["RELEASE-MANIFEST.json"] == hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest()
+print("manifest ok:", json.dumps({k: m[k] for k in m if k != "sources"}))' "$t/out/RELEASE-MANIFEST.json" \
+  "$t/out/release-receipt.json" "$t/out/$dist" "$head" "$version"
 expect "1b verify v$version" 0 "verify v$version: PASS" "$tool" verify "v$version" "$t/out" "$t/allowed_signers"
 
 # 2: a byte changed in the archive after the build.
@@ -117,7 +138,8 @@ absent "$t/out-g"
 # 7: a second spelling of the binary's name in the archive (review of 0.8.4, R84B-L-2): check 3
 # read the member D/deep-diff-forge, while `tar -xzf` leaves the later ./D/deep-diff-forge.
 mkdir "$t/p-member"
-cp "$t/out/$dist" "$t/out/release-receipt.json" "$t/out/sbom.spdx.json" "$t/p-member/"
+cp "$t/out/$dist" "$t/out/release-receipt.json" "$t/out/sbom.spdx.json" "$t/out/RELEASE-MANIFEST.json" \
+  "$t/out/RELEASE-MANIFEST.json.sig" "$t/p-member/"
 python3 -I -c '
 import io, sys, tarfile
 p = sys.argv[1]
@@ -135,6 +157,31 @@ with tarfile.open(p, "w:gz", format=tarfile.GNU_FORMAT) as t:
 ssh-keygen -q -Y sign -f "$t/keys/good" -n "$ns" "$t/p-member/SHA256SUMS"
 expect "7 a second spelling of the binary in the archive" 1 "the archive's members are not exactly" \
   "$tool" verify "v$version" "$t/p-member" "$t/allowed_signers"
+
+# 9: a manifest without a member (the plan's plant: the verdict schemas the binary reads), and
+# a manifest signed in the namespace of SHA256SUMS: each with every checksum recomputed and
+# signed by the good key.
+for member in reads.verdict_schemas scorer_sha256; do
+  cp -r "$t/out" "$t/p-manifest-$member"
+  python3 -I -c '
+import json, sys
+p, path = sys.argv[1], sys.argv[2].split(".")
+m = json.load(open(p)); node = m
+for key in path[:-1]:
+    node = node[key]
+del node[path[-1]]
+open(p, "w").write(json.dumps(m, indent=2) + "\n")' "$t/p-manifest-$member/RELEASE-MANIFEST.json" "$member"
+  (cd "$t/p-manifest-$member" && rm -f SHA256SUMS.sig RELEASE-MANIFEST.json.sig &&
+    sha256sum -- *.gz *.sha256 *.json >SHA256SUMS)
+  ssh-keygen -q -Y sign -f "$t/keys/good" -n "$ns" "$t/p-manifest-$member/SHA256SUMS"
+  ssh-keygen -q -Y sign -f "$t/keys/good" -n "$ns_manifest" "$t/p-manifest-$member/RELEASE-MANIFEST.json"
+  expect "9 a manifest without $member" 1 "the manifest's members $member have no value" \
+    "$tool" verify "v$version" "$t/p-manifest-$member" "$t/allowed_signers"
+done
+cp -r "$t/out" "$t/p-manifest-ns"
+ssh-keygen -q -Y sign -f "$t/keys/good" -n "$ns" "$t/p-manifest-ns/RELEASE-MANIFEST.json"
+expect "9 a manifest signed in the namespace of SHA256SUMS" 1 "RELEASE-MANIFEST.json.sig does not verify" \
+  "$tool" verify "v$version" "$t/p-manifest-ns" "$t/allowed_signers"
 
 # 8 (an_interrupted_sbom_step_leaves_the_tracked_file): a python3 shim marks the end of the
 # generator's run and waits; the step's process group is stopped there by its recorded pid. With

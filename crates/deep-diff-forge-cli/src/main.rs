@@ -2420,6 +2420,17 @@ fn doctor() {
         Ok(location) => emitln!("daemon_socket={}", location.path().display()),
         Err(_) => emitln!("daemon_socket=<unavailable: set XDG_RUNTIME_DIR or pass --socket>"),
     }
+    // What this build reads and writes that no document of it names (F4.c, the release
+    // manifest): the verdict schemas the stop hook reads, the hook-state schemas it reads and
+    // the one it writes, and the version of the project's ledger.
+    emitln!("verdict_schemas_read={}", verdict_v2::READS);
+    emitln!(
+        "hook_state_schemas_read=v{} to v{}; writes {}",
+        hook_run::STATE_FLOOR,
+        hook_run::STATE_OWN,
+        hook_run::STATE_SCHEMA
+    );
+    emitln!("ledger_version={}", ledger::VERSION);
 }
 
 fn claude_code_contract() {

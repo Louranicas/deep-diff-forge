@@ -872,15 +872,15 @@ struct State {
 }
 
 /// The schema this build writes: `deep-diff-forge.hook-state.v` and [`STATE_OWN`].
-const STATE_SCHEMA: &str = "deep-diff-forge.hook-state.v13";
+pub(crate) const STATE_SCHEMA: &str = "deep-diff-forge.hook-state.v13";
 /// What every schema of a state is named by, before its number ([`schema_number`]).
 const STATE_SCHEMA_PREFIX: &str = "deep-diff-forge.hook-state.v";
 /// The number of [`STATE_SCHEMA`].
-const STATE_OWN: u32 = 13;
+pub(crate) const STATE_OWN: u32 = 13;
 /// The oldest schema read: the one the last release wrote (0.9.0 and 0.10.0 write v10). A
 /// state of a schema below it is refused by its name ([`StateRefusal::Older`]); v9 was
 /// written only by builds before any release and is not read since 0.11.0.
-const STATE_FLOOR: u32 = 10;
+pub(crate) const STATE_FLOOR: u32 = 10;
 /// For each schema above [`STATE_FLOOR`] up to [`STATE_OWN`], in order, the change that makes
 /// a state of the schema before it one of that schema: a state is read through every
 /// migration from its own number on, and the first hook that keeps state writes it in

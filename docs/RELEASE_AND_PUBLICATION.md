@@ -253,20 +253,38 @@ the local repository. Its self-test is `scripts/test_release_local.sh` (`just re
   SBOM, packs the archive with `scripts/package_release.py` (`SOURCE_DATE_EPOCH` = the commit
   time), and writes into `<outdir>`, which must not exist: the archive, its `.sha256`,
   `sbom.spdx.json`, `release-receipt.json` (commit, toolchain, both build hashes, every file's
-  SHA-256) and `SHA256SUMS` over all of them. A `<commit>` that is a tag must be
+  SHA-256), `RELEASE-MANIFEST.json` and `SHA256SUMS` over all of them. The manifest (0.11.0,
+  schema `deep-diff-forge.release-manifest.v0`) says what the binary reads and writes, each
+  value read from the binary itself, with the command that gave it in its member `sources`: the
+  version (`--version`), the commit, the target, the binary's and the archive's SHA-256, the rank
+  schema and `scorer_sha256` (`--stdin-patch --rank --json` on `fixtures/patch/basic.patch`),
+  the diagnostics schema (`--stdin-patch --diagnostics --json`), the verdict schemas the stop
+  hook reads, the hook-state schemas it reads and the one it writes and the ledger version
+  (`deep-diff-forge doctor`, its lines `verdict_schemas_read`, `hook_state_schemas_read` and
+  `ledger_version`), and the engine protocol and methods (`rpc`, `engine.initialize`); a member
+  with no value writes nothing. A `<commit>` that is a tag must be
   `v<workspace version>`. The receipt also lists the checks run on the artefact and the
   gate's result: set `DDF_GATE_LOG` to the log of `scripts/ci_local.sh` for the release commit
   (its `gate on` and `steps failed` lines); without it the receipt says "not given".
-- **Sign.** The owner signs `SHA256SUMS` with the release key, in a namespace used for nothing
-  else (a signature in namespace `git` is one git accepts on a tag or commit):
+- **Sign.** The owner signs `SHA256SUMS` and, from 0.11.0, `RELEASE-MANIFEST.json` with the
+  release key, each in a namespace used for nothing else (a signature in namespace `git` is one
+  git accepts on a tag or commit, and one namespace per file keeps either signature from
+  standing for the other file):
 
   ```bash
   ssh-keygen -Y sign -f ~/.ssh/id_ed25519_ddf_release_signing -n deep-diff-forge-release-sha256sums <outdir>/SHA256SUMS
+  ssh-keygen -Y sign -f ~/.ssh/id_ed25519_ddf_release_signing -n deep-diff-forge-release-manifest <outdir>/RELEASE-MANIFEST.json
+  ```
+
+  Anyone can check the manifest's signature alone with the signers file:
+
+  ```bash
+  ssh-keygen -Y verify -f .github/release_allowed_signers -I <principal> -n deep-diff-forge-release-manifest -s <dir>/RELEASE-MANIFEST.json.sig < <dir>/RELEASE-MANIFEST.json
   ```
 
 - **Publish.** The signed tag goes to GitLab (`https://gitlab.com/lukeomahoney/deep-diff-forge`),
   Gitea and Forgejo through `just release-tag`; the archive and the other files of `<outdir>`,
-  with `SHA256SUMS.sig`, are attached to the tag's release on GitLab. These are the owner's
+  with `SHA256SUMS.sig` and `RELEASE-MANIFEST.json.sig`, are attached to the tag's release on GitLab. These are the owner's
   steps. GitLab is the place of release; GitHub gets the tag (with `release.yml` disabled for
   the push, since a tag there starts it) and a release page with the same files, as a mirror.
   From 0.10.0 the crates are published from the tag's commit, a dry run first, then
@@ -282,13 +300,19 @@ the local repository. Its self-test is `scripts/test_release_local.sh` (`just re
 
   It passes only if (1) `scripts/verify_release_tag.sh` accepts the tag against the signers
   file, its commit is on `gitlab/main` and the tag is `v<workspace version>`; (2) `SHA256SUMS`
-  lists exactly the files of `<dir>`, each matches, and `SHA256SUMS.sig` verifies against the
-  signers file in namespace `deep-diff-forge-release-sha256sums`; (3) the archive's members are
-  exactly the five it packs (the directory, `LICENSE-APACHE`, `LICENSE-MIT`, `README.md` and the
-  binary), and a fresh build of the tag's commit gives the binary of the receipt and of the
-  archive. One file serves checks 1 and 2, so
+  lists exactly the files of `<dir>` but the two signatures, each matches, `SHA256SUMS.sig`
+  verifies against the signers file in namespace `deep-diff-forge-release-sha256sums`,
+  `RELEASE-MANIFEST.json.sig` in namespace `deep-diff-forge-release-manifest`, and every member
+  of the manifest has a value; (3) the archive's members are exactly the five it packs (the
+  directory, `LICENSE-APACHE`, `LICENSE-MIT`, `README.md` and the binary), the receipt and the
+  manifest name the tag's commit and version, the manifest names the archive by its SHA-256,
+  and a fresh build of the tag's commit gives the binary of the receipt, of the manifest and of
+  the archive. One file serves checks 1 and 2, so
   `.github/release_allowed_signers` holds the release key, the principal and key of
-  `.github/allowed_signers`, for both namespaces, `git` and `deep-diff-forge-release-sha256sums`.
+  `.github/allowed_signers`, for the namespaces `git` and `deep-diff-forge-release-sha256sums`,
+  and from 0.11.0 `deep-diff-forge-release-manifest` (the owner adds it to that line before the
+  first release that ships a manifest; until then check 2 of a 0.11.0 release fails on the
+  manifest's signature).
   `.github/allowed_signers` stays `git` only: `just release-tag` and `release.yml` read it, and
   `repo_scripts.rs` requires that form of each of its lines. Rotating the key means changing
   both files in one commit.
