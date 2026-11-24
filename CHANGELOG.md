@@ -222,6 +222,18 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   unjudged unit, a hold with no rule, a stop that judged nothing). A class never decides whether a
   stop holds. Its meaning never changes, codes are added without a version change, and an unknown
   code is not a PASS. `docs/reference/agent-hooks.md` "Reason classes" lists them (F7.f).
+- Hook state v12: nothing the hooks keep holds text from the patch, the judge or Git. Every
+  digest they keep (what was said, what was said once, every remembered failure and cause that
+  holds once) is HMAC-SHA-256 under a per-user key, `key` in the hooks' state directory (32
+  random bytes, mode 0600, read only as a regular file of exactly 32 bytes). The file of
+  judged commits keeps rule ids and class codes only, so a later stop names a commit from
+  before by its rules or its class, not the judge's words. A copy of a state file without the
+  key confirms no guessed line; the key's own reader (the same user, the agent included) still
+  can, so the key bounds what a copied file gives away and is not a boundary. A v10 or v11
+  state is read with its base and judged commits; its plain digests are emptied, so a finding
+  is said once more and a failure blocks once more (F7.e).
+- `deep_diff_forge_core::hmac_sha256` and `hmac_sha256_hex` (RFC 2104 on the crate's SHA-256,
+  held by RFC 4231).
 
 ## [0.10.0] - 2026-11-23
 
