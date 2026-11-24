@@ -170,7 +170,7 @@ register names as changed.
 ```bash
 deep-diff-forge daemon start --foreground      # terminal 1
 deep-diff-forge daemon health                  # terminal 2
-# {"id":1,"jsonrpc":"2.0","result":{"cache_entries":0,"pid":…,"protocol":3,"retained_bytes":0,"sessions":0,"status":"ok","version":"0.11.0-dev"}}
+# {"id":1,"jsonrpc":"2.0","result":{"cache_entries":0,"pid":…,"protocol":3,"retained_bytes":0,"sessions":0,"status":"ok","version":"0.11.0"}}
 deep-diff-forge daemon stop                    # answers what is in progress, returns once it has exited
 ```
 

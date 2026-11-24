@@ -23,7 +23,7 @@ The framework is designed for:
 
 ## Status 2026-10-28 (0.3.0), rechecked 2026-11-01
 
-- Workspace version 0.11.0-dev (the 0.11.0 line); the newest release is 0.10.0, the signed tag `v0.10.0` (published on GitLab, Gitea and Forgejo; binaries built locally for Linux x86_64; GitHub mirrors the release page); the tag before it is `v0.9.0` (2026-11-18). 14 crates under `crates/`
+- Workspace version 0.11.0 (the 0.11.0 line); the newest release is 0.10.0, the signed tag `v0.10.0` (published on GitLab, Gitea and Forgejo; binaries built locally for Linux x86_64; GitHub mirrors the release page); the tag before it is `v0.9.0` (2026-11-18). 14 crates under `crates/`
   (core, patch, projection, pipeline, syntax, graph, agent, tui, cluster,
   learning, daemon, review, sdk, cli); edition 2024, MSRV 1.88, toolchain
   1.99.1. Internal edges: [`crate-edges.txt`](crate-edges.txt).

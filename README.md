@@ -219,7 +219,7 @@ Rust **1.88+** (edition 2024):
 git clone https://gitlab.com/lukeomahoney/deep-diff-forge.git
 cd deep-diff-forge
 cargo build --release --locked -p deep-diff-forge-cli
-target/release/deep-diff-forge --version        # deep-diff-forge 0.11.0-dev
+target/release/deep-diff-forge --version        # deep-diff-forge 0.11.0
 target/release/deep-diff-forge --self-test
 ```
 
