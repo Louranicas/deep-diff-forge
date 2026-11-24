@@ -772,7 +772,7 @@ project and not judged at every stop while it is true, as stated above):
   until the directory is gone or it is a tree again"), and a stop made from inside it is
   UNJUDGED. It is forgotten when its directory is gone (the ordinary
   `git worktree remove`), or when it is a tree again and the judge's own reading finds
-  that tree clean. For this the session's state (schema `deep-diff-forge.hook-state.v11`)
+  that tree clean. For this the session's state (schema `deep-diff-forge.hook-state.v12`)
   records the top level of each linked tree it remembers a failure of (a state of the
   schema before, `v9`, which no release wrote, was read with no tree recorded until
   0.10.0; since 0.11.0 it is refused as older than the last release: "The state's schema",
@@ -843,7 +843,8 @@ project and not judged at every stop while it is true, as stated above):
   commit that fails does. The names and states are kept in `blocked` (as `tag/key:count`:
   under the tag `o` of the tree for a refused cause, under the change's own tag for an
   unknown label, the count being the stops the cause held), and these lines are why the
-  state's schema is v11 since 0.11.0 ("The state's schema", at the end). `agent check` says the same
+  state's schema was v11 in 0.11.0's tree (since v12 they are keyed with the rest: "The
+  state's schema", at the end). `agent check` says the same
   sentence for these causes, and `agent doctor --gate` says "a stop here would hold once, then
   be UNJUDGED". What is not closed: while a file stays unreadable or the marks stay, nothing
   else of that working tree is judged (staging the rest is not built), so failing work added
@@ -994,23 +995,30 @@ Stated limits, which the judge on the pull request covers:
   - Names. The files are `session-<the first 32 hex digits of the SHA-256 of the session's
     id>` with `.json` (the state), `.tips` (the commits there when the session began, one id
     a line), `.judged` (the commits that have their answer) and `.lock` (an exclusive
-    `flock`). Names and the lock do not change from one schema to the next: two builds of
-    different versions share them.
+    `flock`), and one file `key` for all of the user's sessions (since v12). Names and the
+    lock do not change from one schema to the next: two builds of different versions share
+    them.
   - The schema. The state's member `schema` is exactly `deep-diff-forge.hook-state.v<N>`,
     `N` in one to six decimal digits with no leading zero, read byte by byte; any other
     text is a damaged state. Any change to the state's members, to a member's type, grammar
     or meaning, or to the lines of `.tips` or `.judged` is a new `N`, between releases too.
-    The lines of `.judged` are `ID:p`, `ID:h[:kept]`, `ID:f[:kept]`,
-    `ID:n<attempts>@<stop>:reason` and `ID:x:reason`; any other line makes the list damaged.
+    The lines of `.judged` are `ID:p`, `ID:h:<rules>|<class>`, `ID:f:<rules>`,
+    `ID:n<attempts>@<stop>:<class>` and `ID:x:<class>`, where `<rules>` are the rule ids
+    the judge names (those that fail, then after a `;` those it holds for; at most eight of
+    each, 64 characters each, and `+N` for the others) and `<class>` a code of "Reason
+    classes" below; any other letter makes the list damaged. Before v12 a hold kept the
+    first 100 characters of the judge's first note after its `|`, and a commit with no
+    verdict kept the judge's or Git's words: such a line is read for the class its words say
+    and written again in v12's form.
   - What is read. A build reads every schema from the one the last release wrote (v10,
-    written by 0.9.0 and 0.10.0) to its own (v11 since 0.11.0), and writes its own; one of a
+    written by 0.9.0 and 0.10.0) to its own (v12 since 0.11.0), and writes its own; one of a
     schema in that range below its own is written in its own by the first hook that keeps
-    state. A v10 state is read as it is (the migration to v11 changes no member): its base,
-    what has blocked and the judged commits are kept, so a failure that blocked does not
-    block again and a judged commit is not judged again. A state
+    state. A v10 or v11 state keeps its base, its list of commits and its judged commits (a
+    judged commit is not judged again); what it kept as plain digests is emptied (below,
+    "Keyed history"), so a failure that blocked blocks once more. A state
     of an older schema is refused by its name: "this session's state file … is of schema
     v9, written by a deep-diff-forge older than the last release; this one reads v10 to
-    v11, and nothing is recorded over it (removing it makes the next hook take the commit
+    v12, and nothing is recorded over it (removing it makes the next hook take the commit
     HEAD names as this session's base: what this session committed before would not be
     judged)". A damaged one (not JSON, a schema that is not one, a member missing or not
     what the hooks write) says why and the same about removing it. That is what removing
@@ -1022,7 +1030,7 @@ Stated limits, which the judge on the pull request covers:
     HEAD names then: what this session committed before is not judged)".
   - A newer state is never written over. A state of a schema above this build's own (a
     newer build of the hooks wrote it) is refused by its name: "this session's state file
-    … is of schema v12, written by a newer deep-diff-forge; this one reads v10 to v11, and
+    … is of schema v13, written by a newer deep-diff-forge; this one reads v10 to v12, and
     nothing was written over it". No hook writes the state, `.tips` or `.judged` then (a
     stop, an advice hook, a session's start; the lock may be taken), and the message names
     no removal: the newer build reads its state again. The stop is UNJUDGED, as for any
@@ -1052,6 +1060,31 @@ Stated limits, which the judge on the pull request covers:
     judged is not judged again. A commit that 0.10.0 judged HOLD for a label the judge does
     not know keeps that answer: it is not held once after the upgrade (its line in `.judged`
     is a hold like any other).
+  - Keyed history (v12, rule V8). No file of the state directory holds text from the patch,
+    the judge or Git: every digest the hooks keep (what was said as a finding, what was said
+    once, every line of `blocked`: a rule, a rule with its signal and path, what the judge
+    said beside its rules, the name and the state of a cause that holds once, the mark of many
+    lines) is HMAC-SHA-256 under the user's key, `key` in the state directory: 32 random
+    bytes, mode 0600, made by the first hook that keeps a state (written to a file of its own
+    and linked into place, so of two first hooks the second reads the first's key), read only
+    as a regular file of exactly 32 bytes and never through a final link. The state names the
+    key it was kept under (`key_id`, 16 hex digits of a SHA-256 that gives nothing of the key
+    away), and the file of judged commits keeps rule ids and class codes only. What the key
+    protects, plainly: a copy of a state file, a ledger or a log without the key no longer
+    confirms a guessed line, rule or path; anyone who can read the key file (the same user,
+    the agent included) can still compute the digest of a guess. The key is not a boundary
+    against the judged agent; it bounds what a copied file gives away. A key file that is no
+    key (a link, a FIFO, a directory, another length, unreadable) ends the hook as a damaged
+    state does (UNJUDGED, did not run); no byte of a key is ever said.
+  - What emptying costs. When a state's digests cannot be used (a state before v12, whose
+    digests were plain; a key that was replaced or lost, which `key_id` shows), `reported`,
+    `noticed` and `blocked` are emptied and nothing else: a finding already said is said
+    once more, a failure that already blocked blocks once more and then stands, and a cause
+    that holds once holds again with its count begun anew. So the bound of three holds for
+    one cause is per key and per schema, not per session: a session that is upgraded from
+    v11 and whose key is replaced once can be held by one cause 3 × 3 = 9 times at worst,
+    each time at a turn's first stop only. Emptying never lets through a stop that would
+    have held or blocked: it can only make a stop hold or block once more.
   - The fixtures `crates/deep-diff-forge-cli/tests/fixtures/hook-state/<schema>-<release>/`
     hold the three files the published 0.9.0 and 0.10.0 binaries wrote, and the same files
     written by a build of this tree in v11 (each directory's

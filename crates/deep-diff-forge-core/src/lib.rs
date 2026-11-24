@@ -11,7 +11,7 @@ mod util;
 
 pub use deploy::{DeploymentStatus, GateResult, GateState, MaturityLevel};
 pub use release::{ReleasePlan, ReleaseTarget, TargetState};
-pub use seal::{InputSeal, Sha256, sha256, sha256_hex};
+pub use seal::{InputSeal, Sha256, hmac_sha256, hmac_sha256_hex, sha256, sha256_hex};
 pub use util::{
     display_safe, display_safe_bounded, is_unsafe_in_untrusted_text, json_escape, json_line_safe,
     path_hazards, text_hazards,

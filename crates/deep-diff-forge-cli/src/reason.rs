@@ -70,8 +70,7 @@ pub(crate) enum ReasonClass {
 }
 
 impl ReasonClass {
-    /// Every class, in the order of the table (for the tests that go through them all).
-    #[cfg(test)]
+    /// Every class, in the order of the table.
     pub(crate) const ALL: [Self; 50] = [
         Self::Pass,
         Self::FailNew,
@@ -131,6 +130,17 @@ impl ReasonClass {
     /// holds.
     pub(crate) fn is_work(self) -> bool {
         self.as_str().starts_with("work.")
+    }
+
+    /// The class whose code is exactly `code`, if this build has one.
+    pub(crate) fn from_code(code: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|class| class.as_str() == code)
+    }
+
+    /// What the class means, in one sentence ([`ReasonClass::row`]): what later stops say of a
+    /// commit from before, whose own words are not kept.
+    pub(crate) fn meaning(self) -> &'static str {
+        self.row().3
     }
 
     /// The code as the ledger writes it.
