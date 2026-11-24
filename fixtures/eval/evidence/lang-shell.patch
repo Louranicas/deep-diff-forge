@@ -1,0 +1,25 @@
+--- a/scripts/a_miss_0.sh
++++ b/scripts/a_miss_0.sh
+@@ -1,1 +1,2 @@
+ x0
++# shellcheck disable=SC2086
+--- a/test/a_miss_1.bats
++++ b/test/a_miss_1.bats
+@@ -1,2 +1,1 @@
+ x0
+-@test "adds" {
+--- a/test/a_miss_2.bats
++++ b/test/a_miss_2.bats
+@@ -1,1 +1,2 @@
+ x0
++  skip "later"
+--- a/test/a_miss_3.bats
++++ b/test/a_miss_3.bats
+@@ -1,1 +1,2 @@
+ x0
++  [ 1 -eq 1 ]
+--- a/scripts/a_miss_4.sh
++++ b/scripts/a_miss_4.sh
+@@ -1,1 +1,2 @@
+ x0
++make check || true

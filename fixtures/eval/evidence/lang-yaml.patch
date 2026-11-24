@@ -1,0 +1,20 @@
+--- a/.yamllint_miss_0.yml
++++ b/.yamllint_miss_0.yml
+@@ -1,1 +1,2 @@
+ x0
++# yamllint disable rule:line-length
+--- a/.github/workflows/ci_miss_1.yml
++++ b/.github/workflows/ci_miss_1.yml
+@@ -1,2 +1,1 @@
+ x0
+-      - run: cargo test --workspace
+--- a/.github/workflows/ci_miss_2.yml
++++ b/.github/workflows/ci_miss_2.yml
+@@ -1,1 +1,2 @@
+ x0
++    if: false
+--- a/.github/workflows/ci_miss_3.yml
++++ b/.github/workflows/ci_miss_3.yml
+@@ -1,1 +1,2 @@
+ x0
++    continue-on-error: true

@@ -2680,7 +2680,7 @@
       "id": "evidence/lang-go",
       "kind": "evidence",
       "patch": "evidence/lang-go.patch",
-      "origin": "synthetic: S3.35.d (0.11.0), the integrity labels in Go: every form the readers read today, one positive and one near miss each; measured on w11G2-2",
+      "origin": "synthetic: S3.35.d (0.11.0), the integrity labels in Go: every form the readers read today, one positive and one near miss each, and the forms a reviewer would expect that are not read, declared; measured on w11G2-2",
       "expect": [
         {
           "path": "a_read_0.go",
@@ -2689,37 +2689,99 @@
           "line": 2
         },
         {
-          "path": "a_test_read_2.go",
+          "path": "a_test_read_3.go",
           "signal": "test_removed",
           "side": "old",
           "line": 2
         },
         {
-          "path": "a_test_read_4.go",
+          "path": "a_test_read_7.go",
           "signal": "test_skipped",
           "side": "new",
           "line": 2
         },
         {
-          "path": "a_read_6.go",
+          "path": "a_read_12.go",
           "signal": "error_swallowed",
           "side": "new",
           "line": 2
         },
         {
-          "path": "a_read_7.go",
+          "path": "a_read_13.go",
           "signal": "error_swallowed",
           "side": "new",
           "line": 2
         }
       ],
-      "sha256": "87ed91ab9242ccae30784d20408b0ec3231149f4b459145a20499502edfa0319"
+      "known_miss": [
+        {
+          "path": "a_miss_2.go",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "a_test_miss_5.go",
+          "signal": "test_removed",
+          "side": "old",
+          "line": 2
+        },
+        {
+          "path": "a_test_miss_6.go",
+          "signal": "test_removed",
+          "side": "old",
+          "line": 2
+        },
+        {
+          "path": "a_test_miss_9.go",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "a_test_miss_10.go",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "a_miss_11.go",
+          "signal": "stub_added",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "a_miss_15.go",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "a_miss_16.go",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "a_miss_17.go",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "a_miss_18.go",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "sha256": "0d144e640011908a1bc78514db559ccfc8accda9e444ead9206ae923d7bc73e6"
     },
     {
       "id": "evidence/lang-javascript",
       "kind": "evidence",
       "patch": "evidence/lang-javascript.patch",
-      "origin": "synthetic: S3.35.d (0.11.0), the integrity labels in JavaScript and TypeScript: every form the readers read today, one positive and one near miss each; measured on w11G2-2",
+      "origin": "synthetic: S3.35.d (0.11.0), the integrity labels in JavaScript and TypeScript: every form the readers read today, one positive and one near miss each, and the forms a reviewer would expect that are not read, declared; measured on w11G2-2",
       "expect": [
         {
           "path": "src/a_read_0.js",
@@ -2740,43 +2802,105 @@
           "line": 2
         },
         {
-          "path": "test/a.test_read_4.js",
+          "path": "test/a.test_read_6.js",
           "signal": "test_removed",
           "side": "old",
           "line": 2
         },
         {
-          "path": "test/a.test_read_6.js",
+          "path": "test/a.test_read_9.js",
           "signal": "test_skipped",
           "side": "new",
           "line": 2
         },
         {
-          "path": "test/a.test_read_8.js",
+          "path": "test/a.test_read_13.js",
           "signal": "trivial_assert",
           "side": "new",
           "line": 2
         },
         {
-          "path": "src/a_read_10.js",
+          "path": "src/a_read_18.js",
           "signal": "error_swallowed",
           "side": "new",
           "line": 2
         },
         {
-          "path": "src/a_read_11.js",
+          "path": "src/a_read_19.js",
           "signal": "error_swallowed",
           "side": "new",
           "line": 2
         }
       ],
-      "sha256": "0e4c5064e33ce4f77f934e25463af97a5ce322669d392f8641acc9f8f6a92fc2"
+      "known_miss": [
+        {
+          "path": "src/a_miss_4.js",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/a_miss_5.js",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "test/a.test_miss_8.js",
+          "signal": "test_removed",
+          "side": "old",
+          "line": 2
+        },
+        {
+          "path": "test/a.test_miss_11.js",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "test/a.test_miss_12.js",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "test/a.test_miss_15.js",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "test/a.test_miss_16.js",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/a_miss_17.js",
+          "signal": "stub_added",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/a_miss_21.js",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/a_miss_22.js",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "sha256": "1ce8ca13f6014502f4abc3b55b597a3104c80e5879c6c0d07ecab5b43a182967"
     },
     {
       "id": "evidence/lang-python",
       "kind": "evidence",
       "patch": "evidence/lang-python.patch",
-      "origin": "synthetic: S3.35.d (0.11.0), the integrity labels in Python: every form the readers read today, one positive and one near miss each; measured on w11G2-2",
+      "origin": "synthetic: S3.35.d (0.11.0), the integrity labels in Python: every form the readers read today, one positive and one near miss each, and the forms a reviewer would expect that are not read, declared; measured on w11G2-2",
       "expect": [
         {
           "path": "src/a_read_0.py",
@@ -2791,49 +2915,247 @@
           "line": 2
         },
         {
-          "path": "tests/test_a_read_3.py",
+          "path": "tests/test_a_read_6.py",
           "signal": "test_removed",
           "side": "old",
           "line": 2
         },
         {
-          "path": "tests/test_a_read_5.py",
-          "signal": "test_skipped",
-          "side": "new",
-          "line": 2
-        },
-        {
-          "path": "tests/test_a_read_6.py",
-          "signal": "test_skipped",
-          "side": "new",
-          "line": 2
-        },
-        {
-          "path": "tests/test_a_read_8.py",
-          "signal": "trivial_assert",
-          "side": "new",
-          "line": 2
-        },
-        {
           "path": "tests/test_a_read_9.py",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/test_a_read_10.py",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/test_a_read_14.py",
           "signal": "trivial_assert",
           "side": "new",
           "line": 2
         },
         {
-          "path": "src/a_read_11.py",
+          "path": "tests/test_a_read_15.py",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/a_read_19.py",
           "signal": "stub_added",
           "side": "new",
           "line": 2
         },
         {
-          "path": "src/a_read_13.py",
+          "path": "src/a_read_22.py",
           "signal": "error_swallowed",
           "side": "new",
           "line": 4
         }
       ],
-      "sha256": "b8412ef3dab757738e7f2d9176652fde1a5cd7a495d849b213ba8b597a7088d4"
+      "known_miss": [
+        {
+          "path": "src/a_miss_3.py",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/a_miss_4.py",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/a_miss_5.py",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/test_a_miss_8.py",
+          "signal": "test_removed",
+          "side": "old",
+          "line": 2
+        },
+        {
+          "path": "tests/test_a_miss_12.py",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/test_a_miss_13.py",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/test_a_miss_17.py",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/test_a_miss_18.py",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/a_miss_21.py",
+          "signal": "stub_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/a_miss_24.py",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/a_miss_25.py",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/a_miss_26.py",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "sha256": "8948f10edca2ef305b2ddf29bb83a3866d7b8597563563f986d7609112811a49"
+    },
+    {
+      "id": "evidence/lang-shell",
+      "kind": "evidence",
+      "patch": "evidence/lang-shell.patch",
+      "origin": "synthetic: S3.35.d (0.11.0), the integrity labels in shell: every form the readers read today, one positive and one near miss each, and the forms a reviewer would expect that are not read, declared; measured on w11G2-2",
+      "expect": [],
+      "known_miss": [
+        {
+          "path": "scripts/a_miss_0.sh",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "test/a_miss_1.bats",
+          "signal": "test_removed",
+          "side": "old",
+          "line": 2
+        },
+        {
+          "path": "test/a_miss_2.bats",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "test/a_miss_3.bats",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "scripts/a_miss_4.sh",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "sha256": "414cdefaf7a1bb7d7ff8ae5e3cd57cf8319646c39ee355667847745a0491e537"
+    },
+    {
+      "id": "evidence/lang-yaml",
+      "kind": "evidence",
+      "patch": "evidence/lang-yaml.patch",
+      "origin": "synthetic: S3.35.d (0.11.0), the integrity labels in YAML: every form the readers read today, one positive and one near miss each, and the forms a reviewer would expect that are not read, declared; measured on w11G2-2",
+      "expect": [],
+      "known_miss": [
+        {
+          "path": ".yamllint_miss_0.yml",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": ".github/workflows/ci_miss_1.yml",
+          "signal": "test_removed",
+          "side": "old",
+          "line": 2
+        },
+        {
+          "path": ".github/workflows/ci_miss_2.yml",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": ".github/workflows/ci_miss_3.yml",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "sha256": "a7ac6500b6a3fadd937290de1188f5b1438016a23d75deca56268f05922744a9"
+    },
+    {
+      "id": "evidence/lang-dockerfile",
+      "kind": "evidence",
+      "patch": "evidence/lang-dockerfile.patch",
+      "origin": "synthetic: S3.35.d (0.11.0), the integrity labels in Dockerfile: every form the readers read today, one positive and one near miss each, and the forms a reviewer would expect that are not read, declared; measured on w11G2-2",
+      "expect": [],
+      "known_miss": [
+        {
+          "path": "d0/Dockerfile",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "d1/Dockerfile",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "sha256": "5c2d8660fe89ead1464a895cc23f4773c7d056584cdfbdfdb5480d03ac5e9df8"
+    },
+    {
+      "id": "evidence/lang-makefile",
+      "kind": "evidence",
+      "patch": "evidence/lang-makefile.patch",
+      "origin": "synthetic: S3.35.d (0.11.0), the integrity labels in Makefile: every form the readers read today, one positive and one near miss each, and the forms a reviewer would expect that are not read, declared; measured on w11G2-2",
+      "expect": [],
+      "known_miss": [
+        {
+          "path": "d0/Makefile",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "d1/Makefile",
+          "signal": "test_removed",
+          "side": "old",
+          "line": 2
+        },
+        {
+          "path": "d2/Makefile",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "sha256": "d589eb21c8c26f45019be805bb9c3bc364a32c5da6f21d14af5828508147f1a6"
     }
   ]
 }

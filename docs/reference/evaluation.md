@@ -150,7 +150,10 @@ deep-diff-forge eval                          # score the labelled corpus in fix
   precision is 211 / 236 and recall 211 / 292, with 109 declared misses. On 69 cases (S3.35.d:
   `evidence/lang-python`, `evidence/lang-javascript`, `evidence/lang-go`: every form of the
   integrity labels the readers read beyond Rust, each beside a near miss) precision is 233 / 258
-  and recall 233 / 314, with 109 declared misses.
+  and recall 233 / 314, with 109 declared misses. On 73 cases (2026-11-24: the 46 forms of those
+  labels that a reviewer would expect and no reader reads are declared as misses, in those three
+  cases and in `evidence/lang-shell`, `evidence/lang-yaml`, `evidence/lang-dockerfile` and
+  `evidence/lang-makefile`) precision is 233 / 258 and recall 233 / 360, with 155 declared misses.
   The sibling battery `assert-cfg-let` (seed 1, 46 shapes) of the comparison corpus, read by the
   0.11.0 branch after F2a: `trivial_assert` is raised on 19 of its 21 shapes that cannot fail
   (not on a macro bound by `use … as`, nor on `matches!(Some(n), Some(_))`), `test_skipped` on 4
@@ -160,53 +163,55 @@ deep-diff-forge eval                          # score the labelled corpus in fix
   | Metric | Right / total | Floor |
   | --- | ---: | ---: |
   | ranking pairs | 12 / 15 | 80.0% |
-  | evidence precision | 233 / 258 | 88.2% |
-  | evidence recall | 233 / 314 | 70.5% |
+  | evidence precision | 233 / 258 | 90.3% |
+  | evidence recall | 233 / 360 | 64.7% |
   | findings verdicts | 33 / 33 | 100% |
 
   The receipt (`--json`) also splits evidence precision and recall by signal (`by_signal`) and by
   the language of the item's file (`by_language`, the engine's own language reading, `none` where
   no language applies); each adds up to the two evidence rows above, and the text summary prints
-  the four metrics only. Measured 2026-11-24 on 69 cases:
+  the four metrics only. Measured 2026-11-24 on 73 cases:
 
   | Signal | Precision | Recall | Cases |
   | --- | ---: | ---: | ---: |
   | `assertions_removed` | 0 / 0 (-) | 0 / 1 (0.0%) | 1 |
   | `build_hook` | 1 / 1 (100.0%) | 1 / 1 (100.0%) | 1 |
-  | `check_suppressed` | 20 / 20 (100.0%) | 20 / 21 (95.2%) | 10 |
+  | `check_suppressed` | 20 / 20 (100.0%) | 20 / 31 (64.5%) | 14 |
   | `ci_privilege` | 5 / 5 (100.0%) | 5 / 5 (100.0%) | 2 |
   | `dynamic_eval` | 7 / 7 (100.0%) | 7 / 11 (63.6%) | 7 |
   | `error_defaulted` | 0 / 0 (-) | 0 / 2 (0.0%) | 1 |
-  | `error_swallowed` | 20 / 20 (100.0%) | 20 / 25 (80.0%) | 10 |
+  | `error_swallowed` | 20 / 20 (100.0%) | 20 / 34 (58.8%) | 14 |
   | `expectations_changed` | 0 / 0 (-) | 0 / 1 (0.0%) | 1 |
   | `input_special_cased` | 0 / 0 (-) | 0 / 1 (0.0%) | 1 |
   | `module_mocked` | 0 / 0 (-) | 0 / 1 (0.0%) | 1 |
   | `network_fetch` | 17 / 19 (89.5%) | 17 / 22 (77.3%) | 12 |
-  | `panic_path_added` | 45 / 60 (75.0%) | 45 / 58 (77.6%) | 19 |
+  | `panic_path_added` | 45 / 60 (75.0%) | 45 / 62 (72.6%) | 22 |
   | `process_spawn` | 38 / 41 (92.7%) | 38 / 51 (74.5%) | 12 |
   | `secret_like` | 9 / 9 (100.0%) | 9 / 9 (100.0%) | 2 |
-  | `stub_added` | 7 / 7 (100.0%) | 7 / 10 (70.0%) | 9 |
-  | `test_removed` | 9 / 9 (100.0%) | 9 / 9 (100.0%) | 7 |
-  | `test_skipped` | 24 / 28 (85.7%) | 24 / 39 (61.5%) | 19 |
-  | `trivial_assert` | 23 / 23 (100.0%) | 23 / 39 (59.0%) | 16 |
+  | `stub_added` | 7 / 7 (100.0%) | 7 / 13 (53.8%) | 11 |
+  | `test_removed` | 9 / 9 (100.0%) | 9 / 16 (56.2%) | 10 |
+  | `test_skipped` | 24 / 28 (85.7%) | 24 / 46 (52.2%) | 21 |
+  | `trivial_assert` | 23 / 23 (100.0%) | 23 / 45 (51.1%) | 18 |
   | `unsafe_added` | 8 / 9 (88.9%) | 8 / 8 (100.0%) | 5 |
 
   | Language | Precision | Recall | Cases |
   | --- | ---: | ---: | ---: |
-  | `go` | 9 / 9 (100.0%) | 9 / 13 (69.2%) | 6 |
-  | `javascript` | 21 / 21 (100.0%) | 21 / 31 (67.7%) | 11 |
-  | `none` | 17 / 18 (94.4%) | 17 / 21 (81.0%) | 5 |
-  | `python` | 21 / 22 (95.5%) | 21 / 38 (55.3%) | 15 |
+  | `go` | 9 / 9 (100.0%) | 9 / 23 (39.1%) | 6 |
+  | `javascript` | 21 / 21 (100.0%) | 21 / 41 (51.2%) | 11 |
+  | `none` | 17 / 18 (94.4%) | 17 / 24 (70.8%) | 6 |
+  | `python` | 21 / 22 (95.5%) | 21 / 50 (42.0%) | 15 |
   | `rust` | 153 / 175 (87.4%) | 153 / 198 (77.3%) | 28 |
-  | `shell` | 6 / 7 (85.7%) | 6 / 7 (85.7%) | 6 |
-  | `yaml` | 6 / 6 (100.0%) | 6 / 6 (100.0%) | 2 |
+  | `shell` | 6 / 7 (85.7%) | 6 / 14 (42.9%) | 9 |
+  | `yaml` | 6 / 6 (100.0%) | 6 / 10 (60.0%) | 3 |
 
   **The integrity labels beyond Rust (S3.35.d, measured 2026-11-24 on the 0.11.0 branch).** Every
   form below was run through the binary, one positive and one near miss each for a form that is
   read; `evidence/lang-python`, `evidence/lang-javascript` and `evidence/lang-go` hold the read forms
-  and their near misses. The forms a reviewer would expect that no rule reads are declared here
-  (46 forms); they are not yet cases of the corpus: as declared misses they would add 46 to the
-  recall's denominator (233 / 360 against 233 / 314), under the recall floor.
+  and their near misses. The forms a reviewer would expect that no rule reads (46 forms, in the
+  last column) are cases of the corpus since 2026-11-24, each a declared miss (`known_miss`) in
+  those three cases or in `evidence/lang-shell`, `evidence/lang-yaml`, `evidence/lang-dockerfile`
+  and `evidence/lang-makefile`, so that a reader that learns one fails the gate until its
+  expectation moves.
 
   | Label | Read (Python · JavaScript/TypeScript · Go) | Not read (declared) |
   | --- | --- | --- |
@@ -219,11 +224,21 @@ deep-diff-forge eval                          # score the labelled corpus in fix
   | `panic_path_added` | none (Rust only) | `sys.exit(1)` in library code; Go `panic(err)`, `log.Fatal(err)`; `process.exit(1)` |
 
   Shell, YAML, Dockerfile and Makefile have no integrity rule: every form named for them above is
-  unread. Per language, precision and recall before (66 cases) and after (69 cases): Go 4 / 4 and
-  4 / 8 to 9 / 9 and 9 / 13; JavaScript 13 / 13 and 13 / 23 to 21 / 21 and 21 / 31; Python
-  12 / 13 and 12 / 29 to 21 / 22 and 21 / 38; Rust, shell, YAML and the rest unchanged. With the
-  46 declared forms as cases recall would be Go 9 / 23, JavaScript 21 / 41, Python 21 / 50, shell
-  6 / 14, YAML 6 / 10, and 233 / 360 overall.
+  unread. Per language, precision and recall before (66 cases) and after the read forms (69
+  cases): Go 4 / 4 and 4 / 8 to 9 / 9 and 9 / 13; JavaScript 13 / 13 and 13 / 23 to 21 / 21 and
+  21 / 31; Python 12 / 13 and 12 / 29 to 21 / 22 and 21 / 38; Rust, shell, YAML and the rest
+  unchanged.
+
+  **The denominator grew by 46 declared misses (2026-11-24).** Declaring the 46 forms above as
+  misses added them to recall's denominator and to nothing else: Go 10, JavaScript 10, Python 12,
+  shell 7 (2 in shell scripts, 2 in Dockerfiles and 3 in Makefiles, which the receipt reads as
+  shell), YAML 4, and 3 with no language (the bats test files). No item found before is lost: 233 expected items are found
+  before and after. Recall fell from 233 / 314 (74.2%) to 233 / 360 (64.7%) for that reason
+  alone, per language Go 9 / 13 to 9 / 23, JavaScript 21 / 31 to 21 / 41, Python 21 / 38 to
+  21 / 50, shell 6 / 7 to 6 / 14, YAML 6 / 6 to 6 / 10, none 17 / 21 to 17 / 24; precision is
+  unchanged. The floors were re-based on what is measured (recall 64.7%, precision 90.3%, up from
+  88.2%), and the gate also holds the count of expected items found at 233 or more, so that a
+  larger denominator cannot hide a lost item.
 
   A case whose patch the parser refuses is listed in the receipt's `refused` with the parser's
   reason and fails the run (exit 7); its items are not scored, and every other case is still

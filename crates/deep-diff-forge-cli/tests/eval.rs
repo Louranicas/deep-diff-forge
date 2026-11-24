@@ -222,15 +222,24 @@ use std::process::Command;
 /// misses): precision 211 of 236, recall 211 of 292, 109 declared.
 /// S3.35.d (0.11.0) adds the integrity labels beyond Rust: `evidence/lang-python`,
 /// `evidence/lang-javascript` and `evidence/lang-go` (every form the readers read, each with a near
-/// miss): precision 233 of 258, recall 233 of 314, 109 declared.
+/// miss): precision 233 of 258, recall 233 of 314, 109 declared. Then (2026-11-24, the
+/// coordinator's ruling) the 46 forms a reviewer would expect that no reader reads are declared
+/// as misses in those cases and in `evidence/lang-shell`, `lang-yaml`, `lang-dockerfile` and
+/// `lang-makefile`: recall 233 of 360, 155 declared, no item found before lost. The floors are
+/// re-based on that: recall and precision at what is measured, and a floor on the count of
+/// expected items found ([`EVIDENCE_FOUND_FLOOR`]), so that declaring more misses, which grows
+/// the denominator, can never hide a lost item.
 const RANKING_PAIRS_FLOOR: u64 = 800_000;
-const EVIDENCE_PRECISION_FLOOR: u64 = 881_516;
-const EVIDENCE_RECALL_FLOOR: u64 = 704_545;
+const EVIDENCE_PRECISION_FLOOR: u64 = 903_100;
+const EVIDENCE_RECALL_FLOOR: u64 = 647_222;
+/// The expected evidence items the engine finds (`evidence_recall`'s `right`): a lost item fails
+/// the gate whatever the fraction.
+const EVIDENCE_FOUND_FLOOR: u64 = 233;
 const FINDINGS_FLOOR: u64 = 1_000_000;
 /// Declared misses (plan N4): each counts as wrong in its metric above. The receipt's
 /// `known_misses` keeps its first meaning, the evidence `known_miss` items; `declared` lists all.
-const DECLARED: u64 = 109;
-const EVIDENCE_KNOWN_MISSES: u64 = 81;
+const DECLARED: u64 = 155;
+const EVIDENCE_KNOWN_MISSES: u64 = 127;
 /// The smallest corpus the gate accepts, and the fewest cases of each kind.
 const MIN_CASES: usize = 30;
 const MIN_CASES_PER_KIND: usize = 3;
@@ -265,6 +274,10 @@ fn the_corpus_meets_its_floors() {
         "{m:#}"
     );
     assert!(ppm("evidence_recall") >= EVIDENCE_RECALL_FLOOR, "{m:#}");
+    assert!(
+        m["evidence_recall"]["right"].as_u64().unwrap() >= EVIDENCE_FOUND_FLOOR,
+        "fewer expected evidence items found than the floor: {m:#}"
+    );
     assert!(ppm("findings_verdicts") >= FINDINGS_FLOOR, "{m:#}");
     assert_eq!(receipt["known_misses"], EVIDENCE_KNOWN_MISSES);
     assert_eq!(
@@ -318,8 +331,8 @@ fn eval_receipt_carries_per_signal_tallies() {
         receipt["by_signal"]["trivial_assert"],
         serde_json::json!({
             "precision": {"right": 23, "total": 23, "ppm": 1_000_000},
-            "recall": {"right": 23, "total": 39, "ppm": 589_743},
-            "cases": 16
+            "recall": {"right": 23, "total": 45, "ppm": 511_111},
+            "cases": 18
         }),
         "the trivial_assert pair in {receipt:#}"
     );
@@ -384,14 +397,14 @@ fn the_summary_names_each_metric_and_each_failure() {
     let (code, text) = run(&corpus());
     assert_eq!(code, Some(0), "{text}");
     assert!(
-        text.starts_with("deep-diff-forge eval: 69 cases\n"),
+        text.starts_with("deep-diff-forge eval: 73 cases\n"),
         "{text}"
     );
     for line in [
         "  ranking_pairs        12/15",
         "  evidence_precision   233/258",
-        "  evidence_recall      233/314",
-        "  declared             109",
+        "  evidence_recall      233/360",
+        "  declared             155",
         "  KNOWN ranking/auth-check-removed: src/handlers/delete.rs ranks below docs/CHANGES.md",
         "  KNOWN evidence/shell-heredoc: reports (\"scripts/docs.sh\", \"network_fetch\", \"new\", 3)",
     ] {
@@ -787,7 +800,7 @@ fn a_declared_miss_must_still_be_a_miss() {
     );
     assert_eq!(
         metrics["evidence_recall"],
-        serde_json::json!({"right": 233, "total": 313, "ppm": 744_408})
+        serde_json::json!({"right": 233, "total": 359, "ppm": 649_025})
     );
 
     // A declared false positive the engine does not report.

@@ -18,48 +18,98 @@
 @@ -1,1 +1,2 @@
  x0
 +// eslint is configured in package.json
---- a/test/a.test_read_4.js
-+++ b/test/a.test_read_4.js
+--- a/src/a_miss_4.js
++++ b/src/a_miss_4.js
+@@ -1,1 +1,2 @@
+ x0
++// biome-ignore lint/style: legacy
+--- a/src/a_miss_5.js
++++ b/src/a_miss_5.js
+@@ -1,1 +1,2 @@
+ x0
++/* istanbul ignore next */
+--- a/test/a.test_read_6.js
++++ b/test/a.test_read_6.js
 @@ -1,2 +1,1 @@
  x0
 -it("adds", () => { expect(add(1, 2)).toBe(3); });
---- a/test/a.test_near_5.js
-+++ b/test/a.test_near_5.js
+--- a/test/a.test_near_7.js
++++ b/test/a.test_near_7.js
 @@ -1,2 +1,1 @@
  x0
 -const helper = () => 3;
---- a/test/a.test_read_6.js
-+++ b/test/a.test_read_6.js
+--- a/test/a.test_miss_8.js
++++ b/test/a.test_miss_8.js
+@@ -1,2 +1,1 @@
+ x0
+-it.each([[1, 2, 3]])("adds", (a, b, c) => {});
+--- a/test/a.test_read_9.js
++++ b/test/a.test_read_9.js
 @@ -1,1 +1,2 @@
  x0
 +it.skip("adds", () => {});
---- a/test/a.test_near_7.js
-+++ b/test/a.test_near_7.js
+--- a/test/a.test_near_10.js
++++ b/test/a.test_near_10.js
 @@ -1,1 +1,2 @@
  x0
 +it("skips nothing", () => {});
---- a/test/a.test_read_8.js
-+++ b/test/a.test_read_8.js
+--- a/test/a.test_miss_11.js
++++ b/test/a.test_miss_11.js
+@@ -1,1 +1,2 @@
+ x0
++it.only("adds", () => {});
+--- a/test/a.test_miss_12.js
++++ b/test/a.test_miss_12.js
+@@ -1,1 +1,2 @@
+ x0
++test.fixme("adds", async () => {});
+--- a/test/a.test_read_13.js
++++ b/test/a.test_read_13.js
 @@ -1,1 +1,2 @@
  x0
 +  expect(true).toBe(true);
---- a/test/a.test_near_9.js
-+++ b/test/a.test_near_9.js
+--- a/test/a.test_near_14.js
++++ b/test/a.test_near_14.js
 @@ -1,1 +1,2 @@
  x0
 +  expect(ready()).toBe(true);
---- a/src/a_read_10.js
-+++ b/src/a_read_10.js
+--- a/test/a.test_miss_15.js
++++ b/test/a.test_miss_15.js
+@@ -1,1 +1,2 @@
+ x0
++  expect(1).toBe(1);
+--- a/test/a.test_miss_16.js
++++ b/test/a.test_miss_16.js
+@@ -1,1 +1,2 @@
+ x0
++  expect(true).toBeTruthy();
+--- a/src/a_miss_17.js
++++ b/src/a_miss_17.js
+@@ -1,1 +1,2 @@
+ x0
++  throw new Error("not implemented");
+--- a/src/a_read_18.js
++++ b/src/a_read_18.js
 @@ -1,1 +1,2 @@
  x0
 +try { f(); } catch (e) {}
---- a/src/a_read_11.js
-+++ b/src/a_read_11.js
+--- a/src/a_read_19.js
++++ b/src/a_read_19.js
 @@ -1,1 +1,2 @@
  x0
 +p.catch(() => {});
---- a/src/a_near_12.js
-+++ b/src/a_near_12.js
+--- a/src/a_near_20.js
++++ b/src/a_near_20.js
 @@ -1,1 +1,2 @@
  x0
 +try { f(); } catch (e) { throw e; }
+--- a/src/a_miss_21.js
++++ b/src/a_miss_21.js
+@@ -1,1 +1,2 @@
+ x0
++try { f(); } catch { console.log("x"); }
+--- a/src/a_miss_22.js
++++ b/src/a_miss_22.js
+@@ -1,1 +1,2 @@
+ x0
++  process.exit(1);
