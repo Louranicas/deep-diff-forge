@@ -27,8 +27,9 @@ pub struct Diagnostic {
     /// Whether the admitted ranker raises this label in this file; only with [`Judge::Different`].
     pub judge_sees: Option<bool>,
     /// The case of a label whose repairs answer different cases (`cases`): for `hazardous_text`
-    /// the kinds of hazard, for `diff_suppressed` the cause, in the vocabulary's order; `None`
-    /// for every other label and when not known. The document lists only its repairs.
+    /// the kinds of hazard, for `diff_suppressed` the cause, for `panic_path_added@line` the
+    /// forms of its line (since 0.11.0), in the vocabulary's order; `None` for every other label
+    /// and when not known. The document lists only its repairs.
     pub case: Option<Vec<&'static str>>,
 }
 
@@ -80,7 +81,7 @@ pub fn diagnostics(seal: &InputSeal, ranked: &[RankedFile]) -> Diagnostics {
         let rows = file
             .evidence
             .iter()
-            .map(|e| (row(e), e.read_now, e.test_likely, None));
+            .map(|e| (row(e), e.read_now, e.test_likely, panic_case(e)));
         let room = MAX_EVIDENCE_PER_FILE.saturating_sub(file.evidence.len());
         let hazards = &file.hazard_lines[..file.hazard_lines.len().min(room)];
         if file.evidence_truncated
@@ -132,6 +133,18 @@ pub fn diagnostics(seal: &InputSeal, ranked: &[RankedFile]) -> Diagnostics {
         diagnostics: out,
     }
 }
+
+/// The case of an evidence row of `panic_path_added` (since 0.11.0, F2a): `call` where an
+/// `unwrap` or `expect` is on its line, `panic_macro` where a `panic!` or `unreachable!` is;
+/// `None` for any other row.
+fn panic_case(e: &crate::Evidence) -> Option<Vec<&'static str>> {
+    let kinds = [(e.by_call, PANIC_CASES[0]), (e.by_macro, PANIC_CASES[1])];
+    let kinds: Vec<&'static str> = kinds.iter().filter(|k| k.0).map(|k| k.1).collect();
+    case_of(RiskSignal::Code(e.signal), &kinds)
+}
+
+/// The cases of `panic_path_added`, as the engine tells them apart.
+pub(crate) const PANIC_CASES: [&str; 2] = ["call", "panic_macro"];
 
 /// The case of `signal` at its file: for `hazardous_text` every kind that raises it there, for
 /// `diff_suppressed` the cause.
@@ -319,6 +332,49 @@ mod tests {
         let ranked = rank(&parse(patch).unwrap());
         let doc = diagnostics(&InputSeal::of(patch.as_bytes(), "test"), &ranked);
         (ranked, doc)
+    }
+
+    /// F2a, ruling 6 (N90): a panic path's row names its form as its case and only the repairs
+    /// of that form: `call` (`unwrap`, `expect`) a1 and a2, `panic_macro` (`panic!`,
+    /// `unreachable!`) a1 and a3, both on one line all three. The row of a panic path the reader
+    /// of tokens does not see (the 0.8.3 reading's `.unwrap()`) is a call.
+    #[test]
+    fn a_panic_path_names_its_form_and_the_repairs_of_it() {
+        let patch = "--- a/src/p.rs\n+++ b/src/p.rs\n@@ -1,1 +1,4 @@\n ctx\n+let a = x.unwrap();\n+unreachable!();\n+let b = y.expect(\"y\"); panic!();\n";
+        let (_, doc) = document(patch);
+        type Row<'a> = (Option<(Side, u32)>, Option<Vec<&'a str>>);
+        let cases: Vec<Row> = doc
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == "panic_path_added@line")
+            .map(|d| (d.at, d.case.clone()))
+            .collect();
+        assert_eq!(
+            cases,
+            [
+                (Some((Side::New, 2)), Some(vec!["call"])),
+                (Some((Side::New, 3)), Some(vec!["panic_macro"])),
+                (Some((Side::New, 4)), Some(vec!["call", "panic_macro"])),
+            ]
+        );
+        let json = doc.to_json();
+        for (case, repairs) in [
+            (
+                "\"call\"",
+                "\"panic_path_added:a1\", \"panic_path_added:a2\"",
+            ),
+            (
+                "\"panic_macro\"",
+                "\"panic_path_added:a1\", \"panic_path_added:a3\"",
+            ),
+            (
+                "\"call\", \"panic_macro\"",
+                "\"panic_path_added:a1\", \"panic_path_added:a2\", \"panic_path_added:a3\"",
+            ),
+        ] {
+            let member = format!("\"cases\": [{case}], \"repairs\": [{repairs}]");
+            assert!(json.contains(&member), "{member} in {json}");
+        }
     }
 
     /// A Trojan Source line: `hazardous_text`, which no row locates.

@@ -177,7 +177,16 @@ pub(crate) struct Item {
     /// For a panic path: every one found on this line stands inside the braces of an item whose
     /// attribute spells a test. A hint, never proof ([`TestStretch`]).
     pub test_likely: bool,
+    /// For a panic path, its forms on this line: [`BY_CALL`] (`unwrap`, `expect`), [`BY_MACRO`]
+    /// (`panic!`, `unreachable!`), or both; 0 for every other signal. The case of a diagnostic
+    /// (since 0.11.0, F2a, ruling 6): its repairs differ.
+    pub forms: u8,
 }
+
+/// [`Item::forms`]: a call that panics on failure.
+pub(crate) const BY_CALL: u8 = 1;
+/// [`Item::forms`]: a macro that panics where it is reached.
+pub(crate) const BY_MACRO: u8 = 2;
 
 /// What the reader found on the two sides of a hunk, each sorted by line and then by signal,
 /// one item for each pair of them.
@@ -1414,7 +1423,7 @@ pub(crate) fn reads(signal: EvidenceSignal, old_side: bool) -> bool {
 
 /// What one line holds: for each of [`READ`], the basis and the hint of the constructs of that
 /// signal found on it so far, taken together.
-type OnLine = [Option<(Basis, bool)>; READ.len()];
+type OnLine = [Option<(Basis, bool, u8)>; READ.len()];
 
 /// What the reader found, as it finds it: one entry for each line that holds something, and in
 /// it one place for each signal. A construct found again on a line joins what is there.
@@ -1458,8 +1467,12 @@ impl Found {
             }
         };
         on_line[place] = Some(match on_line[place] {
-            Some((basis, likely)) => (basis.max(item.basis), likely && item.test_likely),
-            None => (item.basis, item.test_likely),
+            Some((basis, likely, forms)) => (
+                basis.max(item.basis),
+                likely && item.test_likely,
+                forms | item.forms,
+            ),
+            None => (item.basis, item.test_likely, item.forms),
         });
     }
 
@@ -1470,7 +1483,7 @@ impl Found {
         window: &Window<'a, I>,
         signal: EvidenceSignal,
         (first, last): (usize, usize),
-        test_likely: bool,
+        (test_likely, forms): (bool, u8),
     ) {
         let (changed, basis) = window.extent(first, last);
         if let Some(line) = changed {
@@ -1479,6 +1492,7 @@ impl Found {
                 signal,
                 basis,
                 test_likely,
+                forms,
             });
         }
     }
@@ -1489,8 +1503,8 @@ impl Found {
         fn join(into: &mut OnLine, from: OnLine) {
             for (place, more) in from.into_iter().enumerate() {
                 into[place] = match (into[place], more) {
-                    (Some((basis, likely)), Some((other, also))) => {
-                        Some((basis.max(other), likely && also))
+                    (Some((basis, likely, forms)), Some((other, also, more))) => {
+                        Some((basis.max(other), likely && also, forms | more))
                     }
                     (was, more) => was.or(more),
                 };
@@ -1499,12 +1513,13 @@ impl Found {
         let mut out = Vec::new();
         let mut push = |line: usize, on_line: OnLine| {
             for (signal, held) in READ.into_iter().zip(on_line) {
-                if let Some((basis, test_likely)) = held {
+                if let Some((basis, test_likely, forms)) = held {
                     out.push(Item {
                         line,
                         signal,
                         basis,
                         test_likely,
+                        forms,
                     });
                 }
             }
@@ -1631,6 +1646,7 @@ impl Skips {
             signal,
             basis,
             test_likely: false,
+            forms: 0,
         });
     }
 
@@ -2017,7 +2033,12 @@ pub(crate) fn read_new<'a>(lines: impl Iterator<Item = SideLine<'a>>) -> Vec<Ite
         };
         if let Some((signal, extent)) = construct {
             let likely = signal == S::PanicPathAdded && tests.holds();
-            found.construct(&window, signal, extent, likely);
+            let forms = match token.what {
+                _ if signal != S::PanicPathAdded => 0,
+                What::Name(Word::Panic | Word::Unreachable) => BY_MACRO,
+                _ => BY_CALL,
+            };
+            found.construct(&window, signal, extent, (likely, forms));
         }
         window.step();
     }
@@ -2035,7 +2056,7 @@ pub(crate) fn read_old<'a>(lines: impl Iterator<Item = SideLine<'a>>) -> Vec<Ite
         if token.what == What::Mark(b'#')
             && let Some(extent) = test_attribute(&window)
         {
-            found.construct(&window, EvidenceSignal::TestRemoved, extent, false);
+            found.construct(&window, EvidenceSignal::TestRemoved, extent, (false, 0));
         }
         window.step();
     }
@@ -2065,6 +2086,7 @@ mod tests {
             signal,
             basis,
             test_likely,
+            forms: u8::from(signal == S::PanicPathAdded),
         };
         for line in [3usize, 7] {
             for round in 0..100_000 {
@@ -3289,7 +3311,8 @@ mod tests {
                 line: 2,
                 signal: S::PanicPathAdded,
                 basis: Basis::Hunk,
-                test_likely: false
+                test_likely: false,
+                forms: BY_CALL
             }]
         );
         assert_eq!(
@@ -3298,7 +3321,8 @@ mod tests {
                 line: 1,
                 signal: S::TestRemoved,
                 basis: Basis::Lexical,
-                test_likely: false
+                test_likely: false,
+                forms: 0
             }]
         );
         // a side with no line of the change is not read: nothing is evidence on it anyway

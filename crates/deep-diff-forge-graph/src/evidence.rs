@@ -268,6 +268,13 @@ pub struct Evidence {
     /// kept for the floor does (0.8.3's of a Rust hunk, the frozen 0.8.4 one). By reader, not
     /// by `released`: a diagnostic's `reading` (`floor_only` when false). Not printed.
     pub read_now: bool,
+    /// On [`EvidenceSignal::PanicPathAdded`] only: a call that panics on failure (`unwrap`,
+    /// `expect`) is on this line. Since 0.11.0 (F2a): with [`Self::by_macro`] it is the case of
+    /// the line's diagnostic, whose repairs differ. Not printed.
+    pub by_call: bool,
+    /// On [`EvidenceSignal::PanicPathAdded`] only: `panic!` or `unreachable!` is on this line.
+    /// Not printed.
+    pub by_macro: bool,
 }
 
 /// One finding of a hunk's scan: the side, the signal, the line, and whether the reading every
@@ -1314,6 +1321,8 @@ pub(crate) fn file_evidence_marked(file: &ReviewFile, share: Share) -> (Vec<Evid
                 test_likely: hit.signal == S::PanicPathAdded && hit.side == Side::New && hit.likely,
                 released: hit.released,
                 read_now: hit.read_now,
+                by_call: hit.signal == S::PanicPathAdded && hit.forms & rust_tokens::BY_CALL != 0,
+                by_macro: hit.signal == S::PanicPathAdded && hit.forms & rust_tokens::BY_MACRO != 0,
             });
         }
     }
@@ -1374,6 +1383,7 @@ fn hits_of_items(hunk: &PatchHunk, items: &[Item]) -> Vec<Hit> {
                 from_code: false,
                 released,
                 read_now: false,
+                forms: rust_tokens::BY_CALL,
             });
         }
     }
@@ -2191,6 +2201,7 @@ fn legacy_hits(hunk: &PatchHunk, rules: &[&Rule], views: &Views) -> Vec<Hit> {
                     from_code: false,
                     released: true,
                     read_now: false,
+                    forms: rust_tokens::BY_CALL,
                 });
             }
         }
@@ -2431,6 +2442,9 @@ pub(crate) struct Hit {
     /// [`Evidence::read_now`]: true where `text_hits` makes it, false where the readings kept
     /// for the floor make theirs (`legacy_hits`, `hits_of_items`); [`unite`] ORs it.
     read_now: bool,
+    /// The forms of a panic path ([`rust_tokens::Item::forms`]): a rule of a table reads only
+    /// calls; [`unite`] ORs it.
+    forms: u8,
 }
 
 /// Every signal found on a changed line of the text `lines` (`top`: Git must put its first
@@ -2606,6 +2620,7 @@ fn unite(one: &[Hit], other: &[Hit]) -> Vec<Hit> {
                 from_code: x.from_code || y.from_code,
                 released: x.released || y.released,
                 read_now: x.read_now || y.read_now,
+                forms: x.forms | y.forms,
                 ..*x
             }),
         };
@@ -2724,6 +2739,11 @@ fn view_matches(
                 .map(|r| r.matches.basis())
                 .max();
             let mut likely = false;
+            let mut forms = if basis.is_some() {
+                rust_tokens::BY_CALL
+            } else {
+                0
+            };
             // The reader's items are in the order this loop goes in: by line, then by signal.
             while read
                 .get(*read_to)
@@ -2736,6 +2756,7 @@ fn view_matches(
             {
                 basis = basis.max(Some(item.basis));
                 likely = item.test_likely && side == Side::New;
+                forms |= item.forms;
             }
             if let Some(basis) = basis {
                 found.push(Hit {
@@ -2748,6 +2769,7 @@ fn view_matches(
                     from_code,
                     released: false,
                     read_now: true,
+                    forms,
                 });
             }
         }
@@ -4228,6 +4250,8 @@ mod tests {
                     // release 0.8.3 reported both
                     released: true,
                     read_now: true,
+                    by_call: false,
+                    by_macro: false,
                 },
                 Evidence {
                     signal: S::ProcessSpawn,
@@ -4240,6 +4264,8 @@ mod tests {
                     // release 0.8.3 reported both
                     released: true,
                     read_now: true,
+                    by_call: false,
+                    by_macro: false,
                 },
             ]
         );
@@ -5847,6 +5873,8 @@ mod tests {
                     test_likely: false,
                     released,
                     read_now: false,
+                    by_call: signal == S::PanicPathAdded,
+                    by_macro: false,
                 });
             }
         }
@@ -11581,6 +11609,7 @@ mod tests {
             from_code,
             released: false,
             read_now: from_code,
+            forms: 0,
         };
         let key = |hits: &[Hit]| -> Vec<(usize, S, Basis, bool)> {
             hits.iter()
