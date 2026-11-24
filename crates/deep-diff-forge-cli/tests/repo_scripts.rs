@@ -582,10 +582,12 @@ echo "failed: $failed""#,
         let (seconds, rest) = inner.split_once(" s").unwrap();
         (seconds.parse().unwrap(), rest.to_owned())
     };
+    // (bash 3.2, macOS's, has no EPOCHREALTIME: the clock is then whole seconds, and a step
+    // that crosses a second's edge takes 1.0)
     let (quick, said) = line("PASS", "quick");
-    assert!(quick < 1.0 && said.is_empty(), "{stdout}");
     let (slow, _) = line("PASS", "slow");
     assert!((1.0..30.0).contains(&slow), "{stdout}");
+    assert!(quick <= slow && said.is_empty(), "{stdout}");
     assert_eq!(line("PASS", "corpus").1, "; skipped: no corpus here (c)");
     assert_eq!(line("PASS", "tests").1, "; skipped: 3 tests ignored");
     assert_eq!(
