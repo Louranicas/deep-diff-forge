@@ -100,7 +100,11 @@ step "release-script self-test" scripts/test_release_local.sh
 step "comparison corpus manifest" bash -c 'c=${DDF_COMPARE_CORPUS:-$HOME/.local/state/habitat-claude/ddf-corpus/compare-v1}
 [ -d "$c" ] || { echo "skipped: no corpus here ($c)"; exit 0; }
 cd "$c" && sha256sum -c --quiet MANIFEST.sha256 && echo "manifest digest $(sha256sum MANIFEST.sha256 | cut -c1-64)"'
-# The contract with forge-warden (F4): stand-in rows always; the real rows when FW_BIN names one.
-step "contract matrix" bash -c 'cargo build -q --locked -p deep-diff-forge-cli && scripts/contract_matrix.sh target/debug/deep-diff-forge'
+# The contract with forge-warden (F4): stand-in rows always. When FW_BIN names a forge-warden
+# (the gate's judge), the real rows run for it and for each of FW_BIN_OLDER (colon-separated),
+# with the published binaries DDF_RANKER_090 and DDF_RANKER_0100, and every forge-warden that
+# scripts/contract-matrix/binaries.tsv records, and both published binaries, must be given
+# (--require-real: a missing one is red).
+step "contract matrix" bash -c 'cargo build -q --locked -p deep-diff-forge-cli && scripts/contract_matrix.sh ${FW_BIN:+--require-real} target/debug/deep-diff-forge'
 echo "steps failed: $failed"
 [ "$failed" -eq 0 ]
