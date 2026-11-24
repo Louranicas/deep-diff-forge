@@ -16,6 +16,20 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   weak. A protected policy reads `ok … is held or fails under a rule` (the words "under a rule"
   are new). The gate reads the policy at `HEAD`, a session's start the policy at the session's
   base; what a stop judges by is unchanged in this entry.
+- Tests only: no scanner changed. The tests that hold the line scanners to linear time bounded
+  one size in absolute seconds of a debug build, so they failed on a slower runner while the
+  scan was linear (`the_import_rule_is_linear_on_long_lines` on GitHub's Linux runner for
+  0.11.0). Six of them now bound how a scan's cost grows when its input doubles (under 3 times,
+  on the thread's CPU time, at sizes that double from small to large, so that a quadratic scan
+  fails while it is still fast), and keep an absolute deadline only against a hang:
+  `one_long_word_ranks_in_under_a_second` is renamed `one_long_word_ranks_in_linear_time`, and
+  the long-line test of every trigger ranks each line at sizes up to 1 MiB instead of once at 2
+  MiB, at the same cost. The seventh named with them, `the_backstop_scales_with_source_size`, is
+  pure arithmetic on the parse deadline, reads no clock, and is unchanged. The test helper
+  `within_deadline` (six copies) now fails with the work's own panic message instead of
+  "Disconnected". `crates/deep-diff-forge-cli/tests/LOAD_SENSITIVE` names hook tests that fail
+  on a loaded host (five measured, two observed once and marked so), and a test fails when a
+  name on it is no test; nothing reads the list yet.
 
 ## [0.11.0] - 2026-11-25
 

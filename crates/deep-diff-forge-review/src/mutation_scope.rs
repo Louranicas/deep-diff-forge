@@ -894,14 +894,27 @@ mod tests {
     /// binary about 1.7 s) and a quadratic one hours, so the 15x-plus bound does not fail on a
     /// busy host (the 10 s bound `graph` dropped did). It also leaves the test binary room to exit
     /// well inside a diff-mutation run's 300 s timeout after the workspace's other test binaries,
-    /// so a failure is reported as caught rather than as a timeout.
+    /// so a failure is reported as caught rather than as a timeout. A panic of the work is raised
+    /// again here, with its own message.
     fn within_deadline<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
         let (done, wait) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
+        let worker = std::thread::spawn(move || {
             let _ = done.send(work());
         });
-        wait.recv_timeout(std::time::Duration::from_secs(30))
-            .expect("the lines were scanned within 30 s")
+        match wait.recv_timeout(std::time::Duration::from_secs(30)) {
+            // The work panicked, which dropped its sender: raise its own panic, not this one.
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                std::panic::resume_unwind(worker.join().expect_err("the work sent no answer"))
+            }
+            answer => answer.expect("the lines were scanned within 30 s"),
+        }
+    }
+
+    /// [`within_deadline`] fails with the work's own message.
+    #[test]
+    #[should_panic(expected = "the work's own message")]
+    fn within_deadline_raises_the_work_s_own_panic() {
+        within_deadline::<()>(|| panic!("the work's own message"));
     }
 
     #[test]

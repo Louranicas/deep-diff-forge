@@ -90,14 +90,27 @@ mod tests {
 
     /// Run `work` on its own thread and fail if it takes more than ten seconds. A decode of these
     /// few bytes takes microseconds, so a cursor that stops advancing fails here instead of
-    /// hanging the suite (and a mutation run reports it as caught, not as a timeout).
+    /// hanging the suite (and a mutation run reports it as caught, not as a timeout). A panic of
+    /// the work is raised again here, with its own message.
     fn within_deadline<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
         let (done, wait) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
+        let worker = std::thread::spawn(move || {
             let _ = done.send(work());
         });
-        wait.recv_timeout(std::time::Duration::from_secs(10))
-            .expect("a short quoted path was decoded within ten seconds")
+        match wait.recv_timeout(std::time::Duration::from_secs(10)) {
+            // The work panicked, which dropped its sender: raise its own panic, not this one.
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                std::panic::resume_unwind(worker.join().expect_err("the work sent no answer"))
+            }
+            answer => answer.expect("a short quoted path was decoded within ten seconds"),
+        }
+    }
+
+    /// [`within_deadline`] fails with the work's own message.
+    #[test]
+    #[should_panic(expected = "the work's own message")]
+    fn within_deadline_raises_the_work_s_own_panic() {
+        within_deadline::<()>(|| panic!("the work's own message"));
     }
 
     fn prefix(input: &'static str) -> Option<(String, &'static str)> {

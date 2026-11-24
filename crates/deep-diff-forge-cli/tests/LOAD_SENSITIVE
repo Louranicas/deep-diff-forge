@@ -1,0 +1,34 @@
+# Tests that fail on a loaded host although the code under test is right: they wait for
+# a process, a lock or a deadline in wall time, so their outcome depends on how busy the
+# machine is. One test function name a line, as it is written after `fn` in a file of this
+# directory; `#` starts a comment, and blank lines are skipped.
+#
+# What the list is for: a run that must not read load as a verdict skips these names or runs
+# them apart, one at a time. The mutation driver is to pass them as `--skip` filters and to
+# rerun alone a mutant that only they caught; the gate is to run them under
+# `--test-threads=1`. Nothing reads this list yet: neither the mutation driver nor the gate
+# consumes it as of 0.11.1.
+#
+# How a name gets on it: a failure of the test under load, recorded with the run that showed
+# it (a command and its log), while the test passes on the same tree on an idle host. A name
+# that is here because the code is slow is a finding about the code, not an entry. The test
+# `the_load_sensitive_list_names_tests_that_exist` (in agent_hook.rs) fails when a name here
+# is no test function of this directory.
+#
+# Each name says under a comment how it got here. The first five: measured 2026-11-25 from the
+# kept logs of the mutation campaign over 0.10.0's changes: each is a `test <name> ... FAILED`
+# line in 19, 16, 16, 12 and 1 of them, all logs of mutants in the patch crate's parser and the
+# projection crate's side-by-side view, and these five are the only failing tests those logs
+# hold.
+a_stop_waits_for_the_session_s_lock_and_takes_only_the_one_that_is_there
+two_first_stops_of_a_session_do_not_run_at_once
+the_state_of_a_session_is_in_the_users_state_directory_or_the_hook_says_it_has_none
+a_repository_with_more_working_trees_than_are_read_says_so
+session_start_states_the_contract_and_whether_a_stop_can_be_judged
+
+# Observed once under load, not yet confirmed by a repeated measurement: on 2026-11-25 at
+# 07:53 AEDT, host load 17, each failed when run alone with `--test-threads=1` (with three
+# names above); at 08:50, load 3, the same code passed in the whole suite. A repeated
+# measurement keeps them here or takes them off.
+a_damaged_state_after_a_failing_commit_still_judges_the_commit
+a_damaged_state_still_judges_the_tree_once
