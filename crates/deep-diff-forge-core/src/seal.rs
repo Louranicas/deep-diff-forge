@@ -257,6 +257,34 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     out
 }
 
+/// HMAC-SHA-256 of `message` under `key` (RFC 2104 on [`sha256`]): a key longer than the
+/// 64-byte block is hashed first, a shorter one is padded with zeros. Pure and panic-free.
+#[must_use]
+pub fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
+    let mut block = [0_u8; 64];
+    if key.len() > 64 {
+        block[..32].copy_from_slice(&sha256(key));
+    } else {
+        block[..key.len()].copy_from_slice(key);
+    }
+    let pad = |byte: u8| -> Vec<u8> { block.iter().map(|b| b ^ byte).collect() };
+    let mut inner = pad(0x36);
+    inner.extend_from_slice(message);
+    let mut outer = pad(0x5c);
+    outer.extend_from_slice(&sha256(&inner));
+    sha256(&outer)
+}
+
+/// Lowercase hex HMAC-SHA-256 ([`hmac_sha256`]).
+#[must_use]
+pub fn hmac_sha256_hex(key: &[u8], message: &[u8]) -> String {
+    let mut out = String::with_capacity(64);
+    for byte in hmac_sha256(key, message) {
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
+}
+
 /// Provenance seal attached to a machine-readable document: the SHA-256 of the
 /// exact input bytes the document was computed from, plus the emitting tool.
 ///
@@ -307,6 +335,53 @@ impl InputSeal {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RFC 4231, cases 1 to 4, 6 and 7 (case 5 is a truncated output).
+    #[test]
+    fn hmac_sha256_matches_rfc_4231() {
+        // (the messages of cases 6 and 7 name what they test; kept apart from their digests)
+        const CASE_6: &[u8] = b"Test Using Larger Than Block-Size Key - Hash Key First";
+        const CASE_7: &[u8] = b"This is a test using a larger than block-size key and a larger than block-size data. The key needs to be hashed before being used by the HMAC algorithm.";
+        let big = [0xaa_u8; 131];
+        let cases: [(&[u8], &[u8], &str); 6] = [
+            (
+                &[0x0b; 20],
+                b"Hi There",
+                "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7",
+            ),
+            (
+                b"Jefe",
+                b"what do ya want for nothing?",
+                "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843",
+            ),
+            (
+                &[0xaa; 20],
+                &[0xdd; 50],
+                "773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe",
+            ),
+            (
+                &[
+                    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+                    23, 24, 25,
+                ],
+                &[0xcd; 50],
+                "82558a389a443c0ea4cc819899f2083a85f0faa3e578f8077a2e3ff46729665b",
+            ),
+            (
+                &big,
+                CASE_6,
+                "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54",
+            ),
+            (
+                &big,
+                CASE_7,
+                "9b09ffa71b942fcb27635fbcd5b0e944bfdc63644f0713938a7f51535c3a35e2",
+            ),
+        ];
+        for (key, message, expected) in cases {
+            assert_eq!(hmac_sha256_hex(key, message), expected);
+        }
+    }
 
     // Reference digests: FIPS 180-4 / NIST CAVP vectors and `sha256sum`.
     #[test]
