@@ -238,7 +238,7 @@ pub const fn facts(signal: RiskSignal) -> SignalFacts {
         R::Code(E::PanicPathAdded) => (
             Integrity,
             "0.9.0",
-            "An added line calls something that panics on failure (Rust `unwrap` or `expect`).",
+            "An added line calls something that panics on failure (Rust `unwrap` or `expect`), or panics where it is reached (`panic!`, `unreachable!`).",
         ),
     };
     SignalFacts {

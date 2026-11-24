@@ -211,14 +211,16 @@ use std::process::Command;
 /// F2a.b reads a `Result` of the standard library dropped with `let _ =`:
 /// `evidence/rust-dropped-result` (three drops, two near misses, `let _unused =` and `.ok();`
 /// declared): precision 204 of 229, recall 204 of 284, 108 declared.
+/// F2a.c reads `panic!` and `unreachable!`: `evidence/rust-panic-macros` (two, a near miss in a
+/// comment, `assert!(false, …)` declared): precision 206 of 231, recall 206 of 287, 109 declared.
 const RANKING_PAIRS_FLOOR: u64 = 800_000;
 const EVIDENCE_PRECISION_FLOOR: u64 = 881_516;
 const EVIDENCE_RECALL_FLOOR: u64 = 704_545;
 const FINDINGS_FLOOR: u64 = 1_000_000;
 /// Declared misses (plan N4): each counts as wrong in its metric above. The receipt's
 /// `known_misses` keeps its first meaning, the evidence `known_miss` items; `declared` lists all.
-const DECLARED: u64 = 108;
-const EVIDENCE_KNOWN_MISSES: u64 = 80;
+const DECLARED: u64 = 109;
+const EVIDENCE_KNOWN_MISSES: u64 = 81;
 /// The smallest corpus the gate accepts, and the fewest cases of each kind.
 const MIN_CASES: usize = 30;
 const MIN_CASES_PER_KIND: usize = 3;
@@ -372,14 +374,14 @@ fn the_summary_names_each_metric_and_each_failure() {
     let (code, text) = run(&corpus());
     assert_eq!(code, Some(0), "{text}");
     assert!(
-        text.starts_with("deep-diff-forge eval: 63 cases\n"),
+        text.starts_with("deep-diff-forge eval: 64 cases\n"),
         "{text}"
     );
     for line in [
         "  ranking_pairs        12/15",
-        "  evidence_precision   204/229",
-        "  evidence_recall      204/284",
-        "  declared             108",
+        "  evidence_precision   206/231",
+        "  evidence_recall      206/287",
+        "  declared             109",
         "  KNOWN ranking/auth-check-removed: src/handlers/delete.rs ranks below docs/CHANGES.md",
         "  KNOWN evidence/shell-heredoc: reports (\"scripts/docs.sh\", \"network_fetch\", \"new\", 3)",
     ] {
@@ -775,7 +777,7 @@ fn a_declared_miss_must_still_be_a_miss() {
     );
     assert_eq!(
         metrics["evidence_recall"],
-        serde_json::json!({"right": 204, "total": 283, "ppm": 720_848})
+        serde_json::json!({"right": 206, "total": 286, "ppm": 720_279})
     );
 
     // A declared false positive the engine does not report.
@@ -793,7 +795,7 @@ fn a_declared_miss_must_still_be_a_miss() {
     );
     assert_eq!(
         metrics["evidence_precision"],
-        serde_json::json!({"right": 204, "total": 229, "ppm": 890_829})
+        serde_json::json!({"right": 206, "total": 231, "ppm": 891_774})
     );
 
     // A declared false positive that is also expected.
@@ -809,7 +811,7 @@ fn a_declared_miss_must_still_be_a_miss() {
             .unwrap()
             .ends_with("is not reported, or is expected: remove it")
     );
-    assert_eq!(metrics["evidence_precision"]["right"], 205);
+    assert_eq!(metrics["evidence_precision"]["right"], 207);
     assert_eq!(known, usize::try_from(DECLARED).unwrap() - 1);
 }
 

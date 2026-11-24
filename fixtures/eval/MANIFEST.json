@@ -2596,6 +2596,35 @@
         }
       ],
       "sha256": "3b7964096b77328e0a24dec2bb367b8a0eaa4af64c2455976c481fe8558efdfc"
+    },
+    {
+      "id": "evidence/rust-panic-macros",
+      "kind": "evidence",
+      "patch": "evidence/rust-panic-macros.patch",
+      "origin": "synthetic: F2a.c (0.11.0): `panic!` and `unreachable!` added in a match where a conversion was, each a panic path; near miss: `panic!` in a comment. Declared miss: `assert!(false, …)`, which panics on every run it is reached and is read by no rule as a panic path",
+      "expect": [
+        {
+          "path": "src/parse.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/parse.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 7
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "src/parse.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 5
+        }
+      ],
+      "sha256": "97f5d939791a9d7ce99903f798b0c9d679d8d83722a658f05fe700aceaf7c09b"
     }
   ]
 }

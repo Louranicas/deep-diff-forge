@@ -9654,6 +9654,26 @@ mod tests {
                 &["+let _ = std::fs::r#remove_file(p);"],
                 &[S::ErrorSwallowed],
             ),
+            // F2a.c: panic! and unreachable!
+            (&["+// panic!(\"x\");"], &[]),
+            (&["+/// unreachable!();"], &[]),
+            (&["+let s = \"panic!(\\\"x\\\")\";"], &[]),
+            (&["+let s = r#\"", "+unreachable!();", "+\"#;"], &[]),
+            (&["+let q = '\"'; panic!(\"x\");"], &[S::PanicPathAdded]),
+            (
+                &["+fn f<'a>(x: &'a u8) { unreachable!() }"],
+                &[S::PanicPathAdded],
+            ),
+            (
+                &["+macro_rules! m { () => { panic!() } }"],
+                &[S::PanicPathAdded],
+            ),
+            (&["+panic", "+!(", "+\"x\")"], &[S::PanicPathAdded]),
+            (&["+std::panic!(\"x\");"], &[S::PanicPathAdded]),
+            (&["+core::unreachable!();"], &[S::PanicPathAdded]),
+            (&["+::core::panic!();"], &[S::PanicPathAdded]),
+            (&["+r#panic!(\"x\");"], &[S::PanicPathAdded]),
+            (&["+use std::panic as stop;", "+stop!(\"x\");"], &[]),
         ];
         for (lines, signals) in cases {
             assert_eq!(read(lines), *signals, "{lines:?}");

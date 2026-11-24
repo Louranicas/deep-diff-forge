@@ -248,6 +248,8 @@ enum Word {
     DebugAssertNe,
     Todo,
     Unimplemented,
+    Panic,
+    Unreachable,
     Ignore,
     CfgAttr,
     Cfg,
@@ -321,7 +323,7 @@ impl Word {
 }
 
 /// The words the reader knows ([`Word::of`]).
-const WORDS: [(&[u8], Word); 44] = [
+const WORDS: [(&[u8], Word); 46] = [
     (b"unwrap", Word::Unwrap),
     (b"expect", Word::Expect),
     (b"assert", Word::Assert),
@@ -332,6 +334,8 @@ const WORDS: [(&[u8], Word); 44] = [
     (b"debug_assert_ne", Word::DebugAssertNe),
     (b"todo", Word::Todo),
     (b"unimplemented", Word::Unimplemented),
+    (b"panic", Word::Panic),
+    (b"unreachable", Word::Unreachable),
     (b"ignore", Word::Ignore),
     (b"cfg_attr", Word::CfgAttr),
     (b"cfg", Word::Cfg),
@@ -1184,7 +1188,8 @@ fn dropped<'a, I: Iterator<Item = SideLine<'a>>>(window: &Window<'a, I>) -> Opti
 }
 
 /// A placeholder, when the current token is `todo` or `unimplemented`: `!` and an opening
-/// bracket.
+/// bracket. The same shape is a panic path when the token is `panic` or `unreachable` (since
+/// 0.11.0, F2a): `panic!(…)` and `unreachable!(…)` stop the program where they are reached.
 fn stub<'a, I: Iterator<Item = SideLine<'a>>>(window: &Window<'a, I>) -> Option<(usize, usize)> {
     let at = window.at;
     let opened = matches!(window.token(at + 2)?.what, What::Mark(mark) if closer(mark).is_some());
@@ -1996,6 +2001,9 @@ pub(crate) fn read_new<'a>(lines: impl Iterator<Item = SideLine<'a>>) -> Vec<Ite
             What::Name(Word::Todo | Word::Unimplemented) => {
                 stub(&window).map(|extent| (S::StubAdded, extent))
             }
+            What::Name(Word::Panic | Word::Unreachable) => {
+                stub(&window).map(|extent| (S::PanicPathAdded, extent))
+            }
             What::Name(Word::Let | Word::Underscore) => {
                 dropped(&window).map(|extent| (S::ErrorSwallowed, extent))
             }
@@ -2616,6 +2624,43 @@ mod tests {
         ] {
             assert_eq!(signals(&[line]), [], "{line}");
         }
+    }
+
+    /// F2a.c: `panic!` and `unreachable!` are panic paths, read as a stub is (the word, `!`, an
+    /// opening bracket), with the hint of a test's braces as every panic path has it.
+    #[test]
+    fn panic_and_unreachable_are_panic_paths() {
+        for lines in [
+            &["+panic!(\"x\");"][..],
+            &["+unreachable!();"],
+            &["+    _ => panic!(\"{x:?}\"),"],
+            &["+std::panic!{};"],
+            &["+core::unreachable![]"],
+            &["+$crate::panic!(\"x\")"],
+            &["+panic", "+!", "+(", "+)"],
+        ] {
+            assert_eq!(signals(lines), [S::PanicPathAdded], "{lines:?}");
+        }
+        for line in [
+            "+std::panic::catch_unwind(f);",
+            "+#[should_panic]",
+            "+panic!",
+            "+panic!;",
+            "+unreachable_unchecked();",
+            "+my_panic!();",
+            "+panic(x);",
+            "+let panic = 1;",
+        ] {
+            assert_eq!(signals(&[line]), [], "{line}");
+        }
+        assert_eq!(
+            hints(&[
+                "+#[test]",
+                "+fn t() { unreachable!(); }",
+                "+fn u() { panic!(); }"
+            ]),
+            [(1, true), (2, false)]
+        );
     }
 
     #[test]
