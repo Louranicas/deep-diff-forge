@@ -2555,6 +2555,47 @@
         }
       ],
       "sha256": "74a4f99853ac5eddfee476366ebba023268a68f73d356cee5f7931f6c2b1fa0b"
+    },
+    {
+      "id": "evidence/rust-dropped-result",
+      "kind": "evidence",
+      "patch": "evidence/rust-dropped-result.patch",
+      "origin": "synthetic: F2a.b (0.11.0): a `Result` of the standard library dropped with `let _ =` or `_ =` (remove_dir_all, kill, send) where the error was passed up before, each beside a near miss the reader cannot tell from it and does not read: a `String` written with `writeln!` (no error exists) and a function of the patch's own. Declared misses: a name that only begins with `_` (`let _unused =`) and `.ok();`",
+      "expect": [
+        {
+          "path": "src/cleanup.rs",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/cleanup.rs",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/cleanup.rs",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 7
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "src/cleanup.rs",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "src/cleanup.rs",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 8
+        }
+      ],
+      "sha256": "3b7964096b77328e0a24dec2bb367b8a0eaa4af64c2455976c481fe8558efdfc"
     }
   ]
 }

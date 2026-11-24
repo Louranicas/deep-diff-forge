@@ -9617,6 +9617,43 @@ mod tests {
             (&["+::std::debug_assert!(1 == 1);"], &[S::TrivialAssert]),
             (&["+r#assert_eq!(x, x);"], &[S::TrivialAssert]),
             (&["+use std::assert_eq as same;", "+same!(x, x);"], &[]),
+            // F2a.b: a dropped result
+            (&["+// let _ = std::fs::remove_file(p);"], &[]),
+            (&["+/// let _ = std::fs::remove_file(p);"], &[]),
+            (&["+let s = \"let _ = std::fs::remove_file(p);\";"], &[]),
+            (
+                &[
+                    "+let s = r#\"",
+                    "+let _ = std::fs::remove_file(p);",
+                    "+\"#;",
+                ],
+                &[],
+            ),
+            (
+                &["+let q = '\"'; let _ = std::fs::remove_file(p);"],
+                &[S::ErrorSwallowed],
+            ),
+            (
+                &["+fn f<'a>(p: &'a str) { let _ = std::fs::remove_file(p); }"],
+                &[S::ErrorSwallowed],
+            ),
+            (
+                &["+macro_rules! m { () => { let _ = std::fs::remove_file(p); } }"],
+                &[S::ErrorSwallowed],
+            ),
+            (
+                &["+let _ =", "+    std::fs::remove_file(p);"],
+                &[S::ErrorSwallowed],
+            ),
+            (
+                &["+let _ = ::std::fs::remove_file(p);"],
+                &[S::ErrorSwallowed],
+            ),
+            (&["+let r#_x = std::fs::remove_file(p);"], &[]),
+            (
+                &["+let _ = std::fs::r#remove_file(p);"],
+                &[S::ErrorSwallowed],
+            ),
         ];
         for (lines, signals) in cases {
             assert_eq!(read(lines), *signals, "{lines:?}");

@@ -280,6 +280,8 @@ enum Word {
     Become,
     Do,
     Yeet,
+    Let,
+    Underscore,
     Other,
 }
 
@@ -319,7 +321,7 @@ impl Word {
 }
 
 /// The words the reader knows ([`Word::of`]).
-const WORDS: [(&[u8], Word); 42] = [
+const WORDS: [(&[u8], Word); 44] = [
     (b"unwrap", Word::Unwrap),
     (b"expect", Word::Expect),
     (b"assert", Word::Assert),
@@ -362,6 +364,8 @@ const WORDS: [(&[u8], Word); 42] = [
     (b"become", Word::Become),
     (b"do", Word::Do),
     (b"yeet", Word::Yeet),
+    (b"let", Word::Let),
+    (b"_", Word::Underscore),
 ];
 
 /// The names of [`WORDS`], for the test that ranks a long line of each.
@@ -1078,6 +1082,107 @@ fn cannot_fail<'a, I: Iterator<Item = SideLine<'a>>>(
     (holds == Value::Bool(true)).then_some((at, spans[wanted - 1].1))
 }
 
+/// The calls of the standard library (and `killpg`) that answer with a `Result` whose error is
+/// a failure, and that code drops with `let _ =`: the last call of a dropped statement must be
+/// one of these for the drop to be read ([`dropped`]).
+const FALLIBLE: [&str; 29] = [
+    "remove_file",
+    "remove_dir",
+    "remove_dir_all",
+    "create_dir",
+    "create_dir_all",
+    "rename",
+    "copy",
+    "hard_link",
+    "set_permissions",
+    "write_all",
+    "flush",
+    "sync_all",
+    "sync_data",
+    "set_len",
+    "read_to_end",
+    "read_to_string",
+    "read_exact",
+    "send",
+    "try_send",
+    "recv",
+    "join",
+    "kill",
+    "killpg",
+    "wait",
+    "try_wait",
+    "shutdown",
+    "set_nonblocking",
+    "set_read_timeout",
+    "set_write_timeout",
+];
+
+/// A result dropped by a statement (since 0.11.0, F2a), when the current token is `let` or
+/// `_`: `let _ =` (or `let _: Type =`), or `_ =` where a statement begins (after `;`, a brace or
+/// nothing the side shows), then an expression with no `?` in it whose last call, outside
+/// brackets, is one of [`FALLIBLE`] by name (a method or a path: `child.kill()`,
+/// `std::fs::remove_file(p)`), then `;`, within [`AHEAD`] tokens. The reader cannot know a
+/// call's type, so it reads only names whose standard function answers with a `Result`: on
+/// this project's history most other calls dropped this way were a `String` written with
+/// `write!`/`writeln!` (no error exists), a value computed for its effect in a test, or a
+/// function of the project (of 450 such lines a third dropped a `Result`). Not read: a call of
+/// another name (a function of the patch's own, `write!(…)`), a name that only begins with `_`
+/// (`let _e =`), a pattern (`let (_, _) =`), `.ok();`, `drop(…)`, an expression that ends
+/// otherwise (`.await`, a block), and `connect`, `bind`, `status`, `output` and `spawn`, names
+/// that other crates' calls with no `Result` share and that the paths of `network_fetch` and
+/// `process_spawn` already read. A method of one of the names read that answers with no
+/// `Result` (`Path::join`, `[…].join(…)`) is a false item.
+fn dropped<'a, I: Iterator<Item = SideLine<'a>>>(window: &Window<'a, I>) -> Option<(usize, usize)> {
+    let at = window.at;
+    let begins = |before: usize| b";{}".iter().any(|m| window.marks(before, *m));
+    let mut next = match window.word(at)? {
+        Word::Let if window.word(at + 1) == Some(Word::Underscore) => at + 2,
+        Word::Underscore if at.checked_sub(1).is_none_or(begins) => at + 1,
+        _ => return None,
+    };
+    let (mut depth, mut angles, mut open) = (0usize, 0usize, None);
+    if window.marks(next, b':') && !window.path(next) {
+        // the type, up to the `=` outside its brackets
+        next += 1;
+        while !(depth == 0 && angles == 0 && window.marks(next, b'=')) {
+            match window.token(next)?.what {
+                What::Mark(b'(' | b'[') => depth += 1,
+                What::Mark(b')' | b']') => depth = depth.checked_sub(1)?,
+                What::Mark(b'<') => angles += 1,
+                What::Mark(b'>') if !window.arrow(next) => angles = angles.checked_sub(1)?,
+                What::Mark(b';' | b'{' | b'}') => return None,
+                _ => {}
+            }
+            next = (next < at + AHEAD).then_some(next + 1)?;
+        }
+    }
+    if !window.marks(next, b'=') || window.pair(next, b'=', b'=') || window.pair(next, b'=', b'>') {
+        return None;
+    }
+    for end in next + 1..=at + AHEAD {
+        match window.token(end)?.what {
+            What::Mark(b'?') => return None,
+            What::Mark(b'(') if depth == 0 => {
+                open = Some(end);
+                depth = 1;
+            }
+            What::Mark(b'(' | b'[' | b'{') => depth += 1,
+            What::Mark(b')' | b']' | b'}') => depth = depth.checked_sub(1)?,
+            What::Mark(b';') if depth == 0 => {
+                // the `(` that the last `)` closes follows the name of what is called
+                let called = open
+                    .and_then(|open| window.token(open.checked_sub(1)?))
+                    .is_some_and(|name| {
+                        matches!(name.what, What::Name(_)) && FALLIBLE.contains(&name.text)
+                    });
+                return (called && window.marks(end - 1, b')')).then_some((at, end));
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// A placeholder, when the current token is `todo` or `unimplemented`: `!` and an opening
 /// bracket.
 fn stub<'a, I: Iterator<Item = SideLine<'a>>>(window: &Window<'a, I>) -> Option<(usize, usize)> {
@@ -1283,7 +1388,7 @@ fn allowed<'a, I: Iterator<Item = SideLine<'a>>>(window: &Window<'a, I>) -> Opti
 
 /// The signals the reader gives, in the order of [`EvidenceSignal`], which is the order its
 /// items come out in for one line.
-const READ: [EvidenceSignal; 8] = [
+const READ: [EvidenceSignal; 9] = [
     EvidenceSignal::ProcessSpawn,
     EvidenceSignal::NetworkFetch,
     EvidenceSignal::CheckSuppressed,
@@ -1291,6 +1396,7 @@ const READ: [EvidenceSignal; 8] = [
     EvidenceSignal::TestSkipped,
     EvidenceSignal::TrivialAssert,
     EvidenceSignal::StubAdded,
+    EvidenceSignal::ErrorSwallowed,
     EvidenceSignal::PanicPathAdded,
 ];
 
@@ -1890,6 +1996,9 @@ pub(crate) fn read_new<'a>(lines: impl Iterator<Item = SideLine<'a>>) -> Vec<Ite
             What::Name(Word::Todo | Word::Unimplemented) => {
                 stub(&window).map(|extent| (S::StubAdded, extent))
             }
+            What::Name(Word::Let | Word::Underscore) => {
+                dropped(&window).map(|extent| (S::ErrorSwallowed, extent))
+            }
             What::Mark(b'#') => ignored(&window)
                 .map(|extent| (S::TestSkipped, extent))
                 .or_else(|| allowed(&window).map(|extent| (S::CheckSuppressed, extent))),
@@ -2456,6 +2565,57 @@ mod tests {
         // operands longer than the window are not read
         let long = format!("+assert_eq!({0}, {0});", ["x"; 40].join(" + "));
         assert_eq!(signals(&[&long]), []);
+    }
+
+    /// F2a.b: a statement that drops what a call returns, `let _ = call();`, is a swallowed
+    /// error where the call returns a `Result`; the reader cannot know a type, and reads the
+    /// calls of the standard library that do by name.
+    #[test]
+    fn a_dropped_result_is_a_swallowed_error() {
+        for lines in [
+            &["+let _ = std::fs::remove_file(\"x\");"][..],
+            &["+    let _ = tx.send(1);"],
+            &["+let _ : Result<(), Box<dyn Iterator<Item = u8>>> = rx.recv();"],
+            &["+let _ = handle.join();"],
+            &["+let _ = std::io::copy(&mut pipe, &mut std::io::sink());"],
+            &["+{ _ = child.kill(); }"],
+            &["+_ = child.wait();"],
+            &[
+                "+let _ = File::create(p)",
+                "+    .and_then(|mut f| f.write_all(b))",
+                "+    .flush();",
+            ],
+            &["+let", "+_", "+=", "+fs::remove_dir_all(p)", "+;"],
+        ] {
+            assert_eq!(signals(lines), [S::ErrorSwallowed], "{lines:?}");
+        }
+        for line in [
+            "+let _ = x;",
+            "+let _ = f();",
+            "+let _ = a.b(c)(d);",
+            "+let _ = writeln!(out, \"x\");",
+            "+let _ = write!(out, \"x\");",
+            "+let _ = std::fs::remove_file(p).is_ok();",
+            "+let _ = std::fs::remove_file;",
+            "+let _ = remove_file!(p);",
+            "+let _e = child.kill();",
+            "+let _x = child.kill();",
+            "+let (_, _) = child.kill();",
+            "+let _ = child.kill()?;",
+            "+let _ = kill(x?);",
+            "+let _ = (child.kill(), b);",
+            "+let _ = child.wait().await;",
+            "+let _ = { child.kill() };",
+            "+let _ = child.kill()",
+            "+child.kill().ok();",
+            "+drop(child.kill());",
+            "+x = _ == child.kill();",
+            "+let _ == child.kill();",
+            "+if let _ = child.kill() {}",
+            "+match x { _ => child.kill(), };",
+        ] {
+            assert_eq!(signals(&[line]), [], "{line}");
+        }
     }
 
     #[test]
