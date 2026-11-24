@@ -24,7 +24,7 @@ signal-hook = { version = "0.4.6", default-features = false, features = ["iterat
 
 # The peer-credential call outside Linux (`getpeereid`); Linux uses rustix's `SO_PEERCRED`.
 [target.'cfg(not(any(target_os = "linux", target_os = "android")))'.dependencies]
-nix = { version = "=0.31.3", default-features = false, features = ["socket", "user"] }
+nix = { version = "=0.32.0", default-features = false, features = ["socket", "user"] }
 
 [lints]
 workspace = true
