@@ -370,3 +370,92 @@ fn many_binary_files_before_a_payload_cannot_hide_it() {
         "a NUL-only file over the budget stood as a silent binary change"
     );
 }
+
+/// S3.34.c, the missed mutants of `second_reading` (`-` to `+` and to `/` where it takes the other
+/// sections from the patch): a second reading is asked for within the byte budget less every
+/// OTHER section as it stands. Here the other section (`big.txt`) is far larger than the hidden
+/// file's binary block, and the budget is set from the sizes the readings themselves have: with
+/// room for the text reading and 400 bytes it is read; with 400 bytes too few it is not, and the
+/// attribute's label stands. Counting the hidden file's own block twice (`+`) leaves no room in the
+/// first case; dividing (`/`) gives room in the second.
+#[test]
+fn a_second_reading_has_the_budget_less_every_other_section() {
+    // the hidden file: lines of hex from a fixed sequence, so that deflate keeps its binary block
+    // well under its text, and the text far over 400 bytes
+    let mut state = 0x9e37_79b9_u32;
+    let mut hidden = b"fn main() {\n".to_vec();
+    for _ in 0..600 {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        hidden.extend_from_slice(
+            format!("    // {state:08x}{:08x}\n", state.rotate_left(7)).as_bytes(),
+        );
+    }
+    hidden.extend_from_slice(SPAWN);
+    hidden.extend_from_slice(b"}\n");
+    let (root, _scratch) = repo("second-budget", &[("keep.txt", b"k\n".to_vec())]);
+    std::fs::write(root.join("h.rs"), &hidden).unwrap();
+    let big: String = (0..20_000).map(|n| format!("line {n}\n")).collect();
+    std::fs::write(root.join("big.txt"), big).unwrap();
+    git(&root, &["add", "-A"]);
+    let section = |acq: &GitAcquisition, path: &str| change(acq, path).patch_range.len();
+    let roomy = acquire_git(&root, &GitSelection::Staged, &options(false, 1 << 24)).unwrap();
+    read_as_text(&roomy, "h.rs");
+    let (other, text) = (section(&roomy, "big.txt"), section(&roomy, "h.rs"));
+    let tight = acquire_git(
+        &root,
+        &GitSelection::Staged,
+        &options(false, other + text - 400),
+    )
+    .unwrap();
+    let block = section(&tight, "h.rs");
+    assert!(
+        change(&tight, "h.rs").binary,
+        "a second reading longer than the budget less the other sections was read: other {other}, text {text}, block {block}"
+    );
+    assert!(
+        800 < 2 * block && block < text - 400,
+        "block {block}, text {text}"
+    );
+    let fits = acquire_git(
+        &root,
+        &GitSelection::Staged,
+        &options(false, other + text + 400),
+    )
+    .unwrap();
+    assert!(
+        !change(&fits, "h.rs").binary,
+        "a second reading that fits the budget less the other sections was not read: other {other}, text {text}, block {block}"
+    );
+    read_as_text(&fits, "h.rs");
+}
+
+/// S3.34.c, the missed mutants of `wide_encoding` (`==` to `!=` where it finds the new side's
+/// numbers in a hunk header, `||` to `&&` where line 1 is `1,` or `1 `): a UTF-16 file whose text
+/// is not Latin has no NUL in every other byte, so only its byte order mark on line 1 says it is
+/// wide. No attribute covers it (`.txt`): Git calls it binary for the NULs of its line ends, and
+/// the cause must be `encoding`, from the mark alone.
+#[test]
+fn a_wide_file_is_known_by_its_byte_order_mark_alone() {
+    let (root, _scratch) = repo("wide-mark", &[("keep.txt", b"k\n".to_vec())]);
+    let mut wide = vec![0xff, 0xfe];
+    for line in [
+        "\u{4e2d}\u{6587}\u{6587}\u{4ef6}",
+        "\u{4e8c}\u{884c}\u{6587}\u{5b57}",
+    ] {
+        for unit in line.encode_utf16().chain("\n".encode_utf16()) {
+            wide.extend_from_slice(&unit.to_le_bytes());
+        }
+    }
+    std::fs::write(root.join("w.txt"), &wide).unwrap();
+    git(&root, &["add", "-A"]);
+    let acq = acquire_git(&root, &GitSelection::Staged, &options(false, 1 << 20)).unwrap();
+    assert_eq!(
+        change(&acq, "w.txt")
+            .diff_suppressed
+            .map(DiffSuppression::label),
+        Some("encoding"),
+        "a UTF-16 file known only by its byte order mark was not labelled encoding"
+    );
+}
