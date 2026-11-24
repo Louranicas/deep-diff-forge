@@ -8,438 +8,80 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [0.11.0] - 2026-11-25
 
-- Exit 7 has one meaning, with a registry of reason classes. Every exit 7 names its class in one
-  stderr line `refused: <text> (<tag>)`. `schema exit-codes`, `explain 7 [--json]` and the MCP
-  tools `explain_exit_code`/`exit_code_registry` list them as `refusals` (F7.h1).
-- `change_input` no longer says "or drop the contract that refused it". `review_evidence` now
-  reads "read the reason and the evidence the message or the council reported; a person decides
-  what changes; rerunning does not change it" (F7.h1).
-- `findings verify --require-all`, `eval` and `agent doctor` name their refusal on stderr. A
-  verdict refusal is decided before its document is written, so `eval` and `agent doctor` exit
-  7, not 0, when the reader of stdout has gone (F7.h2,
-  [DDF-2026-011](docs/advisories/DDF-2026-011.md)).
-- A stdout that cannot be written at all keeps a pending refusal for every class, through the
-  one door (0.10.0 fixed it for `findings verify`;
-  [DDF-2026-011](docs/advisories/DDF-2026-011.md)).
-- `docs/reference/diagnostics.md`: the contract of `deep-diff-forge.diagnostics.v0` (printed by
-  `--diagnostics`, F5a), with 42 pinned codes (F7.h1).
-- `--rank --fail-on LIST` (on `--stdin-patch`, `--git-*` and `<old> <new>`) is a gate on the
-  ranking. LIST holds classes (`security`, `integrity`, `shape`) and labels from
-  `schema signals`. The ranking is printed as without the flag. The command then exits 7 when any file's
-  `signals[]` holds a selected label (`fail_on_label`), or when any file's evidence list was cut
-  at 32 rows, whatever the list (`fail_on_truncated`). Each reason line is followed by the
-  escaped paths it names. A reader that closes stdout still gets exit 7. Not on rpc or MCP yet
-  (F7.i).
-- Exit-7 reason classes `fail_on_label` and `fail_on_truncated` in `schema exit-codes`,
-  `explain 7` and the MCP exit-code tools (F7.i).
-- `explain signal <label>` says its audience (`"audience": "person"`; last text line);
-  `--audience agent` prints what an agent is shown: the accepted repairs and only the
-  substitutes with a witnessed agent sentence (F7.c1).
-- Every accepted repair and substitute of the vocabulary has a fixed id (`<label>:a<k>`,
-  `<label>:n<k>`), pinned in `fixtures/diagnostics/ids.v0.txt`; five agent sentences each stand
-  on a witness patch the engine is tested on (F7.c1).
-- The graph crate builds `deep-diff-forge.diagnostics.v0` in process: one diagnostic per
-  evidence row and one per label that no row locates; keys hold no line text; each diagnostic is
-  a `current` or `floor_only` reading. It is printed by `--diagnostics` (F5a) (F1.a1).
-- Library API: `Evidence::read_now` says whether a reading of this version finds an item, and
-  `RankedFile::floor_only` lists the code labels that only a reading kept for the floor finds
-  (F1.a1).
-- `tool.scorer_sha256` moves with no label, row or score change (F1.a1).
-- The diagnostics builder locates `hazardous_text` at each changed line whose text carries the
-  hazard (its place, never its text), within the file's 32 places; a file over that is in `cut`
-  (F1.a2).
-- `explain signal <label> --json` names the id of every repair (`accept_ids`) and substitute
-  (`id`), for both audiences (F1.a2).
-- Library API: `RankedFile::hazard_lines`, `hazard_lines_cut`; `Judge` and `Diagnostics::judged`
-  write `judge` and `judge_sees` (F1.a2).
-- `tool.scorer_sha256` moves with no label, row or score change (F1.a2).
-- `--diagnostics` (on `--stdin-patch`, `--git-*` and `<old> <new>`) prints
-  `deep-diff-forge.diagnostics.v0`: with `--json` the builder's document; otherwise a text form
-  for agents that prints only each path (quoted and escaped), the line, the code, the vocabulary
-  ids and their sentences, with floor-only readings counted. The input is refused as under
-  `--rank`; `judge` is `unknown` (F5a).
-- `--fail-on` is admitted with `--diagnostics`: the same verdict as `--rank --fail-on` on the
-  same input, the document printed as without the flag; the message is
-  `error: --fail-on needs --rank or --diagnostics` (F5a).
-- `schema diagnostics` prints the JSON Schema of `deep-diff-forge.diagnostics.v0` (F5a).
-- A `--diagnostics` diagnostic of `hazardous_text` or `diff_suppressed` names its case in `cases`
-  (the kinds of hazard; the cause as in `rank.v0`) and lists only the repairs of that case: a
-  line with hidden characters is no longer told to fix a path, and a file hidden by an attribute
-  is no longer told to remove a NUL byte. `unread`, where the engine cannot tell the cause, lists
-  every repair. The text form prints `case:`; `schema diagnostics` and `explain signal` show the
-  cases (F1.a3).
-- New repair id `diff_suppressed:a3` for a UTF-16 or UTF-32 file: store it as UTF-8, or say why
-  it must be wide (F1.a3).
-- `tool.scorer_sha256` moves with no label, row or score change (F1.a3).
-- `agent check [--session ID | --base REV] [--judge PATH] [--policy NAME] [--ranker-dir DIR]
-  [--json]` judges the uncommitted change with the judge, policy and ranker directory of the
-  registered Stop hook (never one from PATH), by the policy at the base a session recorded
-  (`--session`, its state read only, never written) or at `--base`/HEAD; `--json` prints
-  `deep-diff-forge.agent-check.v0`. It names what it used, lists how that differs from a stop,
-  and says it is not the stop's answer (F3.b, F3.c).
-- A hook's scratch directory is owned by a lock (`flock`) and named `tmp-r` and 16 random hex
-  digits: a check or hook in another PID namespace no longer removes a live stop's scratch.
-  Directories named `tmp-<pid>` by earlier builds are removed as before (F3.a).
-- The partial file a hook state is written through is named at random, not by the process id
-  (F3.a).
-- `agent check` judges the units a stop judges, in its order and each by the patch a stop makes
-  for it: the uncommitted change, the staged change where it is another, then each commit from
-  its first parent (`--range A..B`, one line of first parents, or with `--session` the
-  session's commits as a stop finds them). It says "Equal to the stop in its units and inputs"
-  only with the stop's inputs and every unit a stop of the session answers for judged, never
-  that the stop decides the same; `stop.may_differ` and the lines "The stop may differ" say
-  where a stop can decide otherwise from the same verdicts (F3.d).
-- `agent check --require-pass` exits 7 after the document when there is no unit
-  (`require_pass_no_unit`: a clean CI checkout is no pass) or when any unit is not a pass
-  (`require_pass_not_pass`), through the one door, so a reader that has gone still gets exit 7;
-  the registry has ten classes (F3.e).
-- When the policy admits a ranker of the ranker directory, `agent check` judges the unit with
-  it, as a stop does, names it in `ranker`, and lists the labels this binary raises that it does
-  not as `advice_only`; a ranker that runs out of time, fails or prints no rank document leaves
-  `advice_only` null and says why in `advice_unread` (F3.f).
-- A check with no judge stages and writes nothing (UNJUDGED with the reason, no unit); a HOLD or
-  FAIL names its rules or, by their codes (`judge_note_codes`), what the judge named beside
-  them, never the judge's words (F3).
-- Every stop appends one record for each unit it judges to the project's ledger,
-  `.git/deep-diff-forge/ledger.jsonl` (append only, mode 0600, no link followed, no line text and
-  no words of the judge, tree digests salted for each repository); a ledger that cannot be
-  written changes no decision and is said (F11).
-- `agent check --session` appends one check record to the ledger; a check without a session
-  writes nothing (F11).
-- `agent verify-branch BASE..HEAD` reads the ledger only and exits 7 `branch_unverified` for a
-  commit that no stop passed; the ledger is evidence, not proof. The registry of exit-7 reasons
-  has eleven classes (F11).
-- `check_suppressed` reads `#[expect(..)]` and `#![expect(..)]`, with a reason or without, as it
-  reads `#[allow(..)]` (F2b.b).
-- `check_suppressed` reads an allowance a conditional attribute applies:
-  `#[cfg_attr(condition, allow(..))]` and `expect(..)`, through a nested `cfg_attr` too, when the
-  side holds the attribute whole (F2b.c).
-- `check_suppressed` reads Cargo's files: in `Cargo.toml` a key whose value is the string `allow`
-  (any TOML quoting, and the `level` of an inline table of `[lints]`), and in Cargo's
-  configuration (`.cargo/config.toml`, `.cargo/config`) `-A`, `--allow` or `--cap-lints allow`
-  among compiler flags. Not read: a string over lines, `clippy.toml`, `RUSTFLAGS` set in a CI
-  file (F2b.d).
-- `build_hook` reads a build script or a procedural macro declared in `Cargo.toml`
-  (`build = "…"`, `proc-macro = true`) beside `build.rs` itself (F2b.f).
-- Changed, by owner decision OD-E (the listed floor exceptions to "nothing scores lower than
-  0.8.3"): `#[allow(` in a Rust comment or string is no longer `check_suppressed` in any reading,
-  the ones kept from 0.8.3 and 0.8.4 included, and `r#unsafe` (an identifier) is no longer
-  `unsafe_added`. On the comparison corpus (7,421 patches) 478 such rows and 3 `r#unsafe` rows
-  are no longer reported, and 116 files lose the label (113 `check_suppressed`, 3
-  `unsafe_added`); nothing outside the two exceptions is lost. A forge-warden policy that
-  forbids `check_suppressed` holds more changes (the new readings) and no longer holds one whose
-  only `#[allow(` is in a comment or string (F2b.g).
-- `tool.scorer_sha256` moves (F2b).
-- `--help` names the values `--cluster --parallel` takes (`serial|auto|N`, as it took before);
-  the reference names `--allow-repo` for `mcp`, `rpc` and `daemon start`; the 0.10.0 release
-  notes gain an errata list (D1).
-- `agent setup --client claude --hooks` takes `--judge PATH`, `--policy NAME` and `--ranker-dir
-  DIR` and writes them into the session-start and stop commands it prints (the judge and the
-  directory by absolute path; without `--hooks`, a judge that is no file or a directory that
-  does not exist: exit 2). 0.10.0's release notes named `--ranker-dir` there, and 0.10.0 refused
-  it. `agent --help` lists each form with its own options (D1).
-- A test runs every full command line quoted in the release notes of the tree's version and of
-  the newest release on the built binary, and fails naming the line of any usage error (D1).
-- The evaluation corpus has 61 cases (`evidence/cargo-lints-suppressed`,
-  `evidence/rust-allow-in-comment-and-string`): precision 195 of 220, recall 195 of 272, 105
-  declared misses; the floors stay. The risk-ranking reference states F2b's readings of
-  `check_suppressed`, `build_hook` and `unsafe_added` and what they do not read (D1).
-- **Stop hook, changed on purpose (owner decision OD-J):** a stop the agent itself can make
-  unjudgeable no longer goes through at no cost. A file of the working tree the hook cannot
-  open (looked for only after staging failed: regular files the index or the untracked listing
-  names, never through a link, never waiting) and paths marked skip-worktree hold the first stop
-  of a turn once, with a sentence that names the escaped paths and nothing of Git's words; they
-  hold again when the file changes, at most three times in a session, and never at a stop that
-  follows a block. After that the stop is UNJUDGED as in 0.10.0. A nested repository stays a
-  note: the hook cannot tell whether the session made it (F12.a).
-- **Stop hook, changed on purpose (OD-J):** a hold whose only cause is a label the judge does
-  not know (every rule passed, every note `unknown_signal`) holds the stop once, naming the label
-  only when it is one of DDF's own; then HOLD as before (F12.b). The ledger records the classes
-  `work.unreadable`, `work.skip_worktree` and `hold.version_gap`, and a fail that stands as
-  `fail_stands` (F12.c). `agent check` gives the stop's sentence for these causes, and `agent
-  doctor --gate` says "a stop here would hold once, then be UNJUDGED".
-- `deep-diff-forge-patch`: `judge_patch_probed` and the type `Opens`; `JudgePatchError` gains the
-  variant `Unreadable { paths, whole, error }` (the enum is not `#[non_exhaustive]`: a match
-  outside the crate that names every variant needs an arm). `judge_patch` is unchanged (F12.a).
-- The daemon and `rpc` speak engine protocol 3. The new method `diff.diagnostics` (params
-  `patch`, `require_files`, `require_hunks`, `max_bytes`, `cursor`) answers one page of the
-  `deep-diff-forge.diagnostics.v0` document `--stdin-patch --diagnostics --json` prints: whole
-  diagnostics within `max_bytes` (4096 to 16777216, counted on the page as emitted), each cut
-  file's entry with its first diagnostic, the texts they name, and
-  `page {first, count, total, next_cursor, document_sha256}`, the SHA-256 of the bytes the command
-  prints; `docs/reference/diagnostics.md` gives the byte form exactly, so a client can rebuild and
-  check them. The cursor `dg0.…` belongs to one patch and one engine; a cursor of another patch,
-  another engine or outside the document, and a diagnostic that cannot fit `max_bytes` with the
-  page header, are refused (-32602) and never cut. In its answer line, bidi controls, invisible
-  characters and controls are written as `\u` escapes (F5a).
-- `engine.initialize` without `protocol` (or with 3), `engine.methods`, `daemon.health` and
-  `daemon.status` report protocol 3 and list `diff.diagnostics`; with `protocol: 2` it is not
-  listed and is still served. A refusal of an unknown protocol now says `this daemon speaks 0 to
-  3`. Every protocol-2 method keeps its params, shapes, codes and messages, held by a replay of a
-  transcript of the published 0.10.0 binary (`tests/protocol_compat.rs`; F7.d1, F5a).
-- Hook state: the schema is now `deep-diff-forge.hook-state.v11`, read from v10 (written by
-  0.9.0 and 0.10.0) by a migration that keeps every member: a session started under 0.10.0
-  keeps its base, what has blocked and its judged commits. v11 marks the lines in `blocked`
-  of a cause that holds once (F12), which 0.10.0 misread. The published 0.10.0 and 0.9.0
-  refuse a session this build has written (UNJUDGED, file kept), so do not run both on one
-  session (F7.e).
-- Hook state: the schema is read strictly (`deep-diff-forge.hook-state.v<N>`), from the
-  last release's (v10) to this build's own, through every migration step. An older state
-  (v9 and before) is refused by its name. A newer one is refused by its name and the range
-  this build reads, and its message advises no removal. A newer state is never written over:
-  the file is read again before the lists and before the state is moved into place (where
-  file locks do not keep two hooks apart, a newer build that writes between that read and
-  the write is not seen). The refusals of an older or damaged state, and of a list beside
-  it, say what removing or starting anew costs: the commits the session made before are not
-  judged. Fixtures written by the published 0.9.0 and 0.10.0 binaries, and by this build, are
-  read by a test; `scripts/capture_hook_state.sh` captures them (F7.e).
-- `agent doctor --gate` and `agent check` compare `--ranker-dir` with the registered stop's
-  by the directory a stop lists. A relative path, a trailing `/` or a link to that directory
-  is the same; they compared it as text (found by lane D1).
-- MCP tool `diagnose_patch` and `review_change` view `diagnostics`: one page of
-  `deep-diff-forge.diagnostics.v0` each, from the daemon's pager in process, with an output
-  schema. `max_bytes` (12,364 to 33,554,432, default 32,768) counts the whole answer as written,
-  both copies; the line escapes every hidden character, and a parse failure names where the
-  patch failed and none of its text (F5b).
-- Rust SDK: the typed model `Diagnostics` (its reader ignores members it does not know),
-  `diagnostics(&Review)` in process and `Client::diagnostics`, which pages a protocol-3 daemon,
-  rebuilds the bytes and checks them against `document_sha256`. Python SDK:
-  `diagnostics_patch`, the same. A daemon of protocol 2 is `ProtocolTooOld` and is never worked
-  around; pages that break the paging contract end the call with a named error
-  (`Error::Document`, `PagingError`). `Error` gains the two variants; it is `#[non_exhaustive]`
-  (F5b).
-- Both SDKs refuse diagnostics pages that carry a member they do not know by name (Rust
-  `Error::UnknownMembers`, Python `UnknownMembers`): that version cannot rebuild, and so cannot
-  check, the document; upgrade the SDK. A daemon that reports protocol 3 and does not know
-  `diff.diagnostics` is `ProtocolTooOld` naming the protocol it reported (F5b).
-- `deep_diff_forge_daemon::change_review`: `review.change`'s acquisition, public for a caller
-  that builds its own view of the change (F5b).
-- `agent doctor` checks `diagnostics_parity`: the probe's diagnostics document from the command,
-  the daemon's `diff.diagnostics` and MCP's `diagnose_patch` is one document, compared by the
-  SHA-256 of the command's bytes and by the pages' bytes (F5c).
-- Hooks: every outcome a stop gives, and every record of the project's ledger, carries a reason
-  class from one registry of 50 codes (`pass`, `fail.*`, `hold.*`, `work.*`, `chain.*`, `time.*`,
-  `state.*`, `place.*`, `input.*`). The ledger writes a code where it wrote `"class": null` (an
-  unjudged unit, a hold with no rule, a stop that judged nothing). A class never decides whether a
-  stop holds. Its meaning never changes, codes are added without a version change, and an unknown
-  code is not a PASS. `docs/reference/agent-hooks.md` "Reason classes" lists them (F7.f).
-- Rust readers widened, no new label; more lines carry four labels, and a forge-warden policy that
-  forbids one holds more changes (F2a). `trivial_assert`: an assertion that cannot fail read as a
-  class (`assert!(!false)`, `assert!(1 == 1)`, `assert!(true || x)`, `assert!(x == x)`,
-  `assert_eq!(x, x)`, `assert_ne!(1, 2)`); the same call on both sides is not read (it checks that
-  code is deterministic) (F2a.a). `error_swallowed`: `let _ = …;` and `_ = …;` whose last call is
-  one of 29 standard calls that return a `Result` (`remove_file`, `write_all`, `send`, `join`,
-  `kill`, `wait`, …; `join` and `wait` with no argument, `copy` with two, so that `Path::join`,
-  `Condvar::wait` and `ptr::copy` are not read); `write!` into a `String` and the patch's own
-  functions are not read (F2a.b).
-  `panic_path_added`: `panic!(…)` and `unreachable!(…)` (F2a.c). `test_skipped`: a test compiled
-  out by `#[cfg(…)]` whose predicate is false in every default build of the tests (`any()`,
-  `not(test)`, `FALSE`, `feature = "…"`; `not(<a cfg of the build's own>)` holds), and by the same
-  predicate a module of tests (`mod tests`, `#[cfg(any())]` before it or `#![cfg(any())]` as its
-  first item) or a file of tests by its path (`#![cfg(…)]`) (F2a.d). On the
-  comparison corpus (7,421 patches) against the tree before: +90 `trivial_assert`, +669
-  `error_swallowed`, +778 `panic_path_added`, +47 `test_skipped` rows; no label is lost; in files
-  whose evidence list is cut at 32 rows some earlier rows give their place to new ones.
-- `diagnostics.v0`: a `panic_path_added@line` diagnostic carries `cases` (`call`, `panic_macro` or
-  both) and lists only the repairs of its case; the new repair `panic_path_added:a3` fits
-  `panic!`/`unreachable!`. On call rows the member `"cases": ["call"]` is new (F2a.c).
-- Library: `deep_diff_forge_graph::Evidence` gains the public member `panic_forms` (a new enum
-  `evidence::PanicForms`); code that builds an `Evidence` with a struct literal no longer
-  compiles until it names the member (F2a.c).
-- The vocabulary gains people-facing substitutes that a label now catches (`test_removed:n3`,
-  `stub_added:n2`, `panic_path_added:n2`) and one it does not (`error_swallowed:n2`); the
-  evaluation corpus has 65 cases: precision 209 of 234, recall 209 of 290, 109 declared (F2a.e).
-- `tool.scorer_sha256` moves (F2a).
-- Hook state v12: nothing the hooks keep holds text from the patch, the judge or Git. Every
-  digest they keep (what was said, what was said once, every remembered failure and cause that
-  holds once) is HMAC-SHA-256 under a per-user key, `key` in the hooks' state directory (32
-  random bytes, mode 0600, read only as a regular file of exactly 32 bytes). The file of
-  judged commits keeps rule ids and class codes only, so a later stop names a commit from
-  before by its rules or its class, not the judge's words. A copy of a state file without the
-  key confirms no guessed line; the key's own reader (the same user, the agent included) still
-  can, so the key bounds what a copied file gives away and is not a boundary. A v10 or v11
-  state is read with its base and judged commits; its plain digests are emptied, so a finding
-  is said once more and a failure blocks once more (F7.e).
-- `deep_diff_forge_core::hmac_sha256` and `hmac_sha256_hex` (RFC 2104 on the crate's SHA-256,
-  held by RFC 4231).
-- Hooks: the advice after a tool call is an excerpt of the diagnostics document. Each item is a
-  diagnostic for the agent of class `security` or `integrity`, with its code, class, escaped
-  path, line, side, case and repair ids as `--diagnostics --json` gives them for the same tree,
-  then each repair id once with its sentence. Where the engine cannot tell a case, every repair
-  is listed with a sentence saying so. The item text changed (`- "a.rs":2:
-  check_suppressed@line (integrity, new side, read as lexical); repairs: check_suppressed:a1,
-  check_suppressed:a2.`) (F6.a).
-- Hooks: a `shape` diagnostic (a new or deleted file, a lockfile, a public API path, a large
-  change) is no longer advised or counted, and a change that raises only such labels gets no
-  advice after a tool call: it orders a person's review, and advice that said there was nothing
-  to repair after every added file taught an agent to skip the advice. A `floor_only` reading
-  is not advised either (F6.a).
-- Hooks: a file whose name this version cannot read (not UTF-8) no longer turns the advice off
-  for the session. It is one item naming it as Git quoted it, and the other files are advised.
-  A change not ranked in the advice hook's time is said once to be "advice cut short" (F6.a).
-- Hooks: an edit of a guard file (the policy file, a `.gitattributes`, a CI workflow, lint or
-  tool configuration, the client's hook settings), matched on whole path components, is named
-  by the advice once for each content of the file, as information and never a block. `agent
-  setup` gives the post-tool hook `--policy`. The table is `deep_diff_forge_graph::guard_paths`
-  (F6.b).
-- Hook state v13: `guards`, the guard-file changes the advice has named (at most 64; past that
-  one is named after every tool call). A v12 state is read and written back as v13; a build
-  that writes v12 refuses a v13 state as newer (F6.b).
-- Hooks: the marks an advice hook leaves under `.git/deep-diff-forge/` when no state can
-  remember a reason are keyed (HMAC-SHA-256 under a key file of that directory); a mark of the
-  old unkeyed form is removed when met, and its reason is said once more (F6.b).
-- `docs/reference/agent-hooks.md` states what the advice never notices (ignored files,
-  `.git/info/exclude`, `.git/info/attributes`, `.git/config`), that the advice's `--policy` can
-  differ from the stop's, that guard notices wait for a call that ranks, and that a damaged
-  marks key silences the advice beside the state but not a stop (F6.c).
-- Hooks: the judged frontier belongs to the project (F13.b). A session's first hook writes a
-  `baseline` record to the project's ledger when it has none (the commits named then, at most
-  100,000, and the commit `HEAD` names) and a `start` record for the session. A stop judges,
-  besides the session's own commits, every commit made after the baseline that no stop record
-  gave a verdict, whichever session made it: a commit left by a session that ended before its
-  stop (a crash, a closed terminal) is judged by the next session's stop. A ledger with no
-  baseline is judged as before and the stop says that no record of the project was found. A
-  `SessionStart` whose `source` is `resume`, `compact` or `clear` begins from the commit the
-  last session of its working tree began from, not from `HEAD`. `agent check` says how many
-  commits a stop judges by the frontier that it does not. The ledger's `v` stays 1.
-- Hooks: a commit that holds a stop and that another working tree's `HEAD` reflog records is
-  named in the block as advice ("the HEAD reflog of <tree> has this commit; if this session
-  did not make it, tell a person"); it holds as before (F13.a).
-- Hooks: a stop whose session state cannot be used (damaged, newer, older, its directory, its
-  key file, its lists, its lock held by another hook) no longer says only that it did not run.
-  It judges the working tree without the state, reading and writing nothing of the state
-  directory, under the policy at the ledger's baseline (at `HEAD` with no ledger, which it
-  says): a failing tree blocks, stands at the stop that follows a block, and blocks again at
-  the next turn's stop. With the ledger's baseline it also judges the frontier's commits, the
-  session's own among them, each once (not when another hook of the session holds its lock);
-  without a baseline no commit is judged by it, and they wait for a stop that has its state.
-  The ledger records it (F12.d, owner decision OD-J).
-- Git selections (`--git-range`, `--git-staged`, `--git-working-tree`, MCP and RPC
-  `review_change`): a binary change that is text with a few stray bytes is read (S3.27.h, the miss
-  0.10.0 declared in DDF-2026-006). When Git's NUL check calls a file binary, no attribute applies
-  and the second reading is not UTF-8 but holds at most 128 odd bytes per KiB of what it shows
-  (bytes UTF-8 decoding replaces, and controls other than tab, carriage return and form feed),
-  that reading, decoded lossily, is read for code evidence beside the binary change, which stays
-  (`binary_changed`, `binary_change`); a file it gives evidence for also carries
-  `diff_suppressed` with the cause `content`. Real binaries measured hold 329 to 902 odd bytes
-  per KiB and are read as before; a text drowned in stray bytes (more than one in eight) is still
-  read as bytes, its lines unread, but on a path of a language the readers read (`.rs`, `.py`,
-  `.sh`, …) every such change carries `diff_suppressed` (`content`) whatever its odd bytes. A
-  copy Git gives with its source in one reading is labelled so and not read. Library: `PatchTwin`
-  gains the member `stray_text`.
-- The protocol-2 replay rule names a third kind of difference, values of the build:
-  `daemon.health`'s `retained_bytes` and `daemon.metrics`' `engine.peak_retained_bytes` are
-  estimates from the build's memory layout and move when a type of the review model changes
-  size (0.11.0 moved them); a client must not compare them across builds.
-- A traditional section with neither side `/dev/null` whose one hunk is `@@ -0,0 +1,N @@` is
-  `added` with `new_file` (S3.4.b2): Git's summary and `git apply` treat it as a creation; it was
-  `modified`. The deletion twin (`@@ -1,N +0,0 @@`) stays `modified`. On the comparison corpus
-  one patch changes (`modified` 2 to `added` 4).
-- **Stop hook, changed on purpose (S3.25.b):** a commit can pass under a policy that requires
-  verified claims (forge-warden's `[claims] require_verified`, which its `init` writes from
-  0.3.0); it held before. A commit with one parent is judged with `--repo <the repository's Git
-  common directory> --base <its parent> --head <it>` beside the hook's patch when the judge's
-  `check --help` names `--repo` (read once a stop; the released forge-warden 0.2.1 does not, and
-  is started as before). A pass or a hold whose `seals.claims` are not verified and the asked
-  pair is UNJUDGED (`chain.not_a_verdict`). A judge that refuses bound mode for a commit (exit 3
-  or 4) has it judged again without `--repo`, and the message says so. A root commit, a merge
-  commit, the staged and the uncommitted change, and a repository bound mode does not admit
-  (shallow, object alternates, `:` or a control character in its path) are judged as before and
-  can at best hold. The stateless stop, the frontier's commits and `agent check` judge commits
-  the same way. `agent doctor --gate`'s link `claims_verified` says which units can pass. Cost
-  measured with forge-warden `005a1959`: about 0.25 seconds a commit against 0.09; 300 commits
-  drain in two stops instead of one. No state or ledger schema changes.
-- MCP writes every line, every tool's text copy and every error's text with each bidi control,
-  invisible character, control character (but line feed and tab) and line separator as a `\u`
-  escape. A text copy is JSON and parses to the same value as before; `structuredContent` is
-  unchanged; `rank_patch`'s text is the bytes `--rank --json` prints with those characters
-  escaped. `max_bytes` counts the answer as written, so a view of such text pages earlier and
-  never overflows. Before, every tool but `diagnose_patch` wrote U+202E and the like raw.
-- A patch that does not parse is refused on every MCP tool, by the daemon's `diff.diagnostics`
-  and in both SDKs' diagnostics calls with what the engine found, the line of the patch and the
-  engine's explanation, and no text of the patch (`truncated hunk ending at line 5: 1 old / 2 new
-  line(s) declared but missing`); a path in such a message is quoted and escaped. Before, MCP's
-  older tools quoted the failing line, and the diagnostics surfaces cut the message short,
-  losing the explanation. The command line and the daemon's protocol-2 methods keep their
-  messages, which quote the line. New: `PatchParseError::without_input` (patch crate),
-  `Engine::without_input_in_errors` (daemon crate).
-- Release (F4.c): `scripts/release_local.sh build` writes `RELEASE-MANIFEST.json` beside the
-  archive (listed in `SHA256SUMS`): the version, commit, target, the binary's and the archive's
-  SHA-256, the rank, diagnostics and hook-state schemas and the ledger version the binary writes,
-  the verdict and hook-state schemas it reads, its engine protocol and methods and its
-  `scorer_sha256`, each read from the binary itself with the command named in `sources`. The
-  owner signs it with the release key in the namespace `deep-diff-forge-release-manifest`;
-  `verify` checks that signature, that every member has a value and that it names the tag's
-  commit, version, binary and archive. `deep-diff-forge doctor` prints three more lines:
-  `verdict_schemas_read`, `hook_state_schemas_read` and `ledger_version`.
-- Contract matrix (F4.d): the real rows run once for each forge-warden given (`FW_BIN`, the
-  gate's judge, now forge-warden `005a1959`; `FW_BIN_OLDER`: `db4c580e` and a build of the release
-  commit of 0.2.1), each recorded by its SHA-256 with a name its row ids carry, and the outcomes
-  that differ by judge stated (bound mode, unknown labels, the empty patch); with
-  `--require-real`, which the gate passes when `FW_BIN` is set, every recorded forge-warden and
-  both published binaries (0.9.0, 0.10.0) must be given. New rows: `agent check` equals the stop,
-  a policy that admits an older ranker, the frontier, `agent verify-branch` over every outcome, a
-  first stop is never silent, the stateless stop (six ways), the stray-byte source file in a Git
-  mode, the diagnostics paged on `rpc` and MCP, and the published 0.9.0 and 0.10.0 and this build
-  on one another's hook state. `docs/reference/quality-gates.md` lists every row.
+**The agent-loop release.** 0.11.0 is built for an agent that works under Deep-Diff-Forge's
+hooks. While it works it is told what its change carries, as items of a new document,
+`deep-diff-forge.diagnostics.v0`: one diagnostic for each place a label stands, with the
+repairs that answer it, printed by `--diagnostics`, served in pages by the daemon's engine
+protocol 3 and by MCP, and read and checked by both SDKs. When it stops, forge-warden's verdict
+decides, and the stop judges more than before: the commits an ended session left and the
+commits merged between sessions (the project's frontier, kept in a ledger of stops under the
+repository's Git directory), the working tree even when the session's state cannot be used, and
+each commit with one parent in the judge's bound mode, so that such a commit can pass under a
+policy that requires verified claims. Every exit 7 has one meaning and names its reason class;
+`agent check` judges on demand what a stop judges, and `agent verify-branch` reads the ledger.
+It fixes one miss of released versions with an advisory: `eval` and `agent doctor --gate`
+exited 0 when the reader of their output had gone (DDF-2026-011). It closes the miss
+DDF-2026-006 declared: a source file that a stray byte makes binary by content is read.
 
-- Tests and evaluation only, no change to what the program does (S3.35.d, S3.34.c, S3.34.d): the
-  eval corpus has paired cases (a form read, a near miss not read) for every integrity form the
-  Python, JavaScript and Go readers read, and the 46 forms a reviewer would expect that no reader
-  reads are cases too, each a declared miss (73 cases; precision 233/258, recall 233/360 from
-  233/314, the denominator grown by the declared misses alone). The recall and precision floors
-  are what is measured, and a new floor holds the count of expected items found (233), so that a
-  larger denominator cannot hide a lost item. Every missed mutant of the 0.10.0 mutation run has a test that fails on it but
-  one, shown equivalent on the comparison corpus; `docs/TESTING_GOLD_STANDARD.md` says which
-  functions `cargo mutants` does not mutate.
-- A session's start says its last sentence. Each link of the chain that is not ready was shown
-  to at most 300 characters and cut without a word; the text for a judge that takes bound mode
-  (added in this release) is 357, so under forge-warden's starter policy the start ended "a
-  merge commit can ." and never said "never be verified, so they can at best hold: commit
-  first". The bound is 400, both of the hook's own texts fit it (a test holds that), and a
-  detail that is longer ends "[cut here]". Found by the first real client session on the
-  candidate (F8.a).
-- The local gate has a step of its own for the diagnostics contract (F8.c, 36 steps): `agent
-  doctor` on the built binary must find `diagnostics_parity` true, and the doctor's
-  every-check-can-fail test and the marker canary run by their exact names, each required to
-  be the one test that ran.
-- `agent verify-branch` refuses a ledger with a record that is not whole as its kind is
-  written (A0110-M1, 0.11.0 tree review). It checked a record's `v` and `kind` only, so a stop
-  record with no `outcome`, an outcome this build does not write, or no `unit` was neither
-  refused nor counted, and a branch whose commit a stop had passed still verified beside it.
-  Every member this build writes for a record's kind must now be there and of its type, with a
-  `unit`, `outcome`, `class`, ids and counters this build writes (the documented clearance
-  needs `v`, `kind` and a commit `unit`), and a stop's members must agree as a stop writes
-  them (a `pass` whose class says `fail.new` verified the branch too); else the ledger is
-  refused whole, naming the line. Not checked: the form and content of the digests in
-  `seals` (any string), and damage that leaves a whole record, such as another full commit
-  id: the ledger has no checksum. The frontier's permissive reader is unchanged, and so is
-  what is written.
-- A session's start says what its stops then do (C2, 0.11.0 tree review). With its state
-  unusable (damaged, older, newer, a key file that is no key, no directory of its own) it said
-  "the stops of this session will not be judged and no advice will be given", while each stop
-  judged the working tree without the state and could block; it now says that no advice will
-  be given and each stop judges the working tree without the session's memory. With its lists
-  of commits unusable it says the same without the advice clause (advice is given). Git
-  missing or refusing, the project moved, replaced or gone, and a state directory inside the
-  tree keep "will not be judged": their stops are UNJUDGED. (One place where the new sentence
-  is not true: with such a state in a directory that is no Git repository, or a repository
-  with no commit, the stop is UNJUDGED.) The stateless stop's block no longer
-  ends with "a failure that has blocked does not block again" (or its sentence for a hold),
-  false without a state: the stop after the block lets it through, and the next turn's stop
-  blocks again while the tree still fails or is held.
-- `docs/RELEASE_AND_PUBLICATION.md`: the Rust API of the 0.x line is decided (OD-N, the
-  coordinator's ruling shown to the owner at this release): public enums and structs stay as
-  they are, a release that adds a variant or a public field says so under the Rust API breaks
-  of its notes, and `#[non_exhaustive]`, `Error::source` and the SDK gaps are taken up for 1.0.
-  No code changes.
-- A stated limit of the frontier (0.11.0 tree review, C5 and its re-read): a commit that a
-  session left without a stop is judged by the next fresh session under the policy at that
-  session's base, which can be the left commit, so the whole of its own edit of the policy
-  applies to it. Where the edit also removes the policy's protection of its own file, the
-  commit can pass and `agent verify-branch` verifies it; `agent doctor --gate`'s link
-  `policy_protects_itself` cannot tell under a policy that requires verified claims. Not
-  changed in this release: the judge on the pull request is the boundary.
+Know four things before installing. The hooks' state is schema v13: the published 0.9.0 and
+0.10.0 refuse a session this build has written (UNJUDGED, its files kept), so do not run both
+on one session. The Rust readers of four integrity labels and of `check_suppressed` and
+`build_hook` read more, and a listed exception to the floor removes two readings (`#[allow(` in
+a Rust comment or string, and `r#unsafe`), so a forge-warden policy that forbids these labels
+holds more changes and a few others no longer. Under a policy that requires verified claims
+only a commit with one parent can pass, and `agent doctor --gate` exits 7 there. The Rust
+library API changes where a type gains a variant or a public field. And one limit the review of
+this release left stated, under [Known issues](docs/release-notes/0.11.0.md#known-issues): a
+commit that a session leaves without a stop can pass the next session's stop under its own edit
+of the policy, so the judge on the pull request stays the boundary. Each change on purpose is
+under [Changed on purpose from 0.10.0](docs/release-notes/0.11.0.md#changed-on-purpose-from-0100); install it in the order
+under [Cutover with forge-warden](docs/release-notes/0.11.0.md#cutover-with-forge-warden), and keep the published 0.10.0
+binary as a ranker until every policy admits 0.11.0.
+
+Published as the signed tag `v0.11.0` on GitLab, the place of release, with mirrors on Gitea and
+Forgejo and a Linux x86_64 binary built on the owner's machine, with its `RELEASE-MANIFEST.json`
+signed beside `SHA256SUMS`; GitHub mirrors the release page and crates.io carries the crates from
+the tag, as for 0.10.0.
+
+### Security
+
+- **`eval` and `agent doctor` name their refusal on stderr and exit 7 when the reader of stdout has gone**
+- **A source file that a stray byte makes binary is read**
+- **MCP writes hidden characters as escapes**
+- **A patch that does not parse is refused without its text**
+- **Nothing the hooks keep holds text from the patch, the judge or Git**
+- **The marks an advice hook leaves under `.git/deep-diff-forge/`**
+
+### Added
+
+- **`deep-diff-forge.diagnostics.v0`**
+- **`--diagnostics`**
+- **`--rank --fail-on LIST`**
+- **The vocabulary as data with ids**
+- **`agent check`**
+- **The project's ledger**
+- **`agent verify-branch BASE..HEAD`**
+- **The judged frontier belongs to the project**
+- and 11 more, in the full notes
+
+### Changed
+
+- **Exit 7 has one meaning, with a registry of reason classes**
+- **Stop hook, changed on purpose (owner decision OD-J): a stop the agent itself can make unjudgeable no longer goes through at no cost**
+- **Stop hook, changed on purpose: a stop whose session state cannot be used**
+- **Stop hook, changed on purpose: a commit can pass under a policy that requires verified claims**
+- **Hook state**
+- **The advice after a tool call is an excerpt of the diagnostics document**
+- **`check_suppressed` and `build_hook` read more**
+- **Changed, by owner decision OD-E**
+- and 4 more, in the full notes
+
+### Fixed
+
+- **A hook's scratch directory is owned by a lock**
+- **`agent doctor --gate` and `agent check` compare `--ranker-dir`**
+- **A session's start says its last sentence**
+- **`--help` and the reference**
 
 Full notes: [docs/release-notes/0.11.0.md](docs/release-notes/0.11.0.md)
 

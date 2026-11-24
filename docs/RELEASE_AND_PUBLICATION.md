@@ -270,8 +270,9 @@ the local repository. Its self-test is `scripts/test_release_local.sh` (`just re
   `sbom.spdx.json`, `release-receipt.json` (commit, toolchain, both build hashes, every file's
   SHA-256), `RELEASE-MANIFEST.json` and `SHA256SUMS` over all of them. The manifest (0.11.0,
   schema `deep-diff-forge.release-manifest.v0`) says what the binary reads and writes, each
-  value read from the binary itself, with the command that gave it in its member `sources`: the
-  version (`--version`), the commit, the target, the binary's and the archive's SHA-256, the rank
+  of those values read from the binary itself, with the command that gave it in its member
+  `sources`, beside what the build knows (the commit, the target, the binary's and the
+  archive's SHA-256): the version (`--version`), the rank
   schema and `scorer_sha256` (`--stdin-patch --rank --json` on `fixtures/patch/basic.patch`),
   the diagnostics schema (`--stdin-patch --diagnostics --json`), the verdict schemas the stop
   hook reads, the hook-state schemas it reads and the one it writes and the ledger version

@@ -1784,3 +1784,83 @@ under the rule that there is one fix round: Astra (a Codex model) and a fresh Cl
   also fail it; and "the frontier's reader, which passes over such a record", whose "such" had
   lost its noun. Release preparation follows; no reviewer reads it, which is why its checks
   are its own (the next section).
+
+## 0.11.0 release commit (2026-11-25)
+
+Dates here are UTC. 0.11.0 is built and published as 0.10.0 was
+([local release](docs/RELEASE_AND_PUBLICATION.md#local-release-from-084)), with one addition: the
+release build writes `RELEASE-MANIFEST.json`, which the owner signs in a namespace of its own.
+
+- **Inputs.** `integrate/0.11.0` holds the tasks of the release on 0.10.0 (the two sections
+  above say what was measured before the review and what the review changed). The defect of
+  released versions it fixes is DDF-2026-011; it closes the miss DDF-2026-006 declared.
+- **Review.** Two reviewers, Astra (a Codex model) and a fresh Claude reviewer each round, on
+  three requests: NO-GO and GO-WITH-FIXES on `3eaa7653`; one fix round; GO-WITH-FIXES and NO-GO
+  on `9c4f6099` (the second on a claim the fix round had written too wide); a documents-only
+  commit that cuts three claims to what is true. **Both reviewers say GO on `aa5d9d9f`.** The
+  release preparation after it (`3f979175` to this commit) changes the version, the documents
+  and one line of `.github/release_allowed_signers`; no Rust source file changes, and no
+  reviewer has read it.
+- **Names of binaries here.** `c19cf99c…`: the reviewed binary, a release-profile Cargo build of
+  `b8532c32` (it prints `0.11.0-dev`). `32fe5aa1…`: a release-profile Cargo build of the
+  release-prepared commit `2843998a` (it prints `0.11.0`). `415a72ef…`: the dry run of the
+  release build on `2843998a` (`scripts/release_local.sh build`, two builds of two exports).
+  None of them is the published binary: the owner builds that from the tag.
+- **Gate.** `scripts/ci_local.sh` passed its 36 steps on `2843998a` (2026-11-24): `steps failed:
+  0`, with forge-warden `005a1959`, `db4c580e` and a build of its 0.2.1 release commit as the
+  contract matrix's judges and the published 0.9.0 and 0.10.0 as rankers. It is run again on
+  this commit before the commit is pushed, and the release tool runs it on the tag's commit.
+- **Evaluation.** 73 cases: precision 233 of 258, recall 233 of 360, findings 33 of 33, ranking
+  12 of 15, 155 declared, no failure (`32fe5aa1…`).
+- **Comparison.** The corpus (`fixtures/corpus/compare-v1.sha256`: 7,715 patches, 72 planted Git
+  repositories, manifest `bddd0a41…`) on `32fe5aa1…`: against itself nothing lost or gained;
+  against the published 0.10.0 (`121503a8…`), 106 patches with a lost item or label, every one
+  the listed floor exception of this release, and 1,002 with a gained item; no refusal differs.
+  With the version string written as 0.11.0, `32fe5aa1…` gives the same stdout, stderr and exit
+  code as the reviewed `c19cf99c…` on all 7,715 patches in `--json`, `--rank --json` and
+  `--diagnostics --json`.
+- **A real client on the release-prepared binary.** The three Claude Code sessions of the finish
+  evidence, run again on `32fe5aa1…` (15:47Z to 15:49Z on 2026-11-24): the same outcome at
+  every stop (hold for unverified claims, a block on a credential, FAIL STANDS, a commit that
+  fails in bound mode, UNJUDGED with no judge, a commit that passes, a hold on the policy file);
+  transcript SHA-256 `ce33891d…`. What those sessions do not exercise is listed in the finish
+  evidence above.
+- **Fuzzing.** `scripts/campaign_local.sh 300` on `2843998a`: 18 targets, 300 s each from the
+  committed seeds, all clean (15:12Z to 16:44Z on 2026-11-24, toolchain nightly-2026-10-25; the
+  receipt names the commit, the toolchain and one line per target).
+- **Release build, dry run.** `scripts/release_local.sh build` on `2843998a`: two builds from
+  two exports, one SHA-256 (`415a72ef…`), the archive with exactly its five members, the receipt
+  (`deep-diff-forge.release-receipt.v0`) with the gate's result (36 steps, 0 failed, "pass"), and
+  the manifest (`deep-diff-forge.release-manifest.v0`): it writes `rank.v0`, `diagnostics.v0`,
+  hook state v13 and ledger 1, reads verdict v2 and v3 and hook state v10 to v13, speaks engine
+  protocol 3 with 17 methods; every member of both files carries a value. Not built:
+  `aarch64-unknown-linux-gnu`, macOS. Nothing was signed. The build of the tag is the owner's.
+- **The notes' commands.** Every full command line `docs/release-notes/0.11.0.md` quotes was run
+  on `415a72ef…` with a home of its own: `doctor` exit 0, `agent setup --client claude --hooks`
+  with its three options exit 0, `agent doctor --gate` exit 7 for the reason the notes give
+  (the link `claims_verified` under a policy that requires verified claims); none is a usage
+  error. The gate's test runs them on every build.
+- **Compatibility, against 0.10.0.** The contract changes are the table of
+  `docs/release-notes/0.11.0.md` (the project's contract register, 153 rows for this release),
+  each with its test, and "Changed on purpose from 0.10.0" there says what a user sees differ.
+  Hook state v13 is refused and kept by the published 0.9.0 and 0.10.0 (rows of the contract
+  matrix). The Rust API breaks where `JudgePatchError` gains a variant and `Evidence`,
+  `PatchTwin` and `GitChange` gain public fields.
+- **Owner decisions in this release,** taken under the owner's standing authority and accepted
+  by the merge: the hook-state schema numbers (OD-V); the manifest signed in its own namespace
+  (OD-K: the line of `.github/release_allowed_signers` in this commit's history); the causes
+  that hold a stop once and the stop without usable state (OD-J); the two listed exceptions to
+  the detection floor (OD-E); the Rust API of the library crates for the 0.x line (OD-N); which
+  commits a stop judges (the frontier).
+- **Pending (the owner's steps).** The merge, the signed tag `v0.11.0` on GitLab, Gitea and
+  Forgejo, the release build of the tag, the signatures of its `SHA256SUMS` and of its
+  `RELEASE-MANIFEST.json`, and publishing the files. None had happened when this section was
+  written.
+- **Not measured here.** 0.11.0 has had no independent rescore. No mutation run over what 0.11.0
+  changed has been made; the run over what 0.10.0 changed had 538 of 729 mutants judged caught
+  when this was written (16:50Z on 2026-11-24; it pauses while any gate runs). forge-warden's
+  published 0.2.1 binary was not run against this build (a build of its release commit was).
+  GitHub's own CI has not run on this tree. No binary was built for `aarch64-unknown-linux-gnu`,
+  `x86_64-apple-darwin` or `aarch64-apple-darwin`. The known issues are in the release notes,
+  the limit the review left stated among them: a commit that a session leaves without a stop
+  can pass under its own edit of the policy.

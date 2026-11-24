@@ -11,6 +11,14 @@
 # makes binary by content (27 repositories; the 45 earlier ones rebuild unchanged), the
 # published 0.10.0 binary and the binaries below.
 #
+# The release-prepared commit 2843998a (version 0.11.0; binary sha256
+# 32fe5aa132aafd11cac94a4873ad884d5bd28038b49291db834591857f7f12dc, a release-profile Cargo build
+# of that commit, not the release build), run 2026-11-24T15:47Z, record
+# runs/20261124T154702Z-32fe5aa132aa of the corpus: every figure and every result file of the
+# record below, and with the version string written as 0.11.0 the same stdout, stderr and exit
+# code as the reviewed binary c19cf99c… on all 7,715 patches in --json, --rank --json and
+# --diagnostics --json. No Rust source file changes between the two commits; the version does.
+#
 # Whole-tree record for the candidate after the tree review's fix round, commit b8532c32 (version
 # 0.11.0-dev; binary sha256 c19cf99c6c2e3509be4d4dc1050cd2b8c65c459faef56a609c9d8ce25d9ea208, the
 # release-profile Cargo build of that commit), run 2026-11-24T13:34Z, record
@@ -74,4 +82,4 @@
 # Note 2: all 54 are trivial_assert on Python lines where "assert True" is followed by more
 #   (for example "assert True == False"), which 0.9.0 labelled though they can fail: the narrowing
 #   of task S3.16, a recorded exception to the floor.
-3edc2382d16b3a657a99796d78738b8df2c3a0a408f2b1b731fa554a52f29f52  MANIFEST.sha256
+bddd0a41ffc48a67fd798f6805e36da4324fb30adde0a903e363436962004dc6  MANIFEST.sha256
