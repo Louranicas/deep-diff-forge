@@ -320,7 +320,14 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   (`binary_changed`, `binary_change`); a file it gives evidence for also carries
   `diff_suppressed` with the cause `content`. Real binaries measured hold 329 to 902 odd bytes
   per KiB and are read as before; a text drowned in stray bytes (more than one in eight) is still
-  read as bytes, a stated limit. Library: `PatchTwin` gains the member `stray_text`.
+  read as bytes, its lines unread, but on a path of a language the readers read (`.rs`, `.py`,
+  `.sh`, …) every such change carries `diff_suppressed` (`content`) whatever its odd bytes. A
+  copy Git gives with its source in one reading is labelled so and not read. Library: `PatchTwin`
+  gains the member `stray_text`.
+- The protocol-2 replay rule names a third kind of difference, values of the build:
+  `daemon.health`'s `retained_bytes` and `daemon.metrics`' `engine.peak_retained_bytes` are
+  estimates from the build's memory layout and move when a type of the review model changes
+  size (0.11.0 moved them); a client must not compare them across builds.
 - A traditional section with neither side `/dev/null` whose one hunk is `@@ -0,0 +1,N @@` is
   `added` with `new_file` (S3.4.b2): Git's summary and `git apply` treat it as a creation; it was
   `modified`. The deletion twin (`@@ -1,N +0,0 @@`) stays `modified`. On the comparison corpus
