@@ -19,6 +19,17 @@ const NOT_WHOLE: &str = "This is not the stop's whole answer: not every unit a s
 /// Said only when every unit a stop of the session answers for was judged with its inputs.
 const EQUAL: &str = "Equal to the stop in its units and inputs: every unit a stop of this session answers for (the uncommitted change, the staged change where it is another, and each commit of the session by its own patch) was judged here with the stop's patch, the policy at the base the session recorded, and the judge and rankers of the registered Stop hook. What the stop then decides can still differ: the lines \"The stop may differ\" say where.";
 
+/// What a stop of the session judges by the project's frontier (F13.b) that this check, which
+/// judges the session's own commits, does not.
+fn frontier_said(top: &std::path::Path, mine: Option<&[String]>) -> Option<String> {
+    let left = crate::hook_run::frontier_left(top, mine?);
+    (left > 0).then(|| {
+        format!(
+            "a stop of this session also judges {left} commits the project's ledger has no verdict for, made after it first recorded the project (a session that ended before its stop left them); this check does not"
+        )
+    })
+}
+
 pub(crate) fn run(args: &[String]) {
     crate::args::admit_or_exit(
         args,
@@ -162,6 +173,9 @@ fn check(session: Option<&str>, base: Option<&str>, args: &[String]) -> Value {
                 all.len()
             ));
         }
+    }
+    if session.is_some() {
+        differs.extend(frontier_said(&top, checked.session_commits.as_deref()));
     }
     if checked.linked {
         differs.push("the project has linked working trees: a stop from inside one also judges that tree's changes, which this check does not".to_owned());

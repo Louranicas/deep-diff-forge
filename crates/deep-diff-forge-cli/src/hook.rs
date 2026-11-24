@@ -77,6 +77,9 @@ pub(crate) struct Input {
     pub(crate) cwd: String,
     /// The client is already continuing because a stop hook blocked it.
     pub(crate) stop_hook_active: bool,
+    /// Why a session starts, as `SessionStart` gives it (`startup`, `resume`, `clear`,
+    /// `compact`); empty for the other events and when it is not given.
+    pub(crate) source: String,
 }
 
 /// Read a client's hook JSON for `event`.
@@ -107,6 +110,7 @@ pub(crate) fn parse_input(event: Event, text: &str) -> Result<Input, String> {
             .get("stop_hook_active")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        source: field("source").to_owned(),
     })
 }
 
@@ -298,7 +302,7 @@ pub(crate) fn range_words(base: &str, first_seen_now: bool, moved: bool) -> Stri
 /// stop has judged. A commit is the session's when it came into the repository during the
 /// session; the documents said that a pull or a merge always makes commits the session's
 /// (fourth independent review of the hooks, HR4-M-1).
-pub(crate) const ALREADY_THERE: &str = "a commit that was already in the repository when the session began is not judged at a stop, also when it is pulled or merged in";
+pub(crate) const ALREADY_THERE: &str = "a commit that was already in the repository when the project's ledger first recorded the project (else when the session began), or that was made before the session began and has a stop's verdict in that ledger, is not judged at a stop, also when it is pulled or merged in";
 
 /// The diagnostics of a change for the advice ([`Finding`]), with the sentence of each
 /// vocabulary id they name and the files whose located diagnostics were cut (`cut`: path and
@@ -546,7 +550,7 @@ pub(crate) fn contract(
             let short: String = id.chars().take(7).collect();
             let _ = writeln!(
                 text,
-                "- When you stop, your uncommitted and staged changes, and each commit made since this session began (commit {short}{}) that your branches, tags, stash, HEAD or their history name, are judged by forge-warden against the policy at that commit: each commit once, by its own change, so a later commit does not undo an earlier one. A fail holds the stop once. A hold is for a person. UNJUDGED means no verdict was made; it is not a pass. One stop has as many commits judged as fit in its time, and the rest at the next stop. Not judged: a commit that was already in this repository when the session began, also when you pull, merge, rebase onto or reset to it (one fetched during the session and brought onto your branch is judged); a commit that only a remote-tracking ref names; a commit gone from every ref and from the reflog; another repository.",
+                "- When you stop, your uncommitted and staged changes, and each commit made since this session began (commit {short}{}) that your branches, tags, stash, HEAD or their history name, with each commit those name that came after the project's ledger first recorded the project and has no stop's verdict there (a session that ended before its stop left it), are judged by forge-warden against the policy at that commit: each commit once, by its own change, so a later commit does not undo an earlier one. A fail holds the stop once. A hold is for a person. UNJUDGED means no verdict was made; it is not a pass. One stop has as many commits judged as fit in its time, and the rest at the next stop. Not judged: a commit that was already in this repository when the project's ledger first recorded the project (else when the session began), or made before the session began with a stop's verdict in that ledger, also when you pull, merge, rebase onto or reset to it (one fetched during the session and brought onto your branch is judged); a commit that only a remote-tracking ref names; a commit gone from every ref and from the reflog; another repository.",
                 if resumed {
                     ", recorded when the session first started"
                 } else {
@@ -688,7 +692,7 @@ pub(crate) fn unjudged_output(reason: &str) -> String {
 /// finds the state this one wrote.
 pub(crate) fn first_stop() -> String {
     format!(
-        "This session's start was not recorded: its first hook here ran after the session had begun, so work committed before that hook was not judged. For a session to be judged from its start, the session-start hook must be installed before the session begins (`{} agent setup --client claude --hooks` prints the settings).",
+        "This session's start was not recorded: its first hook here ran after the session had begun, so work committed before that hook is judged only where the project's ledger has it as made after the project was first recorded and with no stop's verdict (a session that ended before its stop); otherwise it was not judged. For a session to be judged from its start, the session-start hook must be installed before the session begins (`{} agent setup --client claude --hooks` prints the settings).",
         this_binary()
     )
 }
@@ -1470,6 +1474,11 @@ pub(crate) fn tree_label(top: &str) -> String {
     format!("Uncommitted changes in {}", shown_path(top))
 }
 
+/// What follows the id of a commit a stop judges by the project's frontier (F13.b): it is not
+/// the session's own.
+pub(crate) const FRONTIER_MARK: &str =
+    " (not this session's: left or merged since the project was first recorded)";
+
 /// A commit as a message names it: by the first twelve digits of its id. An id is hex, so
 /// nothing a ref is called reaches a message: the name of a branch that somebody else pushed
 /// stood in a block's reason, which the model reads (third independent review of the hooks,
@@ -2204,11 +2213,34 @@ fn blocking_text(trees: &[TreeJudged], blocked: &[String], room: usize) -> (Stri
 /// with no mark, in the middle of a word, while the README said that a cut reason ends with
 /// "…" (twelfth independent review of the hooks, HR12-L-3). Empty when there is none.
 fn no_verdict_line(trees: &[TreeJudged]) -> String {
+    let unjudged = |frontier: bool| -> Vec<&TreeJudged> {
+        trees
+            .iter()
+            .filter(|unit| is_commit(unit) && matches!(unit.judged, Some(Judged::Unjudged { .. })))
+            .filter(|unit| unit.what.contains(FRONTIER_MARK) == frontier)
+            .collect()
+    };
+    let words = |one: bool| {
+        if one {
+            "commit of this session has no verdict"
+        } else {
+            "commits of this session have no verdict"
+        }
+    };
+    let mut text = no_verdict_of(&unjudged(false), words);
+    text.push_str(&no_verdict_of(&unjudged(true), |one| {
+        if one {
+            "commit left or merged since the project was first recorded has no verdict"
+        } else {
+            "commits left or merged since the project was first recorded have no verdict"
+        }
+    }));
+    text
+}
+
+/// [`no_verdict_line`] for one kind of commit: `words` gives the words for one or many.
+fn no_verdict_of(unjudged: &[&TreeJudged], words: impl Fn(bool) -> &'static str) -> String {
     let mut text = String::new();
-    let unjudged: Vec<&TreeJudged> = trees
-        .iter()
-        .filter(|unit| is_commit(unit) && matches!(unit.judged, Some(Judged::Unjudged { .. })))
-        .collect();
     if !unjudged.is_empty() {
         let names: Vec<String> = unjudged
             .iter()
@@ -2228,15 +2260,15 @@ fn no_verdict_line(trees: &[TreeJudged]) -> String {
                 } else {
                     reason.into_owned()
                 };
-                format!("{} ({reason})", unit.what.trim_start_matches("Commit "))
+                let what = unit.what.replace(FRONTIER_MARK, "");
+                format!("{} ({reason})", what.trim_start_matches("Commit "))
             })
             .collect();
-        let words = if unjudged.len() == 1 {
-            "commit of this session has no verdict"
-        } else {
-            "commits of this session have no verdict"
-        };
-        text.push_str(&count_line(unjudged.len(), words, &names));
+        text.push_str(&count_line(
+            unjudged.len(),
+            words(unjudged.len() == 1),
+            &names,
+        ));
     }
     text
 }
@@ -2497,7 +2529,12 @@ pub(crate) fn decide_stop_trees(
             blocks_now(tree, blocked)
                 && matches!(&tree.judged, Some(Judged::Fail { rules, .. }) if rules.iter().any(|rule| !rule.held))
         });
-        let ask = if names_a_rule {
+        let not_ours = trees
+            .iter()
+            .any(|tree| blocks_now(tree, blocked) && tree.what.contains(FRONTIER_MARK));
+        let ask = if names_a_rule && not_ours {
+            "What the rules name in this session's own work is this session's to repair; what they name in work it did not make is for a person: tell them. A commit that fails cannot be made good by a later one: tell the person. A commit marked \"not this session's\" was left by a session that ended before its stop, or merged since the project was first recorded: it may not be this session's work. Do not rewrite it or its history: tell a person, and make any repair a new commit. Then stop again: a failure that has blocked does not block again while it stays as it is."
+        } else if names_a_rule {
             "What the rules name in this session's own work is this session's to repair; what they name in work it did not make is for a person: tell them. A commit that fails cannot be made good by a later one: tell the person. Then stop again: a failure that has blocked does not block again while it stays as it is."
         } else {
             "No rule of the change failed: what the judge names below is for a person to settle and is not repaired by editing the change. Tell them, then stop again."
@@ -3814,7 +3851,8 @@ mod tests {
             Ok(Input {
                 session: "s1".to_owned(),
                 cwd: "/r".to_owned(),
-                stop_hook_active: true
+                stop_hook_active: true,
+                source: String::new(),
             })
         );
         // absent means false
@@ -3984,7 +4022,7 @@ mod tests {
         assert!(ready.contains("It is advice and never blocks."));
         // HR2-H-1: exactly what is judged, not "everything, committed or not"
         assert!(ready.contains(
-            "your uncommitted and staged changes, and each commit made since this session began (commit 0123456) that your branches, tags, stash, HEAD or their history name, are judged by forge-warden against the policy at that commit: each commit once, by its own change, so a later commit does not undo an earlier one. A fail holds the stop once. A hold is for a person. UNJUDGED means no verdict was made; it is not a pass. One stop has as many commits judged as fit in its time, and the rest at the next stop."
+            "your uncommitted and staged changes, and each commit made since this session began (commit 0123456) that your branches, tags, stash, HEAD or their history name, with each commit those name that came after the project's ledger first recorded the project and has no stop's verdict there (a session that ended before its stop left it), are judged by forge-warden against the policy at that commit: each commit once, by its own change, so a later commit does not undo an earlier one. A fail holds the stop once. A hold is for a person. UNJUDGED means no verdict was made; it is not a pass. One stop has as many commits judged as fit in its time, and the rest at the next stop."
         ), "{ready}");
         assert!(!ready.contains("committed or not"), "{ready}");
         assert!(ready.contains("UNJUDGED means no verdict was made; it is not a pass."));

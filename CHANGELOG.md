@@ -291,6 +291,26 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   `.git/info/exclude`, `.git/info/attributes`, `.git/config`), that the advice's `--policy` can
   differ from the stop's, that guard notices wait for a call that ranks, and that a damaged
   marks key silences the advice beside the state but not a stop (F6.c).
+- Hooks: the judged frontier belongs to the project (F13.b). A session's first hook writes a
+  `baseline` record to the project's ledger when it has none (the commits named then, at most
+  100,000, and the commit `HEAD` names) and a `start` record for the session. A stop judges,
+  besides the session's own commits, every commit made after the baseline that no stop record
+  gave a verdict, whichever session made it: a commit left by a session that ended before its
+  stop (a crash, a closed terminal) is judged by the next session's stop. A ledger with no
+  baseline is judged as before and the stop says that no record of the project was found. A
+  `SessionStart` whose `source` is `resume`, `compact` or `clear` begins from the commit the
+  last session of its working tree began from, not from `HEAD`. `agent check` says how many
+  commits a stop judges by the frontier that it does not. The ledger's `v` stays 1.
+- Hooks: a commit that holds a stop and that another working tree's `HEAD` reflog records is
+  named in the block as advice ("the HEAD reflog of <tree> has this commit; if this session
+  did not make it, tell a person"); it holds as before (F13.a).
+- Hooks: a stop whose session state cannot be used (damaged, newer, older, its directory, its
+  key file, its lists, its lock held by another hook) no longer says only that it did not run.
+  It judges the working tree without the state, reading and writing nothing of the state
+  directory, under the policy at the ledger's baseline (at `HEAD` with no ledger, which it
+  says): a failing tree blocks, stands at the stop that follows a block, and blocks again at
+  the next turn's stop. No commit is judged by it; the frontier judges them at a stop that has
+  its state. The ledger records it (F12.d, owner decision OD-J).
 
 ## [0.10.0] - 2026-11-23
 
