@@ -12279,7 +12279,10 @@ fn document_items(patch: &[u8]) -> Vec<Item> {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|d| d["audience"] == "agent")
+        .filter(|d| {
+            d["audience"] == "agent"
+                && ["security", "integrity"].contains(&d["class"].as_str().unwrap())
+        })
         .map(|d| {
             (
                 d["path"].as_str().unwrap().replace('\u{202E}', "\\u{202e}"),
@@ -12296,9 +12299,10 @@ fn document_items(patch: &[u8]) -> Vec<Item> {
 }
 
 /// F6.a, the acceptance (N76): what the advice tells an agent after tool calls, item by item,
-/// is what `--diagnostics --json` of the same tree gives it, in path, line, side, code, case and
-/// repair ids, for each kind of case the document tells apart that the hook can meet: a located
-/// row; a label no row locates (an executable bit, a new file); `hazardous_text` by a hidden
+/// is what `--diagnostics --json` of the same tree gives it for the classes the advice lists
+/// (`security` and `integrity`: a `shape` diagnostic orders a person's review), in path, line,
+/// side, code, case and repair ids, for each kind of case the document tells apart that the hook
+/// can meet: a located row; a label no row locates (an executable bit); `hazardous_text` by a hidden
 /// character in a line and by one in a path (each with the character repair alone); a file whose
 /// located diagnostics were cut at 32. The hook's patch is made without the repository's
 /// attributes, so a file the attributes call binary is read as text and carries no
@@ -12544,6 +12548,12 @@ fn an_ordinary_path_gets_no_guard_notice() {
     let scratch = Scratch::new("hook-guard-ordinary");
     let root = repository(&scratch);
     let event = input("PostToolUse", &root, "s1", false);
+    // (one file the advice names, so that there is advice to read)
+    std::fs::write(
+        root.join("a.rs"),
+        "fn a() {}\n#[allow(dead_code)]\nfn b() {}\n",
+    )
+    .unwrap();
     for path in [
         "src/warden.toml.rs",
         "src/warden.toml",
@@ -12559,8 +12569,172 @@ fn an_ordinary_path_gets_no_guard_notice() {
     let (code, stdout, stderr) = hook("post-tool", &[], &event);
     assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
     let advice = advice_of(&stdout);
-    assert!(advice.contains("new_file@file"), "{advice}");
+    assert!(advice.contains("check_suppressed@line"), "{advice}");
     assert!(!advice.contains("is a file that decides how"), "{advice}");
+}
+
+/// F6, closing round, ruling 1: a diagnostic of class `shape` (a new file, a lockfile, a public
+/// API path, a large change) orders a person's review and is not advised, nor counted: a change
+/// that raises only such labels gets no advice after a tool call. Advice saying there was nothing
+/// to repair after every tool call that added a file taught an agent to skip the advice.
+#[test]
+fn a_change_that_only_orders_the_review_gets_no_advice() {
+    let scratch = Scratch::new("hook-advice-shape-only");
+    let root = repository(&scratch);
+    let event = input("PostToolUse", &root, "s1", false);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/lib.rs"), "pub fn n() {}\n").unwrap();
+    std::fs::write(root.join("Cargo.lock"), "version = 4\n").unwrap();
+    std::fs::remove_file(root.join("a.rs")).unwrap();
+    let rank = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .current_dir(&root)
+        .envs(ISOLATE)
+        .args([
+            "--git-working-tree",
+            "--include-untracked",
+            "--rank",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    let ranked = String::from_utf8_lossy(&rank.stdout);
+    for label in ["new_file", "config_or_lockfile", "deleted_file"] {
+        assert!(
+            ranked.contains(&format!("\"{label}\"")),
+            "{label}: {ranked}"
+        );
+    }
+    assert_eq!(
+        hook("post-tool", &[], &event),
+        (0, String::new(), String::new())
+    );
+    // a finding of another class beside them is advised, and counted alone
+    std::fs::write(
+        root.join("src/lib.rs"),
+        "#[allow(dead_code)]\npub fn n() {}\n",
+    )
+    .unwrap();
+    let advice = advice_of(&hook("post-tool", &[], &event).1);
+    assert!(
+        advice.starts_with("deep-diff-forge: 1 new finding in "),
+        "{advice}"
+    );
+    assert!(!advice.contains("@file (shape"), "{advice}");
+    assert!(!advice.contains("Nothing to repair"), "{advice}");
+}
+
+/// F6, closing round, ruling 2 (N75): guard notices are said only by an advice that ranks the
+/// change. While the change cannot be made (here a skip-worktree mark), an edit of the policy
+/// file is not named: the advice says once why it is off, and a stop is UNJUDGED with the
+/// reason, as for any change it cannot make. The first call that ranks names it.
+#[test]
+fn a_guard_notice_waits_for_a_call_that_ranks() {
+    let scratch = Scratch::new("hook-guard-waits");
+    let root = repository(&scratch);
+    let (script, _, _) = failing_judge(&scratch);
+    let event = input("PostToolUse", &root, "s1", false);
+    std::fs::write(root.join("warden.toml"), "# loosened\n").unwrap();
+    git(&root, &["update-index", "--skip-worktree", "a.rs"]);
+    let (code, stdout, _) = hook("post-tool", &[], &event);
+    assert_eq!(code, 0);
+    assert!(
+        system_message(&stdout).contains("skip-worktree"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("is a file that decides how"), "{stdout}");
+    assert_eq!(hook("post-tool", &[], &event).1, "");
+    let held = stop_from(&root, "s1", &script);
+    assert!(blocked(&held).contains("skip-worktree"), "{held}");
+    let decision = stop_from(&root, "s1", &script);
+    let said = allowed(&decision);
+    assert!(
+        said.starts_with("deep-diff-forge: UNJUDGED. ") && said.contains("skip-worktree"),
+        "{said}"
+    );
+    git(&root, &["update-index", "--no-skip-worktree", "a.rs"]);
+    let advice = advice_of(&hook("post-tool", &[], &event).1);
+    assert!(advice.contains(&guard_notice("warden.toml")), "{advice}");
+}
+
+/// F6, closing round, ruling 2 (N75): when the marks' key file under the repository's Git
+/// directory is no key (a link, or a file of another length) and no state can remember a
+/// reason, the advice hook says nothing and writes no mark; no byte of the key file is said;
+/// a stop says the reason as it does with a sound key.
+#[test]
+fn a_damaged_marks_key_silences_the_advice_and_not_the_stop() {
+    let scratch = Scratch::new("hook-marks-key-damaged");
+    let root = repository(&scratch);
+    silence_a_lint(&root);
+    let own = root.join(".git/deep-diff-forge");
+    let sessions = sessions();
+    std::fs::create_dir_all(&sessions).unwrap();
+    let elsewhere = scratch.join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    let kept = scratch.join("sessions-kept");
+    std::fs::rename(&sessions, &kept).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, &sessions).unwrap();
+    let stop = |session: &str| hook("stop", &[], &input("Stop", &root, session, false));
+    // with a sound key: said once beside the state; the stop's answer
+    let sound = hook("post-tool", &[], &input("PostToolUse", &root, "a", false));
+    assert!(
+        system_message(&sound.1).contains("is not a directory of its own"),
+        "{sound:?}"
+    );
+    let stop_sound = stop("a");
+    assert!(
+        stop_sound.1.contains("is not a directory of its own"),
+        "{stop_sound:?}"
+    );
+    let marks = || {
+        std::fs::read_dir(&own)
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("said-")
+            })
+            .count()
+    };
+    assert_eq!(marks(), 1);
+    // the key bytes, assembled here: 32 letters no output holds by chance
+    let bytes: Vec<u8> = (0..32_u8).map(|n| b'Q' + n % 9).collect();
+    let target = scratch.join("a-key");
+    std::fs::write(&target, &bytes).unwrap();
+    for (case, place) in [("a link", true), ("too short", false)] {
+        std::fs::remove_file(own.join("key")).unwrap();
+        if place {
+            std::os::unix::fs::symlink(&target, own.join("key")).unwrap();
+        } else {
+            std::fs::write(own.join("key"), &bytes[..5]).unwrap();
+        }
+        let session = format!("b-{place}");
+        let advice = hook(
+            "post-tool",
+            &[],
+            &input("PostToolUse", &root, &session, false),
+        );
+        assert_eq!(advice, (0, String::new(), String::new()), "{case}");
+        assert_eq!(marks(), 1, "{case}: a mark was written");
+        let answer = stop(&session);
+        assert_eq!(answer, stop_sound, "{case}: the stop's answer changed");
+        let key_text = String::from_utf8_lossy(&bytes).into_owned();
+        let key_hex = bytes.iter().fold(String::new(), |mut hex, b| {
+            use std::fmt::Write as _;
+            let _ = write!(hex, "{b:02x}");
+            hex
+        });
+        for out in [&advice.1, &advice.2, &answer.1, &answer.2] {
+            assert!(
+                !out.contains(&key_text) && !out.contains(&key_hex),
+                "{case}: {out}"
+            );
+            assert!(!out.contains(&key_text[..5]), "{case}: {out}");
+        }
+    }
+    std::fs::remove_file(&sessions).unwrap();
+    std::fs::rename(&kept, &sessions).unwrap();
 }
 
 /// S3.17a.l: when the advice after a tool call is off for a reason told once in the session, the

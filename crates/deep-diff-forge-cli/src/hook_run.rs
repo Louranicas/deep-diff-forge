@@ -2174,6 +2174,11 @@ fn engine_labels(patch: &[u8]) -> Result<BTreeSet<(String, String)>, String> {
     Ok(out)
 }
 
+/// The classes of the diagnostics the advice lists. A `shape` diagnostic orders a person's
+/// review (a new file, a lockfile, a large change); advice after every tool call that adds a
+/// file saying there is nothing to repair teaches an agent to skip the advice.
+const ADVISED_CLASSES: [&str; 2] = ["security", "integrity"];
+
 /// What the advice says when the change was not ranked in the advice hook's time.
 const ADVICE_CUT: &str = "advice cut short: the change was not ranked within the advice hook's time, so it was not read for findings";
 
@@ -2211,9 +2216,10 @@ fn sections(patch: &[u8]) -> Vec<&[u8]> {
 }
 
 /// The advice's items for `patch`: the diagnostics of `deep-diff-forge.diagnostics.v0` whose
-/// audience is the agent, in the document's order, each with what the document wrote for it
-/// (code, class, path, line, side, cases, repairs) and the sentences of the ids it names. A
-/// diagnostic whose audience is a person (a `floor_only` reading) is not advised.
+/// audience is the agent and whose class is one of [`ADVISED_CLASSES`], in the document's
+/// order, each with what the document wrote for it (code, class, path, line, side, cases,
+/// repairs) and the sentences of the ids it names. A diagnostic whose audience is a person (a
+/// `floor_only` reading) or whose class is `shape` is not advised.
 ///
 /// When the patch as a whole cannot be read, each file section is read alone: a file this
 /// version cannot read (a name that is not UTF-8) is one item that names it, first, and the
@@ -2268,7 +2274,8 @@ fn excerpt(bytes: &[u8], policy: &str) -> Result<hook::Excerpt, String> {
     };
     let mut seen = std::collections::HashMap::new();
     for d in document["diagnostics"].as_array().into_iter().flatten() {
-        if d["audience"] != "agent" {
+        let advised = ADVISED_CLASSES.iter().any(|c| d["class"] == *c);
+        if d["audience"] != "agent" || !advised {
             continue;
         }
         let (path, label) = (text(&d["path"]), text(&d["label"]));
