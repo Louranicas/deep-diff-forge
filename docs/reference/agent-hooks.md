@@ -99,23 +99,44 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   `source` is `resume`, `compact` or `clear`, for a session with no record of its own, begins
   from the commit the last session of its working tree began from (the ledger's `start`
   records), not from `HEAD`: a policy the earlier conversation loosened in a commit does not
-  judge that commit. With `startup` it begins at `HEAD`, as before. A frontier commit is
-  judged under the policy at the base of the session that judges it, and after a `startup`
-  that base can be the commit itself, so the whole of its own edit of the policy applies to
-  it. Where the edit leaves the policy's protection of its own file in place (forge-warden's
-  starter policy has it in `ci-is-owned`), the commit is held, or fails where a rule the edit
-  kept fails it. Where the edit also removes
-  that protection, nothing of the old policy judges the commit: a commit that deletes the
-  rule against secrets and the protection, adds a secret, and is left without a stop passes
-  the next fresh session's stop without a word, is recorded `pass`, and `agent verify-branch`
-  verifies it (measured in the 0.11.0 tree review). From 0.11.1 `agent doctor --gate` names
-  the policy such a commit leaves at `HEAD`: its link `policy_protects_itself` is ready only
-  when a rule of the judge's verdict holds or fails the probe, also under a policy that
-  requires verified claims (in 0.11.0 the link read "held or fails" whether the policy
-  protected its file or not, because the probe is held for its claims either way). The link
-  reads the policy at `HEAD` and says nothing of a commit that a stop has already passed. The
-  judge on the pull request, which reads the policy of the target branch, is the boundary. Judging frontier commits under the policy at the ledger's
-  baseline is not built.
+  judge that commit. With `startup` it begins at `HEAD`, as before. **Two policies, from
+  0.11.1.** Every unit of a stop (the working trees' changes, the session's own
+  commits and the frontier's) is judged under the policy at the session's base, as before, and also
+  under the project's **accepted policy** where its file differs: the policy file of the name the
+  hooks are given, at the commit the project's ledger first recorded (the `head` of its first whole
+  `baseline` record). The stricter answer stands (fail, then hold, then UNJUDGED, then pass), and on
+  equal answers the rules of both are named. A unit that one of the two could not judge (no time
+  left for that run, no verdict) is UNJUDGED, never a pass, and the stop names which policy's run it
+  lacks. So a policy edit that is merely committed judges nothing, in the session that makes it or
+  after it: a commit that deletes the rule against secrets and the policy's protection of its own
+  file, adds a secret and is left without a stop, which 0.11.0 passed at the next fresh session's
+  stop (recorded `pass`; `agent verify-branch` exited 0, measured in the 0.11.0 tree review), fails
+  there under the accepted policy, and so does that session's own work. Where the ledger names no
+  accepted policy (there is no ledger or no whole baseline record, it cannot be read, its baseline
+  names no commit, or that commit has no policy file of the name) the stop judges under the policy
+  at the session's base alone, as 0.11.0 did, and the session's start says so. Where it names one
+  that cannot be read (the commit is no longer in the repository, `place.base_gone`; a shallow clone
+  does not have the history back to it, `place.shallow_parent`), each unit that the policy at the
+  session's base does not fail or hold is UNJUDGED with that reason: never judged under the policy
+  at `HEAD` instead. Committing an edit of the policy does not make it the accepted one; neither
+  does a stop's `pass` record, nor a `clearance` line, which keeps its one meaning for `agent
+  verify-branch`. A deliberate act of a process of the same user can still change what the hooks
+  judge by: a ledger that is rewritten or removed, or a changed settings file together with a
+  removed ledger. A `pass` record takes a commit out of the frontier only when it is sealed to the
+  accepted policy's digest (or has no seals: the record of a commit that changes nothing), so a
+  commit that 0.11.0 passed under a left commit's own policy is judged again after the upgrade, and
+  its new record is the worse one `agent verify-branch` takes. That reaches further than the hole:
+  in a project whose policy changed since its ledger first recorded it, every earlier `pass` is
+  sealed to a policy that was never the accepted one, so those commits are judged again, two runs
+  each, on every branch of the frontier; a commit that passed under the policy of its time can then
+  hold or fail, and a branch that verified can stop verifying (a commit that a stop held keeps
+  needing a `clearance` record). A rule that a commit pulled in the middle of a session tightens
+  applies from the next session, whose base has it. From 0.11.1 `agent doctor --gate` names a policy
+  at `HEAD` that does not protect its file: its link `policy_protects_itself` is ready only when a
+  rule of the judge's verdict holds or fails the probe, also under a policy that requires verified
+  claims (in 0.11.0 the link read "held or fails" whether the policy protected its file or not,
+  because the probe is held for its claims either way). The judge on the pull request, which reads
+  the policy of the target branch, is the boundary.
 - **Which commits of others are judged.** A commit that was already in the repository when
   the project's ledger first recorded the project (else when the session began), named by any
   ref (remote-tracking refs included) or by a reflog, or that was made before the session
@@ -128,7 +149,8 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   not. A commit that only a remote-tracking ref names is never the session's. Every message
   that names the session's range says this, the advice after a tool call included: advice
   reports what is in the working tree since the base, also from such a commit, and that is
-  no promise that a stop judges it. All units are judged by the policy at the base. The
+  no promise that a stop judges it. All units are judged by the policy at the base and, where
+  its file differs, by the project's accepted policy (above). The
   same patch is judged once in a stop. Each commit that has its answer is kept with it in a
   file beside the state, which has no bound a session reaches, so a commit is asked about
   once in a session.
@@ -162,7 +184,14 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   changes of its working trees are judged. With less, the asks are made in that order
   while 3 seconds are left, each with 3 seconds. A run of the judge on a working tree's
   change leaves the asks what they need (13 seconds when three are owed); Git taking long
-  to read the working tree or the commits can use them. An ask that is not
+  to read the working tree or the commits can use them. A stop that judges under two policies
+  (from 0.11.1; "The project's frontier", above) makes two runs an ask and holds back twice as
+  much: with 22 seconds of its judging left when it comes to its commits (3 for each run of the
+  first ask it owes and 8 for each of the two after it) both runs of each owed ask are made,
+  however long the first takes, and a run on a working tree's change gets half of its share,
+  the other half the rest. A run that forge-warden's bound mode refuses (exit 3 or 4) is made
+  again without `--repo` in the time that is left, and that second run is outside this
+  guarantee. An ask that is not
   made is not written down: no attempt is counted, the commit keeps its turn, and the stop
   says of it "not asked at this stop for lack of time". An ask that was made is written
   down with what the judge said, whatever time is left after it, so the turn moves on: a
@@ -295,11 +324,11 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
 - **The policy is the one at the commit the session began from** (`warden.toml`, or
   `--policy NAME`), read from Git, never from the working tree: a change cannot loosen the
   policy it is judged by, and committing the loosened policy does not make it the policy
-  either, for as long as the session lasts. The exception is a commit of the frontier (one a
-  session left without its stop): it is judged under the policy at the base of the session
-  that judges it, so the whole of its own policy edit can apply, the removal of the policy's
-  protection of its own file included, and such a commit can pass (the project's frontier,
-  above). A
+  either. From 0.11.1 that holds across sessions too: every unit is also judged under the
+  project's accepted policy where its file differs, the stricter answer standing, so a commit
+  of the frontier (one a session left without its stop) that loosens the policy and removes its
+  protection of its own file does not judge itself or the work of a session that begins at it
+  (the project's frontier, above; within what the ledger holds, which the agent can write). A
   conversation that goes on under a new session
   id with `source` `resume`, `compact` or `clear` keeps the base of the last session of its
   working tree (the project's frontier, below), so it is judged under the policy at that
@@ -463,9 +492,11 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   another hook of the session holds its lock, the stop no longer says only that it did not
   run. It reads no file of the state directory and writes none: with an empty memory, it
   finds the project from its input as a new session does, judges the uncommitted and staged
-  changes of the working trees (their patches against `HEAD`) under the policy at the commit
-  the project's ledger names as its baseline (at `HEAD` when the ledger has none, which the
-  message says: a commit of the session can have loosened that one), and decides as a stop
+  changes of the working trees (their patches against `HEAD`) under the policy at `HEAD` and,
+  where its file differs, the project's accepted policy, the policy at the commit the project's
+  ledger names as its baseline (0.11.0 judged under the latter alone), the stricter answer
+  standing; under the policy at `HEAD` alone when the ledger names no accepted policy, which the
+  message says with the cause (a commit of the session can have loosened that one), and decides as a stop
   with no memory: a failing tree blocks. At a stop that follows a block (`stop_hook_active`)
   the failure stands instead (FAIL STANDS), so the session is not trapped; at the next turn's
   stop it blocks again, since nothing remembers that it blocked: a state that stays unusable
@@ -660,9 +691,16 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   `state.damaged` or `hold.claims_unverified`: Reason classes, below), `blocked_turns` (1
   for a unit that blocked the stop), `agent_checks` (`runs` and `failed`: the records of
   `agent check --session` of this session since its last stop record), `ignored_elsewhere` (null: not counted yet, which
-  is never 0) and `seals` (the SHA-256 of the policy and of the ranker the verdict was sealed
+  is never 0), `seals` (the SHA-256 of the policy and of the ranker the verdict was sealed
   to; for a commit also of its patch and of the verdict document; null when the judge did not
-  run). A commit that passed is recorded at the stop that judged it; a commit left waiting for
+  run) and, from 0.11.1, `policy_snapshot_sha256` (the SHA-256 of what the stop took the
+  project's accepted policy from: the ledger's first whole baseline record and the accepted
+  policy's digest; a record of 0.11.0 has none, and is read as before). A unit judged under two
+  policies (from 0.11.1) has one record for each, each with that run's seals and both with the
+  unit's one outcome and class: a unit that one of them could not judge is `unjudged` in both,
+  and a `pass` record is written only when both passed, so `agent verify-branch`, which takes
+  a `pass` over an `unjudged`, never verifies such a unit; 0.11.0's reads these records as
+  this build does. A commit that passed is recorded at the stop that judged it; a commit left waiting for
   the stop's time is recorded as `unjudged` at each stop that leaves it. A stop with nothing
   to judge records nothing. Nothing of a patch's lines, a path, Git's words or the judge's
   words is written. The file is made with mode 0600, never through a link, and only appended
@@ -1039,13 +1077,14 @@ Deliberate evasion, made visible where that is cheap:
 
 Stated limits, which the judge on the pull request covers:
 
-- A commit that a session left without its stop is judged by the next fresh session under
-  the policy at that session's base, which can be the left commit itself: the whole of its
-  own policy edit applies to it, and where that edit removes the policy's protection of its
-  own file the commit can pass and `agent verify-branch` verifies it; from 0.11.1
-  `agent doctor --gate` reports the policy at `HEAD` that does not protect its file, also
-  under a policy that requires verified claims, and still says nothing of the commit a stop
-  passed ("The project's frontier", above).
+- From 0.11.1 a policy edit that is merely committed does not judge anything, in the session
+  that makes it or after it: every unit is also judged under the project's accepted policy
+  ("The project's frontier", above). A deliberate act by a process of the same user can still
+  change what the hooks judge by: a rewritten or removed ledger, or a changed settings file
+  together with a removed ledger; with the ledger removed the next stop judges under the
+  policy at its session's base alone, as 0.11.0 did. A rule that a commit pulled in the middle
+  of a session tightens applies from the next session. The judge on the pull request is the
+  boundary.
 - A commit that only a remote-tracking ref names (fetched and never pulled; or made with
   plumbing and pushed without ever being on `HEAD` or under a local ref) is not judged.
 - A commit that is gone from every ref and from the reflogs (the reflog expired or was
@@ -1105,7 +1144,8 @@ Stated limits, which the judge on the pull request covers:
   0.11.0 give the post-tool command none, and settings edited by hand can give another. The
   advice then names an edit of `warden.toml` (or of its own `--policy`) as the policy file
   while the stops judge with another, and an edit of the stops' policy file gets no notice as
-  one. The stops read their policy at the session's base whatever the advice said.
+  one. The stops read their policy at the session's base whatever the advice said. From 0.11.1
+  they also read the project's accepted policy, where its file differs.
 - Guard notices are said only by an advice that ranks the change. A session whose every tool
   call is cut short ("advice cut short") or whose change cannot be made (a skip-worktree mark,
   Git failing) never hears them while that lasts; the first call that ranks names them. A
@@ -1132,7 +1172,8 @@ Stated limits, which the judge on the pull request covers:
   `baseline` are files of the repository's Git directory, so an agent that removes or edits
   them is judged as before 0.11.0 (its own range only; the stop says that no record was found),
   and a conversation that goes on under `startup` begins at `HEAD`, whose policy a commit of
-  the earlier conversation can have loosened. Not a boundary: the judge on the pull request
+  the earlier conversation can have loosened (from 0.11.1 the project's accepted policy judges
+  its work too, while the ledger holds its first record). Not a boundary: the judge on the pull request
   reads the policy at the base and sees every commit.
 - **Linked working trees share branches.** A commit another session makes in another
   working tree of the project is on a branch this session's stops read, made during this
@@ -1328,7 +1369,9 @@ Reason classes (from 0.11.0). Every outcome a stop gives a unit, and every recor
 project's ledger, carries one code: why the outcome is what it is. A code never decides
 whether a stop holds; the last column says what the stop's own rules decide for it ("once for
 each cause, at most three stops" is the rule of the causes that hold once, above). The rule of
-the codes: a code's meaning never changes; codes are added without a version change; a
+the codes: a code's meaning never changes, other than to be widened to a cause of the same kind,
+which a release names (0.11.1 widens `place.base_gone` and `place.shallow_parent` to the commit
+the project's ledger first recorded); codes are added without a version change; a
 consumer treats an unknown code as not a PASS; removing one is a new ledger version. The codes
 `pass`, `fail.new`, `fail.stands`, `fail.unsaved_continuing`, `hold.rule`, `hold.version_gap`,
 `work.unreadable` and `work.skip_worktree` were written before this table and keep their

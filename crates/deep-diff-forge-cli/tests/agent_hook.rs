@@ -13174,7 +13174,8 @@ fn a_damaged_state_still_judges_the_tree_once() {
     let (script, log, _) = failing_judge(&scratch);
     start(&root, "s");
     // a commit of the session loosens the policy: the tree is judged under the policy at the
-    // commit the project's ledger names as its baseline, not at HEAD
+    // commit the project's ledger names as its baseline, not at HEAD alone (release 0.11.1,
+    // T11: under the policy at HEAD as well, the stricter answer standing)
     std::fs::write(root.join("warden.toml"), "# loosened by the session\n").unwrap();
     commit_all(&root, "a looser policy");
     silence_a_lint(&root);
@@ -13189,8 +13190,9 @@ fn a_damaged_state_still_judges_the_tree_once() {
         "{first}"
     );
     assert!(!first.contains("TEXT-OF-THE-DAMAGED-STATE"), "{first}");
-    // the tree, and the session's commit, which the ledger has no verdict for
-    assert_eq!(runs(&log), 2);
+    // the tree, and the session's commit, which the ledger has no verdict for: each under the
+    // policy at HEAD and the accepted one (0.11.0 ran the second alone: two runs)
+    assert_eq!(runs(&log), 4);
     assert_eq!(last_policy(&log), "# the policy at the base commit");
     // the stop that follows the block: the failure stands
     let (code, stdout, _) = hook(

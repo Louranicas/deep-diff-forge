@@ -399,7 +399,8 @@ bounded form.** What it holds to:
 - **The change is attacker-controlled, and so is everything read from it.** A hook message
   never repeats the text of a changed line. A path is shown quoted, with control characters
   escaped, cut at 120 characters, and the message says that paths are data. Rule text comes
-  from the policy at the base commit and is escaped the same way.
+  from the policy a change was judged under (at the session's base, or the project's accepted
+  policy) and is escaped the same way.
 - **The session cannot move what is judged.** The project and the commit its changes are
   measured from are fixed by the session's first hook and kept in its state: the directory
   the client names (`CLAUDE_PROJECT_DIR`), else the one recorded, else the hook input's
@@ -407,7 +408,10 @@ bounded form.** What it holds to:
   the session itself moves. A `cd` into a nested repository, another repository or a
   directory that was gone let the stop pass with no output, and so did committing the work;
   a committed policy change was the policy for the rest of the session. A stop now judges
-  the project wherever the session's directory is, by the policy of the recorded commit. A
+  the project wherever the session's directory is, by the policy of the recorded commit and,
+  from 0.11.1, by the project's accepted policy too where its file differs, the stricter
+  answer standing: a policy edit that is merely committed does not judge anything, in the
+  session that makes it or after it. A
   linked working tree the session's directory is in is judged as well.
 - **The unit that is judged is a commit, by its own change.** The session's first hook
   records, with the base, the id of every commit that something names then: every ref, the
@@ -1232,6 +1236,16 @@ says when it closed:
   stop whose session state cannot be used then judges the tree under the policy at `HEAD`,
   which a commit of the session can have loosened. Neither is a boundary; the pull request's
   judge reads the policy at the base.
+- From 0.11.1 the hooks judge every unit under the project's accepted policy too: the policy
+  file at the commit the ledger first recorded, where it differs from the one at the session's
+  base. After this, a policy edit that is merely committed does not judge anything, in the
+  session that makes it or after it. A deliberate act by a process of the same user can still
+  change what the hooks judge by: a rewritten or removed ledger, or a changed settings file
+  together with a removed ledger. The criteria of the 0.11.1 security review read as follows:
+  U2 is **not met** against its named attacker; with the ledger intact and no act on it, a
+  policy edit that is committed cannot make a stop judge less, and a required run of the judge
+  that is missing is UNJUDGED. U3 is **not met**: `agent verify-branch` reads evidence the same
+  user can write. The pull request's judge, under the target branch's policy, is the boundary.
 
 ## Hardening provenance
 
