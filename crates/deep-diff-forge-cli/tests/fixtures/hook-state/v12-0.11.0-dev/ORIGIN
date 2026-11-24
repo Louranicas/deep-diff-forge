@@ -1,0 +1,4 @@
+binary: deep-diff-forge 0.11.0-dev
+sha256: 89593d4c718d251493320255bcf5e85e51bc1669a1ce6be48d28bfd56f4f5fcf
+origin: not a published artefact: a release build (cargo build --release --locked) of commit bc40d5d6, which writes v12; that commit was rewritten before review as 479d2bb4, whose source differs from it only in the core's HMAC test
+captured: by scripts/capture_hook_state.sh; session id "fixture"; commits dated 2026-11-20T00:00:00+0000 by ddf <ddf@example.invalid>
