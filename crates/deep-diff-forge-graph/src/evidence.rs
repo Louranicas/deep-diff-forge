@@ -1340,9 +1340,15 @@ pub(crate) fn file_evidence_marked(file: &ReviewFile, share: Share) -> (Vec<Evid
     // S3.27.h: a binary change whose text with a few stray bytes the acquisition read lossily
     // has no hunk of its own; its code evidence is read from that reading, as from a text file
     // of the same path (no binary marker, no payload)
-    if file.patch_twin.hunks.is_empty() && !file.patch_twin.stray_text.is_empty() {
+    if file.patch_twin.hunks.is_empty()
+        && file
+            .patch_twin
+            .stray_text
+            .as_ref()
+            .is_some_and(|hunks| !hunks.is_empty())
+    {
         let mut text = file.clone();
-        text.patch_twin.hunks = std::mem::take(&mut text.patch_twin.stray_text);
+        text.patch_twin.hunks = text.patch_twin.stray_text.take().unwrap_or_default();
         text.patch_twin.binary_body.clear();
         text.patch_twin
             .metadata

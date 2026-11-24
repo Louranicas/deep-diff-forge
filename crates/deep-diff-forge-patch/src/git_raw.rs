@@ -156,8 +156,8 @@ pub struct GitChange {
     /// ([`deep_diff_forge_core::PatchTwin::diff_suppressed`]); `None` for a first reading.
     pub diff_suppressed: Option<deep_diff_forge_core::DiffSuppression>,
     /// The lossy text reading of a binary change that is text with a few stray bytes
-    /// ([`deep_diff_forge_core::PatchTwin::stray_text`]); empty otherwise.
-    pub stray_text: Vec<deep_diff_forge_core::PatchHunk>,
+    /// ([`deep_diff_forge_core::PatchTwin::stray_text`]); `None` otherwise.
+    pub stray_text: Option<Vec<deep_diff_forge_core::PatchHunk>>,
 }
 
 impl GitChange {
@@ -791,7 +791,7 @@ fn pair(
         patch_range,
         block_count: roles.len(),
         diff_suppressed: None,
-        stray_text: Vec::new(),
+        stray_text: None,
     })
 }
 

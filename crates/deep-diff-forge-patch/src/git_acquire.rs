@@ -942,7 +942,7 @@ fn read_binary_again(
             if let Some(hunks) = stray {
                 for diff in [&mut read, &mut labelled] {
                     let mut change = diff.changes()[at].clone();
-                    change.stray_text.clone_from(&hunks);
+                    change.stray_text = Some(hunks.clone());
                     let bytes = diff.change_patch(&change).to_vec();
                     diff.replace_section(at, change, &bytes);
                 }
@@ -1052,15 +1052,19 @@ fn text_of(change: &GitChange, again: &StructuredDiff) -> Option<(GitChange, Vec
 /// bytes 1.7 to 54. One odd byte in eight.
 const STRAY_PER_KIB: usize = 128;
 
-/// The hunks of `again`, the second reading of `change` that is not valid UTF-8, decoded lossily,
-/// when it is the same change and text with a few stray bytes ([`STRAY_PER_KIB`]); `None`
-/// otherwise. Nothing of it enters the patch: only the evidence readers read it.
+/// For `again`, the second reading of `change` that is not valid UTF-8: `None` when it is another
+/// change or still says binary; no hunks when Git gives it as two changes (a copy and its source,
+/// under `diff.renames=copies`: marked, so a source path is labelled, and not read); else its
+/// hunks decoded lossily when it is text with a few stray bytes ([`STRAY_PER_KIB`]),
+/// and none when it is not or does not parse. Nothing of it enters the patch: only the evidence
+/// readers read it, and the graph labels a source file by its path from the mark alone.
 fn stray_text(
     change: &GitChange,
     again: &StructuredDiff,
 ) -> Option<Vec<deep_diff_forge_core::PatchHunk>> {
+    // a copy Git answers as two changes (the copy and its source): marked, not read
     let [text] = again.changes() else {
-        return None;
+        return Some(Vec::new());
     };
     let same = GitChange {
         binary: true,
@@ -1093,13 +1097,13 @@ fn stray_text(
         }
     }
     if shown == 0 || odd * 1024 > STRAY_PER_KIB * shown {
-        return None;
+        return Some(Vec::new());
     }
-    let captured = crate::CapturedPatch::capture_bytes(again.patch_bytes().to_vec()).ok()?;
-    let [file] = captured.files() else {
-        return None;
-    };
-    (!file.patch_twin.hunks.is_empty()).then(|| file.patch_twin.hunks.clone())
+    let captured = crate::CapturedPatch::capture_bytes(again.patch_bytes().to_vec()).ok();
+    Some(match captured.as_ref().map(crate::CapturedPatch::files) {
+        Some([file]) => file.patch_twin.hunks.clone(),
+        _ => Vec::new(),
+    })
 }
 
 /// Whether the old and the new side of `patch`, a second reading as text, read as UTF-16 or

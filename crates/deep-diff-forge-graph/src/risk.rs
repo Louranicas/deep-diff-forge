@@ -379,19 +379,24 @@ fn status_weight(file: &ReviewFile, signals: &mut Vec<RiskSignal>) -> u32 {
 }
 
 /// +5 when Git was told not to show this text file's changes, recording the signal: the act
-/// itself is evidence, whatever the text then shows (S3.20). Since 0.11.0 also when a binary
-/// change's stray-byte reading gave code evidence (`stray_read`, S3.27.h; cause `content`).
+/// itself is evidence, whatever the text then shows (S3.20). Since 0.11.0 (S3.27.h; cause
+/// `content`) also for a binary change Git's NUL check made and whose reading is not UTF-8
+/// ([`stray`]), when that reading gave code evidence (`stray_read`) or the path names a language
+/// the readers read: the gate has not seen a source file's text, however many odd bytes it holds.
+/// A file of no such language (an image) is labelled only by evidence.
 fn suppressed_weight(file: &ReviewFile, stray_read: bool, signals: &mut Vec<RiskSignal>) -> u32 {
-    if file.patch_twin.diff_suppressed.is_none() && !(stray_read && stray(file)) {
+    let source = || crate::lexical::Language::of(&file.path, None).is_some();
+    if file.patch_twin.diff_suppressed.is_none() && !(stray(file) && (stray_read || source())) {
         return 0;
     }
     signals.push(RiskSignal::DiffSuppressed);
     RiskSignal::DiffSuppressed.weight()
 }
 
-/// The file is a binary change read for evidence from its stray-byte reading (S3.27.h).
+/// The file is a binary change by Git's NUL check whose second reading is not UTF-8 (S3.27.h):
+/// read for evidence when that reading is text with a few stray bytes.
 pub(crate) fn stray(file: &ReviewFile) -> bool {
-    file.patch_twin.hunks.is_empty() && !file.patch_twin.stray_text.is_empty()
+    file.patch_twin.hunks.is_empty() && file.patch_twin.stray_text.is_some()
 }
 
 /// Count added and removed lines across a file's hunks.

@@ -62,12 +62,14 @@ is seen only when the change shows line 1, so wide text outside Latin-1 edited e
 no mark in the change, is not labelled. No attribute is trusted or looked for first,
 and attributes keep every other effect (line endings, the user's filters). Still read as binary,
 with `binary_change` and no new label: a change no attribute hides whose second reading is
-not UTF-8 and either holds more than 128 odd bytes per KiB of what it shows (bytes UTF-8
-decoding replaces, and controls other than tab, carriage return and form feed), a real binary
-most often, or gives no code evidence (since 0.11.0, S3.27.h: a reading under that bound, text
-with a few stray bytes, is decoded lossily and read for code evidence beside the binary change,
-and a file it gives evidence for carries `"diff_suppressed": "content"`; nothing of the
-decoding reaches a document but positions and labels). A
+not UTF-8, on a path of no language the readers read, and either holds more than 128 odd bytes
+per KiB of what it shows (bytes UTF-8 decoding replaces, and controls other than tab, carriage
+return and form feed), a real binary most often, or gives no code evidence (since 0.11.0,
+S3.27.h: a reading under that bound, text with a few stray bytes, is decoded lossily and read
+for code evidence beside the binary change, and a file it gives evidence for carries
+`"diff_suppressed": "content"`, as does every such change on a path of a language the readers
+read, whatever its share of odd bytes; nothing of the decoding reaches a document but positions
+and labels). A
 second reading (or `git check-attr`) that the byte budget or the 120 s limit cuts off never
 leaves a binary change silent and never fails the review: the file stays `binary_changed`, and
 the attribute label stands, else it carries `"diff_suppressed": "unread"`. A `git check-attr`
@@ -79,10 +81,10 @@ run out, every binary change not yet read again is `unread`. A binary by content
 form passes the 64 MiB budget is therefore labelled `unread`. A binary section stays
 unlabelled only when no attribute covers it and Git's second reading of it succeeded, is
 not valid UTF-8 (nor UTF-16 or UTF-32), and is either over the bound above or gives no code
-evidence when read lossily. A change Git pairs with another as a copy (two changes in one
-reading) is not read lossily, and a text drowned in stray bytes (more than one in eight of
-what the change shows) is read as bytes: the file then carries `binary_change` only, its lines
-unread: a stated limit. Every other
+evidence when read lossily, and its path names no language the readers read. A change Git
+pairs with another as a copy (two changes in one reading) is not read lossily, and a text
+drowned in stray bytes (more than one in eight of what the change shows) is read as bytes: its
+lines stay unread, a stated limit; on a source path it is labelled `"content"`. Every other
 outcome that does not end in a used text section keeps a known cause or is `unread`: a reading
 Git failed or cut, and a valid UTF-8 reading not used for any reason (the parser refused it
 alone, more than 1,000,000 lines say; Git answered it as more than one change, a copy under

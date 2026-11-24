@@ -1036,12 +1036,14 @@ fn bytes_with(line: &[u8]) -> Vec<u8> {
     bytes
 }
 
-/// S3.27.h, ruling 1: a real binary stays as it is, also when its name says source and its bytes
+/// S3.27.h, ruling 1: bytes are not read for evidence, also when their name says source and they
 /// hold a line a reader would label: before the reader runs, a reading with more than one odd byte
-/// (not UTF-8, or a control) in eight of what it shows is bytes, not text. The same holds for a
-/// text drowned in stray bytes (the stated limit: `binary_change` only).
+/// (not UTF-8, or a control) in eight of what it shows is bytes, not text. A text drowned in stray
+/// bytes is bytes too. On a path of a language the readers read, either still carries
+/// `diff_suppressed` (content): the gate has not seen a source file's text (coordinator's ruling
+/// 2). The same bytes as an image stay `binary_change` only.
 #[test]
-fn a_real_binary_is_not_read_for_evidence_whatever_its_name() {
+fn bytes_are_not_read_for_evidence_and_a_source_path_is_labelled() {
     let line = b"\n#[allow(dead_code)]\nfn f() { std::process::Command::new(\"sh\"); }\n";
     let mut drowned = stray(true);
     for at in (0..drowned.len()).rev().step_by(3) {
@@ -1051,13 +1053,19 @@ fn a_real_binary_is_not_read_for_evidence_whatever_its_name() {
         for (name, after) in [("bytes", bytes_with(line)), ("drowned", drowned.clone())] {
             let r = custom(mode, b"", "m.rs", &bytes_with(b""), &after);
             let entry = ranked(&r, mode, "m.rs");
-            assert_eq!(entry["status"], "binary_changed", "{name} {mode}: {entry}");
+            let row = format!("{name} {mode}: {entry}");
+            assert_eq!(entry["status"], "binary_changed", "{row}");
             assert_eq!(
                 signals(&entry),
-                ["binary_change"],
-                "{name} {mode}: bytes read as text: {entry}"
+                ["binary_change", "diff_suppressed"],
+                "a source file Git found binary is unlabelled or read as text: {row}"
             );
-            assert!(entry.get("diff_suppressed").is_none(), "{name} {mode}");
+            assert_eq!(entry["diff_suppressed"], "content", "{row}");
+            assert!(evidence(&entry).is_empty(), "{row}");
         }
+        let r = custom(mode, b"", "img.png", &bytes_with(b""), &bytes_with(line));
+        let image = ranked(&r, mode, "img.png");
+        assert_eq!(signals(&image), ["binary_change"], "{mode}: {image}");
+        assert!(image.get("diff_suppressed").is_none(), "{mode}: {image}");
     }
 }
