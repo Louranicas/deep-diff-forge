@@ -4107,7 +4107,8 @@ mod tests {
             .collect();
         let long = contract("/r", fresh, &many, false, None);
         assert!(long.contains("; and 5 more."), "{long}");
-        assert!(long.len() < 3_100, "{}", long.len());
+        assert_eq!(long.matches(LINK_CUT).count(), LINKS_SHOWN, "{long}");
+        assert!(long.len() < 3_600, "{}", long.len());
 
         // a tree that is already changed, and a start that could not be recorded, are said
         let dirty = contract(
