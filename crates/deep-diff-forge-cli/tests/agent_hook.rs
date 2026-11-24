@@ -10563,41 +10563,30 @@ fn lock_file() -> PathBuf {
     locks[0].clone()
 }
 
-/// Hold an exclusive `flock` on `path` (made when it is not there) from another process
-/// until `go` is removed. Returns when the lock is held.
-fn hold_lock(path: &Path, go: &Path) -> std::process::Child {
-    std::fs::write(go, "").unwrap();
-    let held = go.with_extension("held");
-    // (`-o`: the command does not hold the file open; only `flock` itself does)
-    let child = Command::new("flock")
-        .arg("-o")
-        .arg(path)
-        .args([
-            "sh",
-            "-c",
-            "touch \"$1\"; while [ -e \"$2\" ]; do sleep 0.02; done",
-            "sh",
-        ])
-        .arg(&held)
-        .arg(go)
-        .stdin(Stdio::null())
-        .spawn()
-        .unwrap();
-    let asked = std::time::Instant::now();
-    while !held.exists() {
-        assert!(
-            asked.elapsed() < std::time::Duration::from_secs(20),
-            "no lock"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    child
-}
+// `hold_lock(path, go)`: an exclusive `flock(2)` on `path` (made when it is not there), held by
+// another process until `go` is removed; returns when the lock is held. One holder for Linux and
+// macOS, in the testkit (also used by `tests/council_tuicr.rs`): `flock(1)` is not on macOS.
+use deep_diff_forge_testkit::hold_lock;
 
-/// Whether a process of this user other than `but` has `path` open (a link under
-/// `/proc/*/fd` names it).
+/// Whether a process of this user other than `but` has `path` open: a link under `/proc/*/fd`
+/// names it, or where there is no `/proc` (macOS), `lsof -t` lists such a process.
 fn opened_by_a_process(path: &Path, but: u32) -> bool {
     let but = but.to_string();
+    if !Path::new("/proc/self/fd").is_dir() {
+        // (`lsof -t`: the pids that have the file open, one a line, and exit 1 for none)
+        let out = Command::new("lsof")
+            .arg("-t")
+            .arg("--")
+            .arg(path)
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .unwrap();
+        return String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::trim)
+            .any(|pid| !pid.is_empty() && pid != but);
+    }
     std::fs::read_dir("/proc")
         .unwrap()
         .flatten()
@@ -13978,26 +13967,12 @@ fn a_ledger_that_cannot_be_written_changes_no_decision() {
 
     let mut holder = None;
     let started = std::cell::Cell::new(None);
+    let go = scratch.join("go-ledger");
     same_block(
         stop_beside(&root, &judge, "locked", |own| {
             std::fs::remove_file(file(own)).unwrap();
-            let mut child = Command::new("flock")
-                .args(["-o", "-x"])
-                .arg(file(own))
-                .args(["sleep", "60"])
-                .spawn()
-                .unwrap();
-            let held = (0..200).any(|_| {
-                std::thread::sleep(std::time::Duration::from_millis(25));
-                file(own).exists()
-                    && Command::new("flock")
-                        .args(["-n", "-x"])
-                        .arg(file(own))
-                        .arg("true")
-                        .status()
-                        .is_ok_and(|s| !s.success())
-            });
-            assert!(held, "the lock holder did not take the lock");
+            // (made by the holder, as `flock(1)` made it: a regular file, held)
+            let mut child = hold_lock(&file(own), &go);
             assert!(child.try_wait().unwrap().is_none(), "the lock holder ended");
             holder = Some(child);
             started.set(Some(std::time::Instant::now()));
