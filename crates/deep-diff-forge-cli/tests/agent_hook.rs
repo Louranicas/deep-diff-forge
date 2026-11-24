@@ -14016,6 +14016,99 @@ fn verify_branch_refuses_an_unjudged_unit() {
     assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
 }
 
+/// A0110-M1 (the 0.11.0 tree review): a stop record that is damaged (no `outcome`, an outcome
+/// this build does not write, no `unit`) read as no record, so a branch whose commit a stop had
+/// passed still verified beside it. `agent verify-branch` refuses such a ledger whole, naming
+/// the line, as it refuses one with a record of a newer build; the genuine pass verifies, and a
+/// valid hold beside it is a hold, as before. The ledger is left as it is.
+#[test]
+fn verify_branch_refuses_a_ledger_with_a_damaged_stop_record() {
+    let scratch = Scratch::new("agent-hook-verify-branch-damaged");
+    let root = repository(&scratch);
+    let base = git(&root, &["rev-parse", "HEAD"]).trim().to_owned();
+    let (judge, _, exit_file) = failing_judge(&scratch);
+    std::fs::write(&exit_file, "0").unwrap();
+    start(&root, "d");
+    std::fs::write(root.join("c1.rs"), "fn c1() {}\n").unwrap();
+    git(&root, &["add", "c1.rs"]);
+    git(&root, &["commit", "--quiet", "-m", "c1"]);
+    let head = git(&root, &["rev-parse", "HEAD"]).trim().to_owned();
+    let _ = stop_from(&root, "d", &judge);
+    let range = format!("{base}..HEAD");
+    let (code, doc, stderr) = verify_branch(&root, &range);
+    assert_eq!((code, stderr.as_str()), (0, ""), "{doc}");
+
+    let file = root.join(".git/deep-diff-forge/ledger.jsonl");
+    let genuine = std::fs::read_to_string(&file).unwrap();
+    let lines = genuine.lines().count();
+    let passed: Value = genuine
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .find(|r| r["unit"] == format!("commit:{head}").as_str() && r["outcome"] == "pass")
+        .unwrap_or_else(|| panic!("no pass of {head}: {genuine}"));
+    let with = |edit: &dyn Fn(&mut serde_json::Map<String, Value>)| {
+        let mut record = passed.as_object().unwrap().clone();
+        edit(&mut record);
+        format!("{genuine}{}\n", Value::Object(record))
+    };
+    let damaged: [(&str, String); 3] = [
+        (
+            "missing-outcome",
+            with(&|r| {
+                r.remove("outcome");
+            }),
+        ),
+        (
+            "unknown-outcome",
+            with(&|r| {
+                r.insert("outcome".into(), "held".into());
+            }),
+        ),
+        (
+            "missing-unit",
+            with(&|r| {
+                r.insert("outcome".into(), "fail".into());
+                r.remove("unit");
+            }),
+        ),
+    ];
+    for (name, text) in &damaged {
+        std::fs::write(&file, text).unwrap();
+        let (code, doc, stderr) = verify_branch(&root, &range);
+        assert_eq!(code, 7, "{name}: {stderr} {doc}");
+        assert!(
+            stderr.contains("refused: the range or the ledger could not be read (verify-branch)"),
+            "{name}: {stderr}"
+        );
+        let why = doc["unverified"].as_str().unwrap_or_default();
+        assert!(
+            why.contains(&format!("line {} of the ledger", lines + 1))
+                && why.contains("is not a record of this build"),
+            "{name}: {doc}"
+        );
+        assert_eq!(doc["verified"], false, "{name}: {doc}");
+        assert_eq!(doc["commits"], json!([]), "{name}: {doc}");
+        assert_eq!(&std::fs::read_to_string(&file).unwrap(), text, "{name}");
+    }
+
+    // a valid hold beside the pass: a hold, not a refusal of the ledger
+    std::fs::write(
+        &file,
+        with(&|r| {
+            r.insert("outcome".into(), "hold".into());
+        }),
+    )
+    .unwrap();
+    let (code, doc, stderr) = verify_branch(&root, &range);
+    assert_eq!(code, 7, "{stderr}");
+    assert!(
+        stderr.contains("refused: 1 of 1 commits are not verified by the ledger (verify-branch)"),
+        "{stderr}"
+    );
+    assert_eq!(verified(&doc), [("hold".to_owned(), false)], "{doc}");
+    assert_eq!(doc["unverified"], Value::Null, "{doc}");
+}
+
 /// A stop of `session` from `root`, with the client's `stop_hook_active` as `active`: true is
 /// a stop that follows a block in the same turn.
 fn stop_as(root: &Path, session: &str, judge: &Path, active: bool) -> Value {

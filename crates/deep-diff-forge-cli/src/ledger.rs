@@ -549,7 +549,7 @@ fn verdict(records: &[Value], id: &str) -> Value {
     let mine = records.iter().filter(|r| r["unit"] == unit.as_str());
     let stops = mine.clone().filter(|r| r["kind"] == "stop");
     let has = |outcome: &str| stops.clone().any(|r| r["outcome"] == outcome);
-    let outcome = ["fail", "fail_stands", "hold", "pass", "unjudged"]
+    let outcome = OUTCOMES
         .into_iter()
         .find(|outcome| has(outcome))
         .unwrap_or("no_record");
@@ -607,9 +607,10 @@ fn verify_text(doc: &Value) -> String {
 }
 
 /// Every record of the ledger in `own`, for `agent verify-branch`; none when there is no ledger.
-/// A line that is not a record of this build, a record of a newer build, a last line that is not
-/// whole, a ledger over [`WHOLE`] or anything but a regular file at its name: refused whole, so
-/// a damaged record never reads as a missing one.
+/// A line that is not a record of this build (not an object, another version, or a record that
+/// is not whole as its kind is written: [`is_whole_record`]), a record of a newer build, a last
+/// line that is not whole, a ledger over [`WHOLE`] or anything but a regular file at its name:
+/// refused whole, so a damaged record never reads as a missing one.
 fn whole(own: &Path) -> Result<Vec<Value>, String> {
     let shown = crate::hook::shown_path(&own.join(FILE).to_string_lossy());
     let Some(text) = whole_text(own)? else {
@@ -640,15 +641,89 @@ fn whole(own: &Path) -> Result<Vec<Value>, String> {
             }
             _ => return Err(damaged()),
         }
-        if !matches!(
-            record["kind"].as_str(),
-            Some("stop" | "check" | "clearance" | "baseline" | "start")
-        ) {
+        if !is_whole_record(&record) {
             return Err(damaged());
         }
         records.push(record);
     }
     Ok(records)
+}
+
+/// The outcomes a stop record gives a unit, the worst first, as [`verdict`] ranks them.
+const OUTCOMES: [&str; 5] = ["fail", "fail_stands", "hold", "pass", "unjudged"];
+
+/// Whether `record` (an object of this build's `v`) is whole as its kind is written: every
+/// member this build writes for the kind is there, of its type and with a value this build
+/// writes, so [`verdict`] never meets a record whose `unit` or `outcome` it cannot read. The
+/// kinds and their writers: `stop` ([`append_stop`]), `check` ([`append_check`]), `baseline`
+/// and `start` ([`append_start`], [`append_baseline`]); a `clearance` is written by a person,
+/// and its documented form is `v`, `kind` and a `unit` that names a commit. A member this build
+/// does not write is not read, and is passed over.
+fn is_whole_record(record: &Value) -> bool {
+    let has = |name: &str| record.get(name);
+    let text = |name: &str| has(name).and_then(Value::as_str);
+    let count = |value: Option<&Value>| value.and_then(Value::as_u64);
+    let text_or_null = |value: Option<&Value>| value.is_some_and(|v| v.is_null() || v.is_string());
+    let session = || text("session").is_some_and(is_session_key);
+    let commit = |unit: &str| unit.strip_prefix("commit:").is_some_and(is_commit_id);
+    match text("kind") {
+        Some("stop") => {
+            let checks = has("agent_checks");
+            let runs = count(checks.and_then(|c| c.get("runs")));
+            let failed = count(checks.and_then(|c| c.get("failed")));
+            let seals = has("seals").is_some_and(|seals| {
+                seals.is_null()
+                    || (seals.get("policy_sha256").is_some_and(Value::is_string)
+                        && seals.get("ranker_sha256").is_some_and(Value::is_string)
+                        && text_or_null(seals.get("patch_sha256"))
+                        && text_or_null(seals.get("verdict_sha256")))
+            });
+            session()
+                && text_or_null(has("worktree"))
+                && text("unit")
+                    .is_some_and(|unit| unit == "stop" || commit(unit) || is_tree_unit(unit))
+                && text("outcome").is_some_and(|outcome| OUTCOMES.contains(&outcome))
+                && text("class").is_some_and(|class| {
+                    crate::hook::reason::ReasonClass::from_code(class).is_some()
+                })
+                && matches!(count(has("blocked_turns")), Some(0 | 1))
+                && matches!((runs, failed), (Some(runs), Some(failed)) if failed <= runs)
+                && has("ignored_elsewhere").is_some_and(Value::is_null)
+                && seals
+        }
+        Some("check") => {
+            session()
+                && matches!((count(has("units")), count(has("failed"))),
+                    (Some(units), Some(failed)) if failed <= units)
+        }
+        Some("baseline") => has("head").is_some() && baseline_of(record).is_some(),
+        Some("start") => {
+            session() && text("worktree").is_some() && text("base").is_some_and(is_commit_id)
+        }
+        Some("clearance") => text("unit").is_some_and(commit),
+        _ => false,
+    }
+}
+
+/// A session's key as a record gives it ([`session_key`]): 16 lowercase hex digits.
+fn is_session_key(text: &str) -> bool {
+    text.len() == 16 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// A tree's unit as [`append_stop`] writes it: `tree:<digest>:<kind>`, the digest 32 lowercase
+/// hex digits or `unread`, the kind `uncommitted` or `staged`.
+fn is_tree_unit(unit: &str) -> bool {
+    let Some((digest, kind)) = unit
+        .strip_prefix("tree:")
+        .and_then(|rest| rest.split_once(':'))
+    else {
+        return false;
+    };
+    let salted = digest.len() == 32
+        && digest
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    (salted || digest == "unread") && matches!(kind, "uncommitted" | "staged")
 }
 
 /// The text of the ledger in `own`, read whole; `None` when there is none. Anything but a
@@ -678,4 +753,266 @@ fn whole_text(own: &Path) -> Result<Option<String>, String> {
         .read_to_string(&mut text)
         .map_err(|e| format!("the ledger {shown} could not be read: {e}"))?;
     Ok(Some(text))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hook::reason::ReasonClass;
+    use deep_diff_forge_testkit::Scratch;
+
+    const ID: &str = "0123456789abcdef0123456789abcdef01234567";
+    const OTHER: &str = "89abcdef0123456789abcdef0123456789abcdef";
+    const WAIT: Duration = Duration::from_secs(5);
+
+    /// A ledger written by every writer of this build in a scratch directory: a stop record for
+    /// every reason class, the unit names and the outcomes in turn (seals of a commit, of a tree,
+    /// with and without the verdict's digest, and none), a check, a baseline and a start, then
+    /// the minimal clearance the reference documents, as a person appends it.
+    fn written(label: &str) -> (Scratch, std::path::PathBuf, String) {
+        let scratch = Scratch::new(&format!("ledger-unit-{label}"));
+        let own = scratch.path().to_path_buf();
+        let names = [
+            Name::Commit(ID.to_owned()),
+            Name::Tree {
+                patch: Some("d".repeat(64)),
+                kind: "uncommitted",
+                tree: "m".to_owned(),
+            },
+            Name::Tree {
+                patch: None,
+                kind: "staged",
+                tree: "x0123456789abcde".to_owned(),
+            },
+            Name::Stop,
+        ];
+        let units: Vec<Unit> = (ReasonClass::ALL.iter().enumerate())
+            .map(|(at, class)| Unit {
+                name: names[at % names.len()].clone(),
+                outcome: OUTCOMES[at % OUTCOMES.len()],
+                class: *class,
+                seals: (at % 3 != 0).then(|| Seals {
+                    policy: "a".repeat(64),
+                    patch: "b".repeat(64),
+                    ranker: "c".repeat(64),
+                    verdict: (at % 2 == 0).then(|| "e".repeat(64)),
+                }),
+                blocked: at % 2 == 0,
+            })
+            .collect();
+        append_stop(&own, "session-a", &units, WAIT).unwrap();
+        append_check(&own, "session-a", 3, 1, WAIT).unwrap();
+        let baseline = Baseline {
+            tips: vec![ID.to_owned(), OTHER.to_owned()],
+            head: Some(ID.to_owned()),
+        };
+        assert!(append_start(&own, "session-b", "m", Some(ID), Some(&baseline), WAIT).unwrap());
+        let mut text = std::fs::read_to_string(own.join(FILE)).unwrap();
+        text.push_str(&format!(
+            "{{\"v\":1,\"kind\":\"clearance\",\"unit\":\"commit:{ID}\"}}\n"
+        ));
+        std::fs::write(own.join(FILE), &text).unwrap();
+        (scratch, own, text)
+    }
+
+    /// The first record of `kind` in `text` that `pick` takes.
+    fn first(text: &str, kind: &str, pick: impl Fn(&Value) -> bool) -> Value {
+        text.lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .find(|r| r["kind"] == kind && pick(r))
+            .unwrap_or_else(|| panic!("no {kind} record: {text}"))
+    }
+
+    /// `whole` of a ledger that is `text` and then `record`.
+    fn read_with(own: &Path, text: &str, record: &Value) -> Result<Vec<Value>, String> {
+        std::fs::write(own.join(FILE), format!("{text}{record}\n")).unwrap();
+        whole(own)
+    }
+
+    /// Every record each writer of this build writes is whole, and so is the minimal clearance;
+    /// the ledger reads in full, one record a line.
+    #[test]
+    fn every_record_this_build_writes_is_whole() {
+        let (_scratch, own, text) = written("every-writer");
+        let records = whole(&own).unwrap_or_else(|e| panic!("{e}: {text}"));
+        assert_eq!(records.len(), ReasonClass::ALL.len() + 4, "{text}");
+        for kind in ["stop", "check", "baseline", "start", "clearance"] {
+            assert!(records.iter().any(|r| r["kind"] == kind), "{kind}: {text}");
+        }
+        for outcome in OUTCOMES {
+            assert!(records.iter().any(|r| r["outcome"] == outcome), "{outcome}");
+        }
+    }
+
+    /// Each member a record of its kind is written with, missing, of a wrong type, or with a
+    /// value this build does not write: the ledger is refused whole, with the line named.
+    #[test]
+    fn a_record_missing_a_member_or_with_a_wrong_or_unknown_value_refuses_the_ledger() {
+        let (_scratch, own, text) = written("damaged");
+        let commit = format!("commit:{ID}");
+        let stop = first(&text, "stop", |r| {
+            r["unit"] == commit.as_str() && r["seals"]["verdict_sha256"].is_string()
+        });
+        let samples = [
+            ("stop", stop),
+            ("check", first(&text, "check", |_| true)),
+            ("baseline", first(&text, "baseline", |_| true)),
+            ("start", first(&text, "start", |_| true)),
+            ("clearance", first(&text, "clearance", |_| true)),
+        ];
+        // (kind, member, a value of a wrong type, values of the right type this build does not write)
+        let members: &[(&str, &str, &str, &[&str])] = &[
+            (
+                "stop",
+                "/session",
+                "7",
+                &["\"ABCDEF0123456789\"", "\"0123\""],
+            ),
+            ("stop", "/worktree", "1", &[]),
+            (
+                "stop",
+                "/unit",
+                "1",
+                &[
+                    "\"later\"",
+                    "\"commit:0123\"",
+                    "\"tree:unread:both\"",
+                    "\"tree:0123:staged\"",
+                    "\"Stop\"",
+                ],
+            ),
+            ("stop", "/outcome", "1", &["\"held\"", "\"PASS\"", "\"\""]),
+            ("stop", "/class", "null", &["\"pass.maybe\"", "\"\""]),
+            ("stop", "/blocked_turns", "\"1\"", &["2"]),
+            ("stop", "/agent_checks", "[]", &[]),
+            ("stop", "/agent_checks/runs", "\"0\"", &["-1"]),
+            ("stop", "/agent_checks/failed", "\"0\"", &["5"]),
+            ("stop", "/ignored_elsewhere", "0", &[]),
+            ("stop", "/seals", "\"sealed\"", &[]),
+            ("stop", "/seals/policy_sha256", "1", &[]),
+            ("stop", "/seals/ranker_sha256", "null", &[]),
+            ("stop", "/seals/patch_sha256", "1", &[]),
+            ("stop", "/seals/verdict_sha256", "1", &[]),
+            ("check", "/session", "null", &["\"session-a\""]),
+            ("check", "/units", "\"3\"", &["-1"]),
+            ("check", "/failed", "\"1\"", &["4"]),
+            ("baseline", "/head", "1", &["\"HEAD\""]),
+            ("baseline", "/tips", "\"x\"", &["[\"abc\"]"]),
+            ("baseline", "/tips_count", "\"2\"", &["3"]),
+            ("baseline", "/tips_sha256", "1", &["\"00\""]),
+            ("start", "/session", "1", &["\"\""]),
+            ("start", "/worktree", "null", &[]),
+            ("start", "/base", "1", &["\"abc\"", "\"HEAD\""]),
+            (
+                "clearance",
+                "/unit",
+                "1",
+                &["\"commit:0123\"", "\"stop\"", "\"commit:\""],
+            ),
+        ];
+        let line = text.lines().count() + 1;
+        let refused = |what: &str, record: &Value| {
+            let why = read_with(&own, &text, record).map(|_| ()).unwrap_err();
+            assert!(
+                why.contains(&format!("line {line} of the ledger"))
+                    && why.contains("is not a record of this build"),
+                "{what}: {why}"
+            );
+        };
+        for (kind, sample) in &samples {
+            let common: [(&str, &str, &[&str]); 2] = [
+                ("/v", "\"1\"", &["0"]),
+                ("/kind", "1", &["\"Stop\"", "\"pass\""]),
+            ];
+            let mut all = common.to_vec();
+            all.extend(
+                members
+                    .iter()
+                    .filter(|m| m.0 == *kind)
+                    .map(|m| (m.1, m.2, m.3)),
+            );
+            for (member, wrong, unknown) in all {
+                let (parent, name) = member.rsplit_once('/').unwrap();
+                let mut missing = sample.clone();
+                missing
+                    .pointer_mut(parent)
+                    .and_then(Value::as_object_mut)
+                    .and_then(|object| object.remove(name))
+                    .unwrap_or_else(|| panic!("{kind} has no {member}: {sample}"));
+                refused(&format!("{kind} without {member}"), &missing);
+                for value in std::iter::once(&wrong).chain(unknown) {
+                    let mut changed = sample.clone();
+                    *changed.pointer_mut(member).unwrap() = serde_json::from_str(value).unwrap();
+                    refused(&format!("{kind} with {member} {value}"), &changed);
+                }
+            }
+        }
+        // a record of a newer build is still refused as one
+        let mut newer = samples[0].1.clone();
+        newer["v"] = json!(2);
+        let why = read_with(&own, &text, &newer).map(|_| ()).unwrap_err();
+        assert!(why.contains("holds records of a newer build (v2"), "{why}");
+    }
+
+    /// The forms the reference calls valid stay whole: the minimal clearance (and one with a
+    /// note of the person's), the unit `stop` and a tree's unit with its digest or `unread`, a
+    /// null worktree, null seals and a tree's seals without the patch's and the verdict's
+    /// digests, a baseline whose `head` is null; a member this build does not write is passed
+    /// over.
+    #[test]
+    fn the_documented_forms_and_null_members_are_whole() {
+        let (_scratch, own, text) = written("documented");
+        let accepted = |what: &str, record: &Value| {
+            read_with(&own, &text, record).unwrap_or_else(|e| panic!("{what}: {e}"));
+        };
+        let mut clearance = json!({"v": 1, "kind": "clearance", "unit": format!("commit:{OTHER}")});
+        accepted("minimal clearance", &clearance);
+        clearance["by"] = json!("a person");
+        accepted("clearance with a note", &clearance);
+        for unit in [
+            "stop",
+            "tree:unread:staged",
+            "tree:0123456789abcdef0123456789abcdef:uncommitted",
+        ] {
+            let mut stop = first(&text, "stop", |r| {
+                r["unit"].as_str().is_some_and(|u| u.starts_with("commit:"))
+            });
+            stop["unit"] = json!(unit);
+            stop["worktree"] = Value::Null;
+            stop["seals"] = Value::Null;
+            accepted(unit, &stop);
+        }
+        let tree_seals = first(&text, "stop", |r| {
+            r["unit"].as_str().is_some_and(|u| u.starts_with("tree:")) && r["seals"].is_object()
+        });
+        assert!(
+            tree_seals["seals"]["patch_sha256"].is_null(),
+            "{tree_seals}"
+        );
+        accepted("tree seals", &tree_seals);
+        let mut baseline = first(&text, "baseline", |_| true);
+        baseline["head"] = Value::Null;
+        accepted("baseline with no head", &baseline);
+        let mut extra = first(&text, "stop", |_| true);
+        extra["later_member"] = json!({"any": "value"});
+        accepted("a member this build does not write", &extra);
+    }
+
+    /// The frontier's reader stays conservative: a stop record with no outcome, which `whole`
+    /// refuses, is passed over there, so its commit is judged again, and the frontier is read.
+    #[test]
+    fn the_frontier_passes_over_a_record_that_verify_branch_refuses() {
+        let (_scratch, own, text) = written("frontier");
+        let mut damaged = first(&text, "stop", |r| r["outcome"] == "pass");
+        damaged["unit"] = json!(format!("commit:{OTHER}"));
+        damaged.as_object_mut().unwrap().remove("outcome");
+        assert!(read_with(&own, &text, &damaged).is_err());
+        let found = frontier(&own).unwrap();
+        assert!(!found.judged.contains(OTHER), "{found:?}");
+        assert!(found.judged.contains(ID), "{found:?}");
+        assert!(found.baseline.is_some(), "{found:?}");
+        damaged["outcome"] = json!("pass");
+        assert!(read_with(&own, &text, &damaged).is_ok());
+        assert!(frontier(&own).unwrap().judged.contains(OTHER));
+    }
 }
