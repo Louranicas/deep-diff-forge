@@ -78,6 +78,9 @@ const REPORTED_CAP: usize = 5_000;
 /// hook that cannot run says nothing more; a stop still says why it was not judged, and says
 /// once that there is more beside the verdict than it names.
 const NOTICED_CAP: usize = 32;
+/// The most guard-file changes a session remembers having named (F6.b). One that cannot be
+/// remembered is named after every tool call rather than never.
+const GUARDS_CAP: usize = 64;
 /// The most entries one session's state keeps of the failures of uncommitted and staged
 /// changes that have blocked a stop: failing lines, and marks that stand for all the lines of
 /// one change ([`within_bound`] says what is done when there are more).
@@ -329,7 +332,7 @@ pub(crate) fn run(args: &[String]) {
         .map_err(|reason| Why::new(ReasonClass::InputRefused, reason))
         .and_then(|input| match event {
             Event::SessionStart => Ok(session_start(&input, args)),
-            Event::PostTool => Ok(post_tool(&input)),
+            Event::PostTool => Ok(post_tool(&input, args)),
             Event::Stop => stop(&input, args),
         });
     match said {
@@ -858,18 +861,22 @@ struct State {
     /// [`POINTER_BYTES`], and the paths past [`TREES_BYTES`] in all, are not recorded: such a
     /// tree is forgotten when it is no longer listed, as before.
     trees: std::collections::BTreeMap<String, String>,
-    /// The id of the key the digests of `reported`, `noticed` and `blocked` were made with
+    /// The keys of the guard-file changes the advice has named ([`hook::Guard::key`]), at most
+    /// [`GUARDS_CAP`]: a set of their own, so that they cannot take the places of the reasons
+    /// in `noticed` (F6.b).
+    guards: BTreeSet<String>,
+    /// The id of the key the digests of `reported`, `noticed`, `guards` and `blocked` were made with
     /// ([`hook::key_id`]), as the file holds it; empty when no key is named (a state migrated
     /// from v11, or none yet). A state is written with the id of the key its hook used.
     key_id: String,
 }
 
 /// The schema this build writes: `deep-diff-forge.hook-state.v` and [`STATE_OWN`].
-const STATE_SCHEMA: &str = "deep-diff-forge.hook-state.v12";
+const STATE_SCHEMA: &str = "deep-diff-forge.hook-state.v13";
 /// What every schema of a state is named by, before its number ([`schema_number`]).
 const STATE_SCHEMA_PREFIX: &str = "deep-diff-forge.hook-state.v";
 /// The number of [`STATE_SCHEMA`].
-const STATE_OWN: u32 = 12;
+const STATE_OWN: u32 = 13;
 /// The oldest schema read: the one the last release wrote (0.9.0 and 0.10.0 write v10). A
 /// state of a schema below it is refused by its name ([`StateRefusal::Older`]); v9 was
 /// written only by builds before any release and is not read since 0.11.0.
@@ -879,7 +886,7 @@ const STATE_FLOOR: u32 = 10;
 /// migration from its own number on, and the first hook that keeps state writes it in
 /// [`STATE_SCHEMA`] ([`Session::keep`]). Any change to the members of a state, to a member's
 /// type, grammar or meaning, or to the lines of the files beside it is a new number.
-const STATE_MIGRATIONS: &[(u32, Migration)] = &[(11, from_v10), (12, from_v11)];
+const STATE_MIGRATIONS: &[(u32, Migration)] = &[(11, from_v10), (12, from_v11), (13, from_v12)];
 /// A change from a state of one schema to one of the next ([`STATE_MIGRATIONS`]): the JSON
 /// of the state, or why it cannot be made (a damaged state).
 type Migration = fn(Value) -> Result<Value, &'static str>;
@@ -914,6 +921,17 @@ fn from_v11(mut value: Value) -> Result<Value, &'static str> {
         value[member] = json!([]);
     }
     value["key_id"] = json!("");
+    Ok(value)
+}
+
+/// v12 to v13: the set of guard-file changes the advice has named (F6.b), empty. All else is
+/// as it was: no guard file was named before v13.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "a migration's form: a later one can find a state it cannot carry over"
+)]
+fn from_v12(mut value: Value) -> Result<Value, &'static str> {
+    value["guards"] = json!([]);
     Ok(value)
 }
 
@@ -1203,6 +1221,7 @@ fn state_members(value: &Value) -> Result<State, &'static str> {
         stops: value["stops"].as_u64().ok_or(MEMBER)?,
         reported: list("reported", REPORTED_CAP)?.into_iter().collect(),
         noticed: list("noticed", NOTICED_CAP)?.into_iter().collect(),
+        guards: list("guards", GUARDS_CAP)?.into_iter().collect(),
         blocked: list("blocked", BLOCKED_CAP)?,
         judged_sha256: judged_sha256.to_owned(),
         judged_count,
@@ -1224,6 +1243,7 @@ fn state_text(state: &State) -> String {
         "stops": state.stops,
         "reported": state.reported,
         "noticed": state.noticed,
+        "guards": state.guards,
         "blocked": state.blocked,
         "judged_sha256": state.judged_sha256,
         "judged_count": state.judged_count,
@@ -1243,6 +1263,7 @@ fn align_key(state: &mut State) -> bool {
     }
     state.reported.clear();
     state.noticed.clear();
+    state.guards.clear();
     state.blocked.clear();
     state.key_id = current;
     true
@@ -1725,9 +1746,10 @@ impl Session {
         let said = |mine: &BTreeSet<String>, theirs: &BTreeSet<String>| -> Vec<String> {
             mine.difference(theirs).cloned().collect()
         };
-        let (reported, noticed) = (
+        let (reported, noticed, guards) = (
             said(&self.state.reported, &read.reported),
             said(&self.state.noticed, &read.noticed),
+            said(&self.state.guards, &read.guards),
         );
         let mine = std::mem::take(&mut self.state);
         let read = load_read(&self.file).map_err(|refusal| refused_text(&self.file, &refusal))?;
@@ -1749,6 +1771,11 @@ impl Session {
         for key in noticed {
             if self.state.noticed.len() < NOTICED_CAP {
                 self.state.noticed.insert(key);
+            }
+        }
+        for key in guards {
+            if self.state.guards.len() < GUARDS_CAP {
+                self.state.guards.insert(key);
             }
         }
         self.keep().map(|()| true)
@@ -2153,11 +2180,11 @@ const ADVICE_CUT: &str = "advice cut short: the change was not ranked within the
 /// The advice's items for `patch` ([`excerpt`]), ranked on a thread of its own for what is left
 /// of `deadline`: past it the hook says so ([`ADVICE_CUT`]) instead of being cut off by the
 /// client with nothing said (N-19). The thread ends with the process.
-fn findings(patch: &[u8], deadline: Deadline) -> Result<hook::Excerpt, String> {
+fn findings(patch: &[u8], policy: &str, deadline: Deadline) -> Result<hook::Excerpt, String> {
     let (send, receive) = std::sync::mpsc::channel();
-    let patch = patch.to_vec();
+    let (patch, policy) = (patch.to_vec(), policy.to_owned());
     std::thread::spawn(move || {
-        let _ = send.send(excerpt(&patch));
+        let _ = send.send(excerpt(&patch, &policy));
     });
     receive
         .recv_timeout(deadline.left())
@@ -2191,8 +2218,9 @@ fn sections(patch: &[u8]) -> Vec<&[u8]> {
 /// When the patch as a whole cannot be read, each file section is read alone: a file this
 /// version cannot read (a name that is not UTF-8) is one item that names it, first, and the
 /// other files are still advised (N-11). One reason for the whole patch is given when no
-/// section alone is refused.
-fn excerpt(patch: &[u8]) -> Result<hook::Excerpt, String> {
+/// section alone is refused. The guard files among the files read are listed (`policy` is the
+/// policy's path, as `--policy` gives it).
+fn excerpt(patch: &[u8], policy: &str) -> Result<hook::Excerpt, String> {
     let (review, mut items) = match review_of(patch) {
         Ok(review) => (review, Vec::new()),
         Err(whole) => {
@@ -2216,6 +2244,20 @@ fn excerpt(patch: &[u8]) -> Result<hook::Excerpt, String> {
             (review_of(&kept)?, refused)
         }
     };
+    let guards = review
+        .files()
+        .iter()
+        .filter_map(|file| {
+            let kind = deep_diff_forge_graph::guard_paths::guard_file(&file.path, policy)?;
+            let what = file.patch_twin.metadata.join("\n");
+            let key = hook::keyed_hex("guard", format!("{}\0{what}", file.path).as_bytes());
+            Some(hook::Guard {
+                path: file.path.clone(),
+                kind,
+                key,
+            })
+        })
+        .collect();
     let ranked = deep_diff_forge_graph::rank(review.files());
     let document = deep_diff_forge_graph::diagnostics(review.seal(), &ranked).to_json();
     let document: Value = serde_json::from_str(&document)
@@ -2274,6 +2316,7 @@ fn excerpt(patch: &[u8]) -> Result<hook::Excerpt, String> {
         cut: cut
             .map(|c| (text(&c["path"]), c["rows_kept"].as_u64().unwrap_or(0)))
             .collect(),
+        guards,
     })
 }
 
@@ -2595,28 +2638,52 @@ const MARKS_KEPT: usize = 256;
 /// own directory `own` of the repository. With no such directory, or no room for a mark, the
 /// advice hook says nothing: it used to say "the hook did not run" after every tool call
 /// (second independent review of the hooks, HR2-L-2). A stop says the reason every time.
+///
+/// A mark is named by the keyed digest of the session and the reason (`said-` and 64 hex
+/// digits), under a key of its own in `own` (the file `key`, made as the state's key is:
+/// [`hook_key`], [`keep_key`]): the state's key may be what cannot be read. The marks of
+/// builds before F6 (`said-`, 16 hex digits of the session's SHA-256, `-`, 16 of the reason's)
+/// confirm a guessed reason without any key, and are removed when one is met: such a reason is
+/// said once more.
 fn said_beside(own: Option<&Path>, session: &str, reason: &str) -> Option<String> {
     use std::os::unix::fs::OpenOptionsExt as _;
     let own = own?;
     own_directory(own).ok()?;
-    let marks = std::fs::read_dir(own)
-        .ok()?
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_name().to_string_lossy().starts_with("said-"))
-        .take(MARKS_KEPT + 1)
-        .count();
-    if marks > MARKS_KEPT {
-        return None;
+    let (key, new) = hook_key(own, urandom_key).ok()?;
+    let key = if new { keep_key(own, &key).ok()? } else { key };
+    let mut marks = 0;
+    for entry in std::fs::read_dir(own).ok()?.filter_map(Result::ok) {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if unkeyed_mark(&name) {
+            let _ = std::fs::remove_file(entry.path());
+        } else if name.starts_with("said-") {
+            marks += 1;
+            if marks > MARKS_KEPT {
+                return None;
+            }
+        }
     }
-    let digest = |text: &str| deep_diff_forge_core::sha256_hex(text.as_bytes())[..16].to_owned();
+    let message = format!("ddf-said-mark\0{session}\0{reason}");
+    let mark = deep_diff_forge_core::hmac_sha256_hex(&key, message.as_bytes());
     std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
         .custom_flags(nix::libc::O_NOFOLLOW)
-        .open(own.join(format!("said-{}-{}", digest(session), digest(reason))))
+        .open(own.join(format!("said-{mark}")))
         .ok()
         .map(|_| hook::notice_output(reason, false))
+}
+
+/// A mark of a build before F6: `said-`, 16 lowercase hex digits, `-`, 16 more.
+fn unkeyed_mark(name: &str) -> bool {
+    let hex = |part: &str| {
+        part.len() == 16 && part.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    };
+    name.strip_prefix("said-")
+        .and_then(|rest| rest.split_once('-'))
+        .is_some_and(|(a, b)| hex(a) && hex(b))
 }
 
 /// The hooks' own directory in the repository a hook that has no state would work in: the
@@ -2630,7 +2697,7 @@ fn own_without_state(input: &Input, deadline: Deadline) -> Option<PathBuf> {
 }
 
 /// After a tool ran: say what is new in the session's change. Advice only.
-fn post_tool(input: &Input) -> Option<String> {
+fn post_tool(input: &Input, args: &[String]) -> Option<String> {
     let deadline = Deadline::after(ADVICE_LIMIT);
     let mut session = match Session::open(&input.session) {
         Ok(session) => session,
@@ -2652,6 +2719,7 @@ fn post_tool(input: &Input) -> Option<String> {
             let advice = advice_for(
                 &work,
                 &mut session.state,
+                args,
                 deadline.with_project(&work.place),
             );
             (Some(work.place.own), advice)
@@ -2682,6 +2750,7 @@ fn post_tool(input: &Input) -> Option<String> {
 fn advice_for(
     work: &Work,
     state: &mut State,
+    args: &[String],
     deadline: Deadline,
 ) -> Result<Option<String>, String> {
     let (base, range) = match subject(work, deadline) {
@@ -2701,18 +2770,46 @@ fn advice_for(
     let Some(patch) = changed.patch else {
         return Ok(None);
     };
-    let all = findings(&patch, deadline)?;
-    let fresh = hook::fresh(&all.items, &state.reported);
-    let Some(advice) = hook::advice(&fresh, &all, &range) else {
-        return Ok(None);
-    };
-    let said: Vec<String> = fresh
-        .iter()
-        .take(advice.listed)
-        .map(|f| f.key.clone())
+    let all = findings(&patch, &policy_name(args), deadline)?;
+    let notices: String = guards_to_say(state, &all.guards)
+        .into_iter()
+        .map(|(guard, kept)| hook::guard_notice(guard, kept, GUARDS_CAP))
         .collect();
-    keep_said(&mut state.reported, said);
-    Ok(hook::post_tool_output(Some(&advice.text)))
+    let fresh = hook::fresh(&all.items, &state.reported);
+    let advice = hook::advice(&fresh, &all, &range).map(|advice| {
+        let said: Vec<String> = fresh
+            .iter()
+            .take(advice.listed)
+            .map(|f| f.key.clone())
+            .collect();
+        keep_said(&mut state.reported, said);
+        advice.text
+    });
+    Ok(hook::post_tool_output(
+        hook::with_guards(&notices, advice).as_deref(),
+    ))
+}
+
+/// The guard files of a change to name now, at most [`hook::GUARDS_SHOWN`], each with whether
+/// the session remembers it: one whose key (its path and content) the session has is not
+/// named again; one it has room for is remembered; past [`GUARDS_CAP`] one is named and not
+/// remembered, so it is named again after every tool call rather than never.
+fn guards_to_say<'a>(state: &mut State, guards: &'a [hook::Guard]) -> Vec<(&'a hook::Guard, bool)> {
+    let mut out = Vec::new();
+    for guard in guards {
+        if out.len() == hook::GUARDS_SHOWN {
+            break;
+        }
+        if state.guards.contains(&guard.key) {
+            continue;
+        }
+        let kept = state.guards.len() < GUARDS_CAP;
+        if kept {
+            state.guards.insert(guard.key.clone());
+        }
+        out.push((guard, kept));
+    }
+    out
 }
 
 /// Remember the keys of the findings that were just said. A session keeps [`REPORTED_CAP`]
@@ -9357,7 +9454,7 @@ mod tests {
     fn a_state_round_trips_and_anything_else_is_not_a_state() {
         fn with_project(project: &Value) -> String {
             json!({"schema": STATE_SCHEMA, "project": project, "stops": 0,
-                   "reported": ["a"], "noticed": [], "blocked": [],
+                   "reported": ["a"], "noticed": [], "guards": [], "blocked": [],
                    "judged_sha256": "", "judged_count": 0, "trees": {}, "key_id": ""})
             .to_string()
         }
@@ -9366,6 +9463,7 @@ mod tests {
             stops: 7,
             reported: ["b".to_owned(), "a".to_owned()].into(),
             noticed: ["n".to_owned()].into(),
+            guards: ["g".to_owned()].into(),
             blocked: vec![format!("m/u/{}:3", "f".repeat(24))],
             judged_sha256: "d".repeat(64),
             judged_count: 2,
@@ -9505,6 +9603,7 @@ mod tests {
             stops: u64::MAX,
             reported: (0..REPORTED_CAP).map(|n| hex(n, 64)).collect(),
             noticed: (0..NOTICED_CAP).map(|n| hex(n, 64)).collect(),
+            guards: (0..GUARDS_CAP).map(|n| hex(n, 64)).collect(),
             blocked: (0..BLOCKED_CAP)
                 .map(|n| format!("{}:{}", hex(n, 64), usize::MAX))
                 .collect(),
@@ -9898,7 +9997,20 @@ mod tests {
         for n in 0..MARKS_KEPT - 1 {
             std::fs::write(own.join(format!("said-x-{n}")), "").unwrap();
         }
-        let marks = || std::fs::read_dir(&own).unwrap().count();
+        // (the marks' key file beside them is no mark: F6)
+        let marks = || {
+            std::fs::read_dir(&own)
+                .unwrap()
+                .filter(|entry| {
+                    entry
+                        .as_ref()
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("said-")
+                })
+                .count()
+        };
         // the last two marks there is room for
         assert!(said_beside(Some(&own), "s", "one").is_some());
         assert!(said_beside(Some(&own), "s", "two").is_some());
@@ -9908,6 +10020,145 @@ mod tests {
         assert_eq!(said_beside(Some(&own), "s", "three"), None);
         assert_eq!(marks(), MARKS_KEPT + 1);
         assert_eq!(said_beside(None, "s", "four"), None);
+    }
+
+    /// F6, lane H3's finding: a mark is a keyed digest of the session and the reason, under the
+    /// key file beside the marks, so the directory confirms no guessed reason without that key;
+    /// a mark of the unkeyed form (`said-<16 hex>-<16 hex>`) is removed when met, and its
+    /// reason is said once more.
+    #[test]
+    fn a_mark_confirms_no_reason_without_its_key_and_old_marks_are_removed() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-marks-keyed");
+        let own = scratch.join("own");
+        std::fs::create_dir(&own).unwrap();
+        let unkeyed =
+            |text: &str| deep_diff_forge_core::sha256_hex(text.as_bytes())[..16].to_owned();
+        let old = format!("said-{}-{}", unkeyed("s"), unkeyed("one"));
+        std::fs::write(own.join(&old), "").unwrap();
+        // the old mark does not hold the reason back, and goes
+        assert!(said_beside(Some(&own), "s", "one").is_some());
+        assert!(!own.join(&old).exists());
+        assert_eq!(said_beside(Some(&own), "s", "one"), None);
+        let key = std::fs::read(own.join(KEY_FILE)).unwrap();
+        assert_eq!(key.len(), 32);
+        let mode = std::fs::metadata(own.join(KEY_FILE))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+        let names: Vec<String> = std::fs::read_dir(&own)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("said-"))
+            .collect();
+        let message = "ddf-said-mark\0s\0one";
+        let keyed = deep_diff_forge_core::hmac_sha256_hex(&key, message.as_bytes());
+        assert_eq!(names, [format!("said-{keyed}")]);
+        // what a guess would give without the key is not there
+        for guess in [
+            deep_diff_forge_core::sha256_hex(message.as_bytes()),
+            unkeyed("one"),
+            unkeyed("s"),
+        ] {
+            assert!(names.iter().all(|name| !name.contains(&guess)), "{names:?}");
+        }
+        assert!(!unkeyed_mark(&names[0]));
+        assert!(unkeyed_mark(&old));
+        assert!(!unkeyed_mark("said-x-1"));
+    }
+
+    /// F6.a (N-19): the ranking for advice runs for what is left of the advice deadline; past
+    /// it the advice says it was cut short instead of the client cutting the hook off with
+    /// nothing said. With time left, the same change is advised.
+    #[test]
+    fn advice_past_its_deadline_says_it_was_cut_short() {
+        use std::fmt::Write as _;
+        let mut patch = String::new();
+        for n in 0..2_000 {
+            let _ = write!(
+                patch,
+                "diff --git a/src/f{n}.rs b/src/f{n}.rs\n--- a/src/f{n}.rs\n+++ b/src/f{n}.rs\n@@ -1,1 +1,2 @@\n fn a() {{}}\n+#[allow(dead_code)]\n"
+            );
+        }
+        let cut = findings(
+            patch.as_bytes(),
+            "warden.toml",
+            Deadline::after(Duration::ZERO),
+        );
+        assert_eq!(cut, Err(ADVICE_CUT.to_owned()));
+        assert!(ADVICE_CUT.starts_with("advice cut short"));
+        let whole = findings(
+            patch.as_bytes(),
+            "warden.toml",
+            Deadline::after(ADVICE_LIMIT * 30),
+        );
+        assert_eq!(whole.unwrap().items.len(), 2_000);
+    }
+
+    /// F6.b: the guard-file changes the advice names have a set of their own ([`GUARDS_CAP`]),
+    /// so that a full set of them leaves every place of `noticed` to the reasons an advice hook
+    /// gives for not running; and past the cap a guard change is named after every tool call,
+    /// rather than never (N92).
+    #[test]
+    fn guard_notices_do_not_starve_reason_notices() {
+        use deep_diff_forge_graph::guard_paths::GuardFile;
+        let guard = |n: usize| hook::Guard {
+            path: format!(".github/workflows/w{n}.yml"),
+            kind: GuardFile::CiWorkflow,
+            key: format!("k{n}"),
+        };
+        let all: Vec<hook::Guard> = (0..GUARDS_CAP + 2).map(guard).collect();
+        let mut state = State::default();
+        let mut named = 0;
+        while named < GUARDS_CAP {
+            let now = guards_to_say(&mut state, &all);
+            assert!(now.len() <= hook::GUARDS_SHOWN && !now.is_empty());
+            assert!(now.iter().all(|(_, kept)| *kept));
+            named += now.len();
+        }
+        assert_eq!(state.guards.len(), GUARDS_CAP);
+        assert!(state.noticed.is_empty(), "{:?}", state.noticed);
+        // the reasons keep every place of their own
+        assert!(notice(&mut state, "a lasting reason").is_some());
+        assert_eq!(notice(&mut state, "a lasting reason"), None);
+        // past the cap: named every time, not remembered
+        for _ in 0..2 {
+            let now = guards_to_say(&mut state, &all);
+            assert_eq!(now.len(), 2);
+            assert!(now.iter().all(|(_, kept)| !*kept));
+        }
+        assert_eq!(state.guards.len(), GUARDS_CAP);
+        let words = hook::guard_notice(&all[GUARDS_CAP], false, GUARDS_CAP);
+        assert!(
+            words.contains("it is said again after each tool call"),
+            "{words}"
+        );
+    }
+
+    /// F6.b, rule V2: v12 to v13 adds the empty set of guard changes and changes nothing else;
+    /// a v12 state read is written back as v13.
+    #[test]
+    fn a_v12_state_gains_an_empty_set_of_guard_changes() {
+        let v12 = json!({"schema": "deep-diff-forge.hook-state.v12", "project": null, "stops": 3,
+                         "reported": ["r"], "noticed": ["n"], "blocked": [],
+                         "judged_sha256": "", "judged_count": 0, "trees": {}, "key_id": ""});
+        let (state, older) = state_read(&v12.to_string()).unwrap();
+        assert!(older);
+        assert_eq!(state.guards, BTreeSet::new());
+        assert_eq!(
+            (state.reported.len(), state.noticed.len(), state.stops),
+            (1, 1, 3)
+        );
+        let text: Value = serde_json::from_str(&state_text(&state)).unwrap();
+        assert_eq!(text["schema"], STATE_SCHEMA);
+        assert_eq!(text["guards"], json!([]));
+        let mut v13 = text.clone();
+        v13.as_object_mut().unwrap().remove("guards");
+        assert!(
+            state_read(&v13.to_string()).is_err(),
+            "a v13 state has its set"
+        );
     }
 
     /// A mutation run left three of the answers of [`own_directory`] alive: which failure is
@@ -11281,13 +11532,13 @@ mod tests {
                          "judged_sha256": "", "judged_count": 0, "trees": {}})
         .to_string();
         let (state, older) = state_read(&v10).unwrap();
-        assert!(older, "a v10 state is written back in v12");
+        assert!(older, "a v10 state is written back in v13");
         // (its unkeyed digests are emptied on the way: lane H3)
         assert_eq!(state.blocked, Vec::<String>::new());
         assert_eq!(state.stops, 3);
         let text = state_text(&state);
         assert!(
-            text.contains("\"schema\":\"deep-diff-forge.hook-state.v12\""),
+            text.contains("\"schema\":\"deep-diff-forge.hook-state.v13\""),
             "{text}"
         );
         assert_eq!(state_read(&text), Ok((state, false)));
@@ -11440,7 +11691,7 @@ mod tests {
         let dir = scratch.join("hooks");
         std::fs::create_dir(&dir).unwrap();
         let file = state_file(&dir, "s");
-        let newer = r#"{"schema":"deep-diff-forge.hook-state.v13","what":"a newer build's"}"#;
+        let newer = r#"{"schema":"deep-diff-forge.hook-state.v14","what":"a newer build's"}"#;
         std::fs::write(&file, newer).unwrap();
         let mut session = Session {
             dir: dir.clone(),
@@ -11459,7 +11710,7 @@ mod tests {
         };
         let said = session.keep().unwrap_err();
         assert!(
-            said.contains("is now of schema v13, written by a newer deep-diff-forge")
+            said.contains("is now of schema v14, written by a newer deep-diff-forge")
                 && said.contains("nothing was written over it"),
             "{said}"
         );
@@ -11482,7 +11733,7 @@ mod tests {
         })
         .unwrap_err();
         assert!(written.get());
-        assert!(said.to_string().contains("schema v13"), "{said}");
+        assert!(said.to_string().contains("schema v14"), "{said}");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), newer);
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         // and a state of this schema there is written over as before
@@ -13213,7 +13464,7 @@ mod tests {
     #[test]
     fn findings_carry_the_text_of_their_line_only_in_the_key() {
         let patch = b"diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,2 +1,3 @@\n fn a() {}\n+#[allow(dead_code)]\n fn b() {}\n";
-        let found = excerpt(patch).unwrap().items;
+        let found = excerpt(patch, "warden.toml").unwrap().items;
         assert_eq!(found.len(), 1);
         let f = &found[0];
         assert_eq!(
@@ -13226,16 +13477,19 @@ mod tests {
         );
         // the same line further down the file is the same finding
         let moved = b"diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,2 +1,4 @@\n fn a() {}\n+\n+#[allow(dead_code)]\n fn b() {}\n";
-        let again = excerpt(moved).unwrap().items;
+        let again = excerpt(moved, "warden.toml").unwrap().items;
         assert_eq!(again[0].line, 3);
         assert_eq!(again[0].key, f.key);
-        assert_eq!(excerpt(b"").unwrap().items, Vec::<Finding>::new());
+        assert_eq!(
+            excerpt(b"", "warden.toml").unwrap().items,
+            Vec::<Finding>::new()
+        );
         // A finding on the old side has the text of the removed line it names in its key: not
         // of another removed line, and not of a line that stays (a mutation run left the
         // reading of the old side alive).
         let old = ["fn a() {}", "// gone", "#[test]", "fn t() {}", "fn b() {}"];
         let removed = b"diff --git a/tests/t.rs b/tests/t.rs\n--- a/tests/t.rs\n+++ b/tests/t.rs\n@@ -1,5 +1,2 @@\n fn a() {}\n-// gone\n-#[test]\n-fn t() {}\n fn b() {}\n";
-        let found = excerpt(removed).unwrap().items;
+        let found = excerpt(removed, "warden.toml").unwrap().items;
         let on_old: Vec<&Finding> = found.iter().filter(|f| f.side == "old").collect();
         assert!(!on_old.is_empty(), "{found:?}");
         for f in on_old {

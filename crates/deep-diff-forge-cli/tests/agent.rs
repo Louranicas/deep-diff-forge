@@ -120,9 +120,13 @@ fn setup_writes_the_judged_hooks_options_into_their_commands() {
             "{event}"
         );
     }
+    // the advice is told the policy's name alone, to name an edit of it (F6.b)
     assert_eq!(
         command("PostToolUse"),
-        format!("{} agent hook post-tool --client claude", binary())
+        format!(
+            "{} agent hook post-tool --client claude --policy ci/policy.toml",
+            binary()
+        )
     );
     // The text form prints the same stop command.
     let (code, text, stderr) = run(&args);

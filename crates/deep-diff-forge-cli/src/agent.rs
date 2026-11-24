@@ -196,14 +196,19 @@ fn judged_options(args: &[String], hooks: bool) -> Vec<(&'static str, String)> {
 /// decides nothing.
 ///
 /// `judged_by` are the options of the two hooks that use a judge (`--judge`, `--policy`,
-/// `--ranker-dir`, in that order, each with its value). The judge is the one found or named
+/// `--ranker-dir`, in that order, each with its value); the hook after a tool call is given
+/// `--policy` alone, so that it knows the policy file's name. The judge is the one found or named
 /// when the settings are printed, by its absolute path, so that the program is chosen once by
 /// the person who installs the hooks and not at every stop by whatever `PATH` holds then
 /// (review V4, VD4-H-1).
 fn hook_settings(command: &str, judged_by: &[(&str, &str)]) -> Value {
     let hook = |event: &str, timeout: u64, judged: bool| {
         let mut judge = String::new();
-        for (option, value) in judged_by.iter().filter(|_| judged) {
+        // the advice is told the policy's name, to name an edit of it (F6.b); it runs no judge
+        for (option, value) in judged_by
+            .iter()
+            .filter(|(option, _)| judged || *option == "--policy")
+        {
             judge.push(' ');
             judge.push_str(option);
             judge.push(' ');
@@ -631,6 +636,17 @@ mod tests {
             ("--ranker-dir", "/srv/ddf rankers"),
         ];
         let settings = hook_settings("/bin/ddf", &judged_by);
+        // the advice hook is told the policy's name alone (F6.b)
+        let advice = settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            advice,
+            "/bin/ddf agent hook post-tool --client claude --policy ci/policy.toml"
+        );
+        let read = crate::hook::hook_command(advice, "post-tool").unwrap();
+        assert_eq!(read.policy.as_deref(), Some(judged_by[1].1), "{advice}");
+        assert_eq!((read.judge, read.ranker_dir), (None, None), "{advice}");
         for (event, word) in [("SessionStart", "session-start"), ("Stop", "stop")] {
             let command = settings["hooks"][event][0]["hooks"][0]["command"]
                 .as_str()
