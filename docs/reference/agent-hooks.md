@@ -103,7 +103,8 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   judged under the policy at the base of the session that judges it, and after a `startup`
   that base can be the commit itself, so the whole of its own edit of the policy applies to
   it. Where the edit leaves the policy's protection of its own file in place (forge-warden's
-  starter policy has it in `ci-is-owned`), the commit is held. Where the edit also removes
+  starter policy has it in `ci-is-owned`), the commit is held, or fails where a rule the edit
+  kept fails it. Where the edit also removes
   that protection, nothing of the old policy judges the commit: a commit that deletes the
   rule against secrets and the protection, adds a secret, and is left without a stop passes
   the next fresh session's stop without a word, is recorded `pass`, and `agent verify-branch`
@@ -755,8 +756,7 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   working tree without the session's memory (…)". That sentence is not true in one place: the
   state's trouble is found before the place is looked at, so in a directory that is no Git
   repository, or in a repository with no commit, such a session is told that each stop judges
-  the working tree and its stop is UNJUDGED (nothing can be judged there; 0.10.0's start said
-  "will not be judged", which was true of this place and false of every repository).
+  the working tree and its stop is UNJUDGED (nothing can be judged there).
   At most five such things are said in full at one stop, and a session remembers 32 as
   said in full; the others are in the line that counts them, at every stop. Everything else is said: Git
   missing or refusing the repository (another owner), a directory inside `.git`, a base that

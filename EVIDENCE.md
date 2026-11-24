@@ -1767,10 +1767,20 @@ under the rule that there is one fix round: Astra (a Codex model) and a fresh Cl
     "a value this build writes". The digests in a stop's seals are checked as strings only,
     and damage that leaves a whole record is not seen (a fail whose commit id is damaged into
     another full id no longer speaks against its commit: 69 of 2,302 single-byte damages in
-    the Claude reviewer's run; 1,351 refuse the ledger; 882 change nothing a verdict reads).
+    the Claude reviewer's run; 1,351 refuse the ledger; 882 leave the commit's verified state
+    as it was).
     The sentences are narrowed to what is checked, and "a damaged record never reads as a
     missing one" is gone.
   - *One place where the new start sentence is untrue.* With a state that cannot be used, in
     a directory that is no Git repository or a repository with no commit, the start says each
     stop judges the working tree and the stop is UNJUDGED. Stated in the reference and the
     changelog; not changed.
+- **Two GOs on `aa5d9d9f` (2026-11-25).** Both reviewers re-read the documents-only commit and
+  say GO: Astra, and the Claude reviewer of the second round. Astra's verdict "accepts the
+  documented limitations; it does not say the underlying frontier/policy behavior was fixed".
+  Three points of wording they listed without holding the verdict are corrected in the commit
+  that follows: a clause that said 0.10.0's start sentence was false in every repository (it
+  was true of 0.10.0, whose stop did not judge); "the commit is held" where a kept rule can
+  also fail it; and "the frontier's reader, which passes over such a record", whose "such" had
+  lost its noun. Release preparation follows; no reviewer reads it, which is why its checks
+  are its own (the next section).

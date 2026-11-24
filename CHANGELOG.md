@@ -412,8 +412,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   them (a `pass` whose class says `fail.new` verified the branch too); else the ledger is
   refused whole, naming the line. Not checked: the form and content of the digests in
   `seals` (any string), and damage that leaves a whole record, such as another full commit
-  id: the ledger has no checksum. The frontier's reader, which passes over such a record and
-  so judges more, is unchanged, and so is what is written.
+  id: the ledger has no checksum. The frontier's permissive reader is unchanged, and so is
+  what is written.
 - A session's start says what its stops then do (C2, 0.11.0 tree review). With its state
   unusable (damaged, older, newer, a key file that is no key, no directory of its own) it said
   "the stops of this session will not be judged and no advice will be given", while each stop
