@@ -809,9 +809,10 @@ mod tests {
         };
         assert!(append_start(&own, "session-b", "m", Some(ID), Some(&baseline), WAIT).unwrap());
         let mut text = std::fs::read_to_string(own.join(FILE)).unwrap();
-        text.push_str(&format!(
-            "{{\"v\":1,\"kind\":\"clearance\",\"unit\":\"commit:{ID}\"}}\n"
-        ));
+        let _ = writeln!(
+            text,
+            "{{\"v\":1,\"kind\":\"clearance\",\"unit\":\"commit:{ID}\"}}"
+        );
         std::fs::write(own.join(FILE), &text).unwrap();
         (scratch, own, text)
     }
@@ -826,7 +827,7 @@ mod tests {
 
     /// `whole` of a ledger that is `text` and then `record`.
     fn read_with(own: &Path, text: &str, record: &Value) -> Result<Vec<Value>, String> {
-        std::fs::write(own.join(FILE), format!("{text}{record}\n")).unwrap();
+        std::fs::write(own.join(FILE), format!("{text}{record}\n")).map_err(|e| e.to_string())?;
         whole(own)
     }
 
@@ -845,6 +846,58 @@ mod tests {
         }
     }
 
+    /// Each member a record of its kind is written with: (kind, the member, a value of a wrong
+    /// type, values of the right type that this build does not write).
+    const MEMBERS: &[(&str, &str, &str, &[&str])] = &[
+        (
+            "stop",
+            "/session",
+            "7",
+            &["\"ABCDEF0123456789\"", "\"0123\""],
+        ),
+        ("stop", "/worktree", "1", &[]),
+        (
+            "stop",
+            "/unit",
+            "1",
+            &[
+                "\"later\"",
+                "\"commit:0123\"",
+                "\"tree:unread:both\"",
+                "\"tree:0123:staged\"",
+                "\"Stop\"",
+            ],
+        ),
+        ("stop", "/outcome", "1", &["\"held\"", "\"PASS\"", "\"\""]),
+        ("stop", "/class", "null", &["\"pass.maybe\"", "\"\""]),
+        ("stop", "/blocked_turns", "\"1\"", &["2"]),
+        ("stop", "/agent_checks", "[]", &[]),
+        ("stop", "/agent_checks/runs", "\"0\"", &["-1"]),
+        ("stop", "/agent_checks/failed", "\"0\"", &["5"]),
+        ("stop", "/ignored_elsewhere", "0", &[]),
+        ("stop", "/seals", "\"sealed\"", &[]),
+        ("stop", "/seals/policy_sha256", "1", &[]),
+        ("stop", "/seals/ranker_sha256", "null", &[]),
+        ("stop", "/seals/patch_sha256", "1", &[]),
+        ("stop", "/seals/verdict_sha256", "1", &[]),
+        ("check", "/session", "null", &["\"session-a\""]),
+        ("check", "/units", "\"3\"", &["-1"]),
+        ("check", "/failed", "\"1\"", &["4"]),
+        ("baseline", "/head", "1", &["\"HEAD\""]),
+        ("baseline", "/tips", "\"x\"", &["[\"abc\"]"]),
+        ("baseline", "/tips_count", "\"2\"", &["3"]),
+        ("baseline", "/tips_sha256", "1", &["\"00\""]),
+        ("start", "/session", "1", &["\"\""]),
+        ("start", "/worktree", "null", &[]),
+        ("start", "/base", "1", &["\"abc\"", "\"HEAD\""]),
+        (
+            "clearance",
+            "/unit",
+            "1",
+            &["\"commit:0123\"", "\"stop\"", "\"commit:\""],
+        ),
+    ];
+
     /// Each member a record of its kind is written with, missing, of a wrong type, or with a
     /// value this build does not write: the ledger is refused whole, with the line named.
     #[test]
@@ -861,61 +914,10 @@ mod tests {
             ("start", first(&text, "start", |_| true)),
             ("clearance", first(&text, "clearance", |_| true)),
         ];
-        // (kind, member, a value of a wrong type, values of the right type this build does not write)
-        let members: &[(&str, &str, &str, &[&str])] = &[
-            (
-                "stop",
-                "/session",
-                "7",
-                &["\"ABCDEF0123456789\"", "\"0123\""],
-            ),
-            ("stop", "/worktree", "1", &[]),
-            (
-                "stop",
-                "/unit",
-                "1",
-                &[
-                    "\"later\"",
-                    "\"commit:0123\"",
-                    "\"tree:unread:both\"",
-                    "\"tree:0123:staged\"",
-                    "\"Stop\"",
-                ],
-            ),
-            ("stop", "/outcome", "1", &["\"held\"", "\"PASS\"", "\"\""]),
-            ("stop", "/class", "null", &["\"pass.maybe\"", "\"\""]),
-            ("stop", "/blocked_turns", "\"1\"", &["2"]),
-            ("stop", "/agent_checks", "[]", &[]),
-            ("stop", "/agent_checks/runs", "\"0\"", &["-1"]),
-            ("stop", "/agent_checks/failed", "\"0\"", &["5"]),
-            ("stop", "/ignored_elsewhere", "0", &[]),
-            ("stop", "/seals", "\"sealed\"", &[]),
-            ("stop", "/seals/policy_sha256", "1", &[]),
-            ("stop", "/seals/ranker_sha256", "null", &[]),
-            ("stop", "/seals/patch_sha256", "1", &[]),
-            ("stop", "/seals/verdict_sha256", "1", &[]),
-            ("check", "/session", "null", &["\"session-a\""]),
-            ("check", "/units", "\"3\"", &["-1"]),
-            ("check", "/failed", "\"1\"", &["4"]),
-            ("baseline", "/head", "1", &["\"HEAD\""]),
-            ("baseline", "/tips", "\"x\"", &["[\"abc\"]"]),
-            ("baseline", "/tips_count", "\"2\"", &["3"]),
-            ("baseline", "/tips_sha256", "1", &["\"00\""]),
-            ("start", "/session", "1", &["\"\""]),
-            ("start", "/worktree", "null", &[]),
-            ("start", "/base", "1", &["\"abc\"", "\"HEAD\""]),
-            (
-                "clearance",
-                "/unit",
-                "1",
-                &["\"commit:0123\"", "\"stop\"", "\"commit:\""],
-            ),
-        ];
         let line = text.lines().count() + 1;
         let refused = |what: &str, record: &Value| {
-            let why = match read_with(&own, &text, record) {
-                Ok(_) => panic!("{what}: the ledger was read, not refused: {record}"),
-                Err(why) => why,
+            let Err(why) = read_with(&own, &text, record) else {
+                panic!("{what}: the ledger was read, not refused: {record}")
             };
             assert!(
                 why.contains(&format!("line {line} of the ledger"))
@@ -930,7 +932,7 @@ mod tests {
             ];
             let mut all = common.to_vec();
             all.extend(
-                members
+                MEMBERS
                     .iter()
                     .filter(|m| m.0 == *kind)
                     .map(|m| (m.1, m.2, m.3)),

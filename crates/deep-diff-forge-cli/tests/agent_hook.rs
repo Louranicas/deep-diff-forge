@@ -13231,18 +13231,7 @@ fn every_state_that_cannot_be_used_still_judges_the_tree() {
         if case == "unreadable" && std::fs::read(&state).is_ok() {
             continue; // (run as root: nothing is unreadable)
         }
-        // C2 (the 0.11.0 tree review): a start says what the stops then do, never that they
-        // will not be judged; advice stops only when the state itself cannot be used
-        let started = start(&root, "s");
-        let what = if class == "state.lists_damaged" {
-            "deep-diff-forge: this session's lists of commits cannot be used, so each stop judges the working tree without the session's memory"
-        } else {
-            "deep-diff-forge: this session's state cannot be used, so no advice will be given and each stop judges the working tree without the session's memory"
-        };
-        assert!(
-            started.starts_with(what) && !started.contains("will not be judged"),
-            "{case}: {started}"
-        );
+        start_says_what_stops_do(&root, case, class);
         let before = tree_digest_lenient(&sessions());
         let said = blocked(&stop_from(&root, "s", &script)).to_owned();
         assert!(said.starts_with(&stateless(class)), "{case}: {said}");
@@ -13268,6 +13257,22 @@ fn every_state_that_cannot_be_used_still_judges_the_tree() {
         );
         let _ = std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o600));
     }
+}
+
+/// C2 (the 0.11.0 tree review): the start of a session whose state, or whose lists of
+/// commits, cannot be used (`class`) says what its stops then do, never that they will not be
+/// judged; advice stops only when the state itself cannot be used.
+fn start_says_what_stops_do(root: &Path, case: &str, class: &str) {
+    let started = start(root, "s");
+    let what = if class == "state.lists_damaged" {
+        "deep-diff-forge: this session's lists of commits cannot be used, so each stop judges the working tree without the session's memory"
+    } else {
+        "deep-diff-forge: this session's state cannot be used, so no advice will be given and each stop judges the working tree without the session's memory"
+    };
+    assert!(
+        started.starts_with(what) && !started.contains("will not be judged"),
+        "{case}: {started}"
+    );
 }
 
 /// [`tree_digest`] where a file may be unreadable: its bytes count as none.

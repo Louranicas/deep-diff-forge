@@ -4183,6 +4183,13 @@ mod tests {
             );
             assert!(!none.contains("stops will be judged"), "{none}");
         }
+    }
+
+    /// What a start with trouble says is what the session's stops then do (C2 of the 0.11.0
+    /// tree review): with the state or its lists unusable they judge without it (the stateless
+    /// stop), else they are not judged; advice stops unless only the lists are lost.
+    #[test]
+    fn a_start_with_trouble_says_what_its_stops_do() {
         let trouble = contract_trouble(&reason::Why::new(
             reason::ReasonClass::PlaceGitFailed,
             "Git could not be run\u{1b}",
@@ -4194,7 +4201,6 @@ mod tests {
             "{trouble}"
         );
         assert!(!trouble.contains('\u{1b}'));
-        // C2 (the 0.11.0 tree review): what the start says is what the stops then do
         for (class, words) in [
             (
                 reason::ReasonClass::StateDamaged,
