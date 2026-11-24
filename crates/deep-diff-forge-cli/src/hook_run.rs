@@ -9252,9 +9252,11 @@ fn not_checked(why: &str) -> String {
 }
 
 /// What the judge's verdict on the probe says, when it gave one: the ranker it admitted, its
-/// exit code, the schema and version its document names, and whether it holds the probe for
-/// claims it could not verify (a note `claims_unverified`).
-type ProbeVerdict = (PathBuf, i32, String, bool);
+/// exit code, the schema and version its document names, whether it holds the probe for
+/// claims it could not verify (a note `claims_unverified`), and whether a rule actually holds
+/// or fails the probe. A note or an expired waiver can make the verdict non-pass without
+/// protecting the policy file.
+type ProbeVerdict = (PathBuf, i32, String, bool, bool);
 
 /// The links `chain`, `policy_protects_itself` and `claims_verified`: the judge's verdict on
 /// the probe, or why it gave none.
@@ -9269,7 +9271,7 @@ fn chain_checks(name: &str, verdict: &Result<ProbeVerdict, String>, bound: bool)
             "chain",
             verdict.is_ok(),
             match verdict {
-                Ok((ranker, code, read, _)) => format!(
+                Ok((ranker, code, read, _, _)) => format!(
                     "the judge gave a verdict (exit {code}) with ranker {}: {read}, read by this build, which reads {}",
                     ranker.display(),
                     crate::verdict_v2::READS
@@ -9279,13 +9281,21 @@ fn chain_checks(name: &str, verdict: &Result<ProbeVerdict, String>, bound: bool)
         ),
         check(
             hook::PROTECTS_ITSELF,
-            verdict.as_ref().is_ok_and(|(_, code, _, _)| *code != 0),
+            verdict
+                .as_ref()
+                .is_ok_and(|(_, _, _, _, rule_stops_probe)| *rule_stops_probe),
             match verdict {
-                Ok((_, 0, _, _)) => format!(
+                Ok((_, 0, _, _, _)) => format!(
                     "a change to {} passes: any change could loosen the policy it is judged by",
                     hook::shown_path(name)
                 ),
-                Ok(_) => format!("a change to {} is held or fails", hook::shown_path(name)),
+                Ok((_, _, _, _, true)) => {
+                    format!("a change to {} is held or fails under a rule", hook::shown_path(name))
+                }
+                Ok(_) => format!(
+                    "a change to {} does not pass, but no rule holds or fails it: a note or an expired waiver does not prove that the policy protects its file",
+                    hook::shown_path(name)
+                ),
                 Err(_) => not_checked("the judge gave no verdict"),
             },
         ),
@@ -9293,10 +9303,10 @@ fn chain_checks(name: &str, verdict: &Result<ProbeVerdict, String>, bound: bool)
             hook::CLAIMS_VERIFIED,
             verdict
                 .as_ref()
-                .is_ok_and(|(_, _, _, unverified)| !unverified),
+                .is_ok_and(|(_, _, _, unverified, _)| !unverified),
             match verdict {
-                Ok((_, _, _, true)) if bound => hook::CLAIMS_BOUND.to_owned(),
-                Ok((_, _, _, true)) => hook::CLAIMS_HOLD.to_owned(),
+                Ok((_, _, _, true, _)) if bound => hook::CLAIMS_BOUND.to_owned(),
+                Ok((_, _, _, true, _)) => hook::CLAIMS_HOLD.to_owned(),
                 Ok(_) => {
                     "the judge's verdict on the probe has no note claims_unverified".to_owned()
                 }
@@ -9677,7 +9687,12 @@ fn probe(
                 let unverified = document["notes"].as_array().is_some_and(|notes| {
                     notes.iter().any(|note| note["code"] == "claims_unverified")
                 });
-                return Ok((ranker, code, read, unverified));
+                let rule_stops_probe = document["rules"].as_array().is_some_and(|rules| {
+                    rules.iter().any(|rule| {
+                        matches!(rule["outcome"].as_str(), Some("hold" | "fail"))
+                    })
+                });
+                return Ok((ranker, code, read, unverified, rule_stops_probe));
             }
             (_, Judged::Unjudged { reason, .. }) => {
                 // version drift: a judge that writes a schema this build does not read

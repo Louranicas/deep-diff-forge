@@ -1407,6 +1407,96 @@ fn doctor_gate_names_the_link_that_is_missing() {
     );
 }
 
+/// A non-pass probe proves that the policy protects its own file only when a rule actually
+/// holds or fails that edit. `claims_unverified` and an expired waiver both make a real
+/// forge-warden verdict non-pass without such a rule; before this test, the gate reported the
+/// self-protection link ready from the exit code alone.
+#[test]
+fn doctor_gate_does_not_mistake_non_rule_reasons_for_policy_self_protection() {
+    let scratch = Scratch::new("doctor-gate-rule-protection");
+    let root = repository(&scratch);
+    let home = home();
+    std::fs::create_dir(root.join(".claude")).unwrap();
+
+    let non_rule_verdict = |notes: Value, expired_waivers: Value| {
+        json!({
+            "schema": "forge-warden.verdict.v2",
+            "tool": {"name": "forge-warden", "version": "0.2.0"},
+            "evaluated_on": "2026-11-25",
+            "seals": "@SEALS@",
+            "verdict": "@VERDICT@",
+            "exit": {"code": "@CODE@", "name": "@NAME@", "action": "@ACTION@"},
+            "summary": {"files": 1, "rules": 1, "passed": 1,
+                        "waived": 0, "held": 0, "failed": 0},
+            "rules": [{
+                "id": "unrelated", "kind": "forbid_signal", "severity": "hold",
+                "outcome": "pass",
+                "why": "This unrelated rule does not protect the policy file.",
+                "violations": []
+            }],
+            "expired_waivers": expired_waivers,
+            "unused_waivers": [],
+            "notes": notes,
+        })
+    };
+
+    let claims = non_rule_verdict(
+        json!([{"code": "claims_unverified",
+                "detail": "the patch claims were not bound to a repository"}]),
+        json!([]),
+    );
+    let (claims_judge, _, claims_exit) = judge(&scratch, &claims);
+    std::fs::write(&claims_exit, "8").unwrap();
+    std::fs::write(
+        root.join(".claude/settings.local.json"),
+        stop_hook_settings(&claims_judge),
+    )
+    .unwrap();
+    let (code, doc, _) = doctor_gate(
+        &root,
+        &home,
+        &["--judge", claims_judge.to_str().unwrap()],
+    );
+    assert_eq!(
+        (code, gate_checks(&doc)),
+        (
+            7,
+            gate_but(&["policy_protects_itself", "claims_verified"])
+        )
+    );
+    assert!(
+        detail(&doc, "policy_protects_itself").contains("no rule holds or fails it"),
+        "{doc:#}"
+    );
+
+    let expired = non_rule_verdict(
+        json!([]),
+        json!([{"index": 0, "rule": "unrelated", "owner": "reviewer",
+                "expires": "2020-01-01"}]),
+    );
+    let expired_scratch = Scratch::new("doctor-gate-expired-waiver");
+    let (expired_judge, _, expired_exit) = judge(&expired_scratch, &expired);
+    std::fs::write(&expired_exit, "7").unwrap();
+    std::fs::write(
+        root.join(".claude/settings.local.json"),
+        stop_hook_settings(&expired_judge),
+    )
+    .unwrap();
+    let (code, doc, _) = doctor_gate(
+        &root,
+        &home,
+        &["--judge", expired_judge.to_str().unwrap()],
+    );
+    assert_eq!(
+        (code, gate_checks(&doc)),
+        (7, gate_but(&["policy_protects_itself"]))
+    );
+    assert!(
+        detail(&doc, "policy_protects_itself").contains("expired waiver"),
+        "{doc:#}"
+    );
+}
+
 /// Run a hook with `path` as the whole `PATH` (plus the system's, so `git` and `sh` are found).
 /// What every stop after the first says of a session that no session-start hook recorded.
 const START_NOT_RECORDED_AGAIN: &str = "deep-diff-forge: 1 thing in this project is not judged: what was committed before this session's first hook.";
