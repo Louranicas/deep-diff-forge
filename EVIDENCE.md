@@ -1663,7 +1663,8 @@ by its SHA-256 or by its place in the comparison corpus.
   Git repositories, manifest `c0c4f785…`) on `6e49cb19…`: against itself nothing lost or
   gained; against the published 0.10.0, 106 patches with a lost item, every one the listed
   floor exception of this release (`#[allow(` inside a Rust comment or a string is no
-  `check_suppressed`; `r#unsafe` is no `unsafe_added`), read item by item, and 1,002 with a
+  `check_suppressed`; `r#unsafe` is no `unsafe_added`; the count of items first given for it
+  was wrong and is corrected in the next section), and 1,002 with a
   gained item; no refusal differs. Git selections against the published 0.10.0: no planted
   repository loses an item; in two history ranges 49 `check_suppressed` of the same exception
   and 30 `panic_path_added` rows that fall behind the 32-row bound of a file's evidence list,
@@ -1682,6 +1683,65 @@ by its SHA-256 or by its place in the comparison corpus.
   were missed mutants and have tests; seven are loops that only the time limit ends
   (`docs/TESTING_GOLD_STANDARD.md`). A function changed only in its signature gets no mutant
   from the pull-request check, and the tool makes none for a function named `new`.
-- **Not measured here.** No reviewer has read this tree yet. The fuzz campaign has not been run
+- **Not measured here.** No reviewer had read this tree when this section was written (the next
+  section is the review). The fuzz campaign has not been run
   on it. No release build has been made. No independent rescore. The live sessions ran one
   client, one model and one policy.
+
+## 0.11.0 tree review and its one fix round (2026-11-24 and 2026-11-25)
+
+Dates here are UTC. Two reviewers read commit `3eaa7653` (binary `6e49cb19…`), each alone and
+under the rule that there is one fix round: Astra (a Codex model) and a fresh Claude reviewer.
+
+- **Verdicts on `3eaa7653`.** Astra: NO-GO, on one medium finding. The Claude reviewer:
+  GO-WITH-FIXES, five low findings. Both ran their own probes on the frozen binary; Astra ran
+  the contract matrix itself (71 rows green) and repeated the comparison (the same figures).
+- **The medium finding (A0110-M1), fixed as a class.** `agent verify-branch` read a damaged
+  record of a stop (no outcome, an outcome this build does not write, no unit) as no record, so
+  a branch still verified, against the reference's "a damaged record never reads as a missing
+  one". From `0d5577c8` and `b8532c32` the reader that verifies a branch accepts a record only
+  when the members its kind requires are there, of the right type, with a value this build
+  writes, and agreeing with one another as a stop writes them (the coordinator's probe of the
+  first fix found a record with outcome `pass` and a failing class still verifying; the second
+  commit closes that). Checked on the fixed binary: of 30 records of the coordinator's making
+  the 27 that this build never writes refuse the ledger and the three valid ones still verify;
+  the nine ledgers that the real client sessions of the section above left read whole, their
+  passes still verify and their fails still do not.
+- **A sentence an agent read that was false (C2), fixed.** A session whose state or key file
+  cannot be used was told at its start that its stops would not be judged, and a stop then
+  judged the tree and blocked. The start now says, for each cause, what its stops do, and the
+  block of such a stop no longer ends with a promise that needs the state (`72574ec2`).
+- **A claim narrowed (C5).** "A change cannot loosen the policy it is judged by" does not hold
+  for one case, which the reference now states: a commit that a session left without a stop is
+  judged by the next fresh session under the policy at that session's base, which can hold the
+  left commit's own edit of the policy. A policy that protects its own file holds such a commit,
+  and `agent doctor --gate` checks that link. Not changed in code.
+- **Documents corrected to the code** (`9ec3c3b6`): the sentences of the references, of
+  `SECURITY.md` and of the changelog that still described 0.10.0 (the ledger's `class`, the
+  ledger's read bound, what a stop with a newer state or a bad key does, what a later stop says
+  of an earlier commit, "every stop holds" under a policy that requires verified claims, target
+  releases for paths that are still silent, MCP's rank text, an example of a `current` reading,
+  the stateless stop's commits), found by the two reviewers and by the writer of the release
+  notes. The Rust API policy for 0.x is stated (public types stay as they are; a release that
+  adds a variant or a public field lists it; `#[non_exhaustive]` is taken up for 1.0).
+- **An error of this file, corrected (A0110-L2).** The section above and the corpus record said
+  the 106 patches lost against the published 0.10.0 held "191 lost items, read item by item".
+  That counted a log that prints five items a file. Read from the item differences with nothing
+  cut: 251 items in lists neither build cut, on 95 patches (197 `#[allow(` in a string, 50 in a
+  line comment, 1 in a block comment, 3 `r#unsafe`); 14 files in 11 patches that lose the label
+  on a list 0.10.0 had cut, every added line naming `allow(` a comment or a string; 172 rows
+  displaced behind the bound in files that keep the label. The class and the 106 stand.
+- **Repeated on the fixed binary** (`c19cf99c…`, a release-profile Cargo build of `b8532c32`;
+  corpus manifest `3edc2382…`): the comparison (every result file the same as on `3eaa7653`'s
+  binary; the same stdout, stderr and exit code on all 7,715 patches in three forms); the three
+  client sessions (13:30Z to 13:32Z on 2026-11-24, the same outcome at every stop; transcript
+  SHA-256 `8b1f4fb9…`).
+- **Outside the claims, declared and not built:** `agent check` prints an empty signal for a
+  rule that names none; `agent setup --policy` prints a policy name's hidden character raw; the
+  `let _ =` reading has a token window the reference does not state; "[cut here]" can fall
+  inside a word; `--fail-on evidence_truncated` is refused as a value; under the starter policy
+  with a judge that takes bound mode `agent doctor --gate` exits 7 while a session's start says
+  stops will be judged; the guard table omits Cargo `[lints]`, a nested `.cargo/config.toml` and
+  `.github/actions`.
+- **Gate.** 36 steps passed on `b8532c32`; the gate is run on this commit before it is pushed.
+- **Pending when this was written:** both reviewers' re-read of the fix round.
