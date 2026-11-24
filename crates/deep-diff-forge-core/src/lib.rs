@@ -215,6 +215,12 @@ pub struct PatchTwin {
     /// `--text`: why Git called the file binary. Only a Git acquisition sets it; a patch read
     /// from input never does.
     pub diff_suppressed: Option<DiffSuppression>,
+    /// Since 0.11.0 (S3.27.h): a binary section whose second reading as text was not valid
+    /// UTF-8 but was text with a few stray bytes (no attribute applies; Git's NUL check called it
+    /// binary): the hunks of that reading, decoded lossily. Only code evidence is read from them;
+    /// they are no part of the patch (its bytes, status and `binary_change` stay). Empty for every
+    /// other section; only a Git acquisition sets it.
+    pub stray_text: Vec<PatchHunk>,
 }
 
 /// A recorded header line that makes its section binary to Git: `GIT binary patch`,

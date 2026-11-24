@@ -1754,6 +1754,7 @@ impl FileBuf {
                 metadata: self.metadata,
                 lossy_lines: self.lossy_lines,
                 diff_suppressed: None,
+                stray_text: Vec::new(),
             },
             semantic_twin: None,
             planner: PlannerDecision {

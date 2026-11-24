@@ -142,8 +142,8 @@ pub fn assess_file_in_patch(file: &ReviewFile, shares: &CarriedShares, index: us
 /// item for item, whether the reading every release up to 0.8.3 had finds the item: what the
 /// bounded list of a ranked file goes by.
 pub(crate) fn assess_file_marked(file: &ReviewFile, share: Share) -> (Assessment, Vec<bool>) {
-    let (path_score, mut signals) = score_path_and_shape(file);
     let (evidence, released) = file_evidence_marked(file, share);
+    let (path_score, mut signals) = score_path_and_shape(file, !evidence.is_empty());
     let test = is_test(&file.path);
     let mut score = path_score;
     for signal in EvidenceSignal::ALL {
@@ -167,14 +167,15 @@ pub(crate) fn assess_file_marked(file: &ReviewFile, share: Share) -> (Assessment
 }
 
 /// The score and signals from everything but code evidence.
-fn score_path_and_shape(file: &ReviewFile) -> (u32, Vec<RiskSignal>) {
+/// `stray_read`: code evidence was read from the file's stray-byte reading (S3.27.h).
+fn score_path_and_shape(file: &ReviewFile, stray_read: bool) -> (u32, Vec<RiskSignal>) {
     let path = &file.path;
     let mut signals = Vec::new();
     let mut score: u32 = 1; // base weight for any reviewable change
     if is_generated_or_vendored(path) {
         signals.push(RiskSignal::GeneratedOrVendored);
         score += status_weight(file, &mut signals);
-        score += suppressed_weight(file, &mut signals);
+        score += suppressed_weight(file, stray_read, &mut signals);
         score += hazard_weight(file, &mut signals);
         score += mode_weight(file, &mut signals);
         return (score, signals);
@@ -200,7 +201,7 @@ fn score_path_and_shape(file: &ReviewFile) -> (u32, Vec<RiskSignal>) {
     }
 
     score += status_weight(file, &mut signals);
-    score += suppressed_weight(file, &mut signals);
+    score += suppressed_weight(file, stray_read, &mut signals);
     score += hazard_weight(file, &mut signals);
     score += mode_weight(file, &mut signals);
 
@@ -378,13 +379,19 @@ fn status_weight(file: &ReviewFile, signals: &mut Vec<RiskSignal>) -> u32 {
 }
 
 /// +5 when Git was told not to show this text file's changes, recording the signal: the act
-/// itself is evidence, whatever the text then shows (S3.20).
-fn suppressed_weight(file: &ReviewFile, signals: &mut Vec<RiskSignal>) -> u32 {
-    if file.patch_twin.diff_suppressed.is_none() {
+/// itself is evidence, whatever the text then shows (S3.20). Since 0.11.0 also when a binary
+/// change's stray-byte reading gave code evidence (`stray_read`, S3.27.h; cause `content`).
+fn suppressed_weight(file: &ReviewFile, stray_read: bool, signals: &mut Vec<RiskSignal>) -> u32 {
+    if file.patch_twin.diff_suppressed.is_none() && !(stray_read && stray(file)) {
         return 0;
     }
     signals.push(RiskSignal::DiffSuppressed);
     RiskSignal::DiffSuppressed.weight()
+}
+
+/// The file is a binary change read for evidence from its stray-byte reading (S3.27.h).
+pub(crate) fn stray(file: &ReviewFile) -> bool {
+    file.patch_twin.hunks.is_empty() && !file.patch_twin.stray_text.is_empty()
 }
 
 /// Count added and removed lines across a file's hunks.

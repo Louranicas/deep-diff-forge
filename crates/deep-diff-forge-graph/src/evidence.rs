@@ -1337,6 +1337,18 @@ pub fn file_evidence_released(file: &ReviewFile) -> Vec<bool> {
 /// ([`Evidence::released`]); with the hunks the reading of release 0.8.4 reads together that
 /// `share` says.
 pub(crate) fn file_evidence_marked(file: &ReviewFile, share: Share) -> (Vec<Evidence>, Vec<bool>) {
+    // S3.27.h: a binary change whose text with a few stray bytes the acquisition read lossily
+    // has no hunk of its own; its code evidence is read from that reading, as from a text file
+    // of the same path (no binary marker, no payload)
+    if file.patch_twin.hunks.is_empty() && !file.patch_twin.stray_text.is_empty() {
+        let mut text = file.clone();
+        text.patch_twin.hunks = std::mem::take(&mut text.patch_twin.stray_text);
+        text.patch_twin.binary_body.clear();
+        text.patch_twin
+            .metadata
+            .retain(|meta| !deep_diff_forge_core::is_binary_marker(meta));
+        return file_evidence_marked(&text, Share::Own);
+    }
     let hunks = &file.patch_twin.hunks;
     let mut out: Vec<Evidence> = Vec::new();
     for (hunk, hits) in hunks.iter().zip(hunk_hits(file, share)) {

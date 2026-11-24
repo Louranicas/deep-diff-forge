@@ -71,6 +71,7 @@ impl RankedFile {
         });
         let floor_only = floor_only.collect();
         let (evidence, evidence_truncated) = listed(assessment.evidence);
+        let suppressed = assessment.signals.contains(&RiskSignal::DiffSuppressed);
         let (hazard_lines, hazard_line_kinds, hazard_lines_cut, hazard_kinds) =
             if assessment.signals.contains(&RiskSignal::HazardousText) {
                 crate::risk::hazard_lines(file)
@@ -84,7 +85,11 @@ impl RankedFile {
             signals: assessment.signals,
             evidence,
             evidence_truncated,
-            diff_suppressed: file.patch_twin.diff_suppressed,
+            // S3.27.h: a stray-byte reading that gave evidence: Git's NUL check, no attribute
+            diff_suppressed: file.patch_twin.diff_suppressed.or_else(|| {
+                (crate::risk::stray(file) && suppressed)
+                    .then_some(deep_diff_forge_core::DiffSuppression::Content)
+            }),
             floor_only,
             hazard_lines,
             hazard_lines_cut,
