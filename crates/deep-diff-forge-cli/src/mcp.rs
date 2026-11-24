@@ -9,7 +9,7 @@
 //! Framing is the stdio binding's: one JSON-RPC message per line, nothing else on stdout. A line
 //! longer than [`LINE_CAP`] is refused and skipped, so input can never grow memory past the cap.
 
-use deep_diff_forge_core::exit::{EXIT_CODES, ExitCode, IO, REFUSALS, Refusal, lookup};
+use deep_diff_forge_core::exit::{EXIT_CODES, ExitCode, REFUSALS, Refusal, lookup};
 use deep_diff_forge_daemon::pages::{self, MIN_PAGE_BYTES, PageError, escape_hidden};
 use deep_diff_forge_daemon::views::{MAX_MAX_BYTES, Page};
 use deep_diff_forge_daemon::{
@@ -255,9 +255,10 @@ fn server_info() -> Value {
 /// repeats. Bug hunt 2026-11-01: before, the whole name was repeated.
 const ECHO_BYTES: usize = 1024;
 
-/// A JSON-RPC error answer; the message is cut to the daemon's `MAX_ERROR_MESSAGE_BYTES`.
+/// A JSON-RPC error answer; the message is written with every hidden character escaped
+/// ([`safe_text`]) and cut to the daemon's `MAX_ERROR_MESSAGE_BYTES` as escaped.
 fn error(id: &Value, code: i64, message: &str, data: Option<Value>) -> Value {
-    let mut error = json!({"code": code, "message": bounded_message(message)});
+    let mut error = json!({"code": code, "message": bounded_message(&safe_text(message))});
     if let Some(data) = data {
         error["data"] = data;
     }
@@ -621,7 +622,12 @@ fn daemon_value_in(
     arguments: Map<String, Value>,
     allowed: &[std::path::PathBuf],
 ) -> Result<Value, Value> {
-    let engine = match Engine::new().allowing_repos(allowed) {
+    // A model reads every answer of this server: a parse failure names where the patch failed
+    // and none of its text (`PatchParseError::without_input`), on every tool.
+    let engine = match Engine::new()
+        .without_input_in_errors()
+        .allowing_repos(allowed)
+    {
         Ok(engine) => engine,
         Err((root, e)) => {
             return Err(tool_error(&format!(
@@ -681,37 +687,28 @@ fn contained(tool: impl FnOnce() -> Result<Value, Value>) -> Value {
         .unwrap_or_else(|error| error)
 }
 
+/// `text` with every bidi control, invisible character, control character (but line feed and
+/// tab) and line separator written as a `\u` escape (a pair above U+FFFF), as the daemon writes
+/// `diff.diagnostics`: the one escape of everything this server writes, its lines, every tool's
+/// text copy and every error's text. In JSON these characters stand only inside strings, where
+/// the escape means the same character, so a text copy parses to the same value; in a sentence
+/// (an error) a path's hidden character reads as its escape.
+pub(crate) fn safe_text(text: &str) -> String {
+    escape_hidden(&deep_diff_forge_core::json_line_safe(text)).into_owned()
+}
+
 /// A page of a diagnostics document as a tool result. `structuredContent` is the page; its text
-/// copy is the page as the daemon emits it (compact, every hidden character, control and line
-/// separator of a string written as a `\u` escape), so no raw hidden character of a path reaches
-/// a model through the text.
+/// copy is the page as the daemon emits it ([`safe_text`]).
 fn page_result(page: Value) -> Value {
-    let text = escape_hidden(&deep_diff_forge_core::json_line_safe(&page.to_string())).into_owned();
+    let text = safe_text(&page.to_string());
     let mut result = json!({"content": [{"type": "text", "text": text}], "isError": false});
     result["structuredContent"] = page;
     result
 }
 
-/// Whether `response` carries a diagnostics page: its line is written with [`escape_hidden`],
-/// as the daemon writes `diff.diagnostics`. The lines of the other tools are not changed.
-fn carries_a_page(response: &Value) -> bool {
-    response["result"]["structuredContent"]["schema"] == DIAGNOSTICS_SCHEMA
-}
-
-/// The bytes a tool result takes as the server writes it on a line.
-fn emitted_with_page(result: &Value) -> usize {
-    escape_hidden(&deep_diff_forge_core::json_line_safe(&result.to_string())).len()
-}
-
-/// The message of an error of a diagnostics answer. A parse failure (error 4, or 3 for a header
-/// that is not UTF-8) quotes the line that failed after its first `": "`: it is cut there, so a
-/// model reads where the patch failed and no text of it.
-fn without_patch_text(code: i64, message: &str) -> &str {
-    if code == PATCH_PARSE_FAILED || code == i64::from(IO) {
-        message.split_once(": ").map_or(message, |(head, _)| head)
-    } else {
-        message
-    }
+/// The bytes a tool result takes as the server writes it on a line ([`safe_text`]).
+fn emitted(result: &Value) -> usize {
+    safe_text(&result.to_string()).len()
 }
 
 /// `max_bytes` of a diagnostics answer, and `cursor`.
@@ -761,9 +758,7 @@ fn diagnose_tool(arguments: &Map<String, Value>) -> Result<Value, Value> {
         env!("CARGO_PKG_VERSION"),
     )
     .map_err(|error| match error {
-        deep_diff_forge_patch::ReviewError::Parse(e) => {
-            tool_error(without_patch_text(i64::from(e.exit_code()), &e.to_string()))
-        }
+        deep_diff_forge_patch::ReviewError::Parse(e) => tool_error(&e.without_input().to_string()),
         refused @ deep_diff_forge_patch::ReviewError::Refused(_) => {
             tool_error(&refused.to_string())
         }
@@ -794,12 +789,8 @@ fn diagnostics_view(
         })?);
     }
     let params = Value::Object(arguments.clone());
-    let (review, acquisition) = deep_diff_forge_daemon::change_review(&params, &roots).map_err(
-        |RpcError { code, message }| {
-            let message = without_patch_text(code, &message).to_owned();
-            tool_error(&rpc_message(code, message))
-        },
-    )?;
+    let (review, acquisition) = deep_diff_forge_daemon::change_review(&params, &roots)
+        .map_err(|RpcError { code, message }| tool_error(&rpc_message(code, message)))?;
     Ok(fit_page(
         &review,
         max_bytes,
@@ -847,7 +838,7 @@ fn fit_page(
             page["acquisition"] = acquisition.clone();
         }
         let result = page_result(page);
-        let size = emitted_with_page(&result);
+        let size = emitted(&result);
         if size <= max_bytes {
             return result;
         }
@@ -896,8 +887,9 @@ fn view_tool(
     deep_diff_forge_daemon::views::fit_emitted(
         max_bytes,
         2,
-        // Measured as the sink writes it: `json_line_safe` lengthens C1, DEL and separators.
-        |value| deep_diff_forge_core::json_line_safe(&structured(value.clone()).to_string()).len(),
+        // Measured as the line writes it: the escape lengthens every hidden character, once in
+        // `structuredContent` and again in the text copy, which holds it escaped already.
+        |value| emitted(&structured(value.clone())),
         |inner| {
             let mut arguments = arguments.clone();
             arguments.insert("max_bytes".into(), json!(inner));
@@ -1001,9 +993,12 @@ fn rank_tool_with(arguments: Map<String, Value>, cap: usize) -> Value {
     else {
         return tool_error("internal error");
     };
+    // The cap counts the document's bytes, as released: the text copy is those bytes with their
+    // hidden characters escaped, so it is longer only by escapes, and the full answer and the
+    // summary change places at the same size as before.
     let full_bytes = canonical.len();
     if full_bytes <= cap {
-        return json!({"content": [{"type": "text", "text": canonical}], "isError": false, "structuredContent": document});
+        return json!({"content": [{"type": "text", "text": safe_text(&canonical)}], "isError": false, "structuredContent": document});
     }
     let ranked = document["ranked"].as_array().map_or(&[][..], Vec::as_slice);
     // Room for the summary's own fields, so the whole answer stays within the cap.
@@ -1153,19 +1148,21 @@ fn explain(arguments: &Map<String, Value>) -> Value {
     )
 }
 
-/// A successful result: the value as `structuredContent`, and as text for clients without it.
+/// A successful result: the value as `structuredContent`, and as text for clients without it,
+/// written by [`safe_text`]: the same value when parsed, and no raw hidden character.
 fn structured(value: Value) -> Value {
-    let text = value.to_string();
+    let text = safe_text(&value.to_string());
     let mut result = json!({"content": [{"type": "text", "text": text}], "isError": false});
     result["structuredContent"] = value;
     result
 }
 
-/// A tool error answer; the message is cut to the daemon's `MAX_ERROR_MESSAGE_BYTES`, as on the
-/// socket. Bug hunt 2026-11-01: before, a daemon error reached here whole, so a 600 KB
-/// `review_change` repo of bidi characters drew a 900 KB tool error.
+/// A tool error answer; the message is written by [`safe_text`] and cut to the daemon's
+/// `MAX_ERROR_MESSAGE_BYTES` as escaped, as on the socket. Bug hunt 2026-11-01: before, a daemon
+/// error reached here whole, so a 600 KB `review_change` repo of bidi characters drew a 900 KB
+/// tool error.
 fn tool_error(message: &str) -> Value {
-    json!({"content": [{"type": "text", "text": bounded_message(message)}], "isError": true})
+    json!({"content": [{"type": "text", "text": bounded_message(&safe_text(message))}], "isError": true})
 }
 
 /// Read one line of at most `cap` bytes. `Ok(None)` at end of input; an over-long line is drained
@@ -1262,15 +1259,9 @@ fn serve_server(
             )),
         };
         if let Some(response) = response {
-            let line = response.to_string();
-            let line = deep_diff_forge_core::json_line_safe(&line);
-            // A diagnostics page's line escapes every hidden character of its strings, as the
-            // daemon's `diff.diagnostics` line does; the value is the same.
-            let line = if carries_a_page(&response) {
-                escape_hidden(&line)
-            } else {
-                line
-            };
+            // Every line escapes every hidden character of its strings, as the daemon's
+            // `diff.diagnostics` line does; the value is the same.
+            let line = safe_text(&response.to_string());
             writeln!(output, "{line}")?;
             output.flush()?;
         }
@@ -2208,7 +2199,7 @@ mod tests {
             );
             let mut seen = Vec::new();
             for result in &pages {
-                let size = emitted_with_page(result);
+                let size = emitted(result);
                 assert!(
                     size <= max_bytes,
                     "an answer of {size} bytes at max_bytes {max_bytes}"
@@ -2280,7 +2271,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(served["isError"], false, "{served}");
-        assert!(emitted_with_page(&served) <= need);
+        assert!(emitted(&served) <= need);
         assert!(
             served["structuredContent"]["page"]["count"]
                 .as_u64()
@@ -2319,7 +2310,7 @@ mod tests {
                 members.remove("_meta");
                 members.remove("resultType");
                 let extra = line.len()
-                    - emitted_with_page(&result)
+                    - emitted(&result)
                     - id.to_string().len()
                     - env!("CARGO_PKG_VERSION").len();
                 if meta {
@@ -2358,7 +2349,7 @@ mod tests {
             )
             .unwrap();
             if result["isError"] == false {
-                assert!(emitted_with_page(&result) <= MCP_DIAGNOSTICS_MIN_BYTES);
+                assert!(emitted(&result) <= MCP_DIAGNOSTICS_MIN_BYTES);
                 served += 1;
                 continue;
             }
@@ -2513,7 +2504,7 @@ mod tests {
             page["page"]["document_sha256"],
             deep_diff_forge_core::sha256_hex(document.as_bytes())
         );
-        assert!(emitted_with_page(&result) <= MCP_DEFAULT_BYTES);
+        assert!(emitted(&result) <= MCP_DEFAULT_BYTES);
         let small = call(
             json!({"repo": repo, "selection": "staged", "view": "diagnostics", "max_bytes": 2048}),
             &allowed,
@@ -2537,6 +2528,284 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("--allow-repo")
+        );
+    }
+
+    /// The four hidden characters of lane M's ruling 1: a bidi override, a zero-width space, a
+    /// bell and a byte-order mark.
+    const HIDDEN: &str = "\u{202e}\u{200b}\u{7}\u{feff}";
+
+    /// A patch whose path and whose lines carry [`HIDDEN`].
+    fn hidden_patch() -> String {
+        let path = format!("src/zq7{HIDDEN}.rs");
+        format!(
+            "diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1,2 +1,2 @@ fn f{HIDDEN}()\n ctx{HIDDEN}\n-old{HIDDEN}\n+unsafe {{ f() }} // {HIDDEN}\n"
+        )
+    }
+
+    /// The lines the server writes for `tools/call`s of `calls`, one per call, in order.
+    fn served(calls: &[(&str, Value)], allowed: Vec<std::path::PathBuf>) -> Vec<String> {
+        let input: Vec<String> = calls
+            .iter()
+            .enumerate()
+            .map(|(id, (name, arguments))| {
+                let meta = json!({PROTOCOL_VERSION_KEY: MODERN, CLIENT_CAPABILITIES_KEY: {}});
+                json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": name, "arguments": arguments, "_meta": meta}})
+                    .to_string()
+            })
+            .collect();
+        let mut out = Vec::new();
+        serve_allowing(&mut input.join("\n").as_bytes(), &mut out, allowed).unwrap();
+        let lines: Vec<String> = String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(lines.len(), calls.len());
+        lines
+    }
+
+    /// A daemon method's value for `params`, from a fresh engine (what the socket answers).
+    fn daemon_answer(method: &str, params: &Value) -> Value {
+        let line = json!({"method": method, "params": params}).to_string();
+        let request = deep_diff_forge_daemon::parse_request(&line).unwrap();
+        dispatch(&request, &Engine::new()).unwrap()
+    }
+
+    /// Lane M, ruling 1, on one tool answer: no raw hidden character on the line or in the text
+    /// copy; the text copy parses to `structuredContent` (the value a client got before, when the
+    /// text was its plain serialization), byte for byte when written again; and the escape shows.
+    fn holds_its_value(name: &str, line: &str) -> Value {
+        let unsafe_char = deep_diff_forge_core::is_unsafe_in_untrusted_text;
+        assert!(
+            !line.contains(unsafe_char),
+            "{name}: a raw hidden character on the line"
+        );
+        let response: Value = serde_json::from_str(line).unwrap();
+        let result = response["result"].clone();
+        assert_eq!(result["isError"], false, "{name}: {line}");
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(
+            !text.contains(unsafe_char),
+            "{name}: a raw hidden character in the text copy"
+        );
+        let parsed: Value = serde_json::from_str(text).unwrap();
+        let structured = &result["structuredContent"];
+        assert_eq!(&parsed, structured, "{name}: the text copy's value moved");
+        assert_eq!(parsed.to_string(), structured.to_string(), "{name}");
+        result
+    }
+
+    /// Lane M, ruling 1: every tool's text copy is written with hidden characters as `\u`
+    /// escapes and parses to the value it parsed to before; `structuredContent` is the daemon's
+    /// value byte for byte where the tool returns it whole; `rank_patch`'s text is the command's
+    /// canonical bytes with their hidden characters escaped (the same value).
+    #[test]
+    fn every_tool_writes_hidden_characters_escaped_and_keeps_its_value() {
+        let patch = hidden_patch();
+        let calls = [
+            ("review_patch", json!({"patch": patch})),
+            ("review_patch", json!({"patch": patch, "detail": "summary"})),
+            ("rank_patch", json!({"patch": patch})),
+            ("review_outline", json!({"patch": patch})),
+            ("review_hunks", json!({"patch": patch})),
+            ("diagnose_patch", json!({"patch": patch})),
+            ("verify_findings", json!({"patch": patch, "findings": []})),
+            ("explain_exit_code", json!({"code": 7})),
+            ("exit_code_registry", json!({})),
+        ];
+        let lines = served(&calls, Vec::new());
+        let params = json!({"patch": patch});
+        for ((name, _), line) in calls.iter().zip(&lines) {
+            let result = holds_its_value(name, line);
+            let structured = &result["structuredContent"];
+            // `verify_findings` of no findings and the registry tools name no path.
+            if *name == "verify_findings" || name.contains("exit_code") {
+                continue;
+            }
+            assert!(
+                structured.to_string().contains('\u{202e}'),
+                "{name}: the probe carries no hidden character in the value"
+            );
+            let text = result["content"][0]["text"].as_str().unwrap();
+            assert!(text.contains("\\u202e"), "{name}: {text}");
+        }
+        let full = holds_its_value("review_patch", &lines[0]);
+        assert_eq!(
+            full["structuredContent"].to_string(),
+            daemon_answer("diff.compute", &params).to_string()
+        );
+        let rank = holds_its_value("rank_patch", &lines[2]);
+        let mut document = daemon_answer("diff.rank", &params);
+        let canonical = document
+            .as_object_mut()
+            .unwrap()
+            .remove("canonical_json")
+            .unwrap();
+        let canonical = canonical.as_str().unwrap();
+        assert_eq!(rank["structuredContent"].to_string(), document.to_string());
+        assert_eq!(rank["content"][0]["text"], safe_text(canonical).as_str());
+        assert_eq!(
+            serde_json::from_str::<Value>(canonical).unwrap(),
+            rank["structuredContent"]
+        );
+    }
+
+    /// Lane M, ruling 1, for `review_change`: every view of a change whose file name and lines
+    /// carry the hidden characters.
+    #[test]
+    #[expect(clippy::disallowed_methods, reason = "test: makes a Git repository")]
+    fn review_change_writes_hidden_characters_escaped_and_keeps_its_value() {
+        let scratch = deep_diff_forge_testkit::Scratch::new("mcp-change-hidden");
+        let root = std::fs::canonicalize(scratch.path()).unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t.invalid"])
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{args:?}: {out:?}");
+        };
+        git(&["init", "-q"]);
+        let name = format!("zq7{HIDDEN}.rs");
+        std::fs::write(
+            root.join(&name),
+            format!("fn f() {{\n    unsafe {{ g() }} // {HIDDEN}\n}}\n"),
+        )
+        .unwrap();
+        git(&["add", "--", &name]);
+        let repo = root.to_str().unwrap();
+        let calls: Vec<(&str, Value)> = ["outline", "hunks", "diagnostics"]
+            .iter()
+            .map(|view| {
+                (
+                    "review_change",
+                    json!({"repo": repo, "selection": "staged", "view": view}),
+                )
+            })
+            .collect();
+        for line in served(&calls, vec![root.clone()]) {
+            let result = holds_its_value("review_change", &line);
+            assert!(result["structuredContent"].to_string().contains('\u{202e}'));
+        }
+    }
+
+    /// Lane M, ruling 1: a view answer whose lines are mostly hidden characters stays within
+    /// `max_bytes` as the line writes it. Counted before the escape (the measure of 0.10.0), the
+    /// page chosen would now be over the budget; counted as written, the view pages earlier.
+    #[test]
+    fn hidden_heavy_views_page_earlier_and_never_overflow() {
+        use std::fmt::Write as _;
+        let mut patch = String::new();
+        let heavy = "\u{202e}".repeat(40);
+        for i in 0..200 {
+            let _ = write!(
+                patch,
+                "--- a/f{i}.rs\n+++ b/f{i}.rs\n@@ -1 +1 @@\n-{heavy}{i}\n+{heavy}x{i}\n"
+            );
+        }
+        // The measure of 0.10.0: the text copy unescaped, the line only `json_line_safe`.
+        let before = |value: &Value| {
+            let text = value.to_string();
+            let result = json!({"content": [{"type": "text", "text": text}], "isError": false, "structuredContent": value});
+            deep_diff_forge_core::json_line_safe(&result.to_string()).len()
+        };
+        let mut earlier = 0;
+        for max in [MCP_MIN_BYTES, 8192, 32_768] {
+            let arguments: Map<String, Value> =
+                serde_json::from_value(json!({"patch": patch})).unwrap();
+            let old = deep_diff_forge_daemon::views::fit_emitted(max, 2, before, |inner| {
+                let mut arguments = arguments.clone();
+                arguments.insert("max_bytes".into(), json!(inner));
+                daemon_value_in("review.hunks", arguments, &[])
+            })
+            .unwrap();
+            let lines = served(
+                &[("review_hunks", json!({"patch": patch, "max_bytes": max}))],
+                Vec::new(),
+            );
+            let response: Value = serde_json::from_str(&lines[0]).unwrap();
+            let result = &response["result"];
+            assert_eq!(result["isError"], false, "{max}: {result}");
+            let mut bare = result.clone();
+            bare.as_object_mut().unwrap().remove("_meta");
+            bare.as_object_mut().unwrap().remove("resultType");
+            assert!(
+                emitted(&bare) <= max,
+                "{max}: the answer is over max_bytes as written: {} bytes",
+                emitted(&bare)
+            );
+            let new_hunks = result["structuredContent"]["hunks"]
+                .as_array()
+                .unwrap()
+                .len();
+            let old_hunks = old["hunks"].as_array().unwrap().len();
+            if emitted(&structured(old.clone())) > max {
+                assert!(new_hunks < old_hunks, "{max}: {new_hunks} of {old_hunks}");
+                earlier += 1;
+            }
+        }
+        assert!(
+            earlier > 0,
+            "no budget had a page at its limit before the escape"
+        );
+    }
+
+    /// Lane M, part b: on every patch tool a parse failure says what the engine found, at which
+    /// line, with the engine's explanation, and holds no text of the patch; and an error that
+    /// repeats an argument repeats it with its hidden characters escaped.
+    #[test]
+    fn a_parse_failure_on_any_tool_names_where_and_why_and_no_patch_text() {
+        let marker = "zq7MARKER";
+        let broken = [
+            format!("--- a/x\n+++ b/x\n@@ -1,{marker} +1 @@\n-a\n+b\n"),
+            format!("--- a/x\n+++ b/x\n+{marker}\n"),
+            format!("--- a/x\n+++ b/x\n@@ -1,1 +0,0 @@\n+{marker}\n"),
+            "--- a/x\n+++ b/x\n@@ -1,2 +1,3 @@\n-a\n+b\n".to_owned(),
+        ];
+        for patch in &broken {
+            let refused = deep_diff_forge_patch::SealedReview::new(
+                patch.as_bytes(),
+                deep_diff_forge_patch::InputGuards {
+                    files: false,
+                    hunks: false,
+                },
+                "t",
+            )
+            .err()
+            .unwrap();
+            let deep_diff_forge_patch::ReviewError::Parse(error) = refused else {
+                panic!("not a parse failure: {refused}");
+            };
+            let expected = error.without_input().to_string();
+            let calls = [
+                ("review_patch", json!({"patch": patch})),
+                ("rank_patch", json!({"patch": patch})),
+                ("review_outline", json!({"patch": patch})),
+                ("review_hunks", json!({"patch": patch})),
+                ("diagnose_patch", json!({"patch": patch})),
+                ("verify_findings", json!({"patch": patch, "findings": []})),
+            ];
+            for ((name, _), line) in calls.iter().zip(served(&calls, Vec::new())) {
+                assert!(!line.contains(marker), "{name}: patch text in {line}");
+                let response: Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(response["result"]["isError"], true, "{name}: {line}");
+                assert_eq!(response["result"]["content"][0]["text"], expected, "{name}");
+            }
+        }
+        let lines = served(
+            &[(
+                "review_patch",
+                json!({"patch": hidden_patch(), "paths": [format!("no{HIDDEN}such")]}),
+            )],
+            Vec::new(),
+        );
+        assert!(!lines[0].contains(deep_diff_forge_core::is_unsafe_in_untrusted_text));
+        let response: Value = serde_json::from_str(&lines[0]).unwrap();
+        assert_eq!(
+            response["result"]["content"][0]["text"],
+            "no file in the patch is named no\\u202e\\u200b\\u0007\\ufeffsuch"
         );
     }
 }

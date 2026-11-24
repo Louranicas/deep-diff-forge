@@ -138,14 +138,31 @@ fn the_client_rebuilds_the_builders_document_from_the_pages() {
         }
     );
     let marker = "zq7MARKER\u{202e}";
-    for broken in [
-        format!("--- a/x\n+++ b/x\n@@ -1,{marker} +1 @@\n-a\n+b\n"),
-        format!("--- a/x\n+++ b/x\n+{marker}\n"),
+    for (broken, message) in [
+        (
+            format!("--- a/x\n+++ b/x\n@@ -1,{marker} +1 @@\n-a\n+b\n"),
+            "malformed hunk header at line 3: a line that begins with @@ is not a hunk header in Git's grammar (@@ -a[,b] +c[,d] @@, single spaces, digits only)",
+        ),
+        (
+            format!("--- a/x\n+++ b/x\n+{marker}\n"),
+            "diff body line outside any hunk at line 3: a line that begins with + or - stands where no hunk header has opened a hunk",
+        ),
+        (
+            "--- a/x\n+++ b/x\n@@ -1,2 +1,3 @@\n-a\n+b\n".to_owned(),
+            "truncated hunk ending at line 5: 1 old / 2 new line(s) declared but missing",
+        ),
     ] {
         let error = client
             .diagnostics(&broken, Guards::none(), None)
             .unwrap_err();
-        assert!(matches!(error, Error::Rpc { code: 4, .. }), "{error}");
+        // The daemon's words: where the patch failed and the engine's explanation, no text of it.
+        assert_eq!(
+            error,
+            Error::Rpc {
+                code: 4,
+                message: message.to_owned()
+            }
+        );
         assert!(!error.to_string().contains("zq7MARKER"), "{error}");
         assert!(!error.to_string().contains('\u{202e}'), "{error}");
     }

@@ -276,22 +276,22 @@ fn review_parity_ok(expected: &str, cli: &Value, daemon: &Value, via_mcp: &Value
     cli["input_sha256"] == expected && cli == daemon && daemon == via_mcp
 }
 
-/// The CLI's `rank.v0` bytes are of the probe, and the daemon's `canonical_json` and MCP's text
-/// are those same bytes (S3.15: one byte form on every surface; a value check would pass a
-/// surface that reorders or re-spaces the document).
+/// The CLI's `rank.v0` bytes are of the probe, the daemon's `canonical_json` is those same bytes,
+/// and MCP's text is those bytes as the MCP server writes every text (`mcp::safe_text`: each
+/// hidden character as a `\u` escape, so the same value to a parser). Bytes, not values (S3.15:
+/// one byte form on every surface; a value check would pass a surface that reorders or re-spaces
+/// the document); on the probe, which holds no hidden character, MCP's text is the CLI's bytes.
 fn rank_parity_ok(expected: &str, cli: &str, daemon: &Value, mcp_text: &str) -> bool {
     serde_json::from_str::<Value>(cli).is_ok_and(|document| {
         document["schema"] == "deep-diff-forge.rank.v0" && document["input_sha256"] == expected
     }) && daemon["canonical_json"].as_str() == Some(cli)
-        && mcp_text == cli
+        && mcp_text == mcp::safe_text(cli)
 }
 
 /// The bytes of one diagnostics page as the daemon writes it (`diff.diagnostics`), which MCP's
-/// text copy of `diagnose_patch` is.
+/// text copy of `diagnose_patch` is: the same escape as every MCP text.
 fn page_bytes(page: &Value) -> String {
-    let line = page.to_string();
-    let line = deep_diff_forge_core::json_line_safe(&line);
-    deep_diff_forge_daemon::pages::escape_hidden(&line).into_owned()
+    mcp::safe_text(&page.to_string())
 }
 
 /// The command's `diagnostics.v0` bytes are of the probe; the daemon's `diff.diagnostics` page
@@ -516,6 +516,11 @@ mod tests {
         assert!(!rank_parity_ok("e", rank, &json!({}), rank));
         assert!(!rank_parity_ok("e", rank, &daemon(rank), spaced));
         assert!(!rank_parity_ok("e", spaced, &daemon(rank), rank));
+        // A path with a hidden character: MCP's text is the bytes with it escaped, never raw.
+        let hidden = "{\"schema\": \"deep-diff-forge.rank.v0\", \"input_sha256\": \"e\", \"p\": \"a\u{202e}\"}\n";
+        let escaped = hidden.replace('\u{202e}', "\\u202e");
+        assert!(rank_parity_ok("e", hidden, &daemon(hidden), &escaped));
+        assert!(!rank_parity_ok("e", hidden, &daemon(hidden), hidden));
 
         let cli = "{\"schema\": \"deep-diff-forge.diagnostics.v0\", \"input_sha256\": \"e\"}\n";
         let spaced = "{\"schema\": \"deep-diff-forge.diagnostics.v0\",  \"input_sha256\": \"e\"}\n";

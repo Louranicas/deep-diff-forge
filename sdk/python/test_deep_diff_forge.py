@@ -215,16 +215,27 @@ class Diagnostics(unittest.TestCase):
 
     def test_a_parse_failure_names_no_text_of_the_patch(self):
         with ddf.StdioClient((BIN, "rpc")) as client:
-            for broken in (f"--- a/x\n+++ b/x\n@@ -1,{MARKER} +1 @@\n-a\n+b\n", f"--- a/x\n+++ b/x\n+{MARKER}\n"):
+            for broken, message in (
+                    (f"--- a/x\n+++ b/x\n@@ -1,{MARKER} +1 @@\n-a\n+b\n",
+                     "malformed hunk header at line 3: a line that begins with @@ is not a hunk header in Git's "
+                     "grammar (@@ -a[,b] +c[,d] @@, single spaces, digits only)"),
+                    (f"--- a/x\n+++ b/x\n+{MARKER}\n",
+                     "diff body line outside any hunk at line 3: a line that begins with + or - stands where no "
+                     "hunk header has opened a hunk"),
+                    ("--- a/x\n+++ b/x\n@@ -1,2 +1,3 @@\n-a\n+b\n",
+                     "truncated hunk ending at line 5: 1 old / 2 new line(s) declared but missing")):
                 with self.assertRaises(ddf.RpcError) as caught:
                     client.diagnostics_patch(broken)
                 self.assertEqual(caught.exception.code, 4)
+                # The daemon's words, with where the patch failed and the engine's explanation.
+                self.assertEqual(caught.exception.message, message)
                 self.assertNotIn("zq7MARKER", str(caught.exception))
                 self.assertNotIn("\u202e", str(caught.exception))
                 # The same failure on another method still quotes the line, as released.
-                with self.assertRaises(ddf.RpcError) as released:
-                    client.rank_patch(broken)
-                self.assertIn("zq7MARKER", released.exception.message)
+                if "zq7MARKER" in broken:
+                    with self.assertRaises(ddf.RpcError) as released:
+                        client.rank_patch(broken)
+                    self.assertIn("zq7MARKER", released.exception.message)
 
     def test_an_old_daemon_raises_protocol_too_old(self):
         stub = ddf.StdioClient((sys.executable, "-I", "-c", STUB, str(TRANSCRIPT), "transcript"), timeout=10)

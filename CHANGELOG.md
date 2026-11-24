@@ -346,6 +346,20 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   the same way. `agent doctor --gate`'s link `claims_verified` says which units can pass. Cost
   measured with forge-warden `005a1959`: about 0.25 seconds a commit against 0.09; 300 commits
   drain in two stops instead of one. No state or ledger schema changes.
+- MCP writes every line, every tool's text copy and every error's text with each bidi control,
+  invisible character, control character (but line feed and tab) and line separator as a `\u`
+  escape. A text copy is JSON and parses to the same value as before; `structuredContent` is
+  unchanged; `rank_patch`'s text is the bytes `--rank --json` prints with those characters
+  escaped. `max_bytes` counts the answer as written, so a view of such text pages earlier and
+  never overflows. Before, every tool but `diagnose_patch` wrote U+202E and the like raw.
+- A patch that does not parse is refused on every MCP tool, by the daemon's `diff.diagnostics`
+  and in both SDKs' diagnostics calls with what the engine found, the line of the patch and the
+  engine's explanation, and no text of the patch (`truncated hunk ending at line 5: 1 old / 2 new
+  line(s) declared but missing`); a path in such a message is quoted and escaped. Before, MCP's
+  older tools quoted the failing line, and the diagnostics surfaces cut the message short,
+  losing the explanation. The command line and the daemon's protocol-2 methods keep their
+  messages, which quote the line. New: `PatchParseError::without_input` (patch crate),
+  `Engine::without_input_in_errors` (daemon crate).
 
 - Tests and evaluation only, no change to what the program does (S3.35.d, S3.34.c, S3.34.d): the
   eval corpus has paired cases (a form read, a near miss not read) for every integrity form the
