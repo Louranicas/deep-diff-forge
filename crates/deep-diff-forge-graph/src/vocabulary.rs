@@ -666,6 +666,12 @@ pub const fn remedy(signal: RiskSignal) -> Remedy {
                     raises: None,
                     agent: None,
                 },
+                NotAccepted {
+                    id: "test_removed:n3",
+                    substitute: "Keeping the test but compiling it out with a `cfg` that holds in no build of the tests (`#[cfg(any())]`, `#[cfg(not(test))]`).",
+                    raises: Some("test_skipped"),
+                    agent: None,
+                },
             ],
             native_lints: &[],
         },
@@ -688,7 +694,7 @@ pub const fn remedy(signal: RiskSignal) -> Remedy {
                 },
                 NotAccepted {
                     id: "test_skipped:n2",
-                    substitute: "Keeping the test running but asserting `true` (`assert!(true)`, `assert_eq!(true, true)`); other spellings of an assertion that cannot fail are not seen yet.",
+                    substitute: "Keeping the test running but asserting what cannot fail (`assert!(true)`, `assert_eq!(x, x)`, `assert!(1 == 1)`, `assert_ne!(1, 2)`); the same call on both sides and what holds only by type are not seen.",
                     raises: Some("trivial_assert"),
                     agent: Some(
                         "Keeping the Rust test running but asserting `assert!(true)` is not a repair: it raises trivial_assert.",
@@ -722,12 +728,20 @@ pub const fn remedy(signal: RiskSignal) -> Remedy {
             ],
             accept_ids: &["stub_added:a1", "stub_added:a2"],
             cases: &[],
-            not_accepted: &[NotAccepted {
-                id: "stub_added:n1",
-                substitute: "Returning a default value where the placeholder was.",
-                raises: None,
-                agent: None,
-            }],
+            not_accepted: &[
+                NotAccepted {
+                    id: "stub_added:n1",
+                    substitute: "Returning a default value where the placeholder was.",
+                    raises: None,
+                    agent: None,
+                },
+                NotAccepted {
+                    id: "stub_added:n2",
+                    substitute: "Replacing the placeholder with `panic!` or `unreachable!`.",
+                    raises: Some("panic_path_added"),
+                    agent: None,
+                },
+            ],
             native_lints: &[
                 NativeLint {
                     language: "Rust",
@@ -749,12 +763,20 @@ pub const fn remedy(signal: RiskSignal) -> Remedy {
             ],
             accept_ids: &["error_swallowed:a1", "error_swallowed:a2"],
             cases: &[],
-            not_accepted: &[NotAccepted {
-                id: "error_swallowed:n1",
-                substitute: "Logging the error and going on as if it had not happened.",
-                raises: None,
-                agent: None,
-            }],
+            not_accepted: &[
+                NotAccepted {
+                    id: "error_swallowed:n1",
+                    substitute: "Logging the error and going on as if it had not happened.",
+                    raises: None,
+                    agent: None,
+                },
+                NotAccepted {
+                    id: "error_swallowed:n2",
+                    substitute: "Dropping the result another way: `.ok();`, `drop(…)`, `let _e =`, or a call the reader does not know returns a `Result`.",
+                    raises: None,
+                    agent: None,
+                },
+            ],
             native_lints: &[],
         },
         R::Code(E::PanicPathAdded) => Remedy {
@@ -776,13 +798,22 @@ pub const fn remedy(signal: RiskSignal) -> Remedy {
                 ("panic_path_added:a2", &["call"]),
                 ("panic_path_added:a3", &["panic_macro"]),
                 ("panic_path_added:n1", &["call", "panic_macro"]),
+                ("panic_path_added:n2", &["call"]),
             ],
-            not_accepted: &[NotAccepted {
-                id: "panic_path_added:n1",
-                substitute: "Replacing the call with another that panics in the same case, such as an index.",
-                raises: None,
-                agent: None,
-            }],
+            not_accepted: &[
+                NotAccepted {
+                    id: "panic_path_added:n1",
+                    substitute: "Replacing the call with another that panics in the same case, such as an index.",
+                    raises: None,
+                    agent: None,
+                },
+                NotAccepted {
+                    id: "panic_path_added:n2",
+                    substitute: "Dropping the result of a standard call with `let _ =` instead of unwrapping it (`let _ = std::fs::remove_file(p);`).",
+                    raises: Some("error_swallowed"),
+                    agent: None,
+                },
+            ],
             native_lints: &[
                 NativeLint {
                     language: "Rust",

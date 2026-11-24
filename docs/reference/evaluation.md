@@ -146,6 +146,11 @@ deep-diff-forge eval                          # score the labelled corpus in fix
   misses. On 65 cases (F2a.d: `evidence/rust-test-compiled-out` added, and
   `#[cfg(any())]` on a test in `evidence/independent-review-20261114` moved from declared to
   expected) precision is 209 / 234 and recall 209 / 290, with 109 declared misses.
+  The sibling battery `assert-cfg-let` (seed 1, 46 shapes) of the comparison corpus, read by the
+  0.11.0 branch after F2a: `trivial_assert` is raised on 19 of its 21 shapes that cannot fail
+  (not on a macro bound by `use … as`, nor on `matches!(Some(n), Some(_))`), `test_skipped` on 4
+  of its 4 skips, `error_swallowed` on none of its one drop (a function of the patch's own, a
+  stated limit).
 
   | Metric | Right / total | Floor |
   | --- | ---: | ---: |

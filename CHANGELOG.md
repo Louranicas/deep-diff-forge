@@ -222,6 +222,26 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   unjudged unit, a hold with no rule, a stop that judged nothing). A class never decides whether a
   stop holds. Its meaning never changes, codes are added without a version change, and an unknown
   code is not a PASS. `docs/reference/agent-hooks.md` "Reason classes" lists them (F7.f).
+- Rust readers widened, no new label; more lines carry four labels, and a forge-warden policy that
+  forbids one holds more changes (F2a). `trivial_assert`: an assertion that cannot fail read as a
+  class (`assert!(!false)`, `assert!(1 == 1)`, `assert!(true || x)`, `assert!(x == x)`,
+  `assert_eq!(x, x)`, `assert_ne!(1, 2)`); the same call on both sides is not read (it checks that
+  code is deterministic) (F2a.a). `error_swallowed`: `let _ = …;` and `_ = …;` whose last call is
+  one of 29 standard calls that return a `Result` (`remove_file`, `write_all`, `send`, `join`,
+  `kill`, `wait`, …); `write!` into a `String` and the patch's own functions are not read (F2a.b).
+  `panic_path_added`: `panic!(…)` and `unreachable!(…)` (F2a.c). `test_skipped`: a test compiled
+  out by `#[cfg(…)]` whose predicate holds in no build of the tests or names anything but a
+  platform's predicate (`any()`, `not(test)`, `FALSE`, `feature = "…"`) (F2a.d). On the
+  comparison corpus (7,421 patches) against the tree before: +90 `trivial_assert`, +669
+  `error_swallowed`, +778 `panic_path_added`, +47 `test_skipped` rows; no label is lost; in files
+  whose evidence list is cut at 32 rows some earlier rows give their place to new ones.
+- `diagnostics.v0`: a `panic_path_added@line` diagnostic carries `cases` (`call`, `panic_macro` or
+  both) and lists only the repairs of its case; the new repair `panic_path_added:a3` fits
+  `panic!`/`unreachable!`. On call rows the member `"cases": ["call"]` is new (F2a.c).
+- The vocabulary gains people-facing substitutes that a label now catches (`test_removed:n3`,
+  `stub_added:n2`, `panic_path_added:n2`) and one it does not (`error_swallowed:n2`); the
+  evaluation corpus has 65 cases: precision 209 of 234, recall 209 of 290, 109 declared (F2a.e).
+- `tool.scorer_sha256` moves (F2a).
 
 ## [0.10.0] - 2026-11-23
 
