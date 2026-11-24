@@ -195,6 +195,33 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - `agent doctor --gate` and `agent check` compare `--ranker-dir` with the registered stop's
   by the directory a stop lists. A relative path, a trailing `/` or a link to that directory
   is the same; they compared it as text (found by lane D1).
+- MCP tool `diagnose_patch` and `review_change` view `diagnostics`: one page of
+  `deep-diff-forge.diagnostics.v0` each, from the daemon's pager in process, with an output
+  schema. `max_bytes` (12,364 to 33,554,432, default 32,768) counts the whole answer as written,
+  both copies; the line escapes every hidden character, and a parse failure names where the
+  patch failed and none of its text (F5b).
+- Rust SDK: the typed model `Diagnostics` (its reader ignores members it does not know),
+  `diagnostics(&Review)` in process and `Client::diagnostics`, which pages a protocol-3 daemon,
+  rebuilds the bytes and checks them against `document_sha256`. Python SDK:
+  `diagnostics_patch`, the same. A daemon of protocol 2 is `ProtocolTooOld` and is never worked
+  around; pages that break the paging contract end the call with a named error
+  (`Error::Document`, `PagingError`). `Error` gains the two variants; it is `#[non_exhaustive]`
+  (F5b).
+- Both SDKs refuse diagnostics pages that carry a member they do not know by name (Rust
+  `Error::UnknownMembers`, Python `UnknownMembers`): that version cannot rebuild, and so cannot
+  check, the document; upgrade the SDK. A daemon that reports protocol 3 and does not know
+  `diff.diagnostics` is `ProtocolTooOld` naming the protocol it reported (F5b).
+- `deep_diff_forge_daemon::change_review`: `review.change`'s acquisition, public for a caller
+  that builds its own view of the change (F5b).
+- `agent doctor` checks `diagnostics_parity`: the probe's diagnostics document from the command,
+  the daemon's `diff.diagnostics` and MCP's `diagnose_patch` is one document, compared by the
+  SHA-256 of the command's bytes and by the pages' bytes (F5c).
+- Hooks: every outcome a stop gives, and every record of the project's ledger, carries a reason
+  class from one registry of 50 codes (`pass`, `fail.*`, `hold.*`, `work.*`, `chain.*`, `time.*`,
+  `state.*`, `place.*`, `input.*`). The ledger writes a code where it wrote `"class": null` (an
+  unjudged unit, a hold with no rule, a stop that judged nothing). A class never decides whether a
+  stop holds. Its meaning never changes, codes are added without a version change, and an unknown
+  code is not a PASS. `docs/reference/agent-hooks.md` "Reason classes" lists them (F7.f).
 
 ## [0.10.0] - 2026-11-23
 

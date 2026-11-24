@@ -9,8 +9,11 @@
 //!   whose [`Review::to_json`] is the `deep-diff-forge.review.v0` document
 //!   `deep-diff-forge --stdin-patch --json` prints for the same bytes.
 //! - [`rank`] orders a review's files by review risk.
+//! - [`diagnostics`] locates every label of the ranking: the `deep-diff-forge.diagnostics.v0`
+//!   document `--stdin-patch --diagnostics --json` prints, as the typed [`Diagnostics`].
 //! - [`exit`] is the exit-code registry the CLI uses.
-//! - `Client` (Unix only) calls a running daemon over its Unix socket.
+//! - `Client` (Unix only) calls a running daemon over its Unix socket; `Client::diagnostics`
+//!   fetches a diagnostics document from a daemon of engine protocol 3 page by page.
 //!
 //! **Stability.** The SDK owns [`Guards`], [`Review`] and [`Error`]: the first two are opaque, and
 //! [`Error`] is `#[non_exhaustive]`, so they can grow without breaking callers. [`ReviewFile`],
@@ -24,6 +27,12 @@ use std::fmt;
 pub use deep_diff_forge_core::exit;
 pub use deep_diff_forge_core::{InputSeal, ReviewFile};
 pub use deep_diff_forge_graph::RankedFile;
+
+mod diagnostics;
+pub use diagnostics::{
+    CutFile, DIAGNOSTICS_SCHEMA, Diagnostic, Diagnostics, DiagnosticsCounts, DiagnosticsJudge,
+    DiagnosticsTool, MAX_NAMED_MEMBERS,
+};
 
 /// Which input contracts [`review`] applies: `Guards::none()`, then `require_files` and
 /// `require_hunks`, as the CLI's `--require-files` and `--require-hunks`. There is no `Default`:
@@ -74,6 +83,36 @@ pub enum Error {
     Rpc { code: i64, message: String },
     /// The daemon could not be reached, or its answer was not a valid response to the request.
     Transport(String),
+    /// The daemon speaks an engine protocol older than the method needs (an answer of error 2 to
+    /// `engine.initialize` with that protocol, or -32601 for the method). Nothing is built in its
+    /// place from what the older daemon can answer.
+    ProtocolTooOld {
+        /// The newest protocol the daemon speaks.
+        daemon: u32,
+        /// The protocol the method needs.
+        needed: u32,
+        /// The method.
+        method: &'static str,
+    },
+    /// The daemon's diagnostics pages carry members this SDK's model does not know (a newer
+    /// schema of `v0`, whose members are only added): their bytes cannot be rebuilt by this
+    /// version of the SDK, so the document cannot be checked against `document_sha256` and is not
+    /// returned. Upgrade the SDK. `members` are their names (`tool.build`, `diagnostics[].x`),
+    /// escaped, at most [`MAX_NAMED_MEMBERS`] of them, each cut to 64 bytes.
+    UnknownMembers {
+        /// The pages read.
+        pages: usize,
+        /// The members' names, escaped and bounded.
+        members: Vec<String>,
+    },
+    /// A diagnostics document, or the pages a daemon sent of one, broke its contract: `problem`
+    /// names how, at page `pages` (0 for a document given to [`Diagnostics::from_json`]).
+    Document {
+        /// The page at which the call ended, counting from 1.
+        pages: usize,
+        /// What was wrong; a fixed sentence that holds no text of the patch.
+        problem: &'static str,
+    },
 }
 
 impl fmt::Display for Error {
@@ -83,6 +122,32 @@ impl fmt::Display for Error {
             Self::Refused(reason) => write!(f, "refused: {reason}"),
             Self::Rpc { code, message } => write!(f, "daemon error {code}: {message}"),
             Self::Transport(message) => write!(f, "daemon transport failed: {message}"),
+            Self::ProtocolTooOld {
+                daemon,
+                needed,
+                method,
+            } if daemon < needed => write!(
+                f,
+                "protocol too old: {method} needs engine protocol {needed}; the daemon speaks {daemon}"
+            ),
+            Self::ProtocolTooOld { daemon, method, .. } => write!(
+                f,
+                "protocol too old: the daemon reported engine protocol {daemon} and does not know {method}"
+            ),
+            Self::UnknownMembers { members, .. } => write!(
+                f,
+                "the daemon's diagnostics document has members this SDK does not know ({}): this SDK version cannot rebuild its bytes, so the document cannot be checked against document_sha256; upgrade the SDK",
+                members.join(", ")
+            ),
+            Self::Document { pages: 0, problem } => {
+                write!(f, "not a {DIAGNOSTICS_SCHEMA} document: {problem}")
+            }
+            Self::Document { pages, problem } => {
+                write!(
+                    f,
+                    "the daemon's diagnostics pages failed at page {pages}: {problem}"
+                )
+            }
         }
     }
 }
@@ -105,7 +170,11 @@ impl Error {
             Self::Rpc { code, .. } if *code == i64::from(exit::INPUT_CONTRACT_REFUSED) => {
                 exit::INPUT_CONTRACT_REFUSED
             }
-            Self::Rpc { .. } | Self::Transport(_) => exit::DAEMON_OR_TERMINAL,
+            Self::Rpc { .. }
+            | Self::Transport(_)
+            | Self::ProtocolTooOld { .. }
+            | Self::UnknownMembers { .. }
+            | Self::Document { .. } => exit::DAEMON_OR_TERMINAL,
         }
     }
 }
@@ -158,6 +227,21 @@ pub fn rank(review: &Review) -> Vec<RankedFile> {
     deep_diff_forge_graph::rank(review.files())
 }
 
+/// The `deep-diff-forge.diagnostics.v0` document of `review`, in process: the builder's bytes,
+/// what `--stdin-patch --diagnostics --json` prints for the same patch, and their model. Its
+/// `judge` is `unknown`: no judge runs here.
+///
+/// # Panics
+/// Only if the builder wrote a document the model cannot read, which
+/// `the_model_reads_the_builders_document_and_writes_its_bytes` holds against.
+#[must_use]
+pub fn diagnostics(review: &Review) -> Diagnostics {
+    let ranked = rank(review);
+    let bytes = deep_diff_forge_graph::diagnostics(review.seal(), &ranked).to_json();
+    // The builder writes the schema the reader reads; a test holds the two together.
+    Diagnostics::from_json(&bytes).expect("the builder writes deep-diff-forge.diagnostics.v0")
+}
+
 #[cfg(unix)]
 pub use client::Client;
 
@@ -197,6 +281,35 @@ mod client {
             let answer = deep_diff_forge_daemon::request(&self.location, &line)
                 .map_err(|e| Error::Transport(e.to_string()))?;
             parse_response(&answer, ID)
+        }
+
+        /// The `deep-diff-forge.diagnostics.v0` document of `patch` from the daemon (engine
+        /// protocol 3, `diff.diagnostics`), `guards` as its `require_files` and
+        /// `require_hunks`, in pages of at most `max_bytes` (the daemon's default when `None`).
+        ///
+        /// It sends `engine.initialize` with protocol 3 once for the call, then follows the
+        /// cursors, each request on its own connection as every call is. The pages must keep one
+        /// `total` and one `document_sha256`, each must start where the last ended and hold a
+        /// diagnostic, no cursor may come back, and the cursors must end with the document: at
+        /// most `total` pages (one for an empty document), with `total` no more than the patch's
+        /// length in bytes. The document is rebuilt from the pages in the documented byte form
+        /// and returned only when its bytes hash to `document_sha256`.
+        ///
+        /// # Errors
+        ///
+        /// [`Error::ProtocolTooOld`] for a daemon of protocol 2 or older, which is never worked
+        /// around; [`Error::Document`] for pages that break the contract above; [`Error::Rpc`]
+        /// for the daemon's refusals, a parse failure's message cut before the text it quotes;
+        /// [`Error::Transport`] as for [`Client::call`].
+        pub fn diagnostics(
+            &self,
+            patch: &str,
+            guards: crate::Guards,
+            max_bytes: Option<usize>,
+        ) -> Result<crate::Diagnostics, Error> {
+            crate::diagnostics::fetch(patch, guards, max_bytes, |method, params| {
+                self.call(method, params)
+            })
         }
     }
 }
@@ -354,6 +467,43 @@ mod tests {
             Error::Transport("t".into()).to_string(),
             "daemon transport failed: t"
         );
+        let old = Error::ProtocolTooOld {
+            daemon: 2,
+            needed: 3,
+            method: "diff.diagnostics",
+        };
+        assert_eq!(old.exit_code(), 6);
+        assert_eq!(
+            old.to_string(),
+            "protocol too old: diff.diagnostics needs engine protocol 3; the daemon speaks 2"
+        );
+        let claimed = Error::ProtocolTooOld {
+            daemon: 3,
+            needed: 3,
+            method: "diff.diagnostics",
+        };
+        assert_eq!(
+            claimed.to_string(),
+            "protocol too old: the daemon reported engine protocol 3 and does not know diff.diagnostics"
+        );
+        let newer = Error::UnknownMembers {
+            pages: 2,
+            members: vec!["future".into(), "tool.build".into()],
+        };
+        assert_eq!(newer.exit_code(), 6);
+        assert_eq!(
+            newer.to_string(),
+            "the daemon's diagnostics document has members this SDK does not know (future, tool.build): this SDK version cannot rebuild its bytes, so the document cannot be checked against document_sha256; upgrade the SDK"
+        );
+        let pages = Error::Document {
+            pages: 3,
+            problem: "a cursor came back",
+        };
+        assert_eq!(pages.exit_code(), 6);
+        assert_eq!(
+            pages.to_string(),
+            "the daemon's diagnostics pages failed at page 3: a cursor came back"
+        );
     }
 
     #[test]
@@ -402,6 +552,100 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    /// Patches whose documents hold every optional member and escape: a hidden character in a
+    /// path, a bidi line (`hazardous_text` with `cases`), a panic (`test_likely`), a file cut at
+    /// 32 rows, a quote and a backslash in a path, and no change at all.
+    fn model_patches() -> Vec<String> {
+        use std::fmt::Write as _;
+        let mut cut = String::from(
+            "diff --git a/c.rs b/c.rs\nnew file mode 100644\n--- /dev/null\n+++ b/c.rs\n@@ -0,0 +1,40 @@\n",
+        );
+        for i in 0..40 {
+            let _ = writeln!(cut, "+std::process::Command::new(\"p{i}\");");
+        }
+        vec![
+            String::new(),
+            PATCH.to_owned(),
+            cut,
+            "--- a/s\u{200b}\\q\".rs\n+++ b/s\u{200b}\\q\".rs\n@@ -1 +1 @@\n-a\n+unsafe { f() } // \u{202e}\n".to_owned(),
+            "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,2 +1,3 @@\n fn f() {\n+    g().unwrap();\n }\n".to_owned(),
+        ]
+    }
+
+    /// F5b: the model reads the builder's document, and its writer writes the builder's bytes
+    /// back from the model: one byte form, as `docs/reference/diagnostics.md` states it. A
+    /// document with `judge_sees` (a judge that differs) is read and written as well.
+    #[test]
+    fn the_model_reads_the_builders_document_and_writes_its_bytes() {
+        let mut seen = [false; 4];
+        for patch in model_patches() {
+            let review = review(&patch, Guards::none()).unwrap();
+            let document = super::diagnostics(&review);
+            let ranked = rank(&review);
+            let builder = deep_diff_forge_graph::diagnostics(review.seal(), &ranked);
+            assert_eq!(document.to_json(), builder.to_json());
+            assert_eq!(
+                diagnostics::write(&document),
+                builder.to_json(),
+                "{patch:?}"
+            );
+            let judged = builder.judged(deep_diff_forge_graph::Judge::Different {
+                ranker_sha256: "f".repeat(64),
+                signals: Vec::new(),
+            });
+            let model = Diagnostics::from_json(&judged.to_json()).unwrap();
+            assert_eq!(diagnostics::write(&model), judged.to_json());
+            for d in &document.diagnostics {
+                seen[0] |= d.cases.is_some();
+                seen[1] |= d.test_likely.is_some();
+            }
+            seen[2] |= !document.cut.is_empty();
+            seen[3] |= model.diagnostics.iter().any(|d| d.judge_sees.is_some());
+        }
+        assert_eq!(seen, [true; 4], "a member the patches did not reach");
+    }
+
+    /// F5b: the reader follows the schema's stability rule: members it does not know, at the top,
+    /// in `tool` and in a diagnostic, are ignored and the document still reads. Another schema
+    /// or a missing member is refused, naming why without the document's text.
+    #[test]
+    fn a_member_the_model_does_not_know_still_reads() {
+        let review = review(&model_patches()[2], Guards::none()).unwrap();
+        let known = super::diagnostics(&review);
+        let mut value: serde_json::Value = serde_json::from_str(known.to_json()).unwrap();
+        value["future"] = serde_json::json!({"x": [1]});
+        value["tool"]["build"] = serde_json::json!("y");
+        value["diagnostics"][0]["future_member"] = serde_json::json!(true);
+        let text = value.to_string();
+        let read = Diagnostics::from_json(&text).unwrap();
+        assert_eq!(read.diagnostics, known.diagnostics);
+        assert_eq!(
+            (read.tool.clone(), read.counts.clone()),
+            (known.tool.clone(), known.counts.clone())
+        );
+        assert_eq!(read.to_json(), text);
+        value["schema"] = serde_json::json!("deep-diff-forge.rank.v0");
+        assert_eq!(
+            Diagnostics::from_json(&value.to_string())
+                .unwrap_err()
+                .to_string(),
+            "not a deep-diff-forge.diagnostics.v0 document: its schema is not deep-diff-forge.diagnostics.v0"
+        );
+        value["schema"] = serde_json::json!(DIAGNOSTICS_SCHEMA);
+        value["diagnostics"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("path");
+        assert_eq!(
+            Diagnostics::from_json(&value.to_string()).unwrap_err(),
+            Error::Document {
+                pages: 0,
+                problem: "a member that is a string is missing or of another type"
+            }
+        );
+        assert!(Diagnostics::from_json("not json").is_err());
     }
 
     #[cfg(unix)]

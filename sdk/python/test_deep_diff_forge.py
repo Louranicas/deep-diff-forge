@@ -2,6 +2,7 @@
 
 Run: DDF_BIN=target/debug/deep-diff-forge python3 -I sdk/python/test_deep_diff_forge.py
 """
+import hashlib
 import json
 import os
 import pathlib
@@ -24,6 +25,93 @@ REFUSAL = '{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"too long"}}
 # A stand-in for `deep-diff-forge rpc` that answers each request line with an empty result.
 ECHO = ("import json, sys\nfor line in sys.stdin:\n    request = json.loads(line)\n"
         "    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': {}}), flush=True)")
+
+
+TRANSCRIPT = REPO / "fixtures" / "protocol" / "v2-transcript.jsonl"
+MARKER = "zq7MARKER\u202e"
+
+
+def paging_patch():
+    """Six files of process spawns (three cut at 32 rows), a hidden character in each path and a
+    line holding a bidi control: a diagnostics document of many pages at the smallest budget."""
+    text = ""
+    for f in range(6):
+        path = f"src/m{f}/{'n' * 30 * f}\u200b.rs"
+        lines = 25 + 5 * f
+        text += f"diff --git a/{path} b/{path}\nnew file mode 100644\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,{lines} @@\n"
+        text += "".join(f'+std::process::Command::new("p{i}");\n' for i in range(lines))
+    return text + "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-a = 1\n+a = eval(s)  # \u202e\n"
+
+
+def cli_diagnostics(patch):
+    """The bytes ``--stdin-patch --diagnostics --json`` prints."""
+    return subprocess.run([BIN, "--stdin-patch", "--diagnostics", "--json"], input=patch.encode(),
+                          capture_output=True, check=True).stdout
+
+
+# A stand-in daemon for ``StdioClient``: argv[1] is ``transcript`` (answer as the published 0.10.0
+# binary's recorded transcript answers a request of the same method and ``protocol`` param) or a
+# JSON file of real pages and argv[2] how to tamper with them; ``engine.initialize`` is protocol 3.
+STUB = r"""
+import json, sys
+source, mode = sys.argv[1], sys.argv[2]
+if mode == "transcript":
+    records = []
+    for line in open(source, encoding="utf-8").read().splitlines()[1:]:
+        record = json.loads(line)
+        try:
+            asked = json.loads(record["request"])
+        except ValueError:
+            continue
+        params = asked.get("params") if isinstance(asked, dict) else None
+        if isinstance(asked, dict) and isinstance(params, (dict, type(None))):
+            records.append((asked.get("method"), (params or {}).get("protocol"), json.loads(record["response"])))
+elif mode not in ("speaks2", "claims3"):
+    pages = json.load(open(source, encoding="utf-8"))
+for line in sys.stdin:
+    request = json.loads(line)
+    method, params = request["method"], request.get("params") or {}
+    if mode == "transcript":
+        answer = next((r for m, v, r in records if m == method and v == params.get("protocol")), None)
+        answer = dict(answer or {"jsonrpc": "2.0", "error": {"code": -32601, "message": "absent"}})
+        if method == "diff.rank":
+            answer = {"jsonrpc": "2.0", "error": {"code": -32000, "message": "diff.rank was asked"}}
+    elif method == "engine.initialize":
+        answer = {"jsonrpc": "2.0", "result": {"protocol": 2 if mode == "speaks2" else 3}}
+    elif mode == "claims3":
+        answer = {"jsonrpc": "2.0", "error": {"code": -32601, "message": "method not found: diff.diagnostics"}}
+    else:
+        cursor = params.get("cursor")
+        index = 0 if cursor is None else next((i + 1 for i, p in enumerate(pages)
+                                               if p["page"]["next_cursor"] == cursor), len(pages))
+        if index >= len(pages):
+            answer = {"jsonrpc": "2.0", "error": {"code": -32602, "message": "invalid cursor"}}
+        else:
+            page = pages[index]
+            last = len(pages) - 1
+            if mode == "total" and index > 0:
+                page["page"]["total"] += 1
+            if mode == "sha" and index == 1:
+                page["page"]["document_sha256"] = "0" * 64
+            if mode == "first" and index == 1:
+                page["page"]["first"] -= 1
+            if mode == "early" and index == 1:
+                page["page"]["next_cursor"] = None
+            if mode == "hash" and index == 1:
+                page["diagnostics"][0]["line"] = 99999
+            if mode == "repeat" and index == 2:
+                page["page"]["next_cursor"] = pages[1]["page"]["next_cursor"]
+            if mode == "endless" and index == last:
+                page["page"]["next_cursor"] = "dg0.0000000000000000.0000000000000000.1"
+            if mode == "past" and index == last:
+                page["diagnostics"].append(page["diagnostics"][0])
+                page["page"]["count"] += 1
+            if mode == "empty" and index == 2:
+                page["page"]["count"], page["diagnostics"] = 0, []
+            answer = {"jsonrpc": "2.0", "result": page}
+    answer["id"] = request["id"]
+    print(json.dumps(answer), flush=True)
+"""
 
 
 def cli_review(patch, *mode):
@@ -105,6 +193,138 @@ class Stdio(unittest.TestCase):
         with ddf.StdioClient((BIN, "rpc")) as client:
             with self.assertRaises(ValueError):
                 client.review_patch("x" * ddf.MAX_REQUEST_BYTES)
+
+
+class Diagnostics(unittest.TestCase):
+    def test_diagnostics_patch_matches_the_cli(self):
+        patch = paging_patch()
+        expected = cli_diagnostics(patch)
+        with ddf.StdioClient((BIN, "rpc")) as client:
+            for max_bytes in (4096, None):
+                document = client.diagnostics_patch(patch, max_bytes=max_bytes)
+                self.assertIsInstance(document, ddf.Diagnostics)
+                self.assertEqual(document.canonical_bytes, expected)
+                self.assertEqual(document, json.loads(expected))
+                self.assertEqual(list(document), ["schema", "input_sha256", "tool", "judge", "counts", "cut",
+                                                  "diagnostics", "texts"])
+            self.assertGreater(len(document["diagnostics"]), 40)
+            with self.assertRaises(ddf.RpcError) as refused:
+                client.diagnostics_patch("", require_files=True)
+            self.assertEqual((refused.exception.code, refused.exception.message),
+                             (7, "refused: 0 files in input (--require-files)"))
+
+    def test_a_parse_failure_names_no_text_of_the_patch(self):
+        with ddf.StdioClient((BIN, "rpc")) as client:
+            for broken in (f"--- a/x\n+++ b/x\n@@ -1,{MARKER} +1 @@\n-a\n+b\n", f"--- a/x\n+++ b/x\n+{MARKER}\n"):
+                with self.assertRaises(ddf.RpcError) as caught:
+                    client.diagnostics_patch(broken)
+                self.assertEqual(caught.exception.code, 4)
+                self.assertNotIn("zq7MARKER", str(caught.exception))
+                self.assertNotIn("\u202e", str(caught.exception))
+                # The same failure on another method still quotes the line, as released.
+                with self.assertRaises(ddf.RpcError) as released:
+                    client.rank_patch(broken)
+                self.assertIn("zq7MARKER", released.exception.message)
+
+    def test_an_old_daemon_raises_protocol_too_old(self):
+        stub = ddf.StdioClient((sys.executable, "-I", "-c", STUB, str(TRANSCRIPT), "transcript"), timeout=10)
+        with stub:
+            with self.assertRaises(ddf.ProtocolTooOld) as caught:
+                stub.diagnostics_patch(PATCH)
+        error = caught.exception
+        self.assertEqual((error.daemon, error.needed, error.method), (2, 3, "diff.diagnostics"))
+        self.assertEqual(str(error), "protocol too old: diff.diagnostics needs engine protocol 3; the daemon speaks 2")
+        speaks2 = ddf.StdioClient((sys.executable, "-I", "-c", STUB, str(TRANSCRIPT), "speaks2"), timeout=10)
+        with speaks2:
+            with self.assertRaises(ddf.ProtocolTooOld) as answered_two:
+                speaks2.diagnostics_patch(PATCH)
+        self.assertEqual(answered_two.exception.daemon, 2)
+
+    def test_a_daemon_that_breaks_paging_raises_a_named_error(self):
+        patch = paging_patch()
+        pages, cursor = [], None
+        with ddf.StdioClient((BIN, "rpc")) as client:
+            while True:
+                params = {"patch": patch, "max_bytes": 4096}
+                if cursor is not None:
+                    params["cursor"] = cursor
+                page = client.call("diff.diagnostics", **params)
+                pages.append(page)
+                cursor = page["page"]["next_cursor"]
+                if cursor is None:
+                    break
+        self.assertGreaterEqual(len(pages), 4)
+        last = len(pages) - 1
+        cases = [("ok", None, None), ("total", 2, "total changed between pages"),
+                 ("sha", 2, "document_sha256 changed between pages"),
+                 ("first", 2, "a page does not start where the last one ended"),
+                 ("early", 2, "the cursors ended before the document did"),
+                 ("hash", len(pages), "the rebuilt document does not hash to document_sha256"),
+                 ("repeat", 3, "a cursor came back"),
+                 ("endless", last + 1, "the cursors did not end with the document"),
+                 ("empty", 3, "a page holds no diagnostic"),
+                 ("past", len(pages), "a page goes past total")]
+        with tempfile.TemporaryDirectory() as directory:
+            source = pathlib.Path(directory) / "pages.json"
+            source.write_text(json.dumps(pages), encoding="utf-8")
+            for mode, at, problem in cases:
+                with ddf.StdioClient((sys.executable, "-I", "-c", STUB, str(source), mode), timeout=10) as stub:
+                    if problem is None:
+                        self.assertEqual(stub.diagnostics_patch(patch).canonical_bytes, cli_diagnostics(patch))
+                        continue
+                    with self.assertRaises(ddf.PagingError, msg=mode) as caught:
+                        stub.diagnostics_patch(patch)
+                self.assertEqual((caught.exception.pages, caught.exception.problem), (at, problem), mode)
+                self.assertIsInstance(caught.exception, ddf.TransportError)
+
+
+    def test_a_member_this_sdk_does_not_know_is_named(self):
+        patch = paging_patch()
+        pages, cursor = [], None
+        with ddf.StdioClient((BIN, "rpc")) as client:
+            while True:
+                params = {"patch": patch, "max_bytes": 4096}
+                if cursor is not None:
+                    params["cursor"] = cursor
+                page = client.call("diff.diagnostics", **params)
+                pages.append(page)
+                cursor = page["page"]["next_cursor"]
+                if cursor is None:
+                    break
+        command = cli_diagnostics(patch).decode()
+        top = command.replace('\n  "cut": ', '\n  "future": 1,\n  "cut": ', 1)
+        first = command.index('\n    {"key"') + 1
+        close = command.rindex("}", 0, command.index("\n", first))
+        inner = command[:close] + ', "x\\u202e": true' + command[close:]
+        for document, name, tamper in ((top, "future", lambda k, p: p.__setitem__("future", 1)),
+                                       (inner, "diagnostics[].x\\u202e",
+                                        lambda k, p: k == 0 and p["diagnostics"][0].__setitem__("x\u202e", True))):
+            digest = hashlib.sha256(document.encode()).hexdigest()
+            newer = json.loads(json.dumps(pages))
+            for k, page in enumerate(newer):
+                page["page"]["document_sha256"] = digest
+                tamper(k, page)
+            with tempfile.TemporaryDirectory() as directory:
+                source = pathlib.Path(directory) / "pages.json"
+                source.write_text(json.dumps(newer), encoding="utf-8")
+                with ddf.StdioClient((sys.executable, "-I", "-c", STUB, str(source), "ok"), timeout=10) as stub:
+                    with self.assertRaises(ddf.UnknownMembers) as caught:
+                        stub.diagnostics_patch(patch)
+            error = caught.exception
+            self.assertEqual((error.pages, error.members), (len(pages), [name]))
+            self.assertIn("upgrade the SDK", str(error))
+            self.assertNotIn("\u202e", str(error))
+            self.assertIsInstance(error, ddf.PagingError)
+
+    def test_a_daemon_that_claims_protocol_3_without_the_method_is_named(self):
+        error = ddf.ProtocolTooOld(3, 3, "diff.diagnostics")
+        self.assertEqual(str(error), "protocol too old: the daemon reported engine protocol 3 and does not know "
+                                     "diff.diagnostics")
+        claims = ddf.StdioClient((sys.executable, "-I", "-c", STUB, str(TRANSCRIPT), "claims3"), timeout=10)
+        with claims:
+            with self.assertRaises(ddf.ProtocolTooOld) as caught:
+                claims.diagnostics_patch(PATCH)
+        self.assertEqual((caught.exception.daemon, str(caught.exception)), (3, str(error)))
 
 
 class Responses(unittest.TestCase):
@@ -339,6 +559,9 @@ class Socket(unittest.TestCase):
                 with self.assertRaises(ddf.RpcError) as failed:
                     client.review_patch("--- a/x\n+++ b/x\n+stray\n")
                 self.assertEqual(failed.exception.code, 4)
+                patch = paging_patch()
+                self.assertEqual(client.diagnostics_patch(patch, max_bytes=4096).canonical_bytes,
+                                 cli_diagnostics(patch))
                 client.call("daemon.shutdown")
                 self.assertEqual(daemon.wait(timeout=10), 0)
             finally:

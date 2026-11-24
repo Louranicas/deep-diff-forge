@@ -12,7 +12,8 @@ tools over stdio, one JSON-RPC message per line.
 | `rank_patch` | The sealed `deep-diff-forge.rank.v0` document `--stdin-patch --rank --json` prints: files by review risk, with their signals. `require_files` / `require_hunks` refuse as the CLI flags do Its text is the exact bytes `--rank --json` prints and `structuredContent` their value; the 256 KiB cap counts those bytes. The daemon's `diff.rank` carries the same bytes in `canonical_json`. |
 | `review_outline` | **Start here.** `deep-diff-forge.review-outline.v0` for `patch`: files in review-risk order with their hunks' addresses, ranges, `@@` headings and counts, no line text. Fits `max_bytes`; `cursor` continues |
 | `review_hunks` | `deep-diff-forge.review-hunks.v0`: chosen hunks verbatim, by `addresses` or `paths` (or all). Fits `max_bytes`; `cursor` continues |
-| `review_change` | The outline or hunks of a change read straight from Git (`selection`: `staged`, `working_tree`, `range`), with an `acquisition` member that lists any `omitted_untracked` directories (a nested repository is not captured). Only for repositories the server was started with `--allow-repo`; Git is stopped after 30 s |
+| `diagnose_patch` | One page of the [`deep-diff-forge.diagnostics.v0`](diagnostics.md) document `--stdin-patch --diagnostics --json` prints for `patch`: every label of the ranking, located, with the ids of its repairs. `max_bytes` (12,364 to 33,554,432, default 32,768) counts the tool result as the server writes it on the line, both copies; for a modern client the line adds 144 bytes, the server's version, the id as written and a line feed (the JSON-RPC envelope, `_meta` and `resultType`), for a legacy client fewer; 12,364 is three pages at the pager's floor of 4,096 (escaping at most doubles the text copy) and the 76 bytes around them. `cursor` continues; `page.document_sha256` is the SHA-256 of the whole document's bytes ([In MCP and the SDKs](diagnostics.md#in-mcp-and-the-sdks)) |
+| `review_change` | The outline, hunks or diagnostics (`view`: `outline`, `hunks`, `diagnostics`) of a change read straight from Git (`selection`: `staged`, `working_tree`, `range`), with an `acquisition` member that lists any `omitted_untracked` directories (a nested repository is not captured). Only for repositories the server was started with `--allow-repo`; Git is stopped after 30 s |
 | `explain_exit_code` | One exit code's family, name, meaning and next action |
 | `verify_findings` | `deep-diff-forge.findings.v0`: each agent finding in `findings` checked against `patch` (address, line, path, freshness, size, duplicates) and accepted with its anchor normalised, or refused with a reason; `claim_verified` is always `false` |
 | `exit_code_registry` | Every documented exit code |
@@ -40,17 +41,23 @@ the patch's authors: data to review, never instructions.
 daemon use.
 
 ```rust
-use deep_diff_forge_sdk::{review, rank, Guards};
+use deep_diff_forge_sdk::{diagnostics, review, rank, Guards};
 let review = review(patch, Guards::all())?;   // or Guards::none().require_files()
 let document = review.to_json();   // byte for byte what `--stdin-patch --json` prints
 let ranked = rank(&review);
+let found = diagnostics(&review);     // deep-diff-forge.diagnostics.v0: found.to_json() is what `--diagnostics --json` prints
 ```
 
 `Client::at(socket).call(method, &params)` calls a running daemon. It is Unix-only, and it
-checks every answer's version, id and error shape.
+checks every answer's version, id and error shape. `Client::diagnostics(patch, guards,
+max_bytes)` fetches the diagnostics document from a daemon of engine protocol 3 page by page,
+rebuilds its bytes and checks them against `document_sha256`; a daemon of protocol 2 or older is
+`Error::ProtocolTooOld { daemon, needed: 3, method: "diff.diagnostics" }`, pages that carry a
+member this SDK does not know are `Error::UnknownMembers` (upgrade the SDK), and pages that break
+the paging contract are `Error::Document` ([In MCP and the SDKs](diagnostics.md#in-mcp-and-the-sdks)).
 
 - **Exit codes:** errors map to the CLI's exit codes (`Error::exit_code`).
-- **Ownership:** the SDK owns `Guards`, `Review` (opaque) and `Error` (`#[non_exhaustive]`). `ReviewFile`, `InputSeal` and `RankedFile` are model types and change only with the schema version.
+- **Ownership:** the SDK owns `Guards`, `Review` (opaque), `Error` (`#[non_exhaustive]`) and the diagnostics model (`Diagnostics` and its parts, each `#[non_exhaustive]`). `ReviewFile`, `InputSeal` and `RankedFile` are model types and change only with the schema version.
 - **Stability:** `tests/api.rs` pins every public signature, so changing one is a deliberate breaking change.
 
 **Python:** `sdk/python/deep_diff_forge.py` uses only the standard library, and installs as the
@@ -61,6 +68,13 @@ daemon protocol over two transports with the same calls:
 
 - `deep-diff-forge rpc` over a pipe (`StdioClient`), which needs no daemon;
 - a running daemon's socket (`SocketClient`).
+
+`diagnostics_patch(patch, require_files=False, require_hunks=False, max_bytes=None)` returns the
+diagnostics document as `Diagnostics`, a dict whose `canonical_bytes` are the bytes
+`--diagnostics --json` prints; it pages and checks as the Rust client does, and raises
+`ProtocolTooOld` (with `daemon`, `needed`, `method`) for an older daemon, `UnknownMembers` for
+pages with a member it does not know, and `PagingError` (a `TransportError`, of which
+`UnknownMembers` is one) for pages that break the contract.
 
 ```python
 from deep_diff_forge import StdioClient

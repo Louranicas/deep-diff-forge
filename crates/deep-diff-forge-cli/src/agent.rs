@@ -281,6 +281,39 @@ fn rank_parity_ok(expected: &str, cli: &str, daemon: &Value, mcp_text: &str) -> 
         && mcp_text == cli
 }
 
+/// The bytes of one diagnostics page as the daemon writes it (`diff.diagnostics`), which MCP's
+/// text copy of `diagnose_patch` is.
+fn page_bytes(page: &Value) -> String {
+    let line = page.to_string();
+    let line = deep_diff_forge_core::json_line_safe(&line);
+    deep_diff_forge_daemon::pages::escape_hidden(&line).into_owned()
+}
+
+/// The command's `diagnostics.v0` bytes are of the probe; the daemon's `diff.diagnostics` page
+/// and MCP's `diagnose_patch` page each hold the whole document and name the SHA-256 of those
+/// bytes as `document_sha256`; and MCP's text is the daemon's page byte for byte (F5c). A hash
+/// and bytes, never parsed values: a surface whose bytes differ fails even when its values agree.
+fn diagnostics_parity_ok(
+    expected: &str,
+    cli: &str,
+    daemon: &Value,
+    via_mcp: &Value,
+    mcp_text: &str,
+) -> bool {
+    let digest = deep_diff_forge_core::sha256_hex(cli.as_bytes());
+    let whole = |page: &Value| {
+        page["page"]["document_sha256"] == digest.as_str()
+            && page["page"]["first"] == 0
+            && page["page"]["next_cursor"].is_null()
+    };
+    serde_json::from_str::<Value>(cli).is_ok_and(|document| {
+        document["schema"] == "deep-diff-forge.diagnostics.v0"
+            && document["input_sha256"] == expected
+    }) && whole(daemon)
+        && whole(via_mcp)
+        && mcp_text == page_bytes(daemon)
+}
+
 /// The outline is of the probe, and the hunk fetched by its address is that hunk, within budget.
 fn views_ok(expected: &str, outline: &Value, address: &Value, hunks: &Value) -> bool {
     outline["input_sha256"] == expected
@@ -341,6 +374,20 @@ fn checks() -> Vec<Check> {
         detail:
             "CLI --rank --json bytes equal daemon diff.rank canonical_json and MCP rank_patch text"
                 .into(),
+    });
+
+    let cli_diagnostics = review.as_ref().map_or(String::new(), |review| {
+        let ranked = deep_diff_forge_graph::rank(review.files());
+        deep_diff_forge_graph::diagnostics(review.seal(), &ranked).to_json()
+    });
+    let diagnostics = daemon_call("diff.diagnostics", &json!({"patch": PROBE}));
+    let arguments = json!({"patch": PROBE});
+    let via_mcp = mcp_call(&mut server, 7, "diagnose_patch", &arguments);
+    let text = mcp_text(&mut server, 8, "diagnose_patch", &arguments);
+    checks.push(Check {
+        name: "diagnostics_parity",
+        ok: diagnostics_parity_ok(&expected, &cli_diagnostics, &diagnostics, &via_mcp, &text),
+        detail: "SHA-256 of CLI --diagnostics --json bytes equals daemon diff.diagnostics and MCP diagnose_patch document_sha256; MCP text is the daemon page's bytes".into(),
     });
 
     let outline = mcp_call(&mut server, 5, "review_outline", &json!({"patch": PROBE}));
@@ -464,6 +511,54 @@ mod tests {
         assert!(!rank_parity_ok("e", rank, &json!({}), rank));
         assert!(!rank_parity_ok("e", rank, &daemon(rank), spaced));
         assert!(!rank_parity_ok("e", spaced, &daemon(rank), rank));
+
+        let cli = "{\"schema\": \"deep-diff-forge.diagnostics.v0\", \"input_sha256\": \"e\"}\n";
+        let spaced = "{\"schema\": \"deep-diff-forge.diagnostics.v0\",  \"input_sha256\": \"e\"}\n";
+        let page = |bytes: &str| {
+            let digest = deep_diff_forge_core::sha256_hex(bytes.as_bytes());
+            json!({"page": {"first": 0, "next_cursor": null, "document_sha256": digest}})
+        };
+        let good = page(cli);
+        let text = page_bytes(&good);
+        assert!(diagnostics_parity_ok("e", cli, &good, &good, &text));
+        assert!(!diagnostics_parity_ok("f", cli, &good, &good, &text));
+        let rank = cli.replace("diagnostics.v0", "rank.v0");
+        assert!(!diagnostics_parity_ok(
+            "e",
+            &rank,
+            &page(&rank),
+            &page(&rank),
+            &page_bytes(&page(&rank))
+        ));
+        // The same values in other bytes: every surface that names another document's hash fails.
+        assert!(!diagnostics_parity_ok("e", spaced, &good, &good, &text));
+        assert!(!diagnostics_parity_ok(
+            "e",
+            cli,
+            &page(spaced),
+            &good,
+            &text
+        ));
+        assert!(!diagnostics_parity_ok(
+            "e",
+            cli,
+            &good,
+            &page(spaced),
+            &text
+        ));
+        let mut second = good.clone();
+        second["page"]["first"] = json!(1);
+        assert!(!diagnostics_parity_ok("e", cli, &second, &good, &text));
+        let mut more = good.clone();
+        more["page"]["next_cursor"] = json!("dg0.x");
+        assert!(!diagnostics_parity_ok("e", cli, &good, &more, &text));
+        assert!(!diagnostics_parity_ok(
+            "e",
+            cli,
+            &good,
+            &good,
+            &format!("{text} ")
+        ));
 
         let outline = json!({"input_sha256": "e"});
         let address = json!("a1");

@@ -3,8 +3,10 @@
 `deep-diff-forge.diagnostics.v0` is new in 0.11.0. This page is the contract that the
 builder and every surface that prints it (`--diagnostics`, the daemon method `diff.diagnostics`,
 MCP `diagnose_patch`, the SDKs) are held to. `--diagnostics` prints it
-([On the command line](#on-the-command-line)), and the daemon method `diff.diagnostics` (so
-`rpc`) serves it in pages ([Paging](#paging)); MCP and the SDKs are still to come.
+([On the command line](#on-the-command-line)); the daemon method `diff.diagnostics` (so
+`rpc`), MCP's `diagnose_patch` and `review_change` with view `diagnostics` serve it in pages
+([Paging](#paging), [In MCP and the SDKs](#in-mcp-and-the-sdks)); the Rust SDK builds it in
+process (`diagnostics(&Review)`), and both SDKs fetch it from a daemon page by page.
 
 ## What a diagnostics document is
 
@@ -268,6 +270,38 @@ refused at 4 096, 16 384 or 65 536 bytes; at 4 096 they took 9 918 pages, at 65 
 views' 1 024 the first diagnostic of 2 881 of them would not have fitted, which is why this
 method's range starts at 4 096.
 
+## In MCP and the SDKs
+
+MCP's `diagnose_patch` (a patch) and `review_change` with view `diagnostics` (a change read from
+Git, with its `acquisition` member) answer with one page each, from the daemon's pager in the
+server's own process: `structuredContent` is the page and the text copy is the page as the
+daemon emits it. `max_bytes` (12 364 to 33 554 432, default 32 768) counts the tool result as
+the server writes it on the line, both copies, but not the JSON-RPC envelope, `_meta` and
+`resultType` around it ([MCP server](mcp-sdk-daemon.md#mcp-server) gives their size): the page
+starts at half of it and is paged smaller while the result is over it. 12 364 bytes is three pages at the pager's floor of 4 096 (escaping can at
+most double the text copy) and 76 bytes around them, so at any budget in the range a page that
+fits the floor is served; a smaller budget is refused naming the range. A diagnostic that does
+not fit is refused naming the `max_bytes` it needs. The server writes the line of such an answer
+with every bidi control, invisible character and control character of a string as a `\u`
+escape, as the daemon does; a patch that does not parse is refused with where it failed and
+none of its text.
+
+The Rust SDK's `diagnostics(&Review)` returns the builder's bytes and their typed model
+(`Diagnostics`); `Diagnostics::from_json` reads a document and ignores members it does not
+know. `Client::diagnostics` (Rust) and `diagnostics_patch` (Python) send `engine.initialize`
+with protocol 3 once for the call, follow the cursors, rebuild the document in the
+[byte form](#byte-form) and return it only when its bytes hash to `document_sha256`. Pages that
+change `total` or `document_sha256`, do not start where the last ended, hold no diagnostic,
+repeat a cursor or do not end with the document end the call with a named error (Rust
+`Error::Document`, Python `PagingError`); a call takes at most `total` pages, and `total` may not
+exceed the patch's length in bytes. A daemon of protocol 2 or older is reported as
+`ProtocolTooOld` (`daemon`, `needed` 3, `method`), never worked around; a daemon that reports
+protocol 3 or later and still does not know the method is named the same way, with the
+protocol it reported. An SDK rebuilds only the members it knows, so pages that carry a member
+it does not know end the call with `UnknownMembers` (Rust `Error::UnknownMembers`, Python
+`UnknownMembers`), which names the members and says that this SDK version cannot rebuild, and so
+cannot check, the document: upgrade the SDK. No document is returned unchecked.
+
 ## Gates: `--fail-on`
 
 `--rank --fail-on LIST` and `--diagnostics --fail-on LIST` take a comma-separated list of classes
@@ -289,7 +323,9 @@ the list.
 ## Stability
 
 While the schema is `v0`: members are only added, and only as optional; readers ignore members
-they do not know; codes and ids are only added. A version of the engine that finds more on the
+they do not know (an added member needs an SDK that knows it for the paged, checked call of
+[In MCP and the SDKs](#in-mcp-and-the-sdks); the command, the daemon, MCP and the in-process
+`diagnostics(&Review)` are not affected); codes and ids are only added. A version of the engine that finds more on the
 same input changes `scorer_sha256`, not the schema. Removing, renaming or retyping a member, or
 changing the key, the order, the completeness rule or a code's meaning, makes `v1`.
 

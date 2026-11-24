@@ -45,7 +45,7 @@ pub use admission::{
     ADMISSION_WAIT, Admission, Admitted, Busy, MAX_IN_FLIGHT_BYTES, MAX_READ_BYTES, Permit,
     ReadBudget, ReadReservation,
 };
-pub use handler::{Engine, METHODS, MethodSpec, Work, dispatch, request_weight};
+pub use handler::{Engine, METHODS, MethodSpec, Work, change_review, dispatch, request_weight};
 pub use inspect::{DirState, Inspection, LockState, SocketState, Trouble, inspect};
 pub use log::LogFormat;
 pub use protocol::{

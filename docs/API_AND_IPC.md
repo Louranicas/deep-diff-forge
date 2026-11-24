@@ -287,7 +287,8 @@ message per line (`crates/deep-diff-forge-cli/src/mcp.rs`).
 | `rank_patch` | `patch`, `require_files?`, `require_hunks?` | `diff.rank`: the sealed `rank.v0` document, its text the canonical bytes `--rank --json` prints and `structuredContent` their value; a ranking whose canonical bytes are over 256 KiB returns `deep-diff-forge.rank-summary.v0` with the same seal (before 0.10.0 the cap counted the compact form, so a ranking near the cap now comes back as a summary sooner) |
 | `review_outline` | `patch`, `require_files?`, `require_hunks?`, `max_bytes?`, `cursor?` | `review.outline`; `max_bytes` (2 KiB–32 MiB, default 32 KiB) covers the whole answer, both copies: the view starts at half and is re-paged smaller while the escaped text copy still pushes the answer over |
 | `review_hunks` | `patch`, `addresses?` or `paths?`, `require_files?`, `require_hunks?`, `max_bytes?`, `cursor?` | `review.hunks`, budgeted the same way |
-| `review_change` | `repo`, `selection`, `range?`, `include_untracked?`, `view?` (`outline` or `hunks`), and that view's arguments | `review.change`, only when the server was started with `mcp --allow-repo PATH`; budgeted the same way |
+| `diagnose_patch` | `patch`, `require_files?`, `require_hunks?`, `max_bytes?`, `cursor?` | the daemon's pager of `diff.diagnostics`, in the server's process: one page of `diagnostics.v0`, its text the page as the daemon emits it; `max_bytes` (12,364 to 32 MiB, default 32 KiB) counts the tool result as written, both copies |
+| `review_change` | `repo`, `selection`, `range?`, `include_untracked?`, `view?` (`outline`, `hunks` or `diagnostics`), and that view's arguments | `review.change`, only when the server was started with `mcp --allow-repo PATH`; budgeted the same way |
 | `explain_exit_code` | `code`, `family?` (`engine` or `council`) | the exit-code registry |
 | `verify_findings` | `patch`, `findings` (array of finding objects), `require_files?`, `require_hunks?` | `findings.verify` |
 | `exit_code_registry` | — | the exit-code registry |
@@ -301,9 +302,12 @@ can correct its input; an unknown tool or malformed JSON-RPC is a JSON-RPC error
 **Rust (`crates/deep-diff-forge-sdk`):** `review(patch, Guards) -> Result<Review, Error>`,
 `rank(&Review) -> Vec<RankedFile>`, `Review::to_json()` (the `review.v0`
 document), `Review::files()`, `Review::seal()`, `Guards::{none, all,
-require_files, require_hunks}`, the `exit` registry re-export, and, on Unix only,
-`Client::at(socket).call(method, &params)`. `Error` is `#[non_exhaustive]`
-(`Parse`, `Refused`, `Rpc`, `Transport`). `crates/deep-diff-forge-sdk/tests/api.rs`
+require_files, require_hunks}`, the `exit` registry re-export, `diagnostics(&Review) ->
+Diagnostics` (the `diagnostics.v0` document and its typed model; `Diagnostics::from_json`,
+`Diagnostics::to_json`), and, on Unix only, `Client::at(socket).call(method, &params)` and
+`Client::diagnostics(patch, Guards, Option<usize>)` (paged from a protocol-3 daemon, rebuilt and
+checked against `document_sha256`). `Error` is `#[non_exhaustive]` (`Parse`, `Refused`, `Rpc`,
+`Transport`, `ProtocolTooOld`, `UnknownMembers`, `Document`). `crates/deep-diff-forge-sdk/tests/api.rs`
 pins the public signatures.
 
 **Python (`sdk/python/deep_diff_forge.py`, standard library only; installable with
@@ -314,7 +318,10 @@ pins the public signatures.
 `rank_patch(patch, require_files=False, require_hunks=False)` (`diff.rank`; its
 `canonical_json` holds the exact bytes `--rank --json` prints),
 `verify_findings(patch, findings, require_files=False, require_hunks=False)`
-(`findings.verify`, protocol 2) and `methods()`.
+(`findings.verify`, protocol 2), `diagnostics_patch(patch, require_files=False,
+require_hunks=False, max_bytes=None)` (`diff.diagnostics`, protocol 3: a dict with
+`canonical_bytes`; `ProtocolTooOld` for an older daemon, `PagingError` and its subclass
+`UnknownMembers` for pages it cannot check) and `methods()`.
 A JSON-RPC error raises `RpcError` (with the daemon's `code`); a transport
 failure, including an answer that is not UTF-8 JSON or not a response to the
 request, raises `TransportError`. `StdioClient`'s `timeout` covers the whole
