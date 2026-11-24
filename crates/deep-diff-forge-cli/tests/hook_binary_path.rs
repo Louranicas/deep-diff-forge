@@ -24,8 +24,18 @@ fn git(root: &Path, args: &[&str]) {
     let out = Command::new("git")
         .current_dir(root)
         .envs(ISOLATE)
-        .args(["-c", "user.name=ddf", "-c", "user.email=ddf@example.invalid"])
-        .args(["-c", "init.defaultBranch=main", "-c", "commit.gpgSign=false"])
+        .args([
+            "-c",
+            "user.name=ddf",
+            "-c",
+            "user.email=ddf@example.invalid",
+        ])
+        .args([
+            "-c",
+            "init.defaultBranch=main",
+            "-c",
+            "commit.gpgSign=false",
+        ])
         .args(args)
         .output()
         .unwrap();

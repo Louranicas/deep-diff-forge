@@ -396,7 +396,12 @@ fn a_second_reading_has_the_budget_less_every_other_section() {
     hidden.extend_from_slice(b"}\n");
     let (root, _scratch) = repo("second-budget", &[("keep.txt", b"k\n".to_vec())]);
     std::fs::write(root.join("h.rs"), &hidden).unwrap();
-    let big: String = (0..20_000).map(|n| format!("line {n}\n")).collect();
+    let mut big = String::new();
+    for n in 0..20_000 {
+        big.push_str("line ");
+        big.push_str(&n.to_string());
+        big.push('\n');
+    }
     std::fs::write(root.join("big.txt"), big).unwrap();
     git(&root, &["add", "-A"]);
     let section = |acq: &GitAcquisition, path: &str| change(acq, path).patch_range.len();
