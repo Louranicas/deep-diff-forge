@@ -14961,3 +14961,37 @@ fn a_key_file_that_is_no_key_judges_nothing_and_says_no_key() {
     assert_eq!(runs(&log), 1);
     assert_eq!(std::fs::read(&state).unwrap(), before);
 }
+
+/// The list of load-sensitive tests (`tests/LOAD_SENSITIVE`) names test functions of this
+/// directory that exist, each once, so a renamed or removed test leaves no stale name for a
+/// run that skips the list.
+#[test]
+fn the_load_sensitive_list_names_tests_that_exist() {
+    let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let list = std::fs::read_to_string(tests.join("LOAD_SENSITIVE")).unwrap();
+    let mut sources = String::new();
+    for entry in std::fs::read_dir(&tests).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|extension| extension == "rs") {
+            sources.push_str(&std::fs::read_to_string(&path).unwrap());
+        }
+    }
+    let names: Vec<&str> = list
+        .lines()
+        .filter_map(|line| line.split('#').next().map(str::trim))
+        .filter(|name| !name.is_empty())
+        .collect();
+    assert!(!names.is_empty(), "LOAD_SENSITIVE names no test");
+    let unknown: Vec<&&str> = names
+        .iter()
+        .filter(|name| !sources.contains(&format!("fn {name}()")))
+        .collect();
+    assert!(
+        unknown.is_empty(),
+        "LOAD_SENSITIVE names tests that are not here: {unknown:?}"
+    );
+    let mut once = names.clone();
+    once.sort_unstable();
+    once.dedup();
+    assert_eq!(once.len(), names.len(), "LOAD_SENSITIVE names a test twice");
+}
