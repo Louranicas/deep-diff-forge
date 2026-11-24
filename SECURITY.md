@@ -841,16 +841,20 @@ bounded form.** What it holds to:
   Every command a hook names is this binary's own absolute path, quoted for the shell.
 - **The gate reads the notes of the judge's verdict on its probe.** A note `claims_unverified`
   (a policy that requires verified claims) fails the link `claims_verified` of `agent doctor
-  --gate`: the hook gives the judge no `--repo`, `--base` or `--head`, so every stop there
-  holds and none passes; an uncommitted or staged change can never be verified.
+  --gate`. With a judge that takes bound mode (0.11.0, S3.25.b) a commit with one parent is
+  judged with `--repo`, `--base` and `--head` and can pass; an uncommitted or staged change, a
+  root commit and a merge commit still hold, and with a judge that does not take bound mode
+  every stop holds. What is not committed can never be verified.
 - **The patch given to the judge has forge-warden's patch-maker options** (full index lines,
   `--submodule=short`, `--ignore-submodules=none`, the store's commit-graph and multi-pack
   index not read), held byte for byte by a test that runs a recorded copy of `make_patch.sh`.
 - **Not a boundary: work hidden with Git's own rules.** A judged agent can hide work from the
-  hooks with a directory of mode 000, an untracked `.gitignore` that ignores itself, or a
-  directory named `.git` below the top, whose content Git never lists (the stop is then silent), or make staging run out of time with a very large sparse file (UNJUDGED,
-  with no run of the judge). These are stated limits of 0.10.0: the working tree and the merge
-  request still show the work, and release 0.11.0 targets them (F12, F13).
+  hooks with a directory of mode 000, an untracked `.gitignore` that ignores itself, a
+  directory named `.git` below the top, or a plain directory at a path the base records as a
+  submodule, whose content Git never lists (the stop is then silent), or make staging run
+  out of time with a very large sparse file (UNJUDGED, with no run of the judge). These are
+  stated limits, measured again on the 0.11.0 candidate, where each still holds: the working
+  tree and the merge request still show the work.
 - **`agent doctor --gate` reads a registered stop hook only in the form `agent setup --hooks`
   prints.** One program and its arguments, written with plain characters and single quotes:
   no comment, second command, pipe, redirection or substitution. The program word must be

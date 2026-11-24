@@ -88,10 +88,13 @@ later; 0.9.0 is the current development line):
 **The Rust API before 1.0 (decided 2026-11-23).** A minor release may break the Rust API of a
 library crate, and its notes say where. `deep_diff_forge_pipeline::Coverage` stays a closed
 enum in 0.10.0: its five values are every coverage outcome, and a caller may match it
-exhaustively, so a sixth outcome would be a breaking change of that crate. Whether `Coverage`
-and the other public enums become `#[non_exhaustive]` is decided once, for all of them, in
-0.11.0 (library API hygiene, with `Error::source` and the SDK gaps); 0.10.0 publishes the API
-as it is.
+exhaustively, so a sixth outcome would be a breaking change of that crate. **Decided for the
+0.x line in 0.11.0** (OD-N, the coordinator's ruling, shown to the owner at the release): the
+public enums and structs stay as they are (those that are closed, `Coverage` among them, stay
+closed, and those that carry `#[non_exhaustive]` now, `PatchParseError` and `RankedFile`
+among them, keep it); a release that adds a variant or a public field says so under the Rust
+API breaks of its notes, as 0.10.0 did; `#[non_exhaustive]` for the others, `Error::source` and
+the SDK gaps are taken up for 1.0 and not before.
 
 ## Pre-Release Checklist
 

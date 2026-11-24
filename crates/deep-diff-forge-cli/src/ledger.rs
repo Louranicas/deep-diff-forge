@@ -22,8 +22,9 @@ pub(crate) const VERSION: u64 = 1;
 pub(crate) const FILE: &str = "ledger.jsonl";
 /// The salt of the digests of what is not committed: 32 bytes from the system, in hex.
 const SALT: &str = "ledger.salt";
-/// The most of the ledger's end that a stop reads (to count the checks since its session's
-/// last stop, and to see a newer build's records): a stop's time does not grow with the ledger.
+/// The most of the ledger's end that a stop's append reads (to count the checks since its
+/// session's last stop, and to see a newer build's records); the frontier reads the whole
+/// ledger, up to [`WHOLE`].
 const TAIL: u64 = 1 << 20;
 
 /// What a unit of a stop is to the ledger.

@@ -86,8 +86,12 @@ An empty list never means the text is safe. They also raise the file's rank
 the final newline, are the document's canonical form on every surface: the daemon's `diff.rank`
 (and so `rpc` and the Python SDK's `rank_patch`) answers with the document's value plus the member
 `canonical_json`, a string holding exactly those bytes, and MCP's `rank_patch` gives them as its
-text, with the value as `structuredContent`. Seal or compare the bytes, not a re-serialisation of
-the value. Before 0.10.0 the daemon, `rpc` and MCP gave only a compact form with sorted keys,
+text with one difference: each hidden character (a bidi control, an invisible character, a
+control character other than line feed and tab, a line separator) is written there as a `\u`
+escape ([MCP server](mcp-sdk-daemon.md#mcp-server), *Text*), so that text equals the bytes only
+when the document holds none, and always equals them in value; the value is also given as
+`structuredContent`. Seal or compare the bytes, not a re-serialisation of the value; on MCP,
+compare the value, or the bytes after reading the escapes back. Before 0.10.0 the daemon, `rpc` and MCP gave only a compact form with sorted keys,
 equal in value but not in bytes. `diff.plan` and `session.snapshot` still answer with the bare
 `ranked` array, unsealed; `cluster.v0`'s `ranked` list uses the same entries without
 `evidence`, `evidence_truncated` and `diff_suppressed`.

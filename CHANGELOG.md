@@ -309,8 +309,10 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   It judges the working tree without the state, reading and writing nothing of the state
   directory, under the policy at the ledger's baseline (at `HEAD` with no ledger, which it
   says): a failing tree blocks, stands at the stop that follows a block, and blocks again at
-  the next turn's stop. No commit is judged by it; the frontier judges them at a stop that has
-  its state. The ledger records it (F12.d, owner decision OD-J).
+  the next turn's stop. With the ledger's baseline it also judges the frontier's commits, the
+  session's own among them, each once (not when another hook of the session holds its lock);
+  without a baseline no commit is judged by it, and they wait for a stop that has its state.
+  The ledger records it (F12.d, owner decision OD-J).
 - Git selections (`--git-range`, `--git-staged`, `--git-working-tree`, MCP and RPC
   `review_change`): a binary change that is text with a few stray bytes is read (S3.27.h, the miss
   0.10.0 declared in DDF-2026-006). When Git's NUL check calls a file binary, no attribute applies
@@ -400,6 +402,30 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   doctor` on the built binary must find `diagnostics_parity` true, and the doctor's
   every-check-can-fail test and the marker canary run by their exact names, each required to
   be the one test that ran.
+- `agent verify-branch` refuses a ledger with a record that is not whole as its kind is
+  written (A0110-M1, 0.11.0 tree review). It checked a record's `v` and `kind` only, so a stop
+  record with no `outcome`, an outcome this build does not write, or no `unit` was neither
+  refused nor counted, and a branch whose commit a stop had passed still verified beside it.
+  Every member this build writes for a record's kind must now be there, of its type and with a
+  value this build writes (the documented clearance needs `v`, `kind` and a commit `unit`);
+  else the ledger is refused whole, naming the line. The frontier's reader, which passes over
+  such a record and so judges more, is unchanged, and so is what is written.
+- A session's start says what its stops then do (C2, 0.11.0 tree review). With its state
+  unusable (damaged, older, newer, a key file that is no key, no directory of its own) it said
+  "the stops of this session will not be judged and no advice will be given", while each stop
+  judged the working tree without the state and could block; it now says that no advice will
+  be given and each stop judges the working tree without the session's memory. With its lists
+  of commits unusable it says the same without the advice clause (advice is given). Git
+  missing or refusing, the project moved, replaced or gone, and a state directory inside the
+  tree keep "will not be judged": their stops are UNJUDGED. The stateless stop's block no longer
+  ends with "a failure that has blocked does not block again" (or its sentence for a hold),
+  false without a state: the stop after the block lets it through, and the next turn's stop
+  blocks again while the tree still fails or is held.
+- `docs/RELEASE_AND_PUBLICATION.md`: the Rust API of the 0.x line is decided (OD-N, the
+  coordinator's ruling shown to the owner at this release): public enums and structs stay as
+  they are, a release that adds a variant or a public field says so under the Rust API breaks
+  of its notes, and `#[non_exhaustive]`, `Error::source` and the SDK gaps are taken up for 1.0.
+  No code changes.
 
 ## [0.10.0] - 2026-11-23
 
