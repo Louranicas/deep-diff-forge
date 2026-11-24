@@ -138,13 +138,14 @@ open(p, "w").write(json.dumps(d))' "$state" "$n" ;;
   if [ -n "$state" ] && [ "$r" -eq 0 ]; then pass "$id"; else fail "$id" "${state:-no state written}; $why"; fi
 done
 
-# S3.27.h: a source file that Git calls binary for a stray NUL byte is read in a Git mode
-# (`--git-range`): its silenced lint is found (check_suppressed) and the change says its diff is
-# suppressed by content (diff_suppressed). The hook's patch is Git's binary patch and is not
-# read so (stated in docs/reference/agent-hooks.md); this row is the Git modes'.
+# S3.27.h: a source file that Git calls binary for a stray NUL byte, beside a byte that is not
+# UTF-8, is read in a Git mode (`--git-range`): its silenced lint is found (check_suppressed) and
+# the change says its diff is suppressed by content (diff_suppressed). The published 0.10.0 read
+# such a file as a binary change only (measured: binary_change alone). The hook's patch is Git's
+# binary patch and is not read so; this row is the Git modes'.
 id=stray-bytes-in-a-source-file-are-read-in-a-git-mode
 row "$id" '{}'
-printf 'fn a() {}\n#[allow(dead_code)]\nfn b() {}\n// a stray \000 byte\n' >"$d/repo/a.rs"
+printf 'fn a() {}\n#[allow(dead_code)]\nfn b() {}\n// two stray bytes: \000\377\n' >"$d/repo/a.rs"
 git_ -C "$d/repo" commit --quiet -am "a source file with a stray byte"
 run_ddf --git-range HEAD~1..HEAD --rank --json >"$d/rank.json" 2>"$d/rank.err"
 if "$py" -P -E -c 'import json, sys

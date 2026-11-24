@@ -90,7 +90,7 @@ Across the tree:
   | `control-a-fail-let-through-is-red` | stand-in | the known-bad control: a FAIL expected to pass the stop must come out red |
   | `a-first-stop-is-never-silent` | stand-in | a stop that is its session's first hook says the session's start was not recorded, and runs no judge |
   | `stateless-stop-damaged`, `-older`, `-newer`, `-lists_damaged`, `-lock_busy`, `-no_directory` | stand-in | each way a state cannot be used whose stop judges the tree without it: the failing tree blocks and the class is named |
-  | `stray-bytes-in-a-source-file-are-read-in-a-git-mode` | this build | `--git-range` reads a source file Git calls binary for a stray byte: `check_suppressed` and `diff_suppressed` |
+  | `stray-bytes-in-a-source-file-are-read-in-a-git-mode` | this build | `--git-range` reads a source file Git calls binary for a stray NUL beside a byte that is not UTF-8: `check_suppressed` and `diff_suppressed` (the published 0.10.0 gave `binary_change` alone) |
   | `diagnostics-paged-and-put-together-rpc`, `-mcp` | this build | `diff.diagnostics` (at 4,096 bytes) and MCP `diagnose_patch` (at 12,364) page the document and the pages make it again, with its SHA-256 on every page |
   | `state-written-by-<0.9.0, 0.10.0>-is-carried-over-by-this-build` | the published binary | its v10 session is written again as v13 by this build's stop; the failure blocks once more, then stands; the commit judged is not judged again |
   | `state-written-by-this-build-is-refused-and-kept-by-<0.9.0, 0.10.0>` | the published binary | a v13 session: the published stop is UNJUDGED ("cannot be read as a state") and its files are kept byte for byte |
