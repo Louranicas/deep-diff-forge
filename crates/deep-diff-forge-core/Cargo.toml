@@ -12,7 +12,7 @@ description = "Core review-model vocabulary for Deep-Diff-Forge: patch/semantic 
 
 [dependencies]
 # killpg for the bounded-process door (process.rs); the version the review crate already pins.
-nix = { version = "=0.31.3", default-features = false, features = ["signal"] }
+nix = { version = "=0.32.0", default-features = false, features = ["signal"] }
 
 [lints]
 workspace = true
