@@ -1767,7 +1767,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            words("+unwrap_or unwrapé éunwrap 1unwrap ignored Test result _todo todo_ assert_ne"),
+            words("+unwrap_or unwrapé éunwrap 1unwrap ignored Test result _todo todo_ assert_nee"),
             [Word::Other; 10]
         );
     }
