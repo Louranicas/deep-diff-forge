@@ -221,21 +221,59 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   why, and that which rules failed is not known; the failure then stands for a person.
 - **What v3 adds is read for what it means.** Claims that forge-warden bound (`verified:
   true`, with `base`, `head` and `merge_base` of one length, 40 or 64 hex digits) are accepted
-  in that form only. The hook gives no `--repo`, so it cannot check them and does not use
-  them: claims never change an outcome, and the verdict is bound to the hook's patch by the
-  seals alone. A rule of kind `builtin` must have a `builtin:` id (and only it may), be a hold
+  in that form only. A verdict of a run without `--repo` is bound to the hook's patch by the
+  seals alone, and its claims change no outcome. A verdict of a bound run (below) is about its
+  commit only when its claims are verified and name the base and head the hook asked about: a
+  pass or a hold that claims another pair, or none verified, is UNJUDGED (`chain.not_a_verdict`,
+  "no verified verdict on this commit: the judge was asked about commit … against its parent …
+  in bound mode, and its verdict claims another pair or none verified (…)"); a fail still holds
+  the stop. A rule of kind `builtin` must have a `builtin:` id (and only it may), be a hold
   and name no waiver; it is shown like any other rule the judge holds for, by that id at
   every later stop of the session too. A later schema (`forge-warden.verdict.v4`) is no
   verdict, and the reason names it.
-- **Under a policy that requires verified claims, a stop can at best hold.** forge-warden
-  holds a change whose claims it cannot verify (`[claims] require_verified`; its `init` writes
-  that from 0.3.0), with the note `claims_unverified`. The hook gives the judge no `--repo`,
-  `--base` or `--head`, so under such a policy every unit of a stop holds and none passes.
-  An uncommitted or staged change can never be verified, whatever a later hook gives: it can
-  at best hold, so commit first. A hold is said at every stop and never blocks; it is for a
-  person. `agent doctor --gate` says it in the link `claims_verified`, read from the notes of
-  the judge's verdict on its probe (not from the policy file), and a session's start names it
-  as a weak link: stops are judged, and they hold.
+- **Under a policy that requires verified claims, only a commit can pass** (0.11.0, S3.25.b).
+  forge-warden holds a change whose claims it cannot verify (`[claims] require_verified`; its
+  `init` writes that from 0.3.0), with the note `claims_unverified`. A commit with one parent is
+  judged in bound mode: the judge is started with `--repo <the repository's Git common
+  directory> --base <the parent> --head <the commit>` beside the hook's patch, makes `git diff
+  merge-base..head` itself from a verified copy of the repository's objects, refuses a patch
+  that is not byte-equal to it, and claims the pair as verified, so such a commit can pass. What
+  bound mode cannot verify keeps the outcome it had: an uncommitted or staged change (no head
+  commit), a root commit (no base), a merge commit (it brings in commits the pair does not
+  name) and a commit in a repository bound mode does not admit as it is (a shallow clone, object
+  alternates, a path with `:` or a control character) can at best hold, so commit first. Which
+  judge takes bound mode is read once a stop from the judge's own usage: `check --help` that
+  names `--repo` (forge-warden from its 0.3.0 line; the released 0.2.1 does not, and is started
+  as before; it also refuses a `forge-warden.policy.v1` policy, so under `require_verified` its
+  stops are UNJUDGED as they were). A judge that refuses bound mode for a commit (exit 3: a
+  repository it does not admit; exit 4: a patch that is not its diff, or a ranker it does not
+  admit) has the commit judged again without `--repo`, as before, and the message says so
+  ("the judge refused bound mode for this commit (exit N: …), so it was judged without --repo, as
+  before"): no unit that had a verdict before has none now. A hold is said at every stop and
+  never blocks; it is for a person. `agent doctor --gate` says which units can pass in the link
+  `claims_verified`, read from the notes of the judge's verdict on its probe (not from the
+  policy file) and from the judge's usage: with a judge that takes bound mode "under this policy
+  only a commit can pass: …", with one that does not "stops here will hold, never pass: …"; a
+  session's start names it as a weak link. `agent check` judges a commit as a stop does, in
+  bound mode where it can.
+- **Bound mode runs in the repository the agent controls, and reads only its objects.**
+  forge-warden's ADR 0012 (D2, item 3): "Never read, never passed to Git: the caller's config,
+  refs, `HEAD`, index, hooks, `info/` (grafts, attributes, excludes), work tree, `.gitmodules`,
+  `.gitattributes`, `.mailmap`"; it refuses alternates, a shallow repository and a `gitdir:`
+  pointer, and makes the diff with "`--attr-source=<E> -c core.attributesFile=/dev/null -c
+  core.quotePath=true -c core.hooksPath=/dev/null -c core.fsmonitor=false diff --no-ext-diff
+  --no-textconv …`", the hook's own options for its patch. ADR 0010: "Clear the child
+  environment. … never inherit GIT_CONFIG_COUNT/PARAMETERS, GIT_DIR/WORK_TREE/INDEX_FILE,
+  object alternates". The hook passes the three arguments and nothing of its environment that
+  widens them. Measured on thirteen commit shapes (a text change, a rename, a mode change, a
+  deletion, a new empty file, a binary file, a file an attribute hides, a submodule pointer, a
+  path with a space, a path that is not UTF-8, a symlink, CRLF, a 3.6 MiB file): the hook's
+  patch is byte-equal to forge-warden's `scripts/make_patch.sh` for each, and forge-warden at
+  `005a1959` and `db4c580e` accepts each in bound mode. Measured cost (forge-warden `005a1959`,
+  a desktop): about 0.25 seconds a commit in bound mode against 0.09 without it; 300 small
+  commits after the project's baseline drain in two stops (38 and 37 seconds) instead of one
+  (26 seconds). A bound run gets the hook's 30 seconds a judge run at most, within the stop's
+  45; forge-warden's own limit for the whole bound run (`GIT_BOUND_TIMEOUT`) is 60 seconds.
 - **The policy is the one at the commit the session began from** (`warden.toml`, or
   `--policy NAME`), read from Git, never from the working tree: a change cannot loosen the
   policy it is judged by, and committing the loosened policy does not make it the policy
@@ -494,7 +532,8 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--require-pass] [--json]` judges, in the stop's order
   and each by the patch a stop makes for it: the uncommitted change of the working tree around
   the current directory against the commit its `HEAD` names; the staged change, when it is
-  another change than the tree's; then each commit by its own patch, from its first parent:
+  another change than the tree's; then each commit by its own patch, from its first parent, in
+  bound mode where a stop's is (above):
   with `--range A..B` the commits of that range, which must be one line (each the first parent
   of the next, from `A` to `B`; otherwise nothing is judged and `unjudged` says why), and
   with `--session` and no range the session's commits as a stop finds them (named now by the

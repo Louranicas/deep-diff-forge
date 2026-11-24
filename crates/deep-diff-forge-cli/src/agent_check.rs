@@ -17,7 +17,7 @@ pub(crate) const CHECK_USAGE: &str = "deep-diff-forge agent check [--session ID 
 /// Said when not every unit a stop answers for was judged with the stop's inputs.
 const NOT_WHOLE: &str = "This is not the stop's whole answer: not every unit a stop of this session answers for was judged here with the stop's inputs (the lines \"Not as the stop\" say what differs).";
 /// Said only when every unit a stop of the session answers for was judged with its inputs.
-const EQUAL: &str = "Equal to the stop in its units and inputs: every unit a stop of this session answers for (the uncommitted change, the staged change where it is another, and each commit of the session by its own patch) was judged here with the stop's patch, the policy at the base the session recorded, and the judge and rankers of the registered Stop hook. What the stop then decides can still differ: the lines \"The stop may differ\" say where.";
+const EQUAL: &str = "Equal to the stop in its units and inputs: every unit a stop of this session answers for (the uncommitted change, the staged change where it is another, and each commit of the session by its own patch, in bound mode where a stop's is) was judged here with the stop's patch, the policy at the base the session recorded, and the judge and rankers of the registered Stop hook. What the stop then decides can still differ: the lines \"The stop may differ\" say where.";
 
 /// What a stop of the session judges by the project's frontier (F13.b) that this check, which
 /// judges the session's own commits, does not.
