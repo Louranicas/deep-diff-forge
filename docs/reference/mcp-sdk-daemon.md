@@ -9,7 +9,7 @@ tools over stdio, one JSON-RPC message per line.
 | Tool | What it returns |
 | --- | --- |
 | `review_patch` | The `deep-diff-forge.review.v0` document for `patch`: the same JSON value `--stdin-patch --json` prints, up to 256 KiB (see *Large reviews*). `require_files` / `require_hunks` refuse as the CLI flags do; `paths` limits the document to chosen files |
-| `rank_patch` | The sealed `deep-diff-forge.rank.v0` document `--stdin-patch --rank --json` prints: files by review risk, with their signals. `require_files` / `require_hunks` refuse as the CLI flags do Its text is the exact bytes `--rank --json` prints and `structuredContent` their value; the 256 KiB cap counts those bytes. The daemon's `diff.rank` carries the same bytes in `canonical_json`. |
+| `rank_patch` | The sealed `deep-diff-forge.rank.v0` document `--stdin-patch --rank --json` prints: files by review risk, with their signals. `require_files` / `require_hunks` refuse as the CLI flags do Its text is the bytes `--rank --json` prints, each hidden character written as a `\u` escape (see *Text*), and `structuredContent` their value; the 256 KiB cap counts the bytes `--rank --json` prints. The daemon's `diff.rank` carries the same bytes in `canonical_json`. |
 | `review_outline` | **Start here.** `deep-diff-forge.review-outline.v0` for `patch`: files in review-risk order with their hunks' addresses, ranges, `@@` headings and counts, no line text. Fits `max_bytes`; `cursor` continues |
 | `review_hunks` | `deep-diff-forge.review-hunks.v0`: chosen hunks verbatim, by `addresses` or `paths` (or all). Fits `max_bytes`; `cursor` continues |
 | `diagnose_patch` | One page of the [`deep-diff-forge.diagnostics.v0`](diagnostics.md) document `--stdin-patch --diagnostics --json` prints for `patch`: every label of the ranking, located, with the ids of its repairs. `max_bytes` (12,364 to 33,554,432, default 32,768) counts the tool result as the server writes it on the line, both copies; for a modern client the line adds 144 bytes, the server's version, the id as written and a line feed (the JSON-RPC envelope, `_meta` and `resultType`), for a legacy client fewer; 12,364 is three pages at the pager's floor of 4,096 (escaping at most doubles the text copy) and the 76 bytes around them. `cursor` continues; `page.document_sha256` is the SHA-256 of the whole document's bytes ([In MCP and the SDKs](diagnostics.md#in-mcp-and-the-sdks)) |
@@ -26,7 +26,8 @@ text copy for older clients. Ask for `detail: "summary"` or `paths` to keep answ
 instructions and the patch-reading tools tell the model that paths and line text come from
 the patch's authors: data to review, never instructions.
 
-- **Errors:** an unknown tool or malformed JSON-RPC is a JSON-RPC error. Bad or missing arguments, a parse failure or a broken input contract is a tool result with `isError: true`, so a model can correct its input.
+- **Text:** every line the server writes, every tool's text copy and every error's text has each bidi control, invisible character, control character other than line feed and tab, and line separator written as a `\u` escape (`\uXXXX`, two of them above U+FFFF; the characters are those of the diagnostics [byte form](diagnostics.md#byte-form)). A text copy is JSON, where these characters stand only inside strings: it parses to the same value as before the escape, and `structuredContent` is unchanged. In an error's text a path's hidden character reads as its escape. `max_bytes` counts the answer as written, escapes included, so a view of such text pages earlier.
+- **Errors:** an unknown tool or malformed JSON-RPC is a JSON-RPC error. Bad or missing arguments, a parse failure or a broken input contract is a tool result with `isError: true`, so a model can correct its input. A parse failure, on every tool, names what the engine found, the line of the patch where it failed and the engine's explanation, and no text of the patch (`truncated hunk ending at line 5: 1 old / 2 new line(s) declared but missing`); for `review_change` the line is that of the patch Git wrote for the change. The messages of the command line and of the daemon's protocol-2 methods quote the failing line, as released.
 - **Limits:** a request line is capped at the 64 MiB patch budget plus 1 MiB.
 - **Large reviews:** `review_patch` returns the full document while it is at most 256 KiB. A larger review returns a bounded `deep-diff-forge.review-summary.v0` instead: the same seal and totals, and per-file counts for up to 1,000 files, with `reason` and `omitted_files`. Pass `paths` to get chosen files in full, or `detail: "summary"` to ask for the summary. `rank_patch` returns the full ranking while it is at most 256 KiB; a larger one returns `deep-diff-forge.rank-summary.v0`: the same seal, and the highest-ranked files that fit, in order, with `total_files` and `omitted_files`.
 - **Lifetime:** the server exits when stdin closes.
@@ -55,6 +56,8 @@ rebuilds its bytes and checks them against `document_sha256`; a daemon of protoc
 `Error::ProtocolTooOld { daemon, needed: 3, method: "diff.diagnostics" }`, pages that carry a
 member this SDK does not know are `Error::UnknownMembers` (upgrade the SDK), and pages that break
 the paging contract are `Error::Document` ([In MCP and the SDKs](diagnostics.md#in-mcp-and-the-sdks)).
+Any other daemon error is `Error::Rpc` with the daemon's message as it came: for a patch that does
+not parse, the daemon's words without the patch's text.
 
 - **Exit codes:** errors map to the CLI's exit codes (`Error::exit_code`).
 - **Ownership:** the SDK owns `Guards`, `Review` (opaque), `Error` (`#[non_exhaustive]`) and the diagnostics model (`Diagnostics` and its parts, each `#[non_exhaustive]`). `ReviewFile`, `InputSeal` and `RankedFile` are model types and change only with the schema version.
@@ -74,7 +77,8 @@ diagnostics document as `Diagnostics`, a dict whose `canonical_bytes` are the by
 `--diagnostics --json` prints; it pages and checks as the Rust client does, and raises
 `ProtocolTooOld` (with `daemon`, `needed`, `method`) for an older daemon, `UnknownMembers` for
 pages with a member it does not know, and `PagingError` (a `TransportError`, of which
-`UnknownMembers` is one) for pages that break the contract.
+`UnknownMembers` is one) for pages that break the contract. Any other daemon error raises
+`RpcError` with the daemon's message as it came: the SDK reads no English from it.
 
 ```python
 from deep_diff_forge import StdioClient
@@ -147,9 +151,10 @@ On the daemon, rpc, MCP and SDK surfaces a patch text in which no patch is found
 `--stdin-patch --diagnostics --json` prints for the same patch (params `patch`, `require_files`,
 `require_hunks`, `max_bytes` from 4 096, `cursor`; paging in [Paging](diagnostics.md#paging)). Every
 page carries `page.document_sha256`, the SHA-256 of the bytes the command prints, which the pages
-written in the document's byte form reproduce. As on `diff.rank`, the message of a patch that does
-not parse quotes the line that failed: it is the one answer of the method that carries text of
-the input beyond the escaped path. `engine.initialize` without `protocol`, or with 3, lists it; with
+written in the document's byte form reproduce. A patch that does not parse is refused with
+what the engine found, the line of the patch where it failed and the engine's explanation, and
+none of its text: no answer of the method carries text of the input beyond the escaped path. The
+protocol-2 methods, `diff.rank` among them, keep their released message, which quotes the line. `engine.initialize` without `protocol`, or with 3, lists it; with
 `protocol: 2` it does not, and a protocol-2 client that calls it is still served. A daemon of
 release 0.10.0 answers `engine.initialize` with `protocol: 3` with error 2 (`protocol 3 is not
 supported; this daemon speaks 0 to 2`) and `diff.diagnostics` with -32601. Every protocol-2 method

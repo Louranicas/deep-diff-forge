@@ -284,8 +284,12 @@ most double the text copy) and 76 bytes around them, so at any budget in the ran
 fits the floor is served; a smaller budget is refused naming the range. A diagnostic that does
 not fit is refused naming the `max_bytes` it needs. The server writes the line of such an answer
 with every bidi control, invisible character and control character of a string as a `\u`
-escape, as the daemon does; a patch that does not parse is refused with where it failed and
-none of its text.
+escape, as the daemon does (every MCP tool's lines are; [MCP server](mcp-sdk-daemon.md#mcp-server)).
+A patch that does not parse is refused, on MCP and by the daemon's `diff.diagnostics`, with what
+the engine found, the line of the patch where it failed and the engine's explanation, and none of
+the patch's text (`malformed hunk header at line 3: a line that begins with @@ is not a hunk
+header in Git's grammar (@@ -a[,b] +c[,d] @@, single spaces, digits only)`); the command line's
+message quotes the failing line.
 
 The Rust SDK's `diagnostics(&Review)` returns the builder's bytes and their typed model
 (`Diagnostics`); `Diagnostics::from_json` reads a document and ignores members it does not
