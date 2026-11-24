@@ -45,10 +45,10 @@ Across the tree:
   Non-provider patterns and validity checks are not available for this user-owned repository, so
   gitleaks (the `secret scan` check and the versioned pre-push hook) is the compensating control
   ([SECURITY.md](../../SECURITY.md#supply-chain-and-releases)).
-- **Local replica.** `scripts/ci_local.sh` (`just ci`) runs the CI gate jobs locally: 35 steps
-  from 0.10.0 (32 before). It prints the commit it gates and writes nothing into the checkout: the
+- **Local replica.** `scripts/ci_local.sh` (`just ci`) runs the CI gate jobs locally: 36 steps
+  from 0.11.0 (35 in 0.10.0, 32 before). It prints the commit it gates and writes nothing into the checkout: the
   SBOM step generates into the gate's own scratch directory and compares, so `sbom.spdx.json` is
-  never rewritten, also when the step is stopped. Three steps run only there; they are listed as
+  never rewritten, also when the step is stopped. Four steps run only there; they are listed as
   `LOCAL_ONLY` in `crates/deep-diff-forge-cli/tests/ci_replica.rs`, since GitHub's workflow is a
   mirror and is not changed for them (every step is a `ci.yml` step or a member of the list, and
   every member is a step): the **release-script self-test** (`scripts/test_release_local.sh`: a
@@ -56,7 +56,11 @@ Across the tree:
   `scripts/check_glibc_floor.sh` on the release binary, and the test step runs it on the test
   binary), the **comparison corpus manifest** (`sha256sum -c` of the corpus's `MANIFEST.sha256`
   where the corpus is on the machine, `DDF_COMPARE_CORPUS`; elsewhere the step passes and says
-  `skipped: no corpus here`) and the **contract matrix**. `scripts/release_local.sh` writes the
+  `skipped: no corpus here`), the **diagnostics contract** (from 0.11.0: `agent doctor` on the
+  built binary must list `diagnostics_parity` and find it true, and two tests run by their exact
+  names, each required to be the one test that ran: the test in which every doctor check fails
+  its condition, and the canary that puts a marker in every patch-derived place of a patch and
+  finds it only in the escaped path of `diff.diagnostics`) and the **contract matrix**. `scripts/release_local.sh` writes the
   checks run on the artefact and the gate's result (from the log `DDF_GATE_LOG` names) into the
   release receipt, and beside it `RELEASE-MANIFEST.json` (what the binary reads and writes, read
   from the binary itself; [the release document](../RELEASE_AND_PUBLICATION.md)), which the

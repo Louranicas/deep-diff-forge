@@ -100,6 +100,23 @@ step "release-script self-test" scripts/test_release_local.sh
 step "comparison corpus manifest" bash -c 'c=${DDF_COMPARE_CORPUS:-$HOME/.local/state/habitat-claude/ddf-corpus/compare-v1}
 [ -d "$c" ] || { echo "skipped: no corpus here ($c)"; exit 0; }
 cd "$c" && sha256sum -c --quiet MANIFEST.sha256 && echo "manifest digest $(sha256sum MANIFEST.sha256 | cut -c1-64)"'
+# The diagnostics contract (F8.c), a step of its own so that the gate's PASS line names it: the
+# built binary's `agent doctor` must list diagnostics_parity and find it true (the command line's
+# diagnostics document, the daemon's and MCP's are the same bytes), and two tests are asked for by
+# their exact names: the one in which every doctor check fails its condition, and the canary (a
+# marker in every patch-derived place stays in the escaped path). Each must be the one test that
+# ran: a test that is renamed or removed fails the step instead of passing with none.
+step "diagnostics contract" bash -c 'set -e
+cargo build -q --locked -p deep-diff-forge-cli
+h=$(mktemp -d "$0/doctor.XXXXXX"); mkdir -m 700 "$h/run"
+env -i PATH="$PATH" HOME="$h" XDG_RUNTIME_DIR="$h/run" target/debug/deep-diff-forge agent doctor --json >"$h/doctor.json"
+python3 -P -E -c "import json, sys
+d = json.load(open(sys.argv[1])); c = {x[\"name\"]: x[\"ok\"] for x in d[\"checks\"]}
+sys.exit(None if d[\"ok\"] is True and c.get(\"diagnostics_parity\") is True else \"agent doctor: diagnostics_parity is not listed and true: %s\" % c)" "$h/doctor.json"
+one() { local out; out=$(cargo test -q --locked -p deep-diff-forge-cli "$@" 2>&1) && printf "%s\n" "$out" | grep -q "^test result: ok. 1 passed; 0 failed" || { printf "%s\n" "$out" | tail -8; echo "not exactly one passing test: $*"; exit 1; }; }
+one --bin deep-diff-forge -- --exact agent::tests::every_check_condition_can_fail_its_check
+one --test daemon_parity -- --exact a_marker_in_every_patch_derived_place_stays_in_the_escaped_path
+echo "agent doctor: diagnostics_parity true; 2 tests by name"' "$scratch"
 # The contract with forge-warden (F4): stand-in rows always. When FW_BIN names a forge-warden
 # (the gate's judge), the real rows run for it and for each of FW_BIN_OLDER (colon-separated),
 # with the published binaries DDF_RANKER_090 and DDF_RANKER_0100, and every forge-warden that

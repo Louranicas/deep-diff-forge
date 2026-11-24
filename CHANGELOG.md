@@ -389,6 +389,17 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   larger denominator cannot hide a lost item. Every missed mutant of the 0.10.0 mutation run has a test that fails on it but
   one, shown equivalent on the comparison corpus; `docs/TESTING_GOLD_STANDARD.md` says which
   functions `cargo mutants` does not mutate.
+- A session's start says its last sentence. Each link of the chain that is not ready was shown
+  to at most 300 characters and cut without a word; the text for a judge that takes bound mode
+  (added in this release) is 357, so under forge-warden's starter policy the start ended "a
+  merge commit can ." and never said "never be verified, so they can at best hold: commit
+  first". The bound is 400, both of the hook's own texts fit it (a test holds that), and a
+  detail that is longer ends "[cut here; agent doctor --gate prints it whole]". Found by the
+  first real client session on the candidate (F8.a).
+- The local gate has a step of its own for the diagnostics contract (F8.c, 36 steps): `agent
+  doctor` on the built binary must find `diagnostics_parity` true, and the doctor's
+  every-check-can-fail test and the marker canary run by their exact names, each required to
+  be the one test that ran.
 
 ## [0.10.0] - 2026-11-23
 

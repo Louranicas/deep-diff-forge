@@ -518,8 +518,13 @@ pub(crate) const CLAIMS_HOLD: &str = "stops here will hold, never pass: the judg
 pub(crate) const CLAIMS_BOUND: &str = "under this policy only a commit can pass: the judge holds the probe for claims it cannot verify (note claims_unverified), and it takes bound mode, so a commit with one parent is judged with --repo, --base and --head and can pass. An uncommitted or staged change, a root commit and a merge commit can never be verified, so they can at best hold: commit first";
 
 /// The most links that are not ready a session's start names, and the most characters of each.
+/// The hook's own two texts ([`CLAIMS_HOLD`], [`CLAIMS_BOUND`]) fit the bound, which a test
+/// holds: at 300 the second was cut in the middle of its last sentence, "a merge commit can",
+/// and an agent under forge-warden's starter policy never read "commit first" (found by the
+/// first real client session on the 0.11.0 candidate). A detail over the bound says it is cut.
 const LINKS_SHOWN: usize = 4;
-const LINK_CHARS: usize = 300;
+const LINK_CHARS: usize = 400;
+const LINK_CUT: &str = " [cut here; agent doctor --gate prints it whole]";
 
 /// What a session is told when it starts: what the hooks do, what its changes are measured
 /// from, and whether a stop can be judged here. Plain text: Claude Code adds a `SessionStart`
@@ -568,7 +573,11 @@ pub(crate) fn contract(
                     .iter()
                     .take(LINKS_SHOWN)
                     .map(|(name, detail)| {
-                        let detail: String = display_safe(detail).chars().take(LINK_CHARS).collect();
+                        let safe = display_safe(detail);
+                        let mut detail: String = safe.chars().take(LINK_CHARS).collect();
+                        if safe.chars().nth(LINK_CHARS).is_some() {
+                            detail.push_str(LINK_CUT);
+                        }
                         format!("{}: {detail}", display_safe(name))
                     })
                     .collect();
@@ -3598,6 +3607,32 @@ mod tests {
             start(LINKS_SHOWN)
         );
         assert!(start(LINKS_SHOWN + 1).contains("; and 1 more."));
+        // a link's detail: whole up to its bound, and one character more says it is cut
+        let one = |name: &str, detail: &str| {
+            let base = StartBase::Commit { id, resumed: false };
+            let link = [(name.to_owned(), detail.to_owned())];
+            contract("/r", base, &link, false, None)
+        };
+        let full = "d".repeat(LINK_CHARS);
+        let whole = one("link", &full);
+        assert!(
+            whole.contains(&format!("link: {full}. ")) && !whole.contains(LINK_CUT),
+            "{whole}"
+        );
+        let over = one("link", &format!("{full}Z"));
+        assert!(
+            over.contains(&format!("link: {full}{LINK_CUT}. ")) && !over.contains("dZ"),
+            "{over}"
+        );
+        // the hook's own texts are never cut: each is said to its last word
+        for own in [CLAIMS_HOLD, CLAIMS_BOUND] {
+            let said = one(CLAIMS_VERIFIED, own);
+            assert!(
+                said.contains(&format!("One link is weak: claims_verified: {own}.\n"))
+                    && !said.contains(LINK_CUT),
+                "{said}"
+            );
+        }
 
         // a rule: as many violations as are shown are all shown
         let rule = |count: usize| Judged::Fail {
