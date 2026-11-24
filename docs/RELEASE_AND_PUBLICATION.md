@@ -325,9 +325,9 @@ the local repository. Its self-test is `scripts/test_release_local.sh` (`just re
   the archive. One file serves checks 1 and 2, so
   `.github/release_allowed_signers` holds the release key, the principal and key of
   `.github/allowed_signers`, for the namespaces `git` and `deep-diff-forge-release-sha256sums`,
-  and from 0.11.0 `deep-diff-forge-release-manifest` (the owner adds it to that line before the
-  first release that ships a manifest; until then check 2 of a 0.11.0 release fails on the
-  manifest's signature).
+  and from 0.11.0 `deep-diff-forge-release-manifest` (added to that line by the release commit
+  of 0.11.0, the first release that ships a manifest, and accepted by the owner with the merge
+  of its release merge request; owner decision OD-K).
   `.github/allowed_signers` stays `git` only: `just release-tag` and `release.yml` read it, and
   `repo_scripts.rs` requires that form of each of its lines. Rotating the key means changing
   both files in one commit.
