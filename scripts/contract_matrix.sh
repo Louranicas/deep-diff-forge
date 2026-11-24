@@ -18,7 +18,9 @@
 # Usage: scripts/contract_matrix.sh [--require-real] <deep-diff-forge binary>
 # Without FW_BIN the real rows are skipped by name and do not fail the run; with --require-real
 # each of them is red, and so is each forge-warden binaries.tsv records that is not given.
-# Prints PASS/FAIL/SKIP per row and `rows red: N`.
+# Prints PASS/FAIL/SKIP per row, then `real rows: N run, M skipped` (the rows of real_rows.sh,
+# which need a forge-warden), one line `skipped: <count> rows (<count> no <variable>, ...)` when a
+# row of any kind was skipped, and `rows red: N`.
 # KEEP_MATRIX=1 keeps the scratch directory (its path is printed) to read a red row.
 # Exit status: 0 if no row is red, 1 if one is, 2 on a usage error.
 set -uo pipefail
@@ -44,8 +46,17 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 143' INT TERM HUP
 red=0
-pass() { echo "PASS $1${2:+ ($2)}"; }
-fail() { echo "FAIL $1: $2"; red=$((red + 1)); }
+# section: the kind of the rows being run (real: real_rows.sh); real_run and real_skipped count
+# those, and skips holds the reason of every row skipped, one a line.
+section=stand-in real_run=0 real_skipped=0 skips=
+pass() { echo "PASS $1${2:+ ($2)}"; [ "$section" != real ] || real_run=$((real_run + 1)); }
+fail() { echo "FAIL $1: $2"; red=$((red + 1)); [ "$section" != real ] || real_run=$((real_run + 1)); }
+# skip <id> <variable>: the row needs what <variable> names, and it was not given.
+skip() {
+  echo "SKIP $1 (no $2)"
+  skips+="no $2"$'\n'
+  [ "$section" != real ] || real_skipped=$((real_skipped + 1))
+}
 git_() { env -i PATH="$PATH" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c user.name=ddf \
   -c user.email=ddf@example.invalid -c init.defaultBranch=main -c commit.gpgSign=false "$@"; }
 sum() { sha256sum "$1" | cut -d' ' -f1; }
@@ -118,7 +129,7 @@ print(json.dumps({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": s
 published() {
   local role="$1" var="$2" id="$3"
   if [ -z "${!var:-}" ]; then
-    if [ -n "$require_real" ]; then fail "$id" "needs $var"; else echo "SKIP $id (no $var)"; fi
+    if [ -n "$require_real" ]; then fail "$id" "needs $var"; else skip "$id" "$var"; fi
     return 1
   elif [ -z "$(recorded "$role" "${!var}")" ]; then
     fail "$id" "$var ${!var} is not a $role row of binaries.tsv"
@@ -137,7 +148,9 @@ expect() {
 judged() { if stop s1 false && expect "$@"; then pass "$id"; else fail "$id" "$why"; fi; }
 
 . "$here/contract-matrix/stand_in_rows.sh"
+section=state
 . "$here/contract-matrix/state_rows.sh"
+section=real
 
 # --- real rows ---
 # The real rows run once for each forge-warden given: FW_BIN (the gate's judge) and each path of
@@ -153,9 +166,8 @@ for j in "${older[@]}"; do [ -n "$j" ] && judges+=("$j"); done
 if [ "${#judges[@]}" -eq 0 ]; then
   for id in "${real[@]}"; do
     if [ -n "$require_real" ]; then fail "$id" "needs a real forge-warden (FW_BIN) and none was given"
-    else echo "SKIP $id (no FW_BIN)"; fi
+    else skip "$id" FW_BIN; fi
   done
-  [ -n "$require_real" ] || echo "skipped: ${#real[@]} rows that need a real forge-warden (no FW_BIN)"
 else
   for fw_given in "${judges[@]}"; do . "$here/contract-matrix/real_rows.sh"; done
 fi
@@ -169,5 +181,10 @@ if [ -n "$require_real" ]; then
   done <"$here/contract-matrix/binaries.tsv"
 fi
 
+echo "real rows: $real_run run, $real_skipped skipped"
+if [ -n "$skips" ]; then
+  echo "skipped: $(printf '%s' "$skips" | grep -c .) rows ($(printf '%s' "$skips" | sort | uniq -c |
+    awk '{ n = $1; $1 = ""; printf "%s%s%s", sep, n, $0; sep = ", " }'))"
+fi
 echo "rows red: $red"
 [ "$red" -eq 0 ]

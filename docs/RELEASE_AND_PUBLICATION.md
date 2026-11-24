@@ -114,7 +114,16 @@ The local replica of the CI gate is `just ci` ([`scripts/ci_local.sh`](../script
 it runs every step of the `secrets`, `msrv`, `gate` and `supply-chain` jobs and
 prints PASS/FAIL per step (exit 0 only if all pass, 2 if `cargo` or the pinned Rust 1.99.1 with
 rustfmt and clippy is missing). Like CI, every step but the MSRV check runs on Rust 1.99.1, not the
-rustup default. Run `scripts/diff_mutation.sh` from anywhere in the checkout: it moves to the root.
+rustup default. Each step's line carries its time and what it skipped, in one form:
+`PASS test (312.4 s; skipped: 7 tests ignored)`, `PASS comparison corpus manifest (0.1 s; skipped:
+no corpus here (…))`; the contract matrix's line also carries `real rows: N run, M skipped` (the
+rows that need a forge-warden). A failed step's line is followed by the last 15 lines of its
+output. At the end the gate writes a JSON receipt (the commit, whether the checkout had
+uncommitted changes, when it began, each step's name, status, seconds and skip reason, and the
+number failed) and prints its path, `receipt: <path>`: beside the gate's scratch directory, or
+the file `DDF_GATE_RECEIPT` names. `scripts/long_tmpdir.sh <base>` prints a temp directory as long
+and as indirect as macOS's (a link of 49 characters to a directory of 57); run a suite with
+`TMPDIR` set to it to meet on Linux what a long temp path meets on macOS. Run `scripts/diff_mutation.sh` from anywhere in the checkout: it moves to the root.
 `just gate-release` is the smaller gate `just release-tag` runs: `fmt`, `check`,
 `clippy`, `pedantic`, `test`, `contracts` and `docs`. The checklist:
 

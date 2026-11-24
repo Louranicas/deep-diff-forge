@@ -1,6 +1,6 @@
 //! The repository's gate scripts fail closed: the pre-push secret hook, the diff-scoped mutation
-//! gate (anchor B-01), the fuzz runner and the release-tag signer; the macOS-like temp
-//! directory is run as well. Each is run for real against a scratch repository,
+//! gate (anchor B-01), the fuzz runner and the release-tag signer; the local gate's step runner
+//! and the macOS-like temp directory are run as well. Each is run for real against a scratch repository,
 //! with a recording stand-in for the expensive tool it hands off to (gitleaks, cargo mutants,
 //! cargo fuzz), so what is checked is the script's own decision.
 #![cfg(unix)]
@@ -542,6 +542,95 @@ fn the_campaign_uses_nothing_bash_3_2_lacks() {
             "{newer:?}, which bash 3.2 lacks: {found:?}"
         );
     }
+}
+
+// --- scripts/gate_steps.sh (the step runner of scripts/ci_local.sh) -------------------------
+
+/// P7: each step's line carries its time, and what it skipped in one form; a failed step shows
+/// the end of its output; the receipt lists every step with its status, seconds and skip.
+#[test]
+fn the_gate_says_how_long_each_step_took_and_what_it_skipped() {
+    let s = scratch("gate-steps");
+    let out = run(Command::new("bash")
+        .current_dir(&s.0)
+        .args([
+            "-c",
+            r#"gate_steps="$1/steps.tsv"
+. "$2/scripts/gate_steps.sh"
+step "quick" true
+step "slow" sleep 1
+step "corpus" sh -c 'echo working; echo "skipped: no corpus here (c)"'
+step "tests" printf 'test result: ok. 3 passed; 0 failed; 2 ignored; 0 measured\ntest result: ok. 1 passed; 0 failed; 1 ignored; 0 measured\n'
+step "matrix" printf 'real rows: 0 run, 12 skipped\nskipped: 12 rows (12 no FW_BIN)\nrows red: 0\n'
+step "red" sh -c 'echo one; echo two; exit 3'
+gate_receipt "$1/receipt.json" 0123abc
+echo "failed: $failed""#,
+            "bash",
+        ])
+        .arg(&s.0)
+        .arg(ROOT));
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success(), "{out:?}");
+    // `<status> <name> (<seconds> s<; what it said>)`: the seconds and the rest
+    let line = |status: &str, name: &str| -> (f64, String) {
+        let head = format!("{status} {name} (");
+        let line = stdout
+            .lines()
+            .find(|line| line.starts_with(&head))
+            .unwrap_or_else(|| panic!("no line {head}: {stdout}"));
+        let inner = line[head.len()..].strip_suffix(')').unwrap();
+        let (seconds, rest) = inner.split_once(" s").unwrap();
+        (seconds.parse().unwrap(), rest.to_owned())
+    };
+    let (quick, said) = line("PASS", "quick");
+    assert!(quick < 1.0 && said.is_empty(), "{stdout}");
+    let (slow, _) = line("PASS", "slow");
+    assert!((1.0..30.0).contains(&slow), "{stdout}");
+    assert_eq!(line("PASS", "corpus").1, "; skipped: no corpus here (c)");
+    assert_eq!(line("PASS", "tests").1, "; skipped: 3 tests ignored");
+    assert_eq!(
+        line("PASS", "matrix").1,
+        "; real rows: 0 run, 12 skipped; skipped: 12 rows (12 no FW_BIN)"
+    );
+    assert_eq!(line("FAIL", "red").1, "");
+    assert!(stdout.contains("\n    one\n    two\n"), "{stdout}");
+    assert!(stdout.ends_with("failed: 1\n"), "{stdout}");
+
+    let receipt: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(s.0.join("receipt.json")).unwrap()).unwrap();
+    assert_eq!(receipt["commit"], "0123abc");
+    assert_eq!(receipt["failed"], 1);
+    assert_eq!(receipt["uncommitted_changes"], false);
+    assert!(
+        receipt["started"].as_str().unwrap().ends_with('Z'),
+        "{receipt}"
+    );
+    let steps = receipt["steps"].as_array().unwrap();
+    let names: Vec<&str> = steps.iter().map(|s| s["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["quick", "slow", "corpus", "tests", "matrix", "red"]);
+    let status: Vec<&str> = steps
+        .iter()
+        .map(|s| s["status"].as_str().unwrap())
+        .collect();
+    assert_eq!(status, ["PASS", "PASS", "PASS", "PASS", "PASS", "FAIL"]);
+    assert!(
+        steps[1]["seconds"]
+            .as_f64()
+            .is_some_and(|seconds| (seconds - slow).abs() < 1e-9),
+        "{receipt}"
+    );
+    let skipped: Vec<Option<&str>> = steps.iter().map(|s| s["skipped"].as_str()).collect();
+    assert_eq!(
+        skipped,
+        [
+            None,
+            None,
+            Some("no corpus here (c)"),
+            Some("3 tests ignored"),
+            Some("12 rows (12 no FW_BIN)"),
+            None
+        ]
+    );
 }
 
 // --- scripts/long_tmpdir.sh ---------------------------------------------------------------

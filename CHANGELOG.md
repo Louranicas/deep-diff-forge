@@ -26,6 +26,12 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   49 characters to a directory of 57), so these failures can be seen on Linux. The 0.11.0 CI run
   on macOS failed 22 tests; six of the failures that come back on Linux this way are of the
   product (a message cut at the wrong place under a long path) and stay red until it is fixed.
+- The local gate (`scripts/ci_local.sh`) prints each step's time (`PASS test (312.4 s)`) and what
+  it skipped in one form (`skipped: <why>`, also for ignored tests), and writes a JSON receipt of
+  the gate: the commit, and each step's name, status, seconds and skip reason (its path is
+  printed; `DDF_GATE_RECEIPT` names another). The contract matrix prints
+  `real rows: N run, M skipped` and one line for every row it skipped, which the step's line
+  carries.
 
 ## [0.11.0] - 2026-11-25
 
