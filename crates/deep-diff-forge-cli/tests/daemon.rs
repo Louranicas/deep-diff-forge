@@ -103,14 +103,32 @@ fn temp_socket(name: &str) -> (Scratch, PathBuf) {
     (scratch, sock)
 }
 
+/// The default socket is `<XDG_RUNTIME_DIR>/deep-diff-forge/deep-diff-forge.sock`, printed. Its
+/// length follows the temp directory's: under macOS's (49 characters, against Linux's 5) it was
+/// 113 bytes and refused. The runtime directory is kept short; a path that still fits no
+/// system's socket (over 103 bytes: macOS holds 104 with the NUL) may be printed or refused as
+/// too long, never anything else.
 #[test]
 fn daemon_path_prints_socket() {
-    let scratch = Scratch::new("clid-rt");
-    let runtime = scratch.join("runtime");
-    let (code, stdout, _) = run_with_runtime_dir(&["daemon", "path"], Some(&runtime));
-    assert_eq!(code, 0);
-    assert!(stdout.contains("deep-diff-forge.sock"));
-    assert!(stdout.starts_with(runtime.to_str().unwrap()));
+    let scratch = Scratch::new("clid");
+    let runtime = scratch.join("r");
+    let socket = runtime.join("deep-diff-forge/deep-diff-forge.sock");
+    let length = socket.as_os_str().len();
+    let (code, stdout, stderr) = run_with_runtime_dir(&["daemon", "path"], Some(&runtime));
+    if code == 0 {
+        assert_eq!(stdout.trim_end(), socket.to_str().unwrap(), "{stderr}");
+        assert!(length < 108, "a path of {length} bytes was printed");
+    } else {
+        assert!(
+            length > 103,
+            "a path of {length} bytes was refused: {stderr}"
+        );
+        assert_eq!((code, stdout.as_str()), (2, ""), "{stderr}");
+        assert!(
+            stderr.contains(&format!("the socket path is {length} bytes")),
+            "{stderr}"
+        );
+    }
 }
 
 #[test]
