@@ -12506,7 +12506,10 @@ fn each_guard_file_is_named_once_and_again_when_its_content_changes() {
     // again when the content changes again, and only that file
     std::fs::write(root.join("warden.toml"), "# two: loosened\n").unwrap();
     let (_, stdout, _) = hook("post-tool", &[], &event);
-    assert!(!stdout.is_empty(), "a new content of the policy file is not named");
+    assert!(
+        !stdout.is_empty(),
+        "a new content of the policy file is not named"
+    );
     let advice = advice_of(&stdout);
     assert_eq!(
         advice.matches("is a file that decides how").count(),

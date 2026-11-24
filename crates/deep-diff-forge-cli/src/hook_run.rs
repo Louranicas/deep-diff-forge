@@ -2220,12 +2220,12 @@ fn sections(patch: &[u8]) -> Vec<&[u8]> {
 /// other files are still advised (N-11). One reason for the whole patch is given when no
 /// section alone is refused. The guard files among the files read are listed (`policy` is the
 /// policy's path, as `--policy` gives it).
-fn excerpt(patch: &[u8], policy: &str) -> Result<hook::Excerpt, String> {
-    let (review, mut items) = match review_of(patch) {
+fn excerpt(bytes: &[u8], policy: &str) -> Result<hook::Excerpt, String> {
+    let (review, mut items) = match review_of(bytes) {
         Ok(review) => (review, Vec::new()),
         Err(whole) => {
             let (mut kept, mut refused) = (Vec::new(), Vec::new());
-            for section in sections(patch) {
+            for section in sections(bytes) {
                 if review_of(section).is_ok() {
                     kept.extend_from_slice(section);
                 } else {

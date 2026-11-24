@@ -331,6 +331,7 @@ pub(crate) const GUARDS_SHOWN: usize = 8;
 /// change is then said after every tool call rather than never.
 pub(crate) fn guard_notice(guard: &Guard, remembered: bool, cap: usize) -> String {
     use deep_diff_forge_graph::guard_paths::GuardFile;
+    use std::fmt::Write as _;
     let what = match guard.kind {
         GuardFile::Policy => {
             "the policy file the stops judge with; this session's stops read the policy as it was at the commit the session began from, so this edit does not change how they judge"
@@ -353,9 +354,10 @@ pub(crate) fn guard_notice(guard: &Guard, remembered: bool, cap: usize) -> Strin
         shown_path(&guard.path)
     );
     if !remembered {
-        line.push_str(&format!(
+        let _ = write!(
+            line,
             " (This session remembers {cap} changes of such files and cannot remember this one: it is said again after each tool call.)"
-        ));
+        );
     }
     line.push('\n');
     line
