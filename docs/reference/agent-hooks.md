@@ -697,7 +697,12 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   refused whole: a damaged record never reads as a missing one. A record of this build has
   every member this build writes for its kind (above), each of its type and with a value this
   build writes (a stop's `unit` and `outcome` among them; a member the build does not write
-  is passed over); a clearance needs `v`, `kind` and a `unit` that names a full commit id. Nothing is written to the
+  is passed over), and a stop's members agree as a stop writes them: the outcome is the one of
+  its class (`pass` for `pass`, `fail` for `fail.new`, `fail_stands` for the other `fail.*`,
+  `hold` for `hold.*`, else `unjudged`), a blocked turn only for a class that holds a stop and
+  always for `fail`, `worktree` a string only for a tree, and no seals on the unit `stop`, a
+  tree's without the patch's and the verdict's digests; a clearance needs `v`, `kind` and a
+  `unit` that names a full commit id. Nothing is written to the
   ledger; the list of commits Git is given is written in a scratch directory under
   `.git/deep-diff-forge/` and removed. **What it cannot know**, said in the document and the
   text: a commit made outside a session with the hooks, or in a clone, has no record; the ledger

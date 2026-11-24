@@ -659,7 +659,11 @@ const OUTCOMES: [&str; 5] = ["fail", "fail_stands", "hold", "pass", "unjudged"];
 /// kinds and their writers: `stop` ([`append_stop`]), `check` ([`append_check`]), `baseline`
 /// and `start` ([`append_start`], [`append_baseline`]); a `clearance` is written by a person,
 /// and its documented form is `v`, `kind` and a `unit` that names a commit. A member this build
-/// does not write is not read, and is passed over.
+/// does not write is not read, and is passed over. A stop's members must also agree as the stop
+/// writes them: the outcome is the one of its class ([`outcome_of`]); a blocked turn only for a
+/// class that holds a stop, and always for `fail`; a commit's and the stop's `worktree` null, a
+/// tree's a string; seals never on the unit `stop`, a tree's without the patch's and the
+/// verdict's digests, a commit's with the patch's.
 fn is_whole_record(record: &Value) -> bool {
     let has = |name: &str| record.get(name);
     let text = |name: &str| has(name).and_then(Value::as_str);
@@ -672,22 +676,34 @@ fn is_whole_record(record: &Value) -> bool {
             let checks = has("agent_checks");
             let runs = count(checks.and_then(|c| c.get("runs")));
             let failed = count(checks.and_then(|c| c.get("failed")));
+            let unit = text("unit").unwrap_or_default();
+            let tree = is_tree_unit(unit);
+            let class = text("class").and_then(crate::hook::reason::ReasonClass::from_code);
+            let outcome = text("outcome");
+            let blocked = count(has("blocked_turns"));
             let seals = has("seals").is_some_and(|seals| {
                 seals.is_null()
-                    || (seals.get("policy_sha256").is_some_and(Value::is_string)
+                    || (unit != "stop"
+                        && seals.get("policy_sha256").is_some_and(Value::is_string)
                         && seals.get("ranker_sha256").is_some_and(Value::is_string)
+                        && (seals.get("patch_sha256").is_some_and(Value::is_null) == tree)
                         && text_or_null(seals.get("patch_sha256"))
+                        && seals
+                            .get("verdict_sha256")
+                            .is_some_and(|v| v.is_null() || !tree)
                         && text_or_null(seals.get("verdict_sha256")))
             });
             session()
-                && text_or_null(has("worktree"))
-                && text("unit")
-                    .is_some_and(|unit| unit == "stop" || commit(unit) || is_tree_unit(unit))
-                && text("outcome").is_some_and(|outcome| OUTCOMES.contains(&outcome))
-                && text("class").is_some_and(|class| {
-                    crate::hook::reason::ReasonClass::from_code(class).is_some()
+                && (unit == "stop" || commit(unit) || tree)
+                && (if tree {
+                    text("worktree").is_some()
+                } else {
+                    has("worktree").is_some_and(Value::is_null)
                 })
-                && matches!(count(has("blocked_turns")), Some(0 | 1))
+                && class.is_some_and(|class| outcome == Some(outcome_of(class)))
+                && matches!(blocked, Some(0 | 1))
+                && (blocked == Some(0) || class.is_some_and(|class| class.row().2 != "never"))
+                && (outcome != Some("fail") || blocked == Some(1))
                 && matches!((runs, failed), (Some(runs), Some(failed)) if failed <= runs)
                 && has("ignored_elsewhere").is_some_and(Value::is_null)
                 && seals
@@ -703,6 +719,19 @@ fn is_whole_record(record: &Value) -> bool {
         }
         Some("clearance") => text("unit").is_some_and(commit),
         _ => false,
+    }
+}
+
+/// The outcome a stop records for a unit of `class`, by its family in the registry: `pass`, a
+/// failure that blocks (`fail.new`) or stands (`fail.stands`, `fail.unsaved_continuing`), a hold
+/// (`hold.*`), else `unjudged` ([`crate::hook::class_of`] and the stops' own records).
+fn outcome_of(class: crate::hook::reason::ReasonClass) -> &'static str {
+    match class.as_str() {
+        "pass" => "pass",
+        "fail.new" => "fail",
+        code if code.starts_with("fail.") => "fail_stands",
+        code if code.starts_with("hold.") => "hold",
+        _ => "unjudged",
     }
 }
 
@@ -767,9 +796,11 @@ mod tests {
     const WAIT: Duration = Duration::from_secs(5);
 
     /// A ledger written by every writer of this build in a scratch directory: a stop record for
-    /// every reason class, the unit names and the outcomes in turn (seals of a commit, of a tree,
-    /// with and without the verdict's digest, and none), a check, a baseline and a start, then
-    /// the minimal clearance the reference documents, as a person appends it.
+    /// every reason class with the outcome a stop gives it, the unit names in turn (seals of a
+    /// commit, of a tree, with and without the verdict's digest, and none; none on the unit
+    /// `stop`), blocked where the class holds a stop (both ways for `hold.version_gap`), a check,
+    /// a baseline and a start, then the minimal clearance the reference documents, as a person
+    /// appends it.
     fn written(label: &str) -> (Scratch, std::path::PathBuf, String) {
         let scratch = Scratch::new(&format!("ledger-unit-{label}"));
         let own = scratch.path().to_path_buf();
@@ -787,20 +818,28 @@ mod tests {
             },
             Name::Stop,
         ];
-        let units: Vec<Unit> = (ReasonClass::ALL.iter().enumerate())
+        let mut units: Vec<Unit> = (ReasonClass::ALL.iter().enumerate())
             .map(|(at, class)| Unit {
                 name: names[at % names.len()].clone(),
-                outcome: OUTCOMES[at % OUTCOMES.len()],
+                outcome: outcome_of(*class),
                 class: *class,
-                seals: (at % 3 != 0).then(|| Seals {
+                seals: (at % 3 != 0 && at % names.len() != 3).then(|| Seals {
                     policy: "a".repeat(64),
                     patch: "b".repeat(64),
                     ranker: "c".repeat(64),
                     verdict: (at % 2 == 0).then(|| "e".repeat(64)),
                 }),
-                blocked: at % 2 == 0,
+                blocked: *class == ReasonClass::FailNew
+                    || (class.row().2 != "never" && at % 2 == 0),
             })
             .collect();
+        units.push(Unit {
+            name: Name::Commit("fedcba9876543210fedcba9876543210fedcba98".to_owned()),
+            outcome: "hold",
+            class: ReasonClass::HoldVersionGap,
+            seals: None,
+            blocked: true,
+        });
         append_stop(&own, "session-a", &units, WAIT).unwrap();
         append_check(&own, "session-a", 3, 1, WAIT).unwrap();
         let baseline = Baseline {
@@ -837,7 +876,7 @@ mod tests {
     fn every_record_this_build_writes_is_whole() {
         let (_scratch, own, text) = written("every-writer");
         let records = whole(&own).unwrap_or_else(|e| panic!("{e}: {text}"));
-        assert_eq!(records.len(), ReasonClass::ALL.len() + 4, "{text}");
+        assert_eq!(records.len(), ReasonClass::ALL.len() + 5, "{text}");
         for kind in ["stop", "check", "baseline", "start", "clearance"] {
             assert!(records.iter().any(|r| r["kind"] == kind), "{kind}: {text}");
         }
@@ -960,6 +999,156 @@ mod tests {
         assert!(why.contains("holds records of a newer build (v2"), "{why}");
     }
 
+    /// A member of a record set to a value written as JSON.
+    type Change = (&'static str, &'static str);
+
+    /// A stop record whose members are each valid but do not agree as a stop writes them, as
+    /// (what, the sample it changes, the members set to JSON values; `@commit` and `@tree` are
+    /// those samples' seals).
+    const DISAGREE: &[(&str, &str, &[Change])] = &[
+        (
+            "pass with fail.new",
+            "commit",
+            &[("outcome", "\"pass\""), ("class", "\"fail.new\"")],
+        ),
+        (
+            "pass with hold.rule",
+            "commit",
+            &[("outcome", "\"pass\""), ("class", "\"hold.rule\"")],
+        ),
+        (
+            "hold with pass",
+            "commit",
+            &[("outcome", "\"hold\""), ("class", "\"pass\"")],
+        ),
+        (
+            "unjudged with pass",
+            "commit",
+            &[("outcome", "\"unjudged\""), ("class", "\"pass\"")],
+        ),
+        (
+            "fail with fail.stands",
+            "commit",
+            &[
+                ("outcome", "\"fail\""),
+                ("class", "\"fail.stands\""),
+                ("blocked_turns", "1"),
+            ],
+        ),
+        (
+            "fail_stands with fail.new",
+            "commit",
+            &[("outcome", "\"fail_stands\""), ("class", "\"fail.new\"")],
+        ),
+        (
+            "hold with state.damaged",
+            "commit",
+            &[("outcome", "\"hold\""), ("class", "\"state.damaged\"")],
+        ),
+        (
+            "unjudged with hold.rule",
+            "commit",
+            &[("outcome", "\"unjudged\""), ("class", "\"hold.rule\"")],
+        ),
+        (
+            "a blocked pass",
+            "commit",
+            &[
+                ("outcome", "\"pass\""),
+                ("class", "\"pass\""),
+                ("blocked_turns", "1"),
+            ],
+        ),
+        (
+            "a blocked hold.rule",
+            "commit",
+            &[
+                ("outcome", "\"hold\""),
+                ("class", "\"hold.rule\""),
+                ("blocked_turns", "1"),
+            ],
+        ),
+        (
+            "a fail not blocked",
+            "commit",
+            &[
+                ("outcome", "\"fail\""),
+                ("class", "\"fail.new\""),
+                ("blocked_turns", "0"),
+            ],
+        ),
+        (
+            "a commit with a worktree",
+            "commit",
+            &[("worktree", "\"m\"")],
+        ),
+        (
+            "a tree with a null worktree",
+            "tree",
+            &[("worktree", "null")],
+        ),
+        ("seals on the unit stop", "stop", &[("seals", "@commit")]),
+        (
+            "a tree's seals with a patch digest",
+            "tree",
+            &[("seals", "@commit")],
+        ),
+        (
+            "a commit's seals with no patch digest",
+            "commit",
+            &[("seals", "@tree")],
+        ),
+    ];
+
+    /// [`DISAGREE`]: each such record refuses the ledger whole, with the line named (the
+    /// coordinator's probe of the fix round: a pass whose class says it failed verified the
+    /// branch).
+    #[test]
+    fn a_stop_record_whose_members_disagree_refuses_the_ledger() {
+        let (_scratch, own, text) = written("disagree");
+        let line = text.lines().count() + 1;
+        let samples = [
+            (
+                "commit",
+                first(&text, "stop", |r| {
+                    r["unit"] == format!("commit:{ID}").as_str()
+                        && r["seals"]["verdict_sha256"].is_string()
+                }),
+            ),
+            (
+                "tree",
+                first(&text, "stop", |r| {
+                    r["unit"].as_str().is_some_and(|u| u.starts_with("tree:"))
+                        && r["seals"].is_object()
+                }),
+            ),
+            ("stop", first(&text, "stop", |r| r["unit"] == "stop")),
+        ];
+        let sample = |name: &str| {
+            samples
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, r)| r.clone())
+                .unwrap()
+        };
+        for (what, of, changes) in DISAGREE {
+            let mut record = sample(of);
+            for (member, value) in *changes {
+                record[*member] = match value.strip_prefix('@') {
+                    Some(seals) => sample(seals)["seals"].clone(),
+                    None => serde_json::from_str(value).unwrap(),
+                };
+            }
+            let Err(why) = read_with(&own, &text, &record) else {
+                panic!("{what}: the ledger was read, not refused: {record}")
+            };
+            assert!(
+                why.contains(&format!("line {line} of the ledger")),
+                "{what}: {why}"
+            );
+        }
+    }
+
     /// The forms the reference calls valid stay whole: the minimal clearance (and one with a
     /// note of the person's), the unit `stop` and a tree's unit with its digest or `unread`, a
     /// null worktree, null seals and a tree's seals without the patch's and the verdict's
@@ -984,9 +1173,41 @@ mod tests {
                 r["unit"].as_str().is_some_and(|u| u.starts_with("commit:"))
             });
             stop["unit"] = json!(unit);
-            stop["worktree"] = Value::Null;
+            stop["worktree"] = if unit == "stop" {
+                Value::Null
+            } else {
+                json!("m")
+            };
             stop["seals"] = Value::Null;
             accepted(unit, &stop);
+        }
+        // what a writer can make and verdict does not read stays whole: a pass with no seals, a
+        // commit's seals with no verdict digest, a pass on the unit `stop`, and a blocked turn
+        // for each class that holds a stop, of the outcome of its class
+        let mut pass = first(&text, "stop", |r| r["outcome"] == "pass");
+        pass["seals"] = Value::Null;
+        accepted("a pass with no seals", &pass);
+        pass["unit"] = json!("stop");
+        accepted("a pass on the unit stop", &pass);
+        let mut sealed = first(&text, "stop", |r| {
+            r["seals"]["verdict_sha256"].is_string()
+                && r["unit"].as_str().is_some_and(|u| u.starts_with("commit:"))
+        });
+        sealed["seals"]["verdict_sha256"] = Value::Null;
+        accepted("a commit's seals with no verdict digest", &sealed);
+        for (class, outcome) in [
+            ("fail.new", "fail"),
+            ("hold.version_gap", "hold"),
+            ("work.unreadable", "unjudged"),
+            ("work.skip_worktree", "unjudged"),
+        ] {
+            let mut blocked = first(&text, "stop", |_| true);
+            (
+                blocked["class"],
+                blocked["outcome"],
+                blocked["blocked_turns"],
+            ) = (json!(class), json!(outcome), json!(1));
+            accepted(class, &blocked);
         }
         let tree_seals = first(&text, "stop", |r| {
             r["unit"].as_str().is_some_and(|u| u.starts_with("tree:")) && r["seals"].is_object()

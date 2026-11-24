@@ -14044,7 +14044,7 @@ fn verify_branch_refuses_an_unjudged_unit() {
 /// this build does not write, no `unit`) read as no record, so a branch whose commit a stop had
 /// passed still verified beside it. `agent verify-branch` refuses such a ledger whole, naming
 /// the line, as it refuses one with a record of a newer build; the genuine pass verifies, and a
-/// valid hold beside it is a hold, as before. The ledger is left as it is.
+/// valid hold beside it (its class a hold's) is a hold, as before. The ledger is left as it is.
 #[test]
 fn verify_branch_refuses_a_ledger_with_a_damaged_stop_record() {
     let scratch = Scratch::new("agent-hook-verify-branch-damaged");
@@ -14092,6 +14092,8 @@ fn verify_branch_refuses_a_ledger_with_a_damaged_stop_record() {
             "missing-unit",
             with(&|r| {
                 r.insert("outcome".into(), "fail".into());
+                r.insert("class".into(), "fail.new".into());
+                r.insert("blocked_turns".into(), 1.into());
                 r.remove("unit");
             }),
         ),
@@ -14120,6 +14122,7 @@ fn verify_branch_refuses_a_ledger_with_a_damaged_stop_record() {
         &file,
         with(&|r| {
             r.insert("outcome".into(), "hold".into());
+            r.insert("class".into(), "hold.claims_unverified".into());
         }),
     )
     .unwrap();

@@ -407,8 +407,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   record with no `outcome`, an outcome this build does not write, or no `unit` was neither
   refused nor counted, and a branch whose commit a stop had passed still verified beside it.
   Every member this build writes for a record's kind must now be there, of its type and with a
-  value this build writes (the documented clearance needs `v`, `kind` and a commit `unit`);
-  else the ledger is refused whole, naming the line. The frontier's reader, which passes over
+  value this build writes (the documented clearance needs `v`, `kind` and a commit `unit`),
+  and a stop's members must agree as a stop writes them (a `pass` whose class says `fail.new`
+  verified the branch too); else the ledger is refused whole, naming the line. The frontier's reader, which passes over
   such a record and so judges more, is unchanged, and so is what is written.
 - A session's start says what its stops then do (C2, 0.11.0 tree review). With its state
   unusable (damaged, older, newer, a key file that is no key, no directory of its own) it said
