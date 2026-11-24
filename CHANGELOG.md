@@ -347,6 +347,14 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   measured with forge-warden `005a1959`: about 0.25 seconds a commit against 0.09; 300 commits
   drain in two stops instead of one. No state or ledger schema changes.
 
+- Tests and evaluation only, no change to what the program does (S3.35.d, S3.34.c, S3.34.d): the
+  eval corpus has paired cases (a form read, a near miss not read) for every integrity form the
+  Python, JavaScript and Go readers read (69 cases; precision 233/258, recall 233/314, both up),
+  and `docs/reference/evaluation.md` lists, per language, the forms a reviewer would expect that
+  no reader reads. Every missed mutant of the 0.10.0 mutation run has a test that fails on it but
+  one, shown equivalent on the comparison corpus; `docs/TESTING_GOLD_STANDARD.md` says which
+  functions `cargo mutants` does not mutate.
+
 ## [0.10.0] - 2026-11-23
 
 **Security and contract release.** 0.10.0 reads a `diff --git` section only if its headers are
