@@ -2156,7 +2156,7 @@ fn a_linked_working_tree_the_session_entered_is_judged_too() {
     let decision = stop_from(&linked, "s2", &script);
     let reason = blocked(&decision);
     assert!(
-        reason.contains(&format!("Commit {work}: FAIL\n"))
+        reason.contains(&format!("Commit {work} (the HEAD reflog of "))
             && !reason.contains("Uncommitted changes in "),
         "{reason}"
     );
@@ -4467,7 +4467,8 @@ fn a_commit_left_on_a_detached_head_or_made_in_another_working_tree_is_judged() 
     let there = commit_all(&linked, "in the linked tree");
     let decision = stop_from(&root, "linked", &script);
     assert!(
-        blocked(&decision).contains(&format!("Commit {there}: FAIL\n")),
+        // (F13.a: the other tree whose HEAD reflog has it is named)
+        blocked(&decision).contains(&format!("Commit {there} (the HEAD reflog of ")),
         "{decision}"
     );
 
@@ -4479,7 +4480,7 @@ fn a_commit_left_on_a_detached_head_or_made_in_another_working_tree_is_judged() 
     let decision = stop_from(&root, "linked-left", &script);
     let reason = blocked(&decision);
     assert!(
-        reason.contains(&format!("Commit {gone}: FAIL\n")),
+        reason.contains(&format!("Commit {gone} (the HEAD reflog of ")),
         "{reason}"
     );
     // the commit before it was there when this session began: it is not this session's
@@ -5066,7 +5067,8 @@ fn a_linked_working_tree_inside_the_project_is_named_as_what_it_is() {
     let made = commit_all(&inner, "in the inner tree");
     let decision = stop_from(&root, "s", &script);
     assert!(
-        blocked(&decision).contains(&format!("Commit {made}: FAIL\n")),
+        // (F13.a: the other tree whose HEAD reflog has it is named)
+        blocked(&decision).contains(&format!("Commit {made} (the HEAD reflog of ")),
         "{decision}"
     );
     secret(&inner, "k2.rs");
@@ -12902,6 +12904,57 @@ fn a_damaged_marks_key_silences_the_advice_and_not_the_stop() {
     }
     std::fs::remove_file(&sessions).unwrap();
     std::fs::rename(&kept, &sessions).unwrap();
+}
+
+/// F13.a, narrowed (design B8, probes p9 and c7): a commit made in another linked working tree
+/// of the repository is judged by every session that finds it and holds each once; the block of
+/// the session that did not make it names the tree whose `HEAD` reflog records it, as advice.
+/// After `git reflog expire` both sessions still hold once: attribution never removes a hold.
+#[test]
+fn another_worktrees_commit_is_named_and_still_holds_once() {
+    let scratch = Scratch::new("hook-other-tree");
+    let root = repository(&scratch);
+    let (script, _) = reading_judge(&scratch);
+    let other = scratch.join("other");
+    git(
+        &root,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            "side",
+            other.to_str().unwrap(),
+        ],
+    );
+    start(&root, "a");
+    start(&other, "b");
+    secret(&other, "k.rs");
+    let first = commit_all(&other, "the other tree's work");
+    let reason = blocked(&stop_from(&root, "a", &script)).to_owned();
+    assert!(
+        reason.contains(&format!("Commit {first} (the HEAD reflog of "))
+            && reason.contains(
+                " has this commit; if this session did not make it, tell a person): FAIL\n"
+            ),
+        "{reason}"
+    );
+    let theirs = blocked(&stop_from(&other, "b", &script)).to_owned();
+    assert!(
+        theirs.contains(&format!("Commit {first}: FAIL\n")),
+        "{theirs}"
+    );
+    // the reflogs expired: both sessions still hold once
+    secret(&other, "l.rs");
+    let second = commit_all(&other, "more of it");
+    git(&root, &["reflog", "expire", "--expire=now", "--all"]);
+    let reason = blocked(&stop_from(&root, "a", &script)).to_owned();
+    assert!(reason.contains(&format!("Commit {second}")), "{reason}");
+    let theirs = blocked(&stop_from(&other, "b", &script)).to_owned();
+    assert!(
+        theirs.contains(&format!("Commit {second}: FAIL\n")),
+        "{theirs}"
+    );
 }
 
 /// S3.17a.l: when the advice after a tool call is off for a reason told once in the session, the

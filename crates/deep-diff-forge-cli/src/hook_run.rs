@@ -7707,8 +7707,9 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, Why> {
                         active: input.stop_hook_active,
                         frontier: &frontier,
                     };
-                    let judging = judge_units(&stopping, &tips, &known, &session.state.blocked)
+                    let mut judging = judge_units(&stopping, &tips, &known, &session.state.blocked)
                         .map_err(scratch_failed)?;
+                    attribute(&work.place, &mut judging.units);
                     // Decided by what had blocked before this stop; then this stop is
                     // remembered.
                     let decision =
@@ -7793,6 +7794,90 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, Why> {
     }
     let note = (!notes.is_empty()).then(|| notes.join("\n"));
     Ok(hook::stop_output_with(&decision, note.as_deref()))
+}
+
+/// The most of a working tree's `HEAD` reflog read to name where a commit came from.
+const REFLOG_READ: u64 = 1 << 20;
+
+/// F13.a, narrowed (design B8, limit L11): a commit judged at this stop that holds it names the
+/// other working tree whose `HEAD` reflog records it, as advice to the agent. Nothing is taken
+/// from a hold: reflogs are the agent's to write and expire, so they prove nothing about who
+/// made a commit, and a commit the session's own tree records, or none records, is not named.
+fn attribute(place: &Place, units: &mut [TreeJudged]) {
+    for unit in units.iter_mut().filter(|unit| {
+        unit.tag.is_empty()
+            && unit.holds == Holds::Now
+            && matches!(unit.judged, Some(Judged::Fail { .. }))
+    }) {
+        let Some(short) = unit.what.strip_prefix("Commit ").map(str::to_owned) else {
+            continue;
+        };
+        if let Some(top) = reflog_holder(place, &short) {
+            unit.what = format!(
+                "{} (the HEAD reflog of {} has this commit; if this session did not make it, tell a person)",
+                unit.what,
+                shown(&top)
+            );
+        }
+    }
+}
+
+/// The top of the other working tree of the project whose `HEAD` reflog records a commit whose
+/// id begins with `short`, when the reflog of this tree does not: the main tree's
+/// (`<common>/logs/HEAD`) and each linked tree's (`<common>/worktrees/<name>/logs/HEAD`, its
+/// top read from its `gitdir` file), the last [`REFLOG_READ`] bytes of each.
+fn reflog_holder(place: &Place, short: &str) -> Option<PathBuf> {
+    let records = |admin: &Path| -> bool {
+        let Ok(file) = std::fs::File::open(admin.join("logs/HEAD")) else {
+            return false;
+        };
+        let length = file.metadata().map_or(0, |found| found.len());
+        let mut file = file;
+        let mut text = Vec::new();
+        let read = std::io::Seek::seek(
+            &mut file,
+            std::io::SeekFrom::Start(length.saturating_sub(REFLOG_READ)),
+        )
+        .and_then(|_| file.take(REFLOG_READ).read_to_end(&mut text));
+        read.is_ok()
+            && String::from_utf8_lossy(&text).lines().any(|line| {
+                line.split(' ')
+                    .nth(1)
+                    .is_some_and(|new| new.starts_with(short))
+            })
+    };
+    if records(&place.git_dir) {
+        return None;
+    }
+    let mut trees: Vec<(PathBuf, PathBuf)> = Vec::new();
+    if place.git_dir != place.common {
+        let top = place
+            .common
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        trees.push((place.common.clone(), top));
+    }
+    if let Ok(entries) = std::fs::read_dir(place.common.join("worktrees")) {
+        for entry in entries.filter_map(Result::ok).take(TREES_READ) {
+            let admin = entry.path();
+            if admin == place.git_dir {
+                continue;
+            }
+            let Ok(pointer) = std::fs::read_to_string(admin.join("gitdir")) else {
+                continue;
+            };
+            let dotgit = PathBuf::from(pointer.trim_end_matches('\n'));
+            trees.push((
+                admin,
+                dotgit.parent().map(Path::to_path_buf).unwrap_or(dotgit),
+            ));
+        }
+    }
+    trees
+        .into_iter()
+        .find(|(admin, _)| records(admin))
+        .map(|(_, top)| top)
 }
 
 /// The most a stop waits for the lock of the project's ledger (F11).

@@ -989,7 +989,11 @@ Stated limits, which the judge on the pull request covers:
   working tree of the project is on a branch this session's stops read, made during this
   session, so it is judged as this session's: its failure holds this stop once, and the
   author's once (measured: a session in the main tree that changed nothing was held for a
-  failing commit made in a linked tree by another session). Target: F13 (0.11.0).
+  failing commit made in a linked tree by another session). Who made a commit cannot be
+  proven from what the agent can write (reflogs expire and can be written; messages and dates
+  are the author's), so from 0.11.0 (F13.a) the block only names, as advice, the other
+  working tree whose `HEAD` reflog records the commit: "(the HEAD reflog of <tree> has this
+  commit; if this session did not make it, tell a person)". Nothing is taken from the hold.
 - **Some stop outcomes cost the judged agent nothing at its next turn.** A failure that
   stands after its one block is said as FAIL STANDS (and recorded `fail_stands` in the
   ledger), a hold for a rule is for a person and never blocks, and advice that is off is said
