@@ -512,7 +512,10 @@ pub(crate) const CLAIMS_VERIFIED: &str = "claims_verified";
 
 /// What that link says when it is not ready: the contract of the hooks under a policy that
 /// requires verified claims.
-pub(crate) const CLAIMS_HOLD: &str = "stops here will hold, never pass: the judge holds the probe for claims it cannot verify (note claims_unverified). An uncommitted or staged change can never be verified, so it can at best hold: commit first. This build gives no --repo, --base or --head for a commit either, so a commit holds too";
+pub(crate) const CLAIMS_HOLD: &str = "stops here will hold, never pass: the judge holds the probe for claims it cannot verify (note claims_unverified). An uncommitted or staged change can never be verified, so it can at best hold: commit first. This judge does not take bound mode (its check usage names no --repo), so a commit holds too";
+
+/// What that link says when the judge takes bound mode (S3.25.b): which units can pass.
+pub(crate) const CLAIMS_BOUND: &str = "under this policy only a commit can pass: the judge holds the probe for claims it cannot verify (note claims_unverified), and it takes bound mode, so a commit with one parent is judged with --repo, --base and --head and can pass. An uncommitted or staged change, a root commit and a merge commit can never be verified, so they can at best hold: commit first";
 
 /// The most links that are not ready a session's start names, and the most characters of each.
 const LINKS_SHOWN: usize = 4;

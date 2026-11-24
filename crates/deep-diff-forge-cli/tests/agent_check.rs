@@ -170,10 +170,12 @@ fn judge(path: &Path, answer: &str, wait: Option<&Path>) {
 /// is bound and no rule is built in).
 fn judge_of(schema: &str, path: &Path, answer: &str, wait: Option<&Path>) {
     const SCRIPT: &str = r#"#!/bin/sh
-policy=; patch=; ranker=
+if [ "$1" = check ] && [ "$2" = --help ]; then cat "$0.help" 2>/dev/null; exit 0; fi
+policy=; patch=; ranker=; repo=; base=; head=
 while [ $# -gt 0 ]; do
   case "$1" in
     --policy) policy="$2";; --patch) patch="$2";; --ranker) ranker="$2";;
+    --repo) repo="$2";; --base) base="$2";; --head) head="$2";;
   esac
   shift
 done
@@ -204,6 +206,7 @@ elif [ "$code" = 8 ]; then said=hold; name=policy_hold; action=review_evidence; 
 else said=pass; name=pass; action=proceed; counts='"passed":1,"waived":0,"held":0,"failed":0'; fi
 p="$(sum "$policy")"; f="$(sum "$patch")"; r="$(sum "$ranker")"
 seals="{\"policy_sha256\":\"$p\",\"rank_sha256\":\"$f\",\"patch_sha256\":\"$f\",\"patch_facts_sha256\":null,\"provenance\":\"produced\",\"ranked_by\":{\"version\":\"stand-in\",\"sha256\":\"$r\"},\"git\":{\"path\":\"/usr/bin/git\",\"version\":\"git version 2.56.0\",\"sha256\":\"$p\",\"admission\":\"approved\",\"allowlist_sha256\":\"$f\"}}"
+if [ -n "$repo" ]; then echo "$base..$head" >> "$0.bound"; seals="${seals%\}},\"claims\":{\"base\":\"$base\",\"head\":\"$head\",\"merge_base\":\"$base\",\"verified\":true}}"; fi
 sed -e "s/\"@VERDICT@\"/\"$said\"/g" -e "s/\"@CODE@\"/$code/" -e "s/\"@NAME@\"/\"$name\"/" \
     -e "s/\"@ACTION@\"/\"$action\"/" -e "s|\"@SEALS@\"|$seals|" -e "s/\"@COUNTS@\":0/$counts/" -e "s/\"@SEVERITY@\"/\"$sev\"/" <<'VERDICT'
 @VERDICT_DOCUMENT@
@@ -1046,6 +1049,60 @@ fn a_check_gives_the_judge_the_patches_a_stop_gives() {
         by_stop,
         "the check gave the judge other patches than the stop: {doc}"
     );
+}
+
+/// S3.25.b, ruling 6: `agent check` judges a commit as a stop does: a commit with one parent in
+/// bound mode (`--repo`, `--base` its parent, `--head` it) when the judge's usage names
+/// `--repo`, the uncommitted change without.
+#[test]
+fn a_check_judges_a_commit_in_bound_mode_as_a_stop_does() {
+    let scratch = Scratch::new("agent-check-bound");
+    let (home, root) = repository(&scratch);
+    let bound = scratch.join("judge");
+    judge_of("forge-warden.verdict.v3", &bound, "pass", None);
+    std::fs::write(
+        scratch.join("judge.help"),
+        "      --repo <DIR>     Bound mode\n",
+    )
+    .unwrap();
+    install(&home, &bound);
+    let (code, _, _) = hook(
+        &home,
+        "session-start",
+        &[],
+        &input("SessionStart", &root, "s1"),
+    );
+    assert_eq!(code, 0);
+    for name in ["c", "d"] {
+        std::fs::write(
+            root.join(format!("{name}.rs")),
+            format!("fn {name}() {{}}\n"),
+        )
+        .unwrap();
+        git(&root, &["add", "--all"]);
+        git(&root, &["commit", "--quiet", "-m", name]);
+    }
+    std::fs::write(root.join("e.rs"), "fn e() {}\n").unwrap();
+    let pairs = format!(
+        "{}..{}\n{}..{}\n",
+        git(&root, &["rev-parse", "HEAD~2"]).trim(),
+        git(&root, &["rev-parse", "HEAD~1"]).trim(),
+        git(&root, &["rev-parse", "HEAD~1"]).trim(),
+        git(&root, &["rev-parse", "HEAD"]).trim(),
+    );
+    let log = scratch.join("judge.bound");
+    let (_, stop, _) = hook(
+        &home,
+        "stop",
+        &["--judge", bound.to_str().unwrap()],
+        &input("Stop", &root, "s1"),
+    );
+    assert_eq!(stop_outcome(&stop), "pass", "{stop}");
+    assert_eq!(std::fs::read_to_string(&log).unwrap(), pairs, "{stop}");
+    std::fs::write(&log, "").unwrap();
+    let doc = check_json(&home, &root, &["--session", "s1"], None);
+    assert_eq!(doc["units"].as_array().map(Vec::len), Some(3), "{doc}");
+    assert_eq!(std::fs::read_to_string(&log).unwrap(), pairs, "{doc}");
 }
 
 /// F3.e: `--require-pass` exits 7 through the one door when there is no unit (a clean
