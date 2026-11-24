@@ -147,7 +147,10 @@ deep-diff-forge eval                          # score the labelled corpus in fix
   `#[cfg(any())]` on a test in `evidence/independent-review-20261114` moved from declared to
   expected) precision is 209 / 234 and recall 209 / 290, with 109 declared misses. On 66 cases
   (`evidence/rust-tests-module-compiled-out` added: a module and a file of tests compiled out)
-  precision is 211 / 236 and recall 211 / 292, with 109 declared misses.
+  precision is 211 / 236 and recall 211 / 292, with 109 declared misses. On 69 cases (S3.35.d:
+  `evidence/lang-python`, `evidence/lang-javascript`, `evidence/lang-go`: every form of the
+  integrity labels the readers read beyond Rust, each beside a near miss) precision is 233 / 258
+  and recall 233 / 314, with 109 declared misses.
   The sibling battery `assert-cfg-let` (seed 1, 46 shapes) of the comparison corpus, read by the
   0.11.0 branch after F2a: `trivial_assert` is raised on 19 of its 21 shapes that cannot fail
   (not on a macro bound by `use … as`, nor on `matches!(Some(n), Some(_))`), `test_skipped` on 4
@@ -157,24 +160,24 @@ deep-diff-forge eval                          # score the labelled corpus in fix
   | Metric | Right / total | Floor |
   | --- | ---: | ---: |
   | ranking pairs | 12 / 15 | 80.0% |
-  | evidence precision | 211 / 236 | 88.2% |
-  | evidence recall | 211 / 292 | 70.5% |
+  | evidence precision | 233 / 258 | 88.2% |
+  | evidence recall | 233 / 314 | 70.5% |
   | findings verdicts | 33 / 33 | 100% |
 
   The receipt (`--json`) also splits evidence precision and recall by signal (`by_signal`) and by
   the language of the item's file (`by_language`, the engine's own language reading, `none` where
   no language applies); each adds up to the two evidence rows above, and the text summary prints
-  the four metrics only. Measured 2026-11-24 on 66 cases:
+  the four metrics only. Measured 2026-11-24 on 69 cases:
 
   | Signal | Precision | Recall | Cases |
   | --- | ---: | ---: | ---: |
   | `assertions_removed` | 0 / 0 (-) | 0 / 1 (0.0%) | 1 |
   | `build_hook` | 1 / 1 (100.0%) | 1 / 1 (100.0%) | 1 |
-  | `check_suppressed` | 14 / 14 (100.0%) | 14 / 15 (93.3%) | 7 |
+  | `check_suppressed` | 20 / 20 (100.0%) | 20 / 21 (95.2%) | 10 |
   | `ci_privilege` | 5 / 5 (100.0%) | 5 / 5 (100.0%) | 2 |
   | `dynamic_eval` | 7 / 7 (100.0%) | 7 / 11 (63.6%) | 7 |
   | `error_defaulted` | 0 / 0 (-) | 0 / 2 (0.0%) | 1 |
-  | `error_swallowed` | 15 / 15 (100.0%) | 15 / 20 (75.0%) | 7 |
+  | `error_swallowed` | 20 / 20 (100.0%) | 20 / 25 (80.0%) | 10 |
   | `expectations_changed` | 0 / 0 (-) | 0 / 1 (0.0%) | 1 |
   | `input_special_cased` | 0 / 0 (-) | 0 / 1 (0.0%) | 1 |
   | `module_mocked` | 0 / 0 (-) | 0 / 1 (0.0%) | 1 |
@@ -182,21 +185,45 @@ deep-diff-forge eval                          # score the labelled corpus in fix
   | `panic_path_added` | 45 / 60 (75.0%) | 45 / 58 (77.6%) | 19 |
   | `process_spawn` | 38 / 41 (92.7%) | 38 / 51 (74.5%) | 12 |
   | `secret_like` | 9 / 9 (100.0%) | 9 / 9 (100.0%) | 2 |
-  | `stub_added` | 6 / 6 (100.0%) | 6 / 9 (66.7%) | 8 |
-  | `test_removed` | 6 / 6 (100.0%) | 6 / 6 (100.0%) | 4 |
-  | `test_skipped` | 20 / 24 (83.3%) | 20 / 35 (57.1%) | 16 |
-  | `trivial_assert` | 20 / 20 (100.0%) | 20 / 36 (55.6%) | 14 |
+  | `stub_added` | 7 / 7 (100.0%) | 7 / 10 (70.0%) | 9 |
+  | `test_removed` | 9 / 9 (100.0%) | 9 / 9 (100.0%) | 7 |
+  | `test_skipped` | 24 / 28 (85.7%) | 24 / 39 (61.5%) | 19 |
+  | `trivial_assert` | 23 / 23 (100.0%) | 23 / 39 (59.0%) | 16 |
   | `unsafe_added` | 8 / 9 (88.9%) | 8 / 8 (100.0%) | 5 |
 
   | Language | Precision | Recall | Cases |
   | --- | ---: | ---: | ---: |
-  | `go` | 4 / 4 (100.0%) | 4 / 8 (50.0%) | 5 |
-  | `javascript` | 13 / 13 (100.0%) | 13 / 23 (56.5%) | 10 |
+  | `go` | 9 / 9 (100.0%) | 9 / 13 (69.2%) | 6 |
+  | `javascript` | 21 / 21 (100.0%) | 21 / 31 (67.7%) | 11 |
   | `none` | 17 / 18 (94.4%) | 17 / 21 (81.0%) | 5 |
-  | `python` | 12 / 13 (92.3%) | 12 / 29 (41.4%) | 14 |
+  | `python` | 21 / 22 (95.5%) | 21 / 38 (55.3%) | 15 |
   | `rust` | 153 / 175 (87.4%) | 153 / 198 (77.3%) | 28 |
   | `shell` | 6 / 7 (85.7%) | 6 / 7 (85.7%) | 6 |
   | `yaml` | 6 / 6 (100.0%) | 6 / 6 (100.0%) | 2 |
+
+  **The integrity labels beyond Rust (S3.35.d, measured 2026-11-24 on the 0.11.0 branch).** Every
+  form below was run through the binary, one positive and one near miss each for a form that is
+  read; `evidence/lang-python`, `evidence/lang-javascript` and `evidence/lang-go` hold the read forms
+  and their near misses. The forms a reviewer would expect that no rule reads are declared here
+  (46 forms); they are not yet cases of the corpus: as declared misses they would add 46 to the
+  recall's denominator (233 / 360 against 233 / 314), under the recall floor.
+
+  | Label | Read (Python · JavaScript/TypeScript · Go) | Not read (declared) |
+  | --- | --- | --- |
+  | `check_suppressed` | `# noqa`, `# type: ignore`, `# nosec`, `# pragma: no cover` · `eslint-disable`, `@ts-ignore`, `@ts-nocheck`, `@ts-expect-error` · `//nolint`, `#nosec` | `# pylint: disable=`, `# ruff: noqa`, `warnings.filterwarnings("ignore")`; `// biome-ignore`, `/* istanbul ignore */`; `//lint:ignore`; shell `# shellcheck disable=`; YAML `# yamllint disable`; Dockerfile `# hadolint ignore=`; Makefile `.IGNORE:` |
+  | `test_removed` | a removed `def test…` · a removed `it(`, `test(`, `describe(` · a removed `func Test…` | a removed `class Test…(unittest.TestCase)`; a removed `it.each(…)(…)`; a removed `func Fuzz…` and a row of a table test; a removed bats `@test`; a removed CI step that runs the tests; a removed Makefile test command |
+  | `test_skipped` | `pytest.mark.skip…`, `pytest.mark.xfail`, `pytest.skip(`, `unittest.skip…`, `self.skipTest(` · `it.skip(`, `test.skip(`, `describe.skip(`, the `skipIf` and `todo` forms, `xit(`, `xtest(`, `xdescribe(` · `t.Skip(`, `t.Skipf(`, `t.SkipNow(` | `pytest.importorskip(`, `@unittest.expectedFailure`; `it.only(` (every other test then skipped), Playwright `test.fixme(`; `if testing.Short() { return }`; bats `skip`; a CI job with `if: false` |
+  | `trivial_assert` | `assert True` where the statement ends, `self.assertTrue(True)` · `expect(true).toBe(true)`, `expect(true).toEqual(true)`, `assert(true)`, `assert.ok(true)` · none | `assert 1`, `self.assertEqual(x, x)`; `expect(1).toBe(1)`, `expect(true).toBeTruthy()`; testify `assert.True(t, true)`; bats `[ 1 -eq 1 ]` |
+  | `stub_added` | `raise NotImplementedError` · none · none | an `...` body; `throw new Error("not implemented")`; `panic("not implemented")` |
+  | `error_swallowed` | an `except` whose body is `pass` or `...` · an empty `catch` block or `.catch(() => {})` · `_ = err`, an empty `if err != nil {}` | `contextlib.suppress(…)`, an `except` that returns `None`; a `catch` that only logs; `_ = f()` dropping an error result, `if err != nil { return nil }`; shell `|| true`; YAML `continue-on-error: true`; Dockerfile `RUN … || true`; a Makefile recipe line with `-` |
+  | `panic_path_added` | none (Rust only) | `sys.exit(1)` in library code; Go `panic(err)`, `log.Fatal(err)`; `process.exit(1)` |
+
+  Shell, YAML, Dockerfile and Makefile have no integrity rule: every form named for them above is
+  unread. Per language, precision and recall before (66 cases) and after (69 cases): Go 4 / 4 and
+  4 / 8 to 9 / 9 and 9 / 13; JavaScript 13 / 13 and 13 / 23 to 21 / 21 and 21 / 31; Python
+  12 / 13 and 12 / 29 to 21 / 22 and 21 / 38; Rust, shell, YAML and the rest unchanged. With the
+  46 declared forms as cases recall would be Go 9 / 23, JavaScript 21 / 41, Python 21 / 50, shell
+  6 / 14, YAML 6 / 10, and 233 / 360 overall.
 
   A case whose patch the parser refuses is listed in the receipt's `refused` with the parser's
   reason and fails the run (exit 7); its items are not scored, and every other case is still

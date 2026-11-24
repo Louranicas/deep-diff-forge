@@ -220,6 +220,9 @@ use std::process::Command;
 /// F2a.d as a class (ruling 2): `evidence/rust-tests-module-compiled-out` (a module of tests and
 /// a file of tests compiled out; a module of another name and a file outside the tests as near
 /// misses): precision 211 of 236, recall 211 of 292, 109 declared.
+/// S3.35.d (0.11.0) adds the integrity labels beyond Rust: `evidence/lang-python`,
+/// `evidence/lang-javascript` and `evidence/lang-go` (every form the readers read, each with a near
+/// miss): precision 233 of 258, recall 233 of 314, 109 declared.
 const RANKING_PAIRS_FLOOR: u64 = 800_000;
 const EVIDENCE_PRECISION_FLOOR: u64 = 881_516;
 const EVIDENCE_RECALL_FLOOR: u64 = 704_545;
@@ -305,7 +308,7 @@ fn the_corpus_meets_its_floors() {
 /// S3.35.b: the receipt splits evidence precision and recall by signal (`by_signal`) and by
 /// the language of the item's file (`by_language`), and each split adds up to the aggregate the
 /// floors hold. The `trivial_assert` pair (precision and recall; S3.16 narrowed it, F2a.a widened
-/// it to the class: 14 of 14 and 14 of 29 before) and
+/// it to the class: 14 of 14 and 14 of 29 before; S3.35.d added its Python and JavaScript forms) and
 /// the Python case count are held exactly, so a change to them shows here by name.
 #[test]
 fn eval_receipt_carries_per_signal_tallies() {
@@ -314,13 +317,13 @@ fn eval_receipt_carries_per_signal_tallies() {
     assert_eq!(
         receipt["by_signal"]["trivial_assert"],
         serde_json::json!({
-            "precision": {"right": 20, "total": 20, "ppm": 1_000_000},
-            "recall": {"right": 20, "total": 36, "ppm": 555_555},
-            "cases": 14
+            "precision": {"right": 23, "total": 23, "ppm": 1_000_000},
+            "recall": {"right": 23, "total": 39, "ppm": 589_743},
+            "cases": 16
         }),
         "the trivial_assert pair in {receipt:#}"
     );
-    assert_eq!(receipt["by_language"]["python"]["cases"], 14, "{receipt:#}");
+    assert_eq!(receipt["by_language"]["python"]["cases"], 15, "{receipt:#}");
     let m = &receipt["metrics"];
     for member in ["by_signal", "by_language"] {
         let split = receipt[member].as_object().unwrap();
@@ -381,13 +384,13 @@ fn the_summary_names_each_metric_and_each_failure() {
     let (code, text) = run(&corpus());
     assert_eq!(code, Some(0), "{text}");
     assert!(
-        text.starts_with("deep-diff-forge eval: 66 cases\n"),
+        text.starts_with("deep-diff-forge eval: 69 cases\n"),
         "{text}"
     );
     for line in [
         "  ranking_pairs        12/15",
-        "  evidence_precision   211/236",
-        "  evidence_recall      211/292",
+        "  evidence_precision   233/258",
+        "  evidence_recall      233/314",
         "  declared             109",
         "  KNOWN ranking/auth-check-removed: src/handlers/delete.rs ranks below docs/CHANGES.md",
         "  KNOWN evidence/shell-heredoc: reports (\"scripts/docs.sh\", \"network_fetch\", \"new\", 3)",
@@ -784,7 +787,7 @@ fn a_declared_miss_must_still_be_a_miss() {
     );
     assert_eq!(
         metrics["evidence_recall"],
-        serde_json::json!({"right": 211, "total": 291, "ppm": 725_085})
+        serde_json::json!({"right": 233, "total": 313, "ppm": 744_408})
     );
 
     // A declared false positive the engine does not report.
@@ -802,7 +805,7 @@ fn a_declared_miss_must_still_be_a_miss() {
     );
     assert_eq!(
         metrics["evidence_precision"],
-        serde_json::json!({"right": 211, "total": 236, "ppm": 894_067})
+        serde_json::json!({"right": 233, "total": 258, "ppm": 903_100})
     );
 
     // A declared false positive that is also expected.
@@ -818,7 +821,7 @@ fn a_declared_miss_must_still_be_a_miss() {
             .unwrap()
             .ends_with("is not reported, or is expected: remove it")
     );
-    assert_eq!(metrics["evidence_precision"]["right"], 212);
+    assert_eq!(metrics["evidence_precision"]["right"], 234);
     assert_eq!(known, usize::try_from(DECLARED).unwrap() - 1);
 }
 

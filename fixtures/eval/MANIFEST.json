@@ -2675,6 +2675,165 @@
         }
       ],
       "sha256": "9f53c25e353aeed24e30ec2b4eda126e381b9fda97df6672e1f7497478de61ad"
+    },
+    {
+      "id": "evidence/lang-go",
+      "kind": "evidence",
+      "patch": "evidence/lang-go.patch",
+      "origin": "synthetic: S3.35.d (0.11.0), the integrity labels in Go: every form the readers read today, one positive and one near miss each; measured on w11G2-2",
+      "expect": [
+        {
+          "path": "a_read_0.go",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "a_test_read_2.go",
+          "signal": "test_removed",
+          "side": "old",
+          "line": 2
+        },
+        {
+          "path": "a_test_read_4.go",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "a_read_6.go",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "a_read_7.go",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "sha256": "87ed91ab9242ccae30784d20408b0ec3231149f4b459145a20499502edfa0319"
+    },
+    {
+      "id": "evidence/lang-javascript",
+      "kind": "evidence",
+      "patch": "evidence/lang-javascript.patch",
+      "origin": "synthetic: S3.35.d (0.11.0), the integrity labels in JavaScript and TypeScript: every form the readers read today, one positive and one near miss each; measured on w11G2-2",
+      "expect": [
+        {
+          "path": "src/a_read_0.js",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/a_read_1.ts",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/a_read_2.ts",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "test/a.test_read_4.js",
+          "signal": "test_removed",
+          "side": "old",
+          "line": 2
+        },
+        {
+          "path": "test/a.test_read_6.js",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "test/a.test_read_8.js",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/a_read_10.js",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/a_read_11.js",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "sha256": "0e4c5064e33ce4f77f934e25463af97a5ce322669d392f8641acc9f8f6a92fc2"
+    },
+    {
+      "id": "evidence/lang-python",
+      "kind": "evidence",
+      "patch": "evidence/lang-python.patch",
+      "origin": "synthetic: S3.35.d (0.11.0), the integrity labels in Python: every form the readers read today, one positive and one near miss each; measured on w11G2-2",
+      "expect": [
+        {
+          "path": "src/a_read_0.py",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/a_read_1.py",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/test_a_read_3.py",
+          "signal": "test_removed",
+          "side": "old",
+          "line": 2
+        },
+        {
+          "path": "tests/test_a_read_5.py",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/test_a_read_6.py",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/test_a_read_8.py",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/test_a_read_9.py",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/a_read_11.py",
+          "signal": "stub_added",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/a_read_13.py",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 4
+        }
+      ],
+      "sha256": "b8412ef3dab757738e7f2d9176652fde1a5cd7a495d849b213ba8b597a7088d4"
     }
   ]
 }

@@ -1,0 +1,50 @@
+--- a/a_read_0.go
++++ b/a_read_0.go
+@@ -1,1 +1,2 @@
+ x0
++x := f() //nolint:errcheck
+--- a/a_near_1.go
++++ b/a_near_1.go
+@@ -1,1 +1,2 @@
+ x0
++x := f() // nolinter here
+--- a/a_test_read_2.go
++++ b/a_test_read_2.go
+@@ -1,3 +1,1 @@
+ x0
+-func TestAdd(t *testing.T) {
+-}
+--- a/a_test_near_3.go
++++ b/a_test_near_3.go
+@@ -1,3 +1,1 @@
+ x0
+-func helper(t *testing.T) {
+-}
+--- a/a_test_read_4.go
++++ b/a_test_read_4.go
+@@ -1,1 +1,2 @@
+ x0
++	t.Skip("later")
+--- a/a_test_near_5.go
++++ b/a_test_near_5.go
+@@ -1,1 +1,2 @@
+ x0
++	t.Log("not skipped")
+--- a/a_read_6.go
++++ b/a_read_6.go
+@@ -1,1 +1,2 @@
+ x0
++	_ = err
+--- a/a_read_7.go
++++ b/a_read_7.go
+@@ -1,1 +1,3 @@
+ x0
++	if err != nil {
++	}
+--- a/a_near_8.go
++++ b/a_near_8.go
+@@ -1,1 +1,4 @@
+ x0
++	if err != nil {
++		return err
++	}

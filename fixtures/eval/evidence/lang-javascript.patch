@@ -1,0 +1,65 @@
+--- a/src/a_read_0.js
++++ b/src/a_read_0.js
+@@ -1,1 +1,2 @@
+ x0
++// eslint-disable-next-line no-unused-vars
+--- a/src/a_read_1.ts
++++ b/src/a_read_1.ts
+@@ -1,1 +1,2 @@
+ x0
++// @ts-ignore
+--- a/src/a_read_2.ts
++++ b/src/a_read_2.ts
+@@ -1,1 +1,2 @@
+ x0
++// @ts-expect-error
+--- a/src/a_near_3.js
++++ b/src/a_near_3.js
+@@ -1,1 +1,2 @@
+ x0
++// eslint is configured in package.json
+--- a/test/a.test_read_4.js
++++ b/test/a.test_read_4.js
+@@ -1,2 +1,1 @@
+ x0
+-it("adds", () => { expect(add(1, 2)).toBe(3); });
+--- a/test/a.test_near_5.js
++++ b/test/a.test_near_5.js
+@@ -1,2 +1,1 @@
+ x0
+-const helper = () => 3;
+--- a/test/a.test_read_6.js
++++ b/test/a.test_read_6.js
+@@ -1,1 +1,2 @@
+ x0
++it.skip("adds", () => {});
+--- a/test/a.test_near_7.js
++++ b/test/a.test_near_7.js
+@@ -1,1 +1,2 @@
+ x0
++it("skips nothing", () => {});
+--- a/test/a.test_read_8.js
++++ b/test/a.test_read_8.js
+@@ -1,1 +1,2 @@
+ x0
++  expect(true).toBe(true);
+--- a/test/a.test_near_9.js
++++ b/test/a.test_near_9.js
+@@ -1,1 +1,2 @@
+ x0
++  expect(ready()).toBe(true);
+--- a/src/a_read_10.js
++++ b/src/a_read_10.js
+@@ -1,1 +1,2 @@
+ x0
++try { f(); } catch (e) {}
+--- a/src/a_read_11.js
++++ b/src/a_read_11.js
+@@ -1,1 +1,2 @@
+ x0
++p.catch(() => {});
+--- a/src/a_near_12.js
++++ b/src/a_near_12.js
+@@ -1,1 +1,2 @@
+ x0
++try { f(); } catch (e) { throw e; }
