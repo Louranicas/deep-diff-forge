@@ -16,6 +16,16 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   weak. A protected policy reads `ok … is held or fails under a rule` (the words "under a rule"
   are new). The gate reads the policy at `HEAD`, a session's start the policy at the session's
   base; what a stop judges by is unchanged in this entry.
+- Tests: the suite no longer assumes Linux or a short temp directory. A test that needs another
+  process to hold a lock takes it with `python3`'s `fcntl.flock` (one holder, in the testkit),
+  not `flock(1)`, which macOS lacks; the stand-in judge of `agent check`'s tests falls back to
+  `shasum -a 256`; names that are not UTF-8 are also put in Git's objects alone, and the case on
+  disk says it is skipped where the file system refuses it; paths are compared as messages show
+  them (cut in the middle, canonical); `scripts/campaign_local.sh` runs on bash 3.2.
+  `scripts/long_tmpdir.sh` makes a temp directory as long and as indirect as macOS's (a link of
+  49 characters to a directory of 57), so these failures can be seen on Linux. The 0.11.0 CI run
+  on macOS failed 22 tests; six of the failures that come back on Linux this way are of the
+  product (a message cut at the wrong place under a long path) and stay red until it is fixed.
 
 ## [0.11.0] - 2026-11-25
 
