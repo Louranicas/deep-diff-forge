@@ -186,14 +186,6 @@ def _unknown_members(pages):
     return sorted(found)[:8]
 
 
-def _without_patch_text(error):
-    """A daemon error of a diagnostics call: a parse failure (4, or 3 for a header that is not
-    UTF-8) quotes the line that failed after its first ': '; it is cut there."""
-    if error.code in (3, 4):
-        return RpcError(error.code, error.message.split(": ", 1)[0])
-    return error
-
-
 def _result(response, request_id):
     """The result of a JSON-RPC 2.0 response to ``request_id``. The version, the id and the error
     object's shape are checked before anything in it is believed, errors included."""
@@ -314,7 +306,9 @@ class _Client:
             except RpcError as error:
                 if error.code == -32601:
                     raise ProtocolTooOld(daemon, needed, method) from None
-                raise _without_patch_text(error) from None
+                # Raised as the daemon worded it: diff.diagnostics names where a patch failed to
+                # parse and none of its text, so the SDK reads no English here.
+                raise
 
             def bad(problem, at=len(pages) + 1):
                 return PagingError(at, problem)

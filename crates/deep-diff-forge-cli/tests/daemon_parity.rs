@@ -381,13 +381,23 @@ fn diff_diagnostics_matches_the_cli_document() {
                     seen[1] += 1;
                 }
                 exit::INVALID_INPUT => {
+                    // One parse failure: the command line words it as released (the failing line
+                    // quoted), `diff.diagnostics` without the patch's text (lane M, part b).
                     let err = rpc.unwrap_err();
+                    let guards = deep_diff_forge_patch::InputGuards { files, hunks };
+                    let Err(deep_diff_forge_patch::ReviewError::Parse(parse)) =
+                        deep_diff_forge_patch::SealedReview::new(patch.as_bytes(), guards, "t")
+                    else {
+                        panic!("the command refused what the parser reads: {patch:?}");
+                    };
                     assert_eq!(
-                        (
-                            err.code,
-                            format!("error: patch parse failed: {}\n", err.message)
-                        ),
-                        (PATCH_PARSE_FAILED, stderr),
+                        stderr,
+                        format!("error: patch parse failed: {parse}\n"),
+                        "{patch:?}"
+                    );
+                    assert_eq!(
+                        (err.code, err.message),
+                        (PATCH_PARSE_FAILED, parse.without_input().to_string()),
                         "{patch:?}"
                     );
                     seen[2] += 1;

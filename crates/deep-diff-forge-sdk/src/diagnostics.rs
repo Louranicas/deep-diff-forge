@@ -574,10 +574,9 @@ pub(crate) fn fetch(
             Err(Error::Rpc { code, .. }) if code == deep_diff_forge_daemon::METHOD_NOT_FOUND => {
                 return Err(too_old(Some(daemon)));
             }
-            Err(Error::Rpc { code, message }) => {
-                let message = without_patch_text(code, &message).to_owned();
-                return Err(Error::Rpc { code, message });
-            }
+            // Every other daemon error is returned as the daemon worded it: `diff.diagnostics`
+            // words a parse failure with where it failed and none of the patch's text
+            // (`PatchParseError::without_input`), so nothing here reads its English.
             Err(other) => return Err(other),
         };
         let next = paging
@@ -642,17 +641,4 @@ fn rebuild(pages: &[Value], digest: Option<&str>) -> Result<Diagnostics, Error> 
         return Err(bad("the rebuilt document does not hash to document_sha256"));
     }
     Ok(document)
-}
-
-/// The message of a daemon error for a diagnostics call: a parse failure (error 4, or 3 for a
-/// header that is not UTF-8) quotes the line that failed after its first `": "`; it is cut there,
-/// so an error carries where the patch failed and no text of it.
-#[cfg(unix)]
-fn without_patch_text(code: i64, message: &str) -> &str {
-    let parse = [crate::exit::INVALID_INPUT, crate::exit::IO].map(i64::from);
-    if parse.contains(&code) {
-        message.split_once(": ").map_or(message, |(head, _)| head)
-    } else {
-        message
-    }
 }
