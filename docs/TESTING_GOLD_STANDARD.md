@@ -340,6 +340,29 @@ That is six functions in all, four not seen at all and two not seen by a
 diff-scoped run; the review did not name its six, so whether they are these is not
 known.
 
+What the 0.10.0 run reported needs reading too (S3.34.c, 2026-11-24):
+
+- A timeout is not always a catch. Two of the run's timeouts were missed mutants
+  that the machine's load made slow: `hook.rs` `sh_quote` (`&&` to `||`, which no
+  test could tell apart, the build directory's path being plain) and `risk.rs`
+  `score_path_and_shape` (`+=` to `-=`, which passes every test of the workspace in
+  496 seconds against the baseline's 396 and the run's limit of 900). Both now have
+  tests that fail on them. A timeout is counted as a catch only once the mutant is
+  shown to loop or to be caught by a test.
+- Seven mutants of `lexical.rs` `scalar_reading` are caught only by the run's time
+  limit. Six make its loop never end: `colon + 1 + after` with either `+` made `-`
+  or `*` leaves the index where it was, or sends it back, on `key:` or `key: value`;
+  `colon > i` made `>=` or `==` takes nothing and leaves the index on any byte that is
+  not a blank or a key's colon (planted: the lexical tests hang). The seventh, `<`,
+  gives the same output and is quadratic on a run of blanks. A test with a bound
+  would catch the six in a second, but the function is not exported, so it would sit
+  in the graph crate's `src/` and move the scorer digest; it is not written.
+- One missed mutant is equivalent, answered by argument and by measurement: deleting
+  `released` from the hit `texts_found` keeps. The reading of release 0.8.4 marks the
+  same items, and the union of the readings keeps either mark. The marks of 29,646
+  files of the comparison and eval corpora, and `--rank` and `--diagnostics` on 7,490
+  patches, are the same with the mutant.
+
 ## Module Test Targets
 
 | Module or crate | Required focus |
