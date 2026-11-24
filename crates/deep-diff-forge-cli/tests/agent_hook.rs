@@ -13304,6 +13304,16 @@ fn no_state_file_confirms_a_line_of_the_patch() {
     assert!(advice.contains("check_suppressed"), "{advice}");
     blocked(&stop_as(&root, "s", &judge_path, false));
     let _ = stop_as(&root, "s", &judge_path, true);
+    // (what has blocked is remembered while the change is not committed: the files are read
+    // now, and again after the commit has its answer)
+    let while_uncommitted = files_under(&sessions());
+    assert!(
+        the_state()["blocked"]
+            .as_array()
+            .is_some_and(|lines| lines.len() >= 2),
+        "{}",
+        the_state()
+    );
     git(
         &root,
         &["commit", "--quiet", "-am", "the change with the line"],
@@ -13358,7 +13368,10 @@ fn no_state_file_confirms_a_line_of_the_patch() {
     assert!(state_files.len() >= 4, "{state_files:?}");
     let ledger = root.join(".git/deep-diff-forge/ledger.jsonl");
     let ledger_file = (ledger.clone(), std::fs::read(&ledger).unwrap_or_default());
-    for (path, bytes) in state_files.iter().chain(std::iter::once(&ledger_file)) {
+    for (path, bytes) in (state_files.iter())
+        .chain(&while_uncommitted)
+        .chain(std::iter::once(&ledger_file))
+    {
         let text = String::from_utf8_lossy(bytes);
         for (what, words) in &forbidden {
             assert!(
