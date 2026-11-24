@@ -360,6 +360,25 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   losing the explanation. The command line and the daemon's protocol-2 methods keep their
   messages, which quote the line. New: `PatchParseError::without_input` (patch crate),
   `Engine::without_input_in_errors` (daemon crate).
+- Release (F4.c): `scripts/release_local.sh build` writes `RELEASE-MANIFEST.json` beside the
+  archive (listed in `SHA256SUMS`): the version, commit, target, the binary's and the archive's
+  SHA-256, the rank, diagnostics and hook-state schemas and the ledger version the binary writes,
+  the verdict and hook-state schemas it reads, its engine protocol and methods and its
+  `scorer_sha256`, each read from the binary itself with the command named in `sources`. The
+  owner signs it with the release key in the namespace `deep-diff-forge-release-manifest`;
+  `verify` checks that signature, that every member has a value and that it names the tag's
+  commit, version, binary and archive. `deep-diff-forge doctor` prints three more lines:
+  `verdict_schemas_read`, `hook_state_schemas_read` and `ledger_version`.
+- Contract matrix (F4.d): the real rows run once for each forge-warden given (`FW_BIN`, the
+  gate's judge, now forge-warden `005a1959`; `FW_BIN_OLDER`: `db4c580e` and a build of the release
+  commit of 0.2.1), each recorded by its SHA-256 with a name its row ids carry, and the outcomes
+  that differ by judge stated (bound mode, unknown labels, the empty patch); with
+  `--require-real`, which the gate passes when `FW_BIN` is set, every recorded forge-warden and
+  both published binaries (0.9.0, 0.10.0) must be given. New rows: `agent check` equals the stop,
+  a policy that admits an older ranker, the frontier, `agent verify-branch` over every outcome, a
+  first stop is never silent, the stateless stop (six ways), the stray-byte source file in a Git
+  mode, the diagnostics paged on `rpc` and MCP, and the published 0.9.0 and 0.10.0 and this build
+  on one another's hook state. `docs/reference/quality-gates.md` lists every row.
 
 ## [0.10.0] - 2026-11-23
 
