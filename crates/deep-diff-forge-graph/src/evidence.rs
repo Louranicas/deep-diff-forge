@@ -5434,14 +5434,27 @@ mod tests {
     /// Run `work` on its own thread and fail if it takes more than two minutes of wall time.
     /// This bound only keeps a hang from stalling the suite, so a diff-mutation run reports a
     /// looping mutant as caught rather than as a timeout; the scan's cost is bounded by
-    /// [`ScanClock`] inside the work.
+    /// [`ScanClock`] inside the work. A panic of the work is raised again here, with its own
+    /// message.
     fn within_deadline<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
         let (done, wait) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
+        let worker = std::thread::spawn(move || {
             let _ = done.send(work());
         });
-        wait.recv_timeout(std::time::Duration::from_secs(120))
-            .expect("a long line was scanned within two minutes")
+        match wait.recv_timeout(std::time::Duration::from_secs(120)) {
+            // The work panicked, which dropped its sender: raise its own panic, not this one.
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                std::panic::resume_unwind(worker.join().expect_err("the work sent no answer"))
+            }
+            answer => answer.expect("a long line was scanned within two minutes"),
+        }
+    }
+
+    /// [`within_deadline`] fails with the work's own message.
+    #[test]
+    #[should_panic(expected = "the work's own message")]
+    fn within_deadline_raises_the_work_s_own_panic() {
+        within_deadline::<()>(|| panic!("the work's own message"));
     }
 
     /// The import rule's receiver, boundary, `typeof` and statement decisions, each pinned.
