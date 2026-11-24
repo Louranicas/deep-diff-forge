@@ -1,0 +1,10 @@
+--- a/d0/Dockerfile
++++ b/d0/Dockerfile
+@@ -1,1 +1,2 @@
+ x0
++# hadolint ignore=DL3008
+--- a/d1/Dockerfile
++++ b/d1/Dockerfile
+@@ -1,1 +1,2 @@
+ x0
++RUN make check || true

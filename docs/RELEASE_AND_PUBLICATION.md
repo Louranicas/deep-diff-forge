@@ -2,8 +2,20 @@
 
 This document defines how Deep-Diff-Forge moves from commit to public artifact.
 
-## Status of 0.10.0 and the releases before it
+## Status of 0.11.0 and the releases before it
 
+- **0.11.0** is the agent-loop release: the document `deep-diff-forge.diagnostics.v0`, engine
+  protocol 3, a stop that judges the project's frontier and one-parent commits in the judge's
+  bound mode, and one meaning for exit 7. It fixes `eval` and `agent doctor --gate`, which exited
+  0 when the reader of their output had gone in 0.10.0 and earlier
+  ([DDF-2026-011](advisories/DDF-2026-011.md)), and closes the miss
+  [DDF-2026-006](advisories/DDF-2026-006.md) declared; its known issues, contract changes and
+  the order of the cutover with forge-warden are in its [release notes](release-notes/0.11.0.md).
+  It is released as the signed tag `v0.11.0`, published on GitLab, Gitea and Forgejo with a
+  binary built locally for Linux x86_64 and its `RELEASE-MANIFEST.json` signed beside
+  `SHA256SUMS`; GitHub mirrors its release page from the GitLab files, and its crates are
+  published on crates.io from the tag's commit ([Local release](#local-release-from-084),
+  **Publish**).
 - **0.10.0** reads a `diff --git` section only if its headers are a shape Git's own diff
   writes, and fixes six misses of 0.9.0 and earlier
   ([DDF-2026-004](advisories/DDF-2026-004.md) to [DDF-2026-008](advisories/DDF-2026-008.md) and
@@ -61,10 +73,10 @@ This document defines how Deep-Diff-Forge moves from commit to public artifact.
 
 | Channel | Purpose | Today |
 | --- | --- | --- |
-| `main` | Current development branch. | 0.10.0 (from 0.8.4 merged on GitLab; GitHub's `main` is brought level by a pull request); up to 0.8.3 it was reached only through pull requests (branch ruleset). |
-| GitHub Releases | Up to v0.8.3 the primary binary release; from 0.8.4 a mirror of the GitLab release. | `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`, `v0.8.0`, `v0.8.1`, `v0.8.2`, `v0.8.3` built by `release.yml`; `v0.8.4` and `v0.9.0` mirrored (2026-11-22), `v0.10.0` mirrored from its GitLab files. |
+| `main` | Current development branch. | 0.11.0 (from 0.8.4 merged on GitLab; GitHub's `main` is brought level by a pull request); up to 0.8.3 it was reached only through pull requests (branch ruleset). |
+| GitHub Releases | Up to v0.8.3 the primary binary release; from 0.8.4 a mirror of the GitLab release. | `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`, `v0.8.0`, `v0.8.1`, `v0.8.2`, `v0.8.3` built by `release.yml`; `v0.8.4` and `v0.9.0` mirrored (2026-11-22), `v0.10.0` and `v0.11.0` mirrored from their GitLab files. |
 | GitLab | Up to 0.8.3 a mirror; from 0.8.4 the repository of record and the place of release and contribution (merge requests). | Up to 0.8.3 pushed to match GitHub; from 0.8.4 every signed tag and its release files are published here ([local release](#local-release-from-084)). |
-| crates.io | Rust library and CLI distribution. | 0.9.0, fourteen crates (2026-11-23); from 0.10.0 a step of every release, 0.10.0 from its tag. |
+| crates.io | Rust library and CLI distribution. | 0.9.0, fourteen crates (2026-11-23); from 0.10.0 a step of every release, 0.10.0 and 0.11.0 from their tags. |
 | cargo-binstall | Fast binary installation. | Not configured (no binstall metadata in any `Cargo.toml`). |
 | package managers | Later, after CLI stabilizes. | None. |
 
@@ -73,7 +85,7 @@ This document defines how Deep-Diff-Forge moves from commit to public artifact.
 Semantic versioning. The plan below is the original 2026-06 sequence, kept as
 written; the releases did not follow it (`v0.2.0` already held 12 crates,
 including the TUI, daemon and learning crates; the review and SDK crates came
-later; 0.9.0 is the current development line):
+later; 0.11.0 is the newest release):
 
 ```text
 0.1.0: model and CLI bootstrap
@@ -88,10 +100,13 @@ later; 0.9.0 is the current development line):
 **The Rust API before 1.0 (decided 2026-11-23).** A minor release may break the Rust API of a
 library crate, and its notes say where. `deep_diff_forge_pipeline::Coverage` stays a closed
 enum in 0.10.0: its five values are every coverage outcome, and a caller may match it
-exhaustively, so a sixth outcome would be a breaking change of that crate. Whether `Coverage`
-and the other public enums become `#[non_exhaustive]` is decided once, for all of them, in
-0.11.0 (library API hygiene, with `Error::source` and the SDK gaps); 0.10.0 publishes the API
-as it is.
+exhaustively, so a sixth outcome would be a breaking change of that crate. **Decided for the
+0.x line in 0.11.0** (OD-N, the coordinator's ruling, shown to the owner at the release): the
+public enums and structs stay as they are (those that are closed, `Coverage` among them, stay
+closed, and those that carry `#[non_exhaustive]` now, `PatchParseError` and `RankedFile`
+among them, keep it); a release that adds a variant or a public field says so under the Rust
+API breaks of its notes, as 0.10.0 did; `#[non_exhaustive]` for the others, `Error::source` and
+the SDK gaps are taken up for 1.0 and not before.
 
 ## Pre-Release Checklist
 
@@ -125,6 +140,11 @@ rustup default. Run `scripts/diff_mutation.sh` from anywhere in the checkout: it
       `deep_diff_forge.__version__`; `cli/tests/python_sdk.rs` fails if they differ)
 - [ ] Docs updated
 - [ ] `CHANGELOG.md` updated
+- [ ] The release notes' commands run (from 0.11.0, part of the workspace tests):
+      `cli/tests/release_notes_commands.rs` runs every full command line quoted in backticks in
+      `docs/release-notes/<version>.md` of the tree's version and of the newest released one,
+      placeholders (`DIR`, `PATH`, `<…>`) with a stand-in, and fails naming the file and line of
+      any that is a usage error (exit 2). The 0.10.0 notes quoted a command 0.10.0 refused.
 
 Corpus regression snapshots and release receipts were part of the original
 checklist; neither has tooling yet.
@@ -248,20 +268,39 @@ the local repository. Its self-test is `scripts/test_release_local.sh` (`just re
   SBOM, packs the archive with `scripts/package_release.py` (`SOURCE_DATE_EPOCH` = the commit
   time), and writes into `<outdir>`, which must not exist: the archive, its `.sha256`,
   `sbom.spdx.json`, `release-receipt.json` (commit, toolchain, both build hashes, every file's
-  SHA-256) and `SHA256SUMS` over all of them. A `<commit>` that is a tag must be
+  SHA-256), `RELEASE-MANIFEST.json` and `SHA256SUMS` over all of them. The manifest (0.11.0,
+  schema `deep-diff-forge.release-manifest.v0`) says what the binary reads and writes, each
+  of those values read from the binary itself, with the command that gave it in its member
+  `sources`, beside what the build knows (the commit, the target, the binary's and the
+  archive's SHA-256): the version (`--version`), the rank
+  schema and `scorer_sha256` (`--stdin-patch --rank --json` on `fixtures/patch/basic.patch`),
+  the diagnostics schema (`--stdin-patch --diagnostics --json`), the verdict schemas the stop
+  hook reads, the hook-state schemas it reads and the one it writes and the ledger version
+  (`deep-diff-forge doctor`, its lines `verdict_schemas_read`, `hook_state_schemas_read` and
+  `ledger_version`), and the engine protocol and methods (`rpc`, `engine.initialize`); a member
+  with no value writes nothing. A `<commit>` that is a tag must be
   `v<workspace version>`. The receipt also lists the checks run on the artefact and the
   gate's result: set `DDF_GATE_LOG` to the log of `scripts/ci_local.sh` for the release commit
   (its `gate on` and `steps failed` lines); without it the receipt says "not given".
-- **Sign.** The owner signs `SHA256SUMS` with the release key, in a namespace used for nothing
-  else (a signature in namespace `git` is one git accepts on a tag or commit):
+- **Sign.** The owner signs `SHA256SUMS` and, from 0.11.0, `RELEASE-MANIFEST.json` with the
+  release key, each in a namespace used for nothing else (a signature in namespace `git` is one
+  git accepts on a tag or commit, and one namespace per file keeps either signature from
+  standing for the other file):
 
   ```bash
   ssh-keygen -Y sign -f ~/.ssh/id_ed25519_ddf_release_signing -n deep-diff-forge-release-sha256sums <outdir>/SHA256SUMS
+  ssh-keygen -Y sign -f ~/.ssh/id_ed25519_ddf_release_signing -n deep-diff-forge-release-manifest <outdir>/RELEASE-MANIFEST.json
+  ```
+
+  Anyone can check the manifest's signature alone with the signers file:
+
+  ```bash
+  ssh-keygen -Y verify -f .github/release_allowed_signers -I <principal> -n deep-diff-forge-release-manifest -s <dir>/RELEASE-MANIFEST.json.sig < <dir>/RELEASE-MANIFEST.json
   ```
 
 - **Publish.** The signed tag goes to GitLab (`https://gitlab.com/lukeomahoney/deep-diff-forge`),
   Gitea and Forgejo through `just release-tag`; the archive and the other files of `<outdir>`,
-  with `SHA256SUMS.sig`, are attached to the tag's release on GitLab. These are the owner's
+  with `SHA256SUMS.sig` and `RELEASE-MANIFEST.json.sig`, are attached to the tag's release on GitLab. These are the owner's
   steps. GitLab is the place of release; GitHub gets the tag (with `release.yml` disabled for
   the push, since a tag there starts it) and a release page with the same files, as a mirror.
   From 0.10.0 the crates are published from the tag's commit, a dry run first, then
@@ -277,13 +316,19 @@ the local repository. Its self-test is `scripts/test_release_local.sh` (`just re
 
   It passes only if (1) `scripts/verify_release_tag.sh` accepts the tag against the signers
   file, its commit is on `gitlab/main` and the tag is `v<workspace version>`; (2) `SHA256SUMS`
-  lists exactly the files of `<dir>`, each matches, and `SHA256SUMS.sig` verifies against the
-  signers file in namespace `deep-diff-forge-release-sha256sums`; (3) the archive's members are
-  exactly the five it packs (the directory, `LICENSE-APACHE`, `LICENSE-MIT`, `README.md` and the
-  binary), and a fresh build of the tag's commit gives the binary of the receipt and of the
-  archive. One file serves checks 1 and 2, so
+  lists exactly the files of `<dir>` but the two signatures, each matches, `SHA256SUMS.sig`
+  verifies against the signers file in namespace `deep-diff-forge-release-sha256sums`,
+  `RELEASE-MANIFEST.json.sig` in namespace `deep-diff-forge-release-manifest`, and every member
+  of the manifest has a value; (3) the archive's members are exactly the five it packs (the
+  directory, `LICENSE-APACHE`, `LICENSE-MIT`, `README.md` and the binary), the receipt and the
+  manifest name the tag's commit and version, the manifest names the archive by its SHA-256,
+  and a fresh build of the tag's commit gives the binary of the receipt, of the manifest and of
+  the archive. One file serves checks 1 and 2, so
   `.github/release_allowed_signers` holds the release key, the principal and key of
-  `.github/allowed_signers`, for both namespaces, `git` and `deep-diff-forge-release-sha256sums`.
+  `.github/allowed_signers`, for the namespaces `git` and `deep-diff-forge-release-sha256sums`,
+  and from 0.11.0 `deep-diff-forge-release-manifest` (added to that line by the release commit
+  of 0.11.0, the first release that ships a manifest, and accepted by the owner with the merge
+  of its release merge request; owner decision OD-K).
   `.github/allowed_signers` stays `git` only: `just release-tag` and `release.yml` read it, and
   `repo_scripts.rs` requires that form of each of its lines. Rotating the key means changing
   both files in one commit.

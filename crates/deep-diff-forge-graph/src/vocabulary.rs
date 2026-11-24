@@ -238,7 +238,7 @@ pub const fn facts(signal: RiskSignal) -> SignalFacts {
         R::Code(E::PanicPathAdded) => (
             Integrity,
             "0.9.0",
-            "An added line calls something that panics on failure (Rust `unwrap` or `expect`).",
+            "An added line calls something that panics on failure (Rust `unwrap` or `expect`), or panics where it is reached (`panic!`, `unreachable!`).",
         ),
     };
     SignalFacts {
@@ -273,11 +273,20 @@ pub fn signal_named(label: &str) -> Option<RiskSignal> {
 /// A substitute that does not clear a signal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NotAccepted {
-    /// What an author might write to make the signal go away.
+    /// `<label>:n<k>`, `k` from 1 in the label's order: assigned once, never reused or
+    /// renumbered (`fixtures/diagnostics/ids.v0.txt` pins every id).
+    pub id: &'static str,
+    /// What an author might write to make the signal go away, for people (`explain signal`).
     pub substitute: &'static str,
     /// The label that substitute raises, or `None` when nothing in this version sees it (a
     /// declared miss: the substitute is still wrong).
     pub raises: Option<&'static str>,
+    /// The sentence an agent is shown, or `None` for an entry agents are not shown. Only an entry
+    /// that raises a label has one, and only with a witness patch
+    /// `fixtures/diagnostics/witness/<id>.patch` on which this engine raises that label; each
+    /// spelling it quotes in backticks stands in a changed line of the witness, on a side the
+    /// raised label reads (F7.c1, contract design section 3.4).
+    pub agent: Option<&'static str>,
 }
 
 /// A rule of a compiler or linter that refuses the construct before a review sees it.
@@ -295,17 +304,59 @@ pub struct Remedy {
     pub why: &'static str,
     /// Changes that answer the signal: either it no longer fires, or a reviewer can accept it.
     pub accept: &'static [&'static str],
+    /// The id of each line of `accept`, in the same order: `<label>:a<k>`, `k` from 1, assigned
+    /// once and never reused or renumbered.
+    pub accept_ids: &'static [&'static str],
+    /// For a label whose repairs answer different cases that the engine tells apart when it
+    /// raises the label, the cases each repair and substitute answers, by id. A case is a value
+    /// the engine computes: for `hazardous_text` a kind of `deep_diff_forge_core::text_hazards`
+    /// or `path_hazards`, for `diff_suppressed` a cause (`DiffSuppression::label`). Empty for a
+    /// label whose repairs are alternatives for one case (`diagnostics.v0`'s `cases`).
+    pub cases: &'static [(&'static str, &'static [&'static str])],
     /// Changes that hide the signal without answering it.
     pub not_accepted: &'static [NotAccepted],
     /// Rules that stop the construct at compile or lint time, where one exists.
     pub native_lints: &'static [NativeLint],
 }
 
+impl Remedy {
+    /// The cases of the label, each once, in the order its ids name them.
+    #[must_use]
+    pub fn case_names(&self) -> Vec<&'static str> {
+        let mut names = Vec::new();
+        for name in self.cases.iter().flat_map(|(_, case)| case.iter()) {
+            if !names.contains(name) {
+                names.push(*name);
+            }
+        }
+        names
+    }
+
+    /// Whether the entry `id` answers a diagnostic whose case is `case`: always when the case
+    /// is not known or holds a value that no entry names, and when no case is given for `id`;
+    /// else when `id` answers one of its values.
+    #[must_use]
+    pub fn answers(&self, id: &str, case: Option<&[&str]>) -> bool {
+        let names = self.case_names();
+        let known = case.filter(|c| !c.is_empty() && c.iter().all(|v| names.contains(v)));
+        let given = self.cases.iter().find(|(i, _)| *i == id);
+        match (known, given) {
+            (Some(case), Some((_, answers))) => answers.iter().any(|v| case.contains(v)),
+            _ => true,
+        }
+    }
+}
+
+/// The character kinds of `deep_diff_forge_core::text_hazards`, which a path can carry too.
+const CHARACTERS: &[&str] = &["bidi_control", "invisible", "control"];
+
 /// A signal that orders the review and asks for nothing: there is nothing to repair.
-const fn orders_the_review(why: &'static str) -> Remedy {
+const fn orders_the_review(why: &'static str, accept_ids: &'static [&'static str]) -> Remedy {
     Remedy {
         why,
         accept: &["Nothing to repair: the signal orders the review."],
+        accept_ids,
+        cases: &[],
         not_accepted: &[],
         native_lints: &[],
     }
@@ -323,22 +374,30 @@ pub const fn remedy(signal: RiskSignal) -> Remedy {
     match signal {
         R::PublicApiSurface => orders_the_review(
             "A change to a public surface can break every caller, so it is read first.",
+            &["public_api_surface:a1"],
         ),
         R::NewFile => orders_the_review(
             "A new file has no earlier version to compare with; all of it is new.",
+            &["new_file:a1"],
         ),
         R::DeletedFile => Remedy {
             why: "A deleted file takes its behaviour and its tests with it.",
             accept: &["Say in the change why the file is no longer needed and what replaces it."],
+            accept_ids: &["deleted_file:a1"],
+            cases: &[],
             not_accepted: &[NotAccepted {
+                id: "deleted_file:n1",
                 substitute: "Emptying the file instead of deleting it, to avoid the signal.",
                 raises: None,
+                agent: None,
             }],
             native_lints: &[],
         },
         R::BinaryChange => Remedy {
             why: "A binary change cannot be read in a review.",
             accept: &["Say where the binary comes from and how to rebuild or verify it."],
+            accept_ids: &["binary_change:a1"],
+            cases: &[],
             not_accepted: &[],
             native_lints: &[],
         },
@@ -347,40 +406,70 @@ pub const fn remedy(signal: RiskSignal) -> Remedy {
             accept: &[
                 "Remove the `-diff`, `binary` or `diff=` attribute that covers the source file, wherever it is set.",
                 "Remove the NUL byte from the file, or say why a text file must hold one.",
+                "Store the file as UTF-8, or say why it must be UTF-16 or UTF-32.",
+            ],
+            accept_ids: &[
+                "diff_suppressed:a1",
+                "diff_suppressed:a2",
+                "diff_suppressed:a3",
+            ],
+            // `unread`: the engine does not know which cause it is, so every repair may answer it.
+            cases: &[
+                ("diff_suppressed:a1", &["attribute", "unread"]),
+                ("diff_suppressed:a2", &["content", "unread"]),
+                ("diff_suppressed:a3", &["encoding", "unread"]),
+                (
+                    "diff_suppressed:n1",
+                    &["attribute", "content", "encoding", "unread"],
+                ),
             ],
             not_accepted: &[NotAccepted {
+                id: "diff_suppressed:n1",
                 substitute: "Storing the same code compressed or encoded, so that it is a real binary.",
                 raises: Some("binary_change"),
+                agent: None,
             }],
             native_lints: &[],
         },
         R::LargeChange => Remedy {
             why: "A large change is harder to review and easier to approve without reading.",
             accept: &["Split the change so that each part has one purpose."],
+            accept_ids: &["large_change:a1"],
+            cases: &[],
             not_accepted: &[NotAccepted {
+                id: "large_change:n1",
                 substitute: "Moving lines into other files only to stay under the size limit.",
                 raises: None,
+                agent: None,
             }],
             native_lints: &[],
         },
         R::ManyHunks => Remedy {
             why: "Many separate edits in one file are easy to skim past.",
             accept: &["Split unrelated edits into separate changes."],
+            accept_ids: &["many_hunks:a1"],
+            cases: &[],
             not_accepted: &[],
             native_lints: &[],
         },
         R::ConfigOrLockfile => orders_the_review(
             "Configuration and lockfiles decide what is built and what every other check means.",
+            &["config_or_lockfile:a1"],
         ),
         R::TestOnly => orders_the_review(
             "A test path is read after source; a test that lost its force is reported by its own signal.",
+            &["test_only:a1"],
         ),
         R::GeneratedOrVendored => Remedy {
             why: "A generated or vendored path is seldom read, so it must not hide hand-written code.",
             accept: &["Keep hand-written code out of generated and vendored directories."],
+            accept_ids: &["generated_or_vendored:a1"],
+            cases: &[],
             not_accepted: &[NotAccepted {
+                id: "generated_or_vendored:n1",
                 substitute: "Placing new source under a generated or vendored path to lower its rank.",
                 raises: None,
+                agent: None,
             }],
             native_lints: &[],
         },
@@ -390,9 +479,17 @@ pub const fn remedy(signal: RiskSignal) -> Remedy {
                 "Remove the hidden or control characters.",
                 "Use a path inside the repository that does not traverse or name .git.",
             ],
+            accept_ids: &["hazardous_text:a1", "hazardous_text:a2"],
+            cases: &[
+                ("hazardous_text:a1", CHARACTERS),
+                ("hazardous_text:a2", &["path_traversal", "git_internal"]),
+                ("hazardous_text:n1", CHARACTERS),
+            ],
             not_accepted: &[NotAccepted {
+                id: "hazardous_text:n1",
                 substitute: "Building the same character at run time from an escape sequence.",
                 raises: None,
+                agent: None,
             }],
             native_lints: &[NativeLint {
                 language: "Rust",
@@ -405,6 +502,8 @@ pub const fn remedy(signal: RiskSignal) -> Remedy {
             accept: &[
                 "Replace the link with the file it stands for, or say why a link is needed and where it points.",
             ],
+            accept_ids: &["symlink_change:a1"],
+            cases: &[],
             not_accepted: &[],
             native_lints: &[],
         },
@@ -413,6 +512,8 @@ pub const fn remedy(signal: RiskSignal) -> Remedy {
             accept: &[
                 "Keep the bit only on files that are meant to be run, and say what runs them.",
             ],
+            accept_ids: &["executable_bit:a1"],
+            cases: &[],
             not_accepted: &[],
             native_lints: &[],
         },
@@ -422,9 +523,13 @@ pub const fn remedy(signal: RiskSignal) -> Remedy {
                 "Use a safe construct.",
                 "Keep the unsafe block and state its safety argument next to it for the reviewer.",
             ],
+            accept_ids: &["unsafe_added:a1", "unsafe_added:a2"],
+            cases: &[],
             not_accepted: &[NotAccepted {
+                id: "unsafe_added:n1",
                 substitute: "Hiding the block inside a macro, or moving it into a generated or vendored path.",
                 raises: None,
+                agent: None,
             }],
             native_lints: &[NativeLint {
                 language: "Rust",
@@ -438,9 +543,15 @@ pub const fn remedy(signal: RiskSignal) -> Remedy {
                 "Do the work in the program itself.",
                 "Keep the call and say what is run, with which arguments, and under what limits.",
             ],
+            accept_ids: &["process_spawn:a1", "process_spawn:a2"],
+            cases: &[],
             not_accepted: &[NotAccepted {
+                id: "process_spawn:n1",
                 substitute: "Building the command as a string and evaluating it.",
                 raises: Some("dynamic_eval"),
+                agent: Some(
+                    "Passing the command as a string to Python's `eval(cmd)` is not a repair: it raises dynamic_eval.",
+                ),
             }],
             native_lints: &[NativeLint {
                 language: "Rust",
@@ -453,18 +564,28 @@ pub const fn remedy(signal: RiskSignal) -> Remedy {
             accept: &[
                 "Say what is contacted and why, and pin what is fetched by hash where code or data is downloaded.",
             ],
+            accept_ids: &["network_fetch:a1"],
+            cases: &[],
             not_accepted: &[NotAccepted {
+                id: "network_fetch:n1",
                 substitute: "Calling curl or wget through a process instead.",
                 raises: Some("process_spawn"),
+                agent: Some(
+                    "Calling curl through a process, as Python's `subprocess.run([\"curl\", url])` does, is not a repair: it raises process_spawn.",
+                ),
             }],
             native_lints: &[],
         },
         R::Code(E::DynamicEval) => Remedy {
             why: "Code built at run time is not the code that was reviewed.",
             accept: &["Call the function directly, or parse the input as data."],
+            accept_ids: &["dynamic_eval:a1"],
+            cases: &[],
             not_accepted: &[NotAccepted {
+                id: "dynamic_eval:n1",
                 substitute: "Assembling the call from pieces so that no single line shows it.",
                 raises: None,
+                agent: None,
             }],
             native_lints: &[],
         },
@@ -473,12 +594,16 @@ pub const fn remedy(signal: RiskSignal) -> Remedy {
             accept: &[
                 "Use the least permission the job needs, and keep untrusted code out of privileged triggers.",
             ],
+            accept_ids: &["ci_privilege:a1"],
+            cases: &[],
             not_accepted: &[],
             native_lints: &[],
         },
         R::Code(E::BuildHook) => Remedy {
             why: "A build script or an install hook runs on every machine that builds or installs.",
             accept: &["Say what the hook does and why it cannot be done at run time or by a tool."],
+            accept_ids: &["build_hook:a1"],
+            cases: &[],
             not_accepted: &[],
             native_lints: &[],
         },
@@ -488,9 +613,13 @@ pub const fn remedy(signal: RiskSignal) -> Remedy {
                 "Remove the value and revoke the credential if it is real.",
                 "Read it at run time from the environment or a secret store.",
             ],
+            accept_ids: &["secret_like:a1", "secret_like:a2"],
+            cases: &[],
             not_accepted: &[NotAccepted {
+                id: "secret_like:n1",
                 substitute: "Splitting or encoding the value so that it no longer looks like a credential.",
                 raises: None,
+                agent: None,
             }],
             native_lints: &[],
         },
@@ -500,9 +629,13 @@ pub const fn remedy(signal: RiskSignal) -> Remedy {
                 "Fix what the check reports.",
                 "Keep the suppression as narrow as possible and state the reason next to it.",
             ],
+            accept_ids: &["check_suppressed:a1", "check_suppressed:a2"],
+            cases: &[],
             not_accepted: &[NotAccepted {
-                substitute: "Turning the check off in the tool's configuration file instead.",
+                id: "check_suppressed:n1",
+                substitute: "Turning the check off in the tool's configuration file instead (other than Cargo's, whose lint allowances and `-A` flags raise check_suppressed since 0.11.0).",
                 raises: None,
+                agent: None,
             }],
             native_lints: &[NativeLint {
                 language: "Rust",
@@ -516,14 +649,28 @@ pub const fn remedy(signal: RiskSignal) -> Remedy {
                 "Keep the test and make it pass.",
                 "Replace it with a test that checks the same behaviour, in the same change.",
             ],
+            accept_ids: &["test_removed:a1", "test_removed:a2"],
+            cases: &[],
             not_accepted: &[
                 NotAccepted {
+                    id: "test_removed:n1",
                     substitute: "Keeping the test but skipping it.",
                     raises: Some("test_skipped"),
+                    agent: Some(
+                        "Keeping the Rust test but marking it `#[ignore]` is not a repair: it raises test_skipped.",
+                    ),
                 },
                 NotAccepted {
+                    id: "test_removed:n2",
                     substitute: "Keeping the test but emptying its body.",
                     raises: None,
+                    agent: None,
+                },
+                NotAccepted {
+                    id: "test_removed:n3",
+                    substitute: "Keeping the test but compiling it out with a `cfg` that holds in no build of the tests (`#[cfg(any())]`, `#[cfg(not(test))]`).",
+                    raises: Some("test_skipped"),
+                    agent: None,
                 },
             ],
             native_lints: &[],
@@ -534,14 +681,24 @@ pub const fn remedy(signal: RiskSignal) -> Remedy {
                 "Make the test pass and remove the skip.",
                 "If the test cannot run here, say why next to the skip and where it runs instead.",
             ],
+            accept_ids: &["test_skipped:a1", "test_skipped:a2"],
+            cases: &[],
             not_accepted: &[
                 NotAccepted {
+                    id: "test_skipped:n1",
                     substitute: "Deleting the test instead of skipping it.",
                     raises: Some("test_removed"),
+                    agent: Some(
+                        "Deleting the Rust test, from its `#[test]` line to its body, instead of skipping it is not a repair: it raises test_removed.",
+                    ),
                 },
                 NotAccepted {
-                    substitute: "Keeping the test running but asserting `true` (`assert!(true)`, `assert_eq!(true, true)`); other spellings of an assertion that cannot fail are not seen yet.",
+                    id: "test_skipped:n2",
+                    substitute: "Keeping the test running but asserting what cannot fail (`assert!(true)`, `assert_eq!(x, x)`, `assert!(1 == 1)`, `assert_ne!(1, 2)`); the same call on both sides and what holds only by type are not seen.",
                     raises: Some("trivial_assert"),
+                    agent: Some(
+                        "Keeping the Rust test running but asserting `assert!(true)` is not a repair: it raises trivial_assert.",
+                    ),
                 },
             ],
             native_lints: &[],
@@ -549,9 +706,13 @@ pub const fn remedy(signal: RiskSignal) -> Remedy {
         R::Code(E::TrivialAssert) => Remedy {
             why: "An assertion that cannot fail passes whatever the code does.",
             accept: &["Assert on the behaviour the test is about."],
+            accept_ids: &["trivial_assert:a1"],
+            cases: &[],
             not_accepted: &[NotAccepted {
+                id: "trivial_assert:n1",
                 substitute: "Comparing a value with itself, or a constant with a constant, in another spelling.",
                 raises: None,
+                agent: None,
             }],
             native_lints: &[NativeLint {
                 language: "Rust",
@@ -565,10 +726,22 @@ pub const fn remedy(signal: RiskSignal) -> Remedy {
                 "Write the code.",
                 "If the code is meant to come later, say so in the change and keep the placeholder out of paths that run.",
             ],
-            not_accepted: &[NotAccepted {
-                substitute: "Returning a default value where the placeholder was.",
-                raises: None,
-            }],
+            accept_ids: &["stub_added:a1", "stub_added:a2"],
+            cases: &[],
+            not_accepted: &[
+                NotAccepted {
+                    id: "stub_added:n1",
+                    substitute: "Returning a default value where the placeholder was.",
+                    raises: None,
+                    agent: None,
+                },
+                NotAccepted {
+                    id: "stub_added:n2",
+                    substitute: "Replacing the placeholder with `panic!` or `unreachable!`.",
+                    raises: Some("panic_path_added"),
+                    agent: None,
+                },
+            ],
             native_lints: &[
                 NativeLint {
                     language: "Rust",
@@ -588,10 +761,22 @@ pub const fn remedy(signal: RiskSignal) -> Remedy {
                 "Handle the error, or pass it to the caller.",
                 "If it is safe to ignore, say why next to the handler.",
             ],
-            not_accepted: &[NotAccepted {
-                substitute: "Logging the error and going on as if it had not happened.",
-                raises: None,
-            }],
+            accept_ids: &["error_swallowed:a1", "error_swallowed:a2"],
+            cases: &[],
+            not_accepted: &[
+                NotAccepted {
+                    id: "error_swallowed:n1",
+                    substitute: "Logging the error and going on as if it had not happened.",
+                    raises: None,
+                    agent: None,
+                },
+                NotAccepted {
+                    id: "error_swallowed:n2",
+                    substitute: "Dropping the result another way: `.ok();`, `drop(…)`, `let _e =`, or a call the reader does not know returns a `Result`.",
+                    raises: None,
+                    agent: None,
+                },
+            ],
             native_lints: &[],
         },
         R::Code(E::PanicPathAdded) => Remedy {
@@ -599,11 +784,36 @@ pub const fn remedy(signal: RiskSignal) -> Remedy {
             accept: &[
                 "Handle the error, or return it to the caller.",
                 "If failure cannot happen, say why in the message of `expect`.",
+                "If the code cannot be reached, say why in the message of `unreachable!`.",
             ],
-            not_accepted: &[NotAccepted {
-                substitute: "Replacing the call with another that panics in the same case, such as an index.",
-                raises: None,
-            }],
+            accept_ids: &[
+                "panic_path_added:a1",
+                "panic_path_added:a2",
+                "panic_path_added:a3",
+            ],
+            // since 0.11.0 (F2a): `call` (`unwrap`, `expect`) and `panic_macro` (`panic!`,
+            // `unreachable!`), the forms on the row's line
+            cases: &[
+                ("panic_path_added:a1", &["call", "panic_macro"]),
+                ("panic_path_added:a2", &["call"]),
+                ("panic_path_added:a3", &["panic_macro"]),
+                ("panic_path_added:n1", &["call", "panic_macro"]),
+                ("panic_path_added:n2", &["call"]),
+            ],
+            not_accepted: &[
+                NotAccepted {
+                    id: "panic_path_added:n1",
+                    substitute: "Replacing the call with another that panics in the same case, such as an index.",
+                    raises: None,
+                    agent: None,
+                },
+                NotAccepted {
+                    id: "panic_path_added:n2",
+                    substitute: "Dropping the result of a standard call with `let _ =` instead of unwrapping it (`let _ = std::fs::remove_file(p);`).",
+                    raises: Some("error_swallowed"),
+                    agent: None,
+                },
+            ],
             native_lints: &[
                 NativeLint {
                     language: "Rust",
@@ -876,5 +1086,244 @@ mod tests {
             );
             assert_eq!(facts.sides(), signal_sides(signal), "{}", facts.label());
         }
+    }
+
+    /// Every id of the vocabulary in its order: per label, the accepted repairs, then the
+    /// substitutes.
+    fn every_id() -> Vec<&'static str> {
+        let mut ids = Vec::new();
+        for facts in vocabulary() {
+            let remedy = remedy(facts.signal);
+            ids.extend(remedy.accept_ids);
+            ids.extend(remedy.not_accepted.iter().map(|n| n.id));
+        }
+        ids
+    }
+
+    /// F7.c1 (contract design 3.4, critic B5): `accept` stays a list of sentences, so its ids
+    /// run beside it, one per sentence; an id names its own label and kind, `k` counts from 1 in
+    /// the label's order, and no id is given twice.
+    #[test]
+    fn every_accept_has_one_id() {
+        for facts in vocabulary() {
+            let remedy = remedy(facts.signal);
+            let label = facts.label();
+            assert_eq!(
+                remedy.accept_ids.len(),
+                remedy.accept.len(),
+                "{label}: one id per accepted repair"
+            );
+            for (k, id) in remedy.accept_ids.iter().enumerate() {
+                assert_eq!(*id, format!("{label}:a{}", k + 1), "{label}: accept id");
+            }
+            for (k, not) in remedy.not_accepted.iter().enumerate() {
+                assert_eq!(
+                    not.id,
+                    format!("{label}:n{}", k + 1),
+                    "{label}: substitute id"
+                );
+            }
+        }
+        let ids = every_id();
+        let mut unique = ids.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), ids.len(), "an id is given twice");
+    }
+
+    /// The released ids: the first lines of `fixtures/diagnostics/ids.v0.txt`, and the SHA-256 of
+    /// those lines, each ended by a line feed. Ids are appended after them; the prefix grows only
+    /// at a release, when every id appended since is added to it here.
+    const RELEASED_IDS: (usize, &str) = (
+        57,
+        "1028e1d81fdef5e2c8be53f2c18af0379f934299f01cd42d92a0bd5db22753ca",
+    );
+
+    /// F7.c1, F1.a3: an id is assigned once and never reused or renumbered, and the pinned list
+    /// only grows. Its released prefix ([`RELEASED_IDS`]) is held by content: an edit, a
+    /// reordering or a removal of one of those lines fails. After it come the ids appended since
+    /// (F1.a3: `diff_suppressed:a3`; F2a: `panic_path_added:a3`). Every vocabulary id is a line, once, and every line is a
+    /// vocabulary id; an id that moves to another entry fails `every_accept_has_one_id`; an id
+    /// pinned before the one of its label and kind it counts on from fails.
+    #[test]
+    fn vocabulary_ids_are_pinned() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/diagnostics/ids.v0.txt"
+        );
+        let pinned = std::fs::read_to_string(path).unwrap();
+        let pinned: Vec<&str> = pinned.lines().collect();
+        let (count, digest) = RELEASED_IDS;
+        let released: String = pinned
+            .iter()
+            .take(count)
+            .flat_map(|id| [*id, "\n"])
+            .collect();
+        assert_eq!(
+            (
+                pinned.len() >= count,
+                deep_diff_forge_core::sha256_hex(released.as_bytes())
+            ),
+            (true, digest.to_owned()),
+            "the released ids of fixtures/diagnostics/ids.v0.txt were changed"
+        );
+        let (mut sorted, mut ids) = (pinned.clone(), every_id());
+        sorted.sort_unstable();
+        ids.sort_unstable();
+        assert_eq!(
+            sorted, ids,
+            "fixtures/diagnostics/ids.v0.txt and the vocabulary's ids differ"
+        );
+        for (at, id) in pinned.iter().enumerate() {
+            let (label, entry) = id
+                .rsplit_once(':')
+                .unwrap_or_else(|| panic!("{id}: no label"));
+            let (kind, k) = entry.split_at(1);
+            let k: u32 = k.parse().unwrap_or_else(|_| panic!("{id}: no number"));
+            if k > 1 {
+                let before = format!("{label}:{kind}{}", k - 1);
+                assert!(
+                    pinned[..at].contains(&before.as_str()),
+                    "{id} is pinned before {before}"
+                );
+            }
+        }
+    }
+
+    /// The kinds of hazard and the causes of suppression the engine can give, each one: what
+    /// `hazardous_text` and `diff_suppressed` are raised on.
+    fn engine_cases(signal: RiskSignal) -> Vec<&'static str> {
+        use deep_diff_forge_core::DiffSuppression as S;
+        match signal {
+            RiskSignal::HazardousText => {
+                deep_diff_forge_core::path_hazards("/\u{202E}\u{200B}\u{1}/.git/x")
+            }
+            RiskSignal::DiffSuppressed => [S::Attribute, S::Content, S::Encoding, S::Unread]
+                .into_iter()
+                .map(|cause| match cause {
+                    S::Attribute | S::Content | S::Encoding | S::Unread => cause.label(),
+                })
+                .collect(),
+            RiskSignal::Code(crate::evidence::EvidenceSignal::PanicPathAdded) => {
+                crate::diagnostics::PANIC_CASES.to_vec()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// F1.a3: a label whose repairs answer different cases says which: exactly the labels whose
+    /// cases the engine computes have them; their cases are the engine's values, each answered by
+    /// at least one repair; every repair and substitute of such a label names at least one case,
+    /// and each id named is the label's own.
+    #[test]
+    fn every_repair_of_a_label_with_cases_names_its_cases() {
+        for facts in vocabulary() {
+            let (remedy, label) = (remedy(facts.signal), facts.label());
+            let mut names = remedy.case_names();
+            let mut engine = engine_cases(facts.signal);
+            names.sort_unstable();
+            engine.sort_unstable();
+            assert_eq!(names, engine, "{label}: the cases and the engine's values");
+            if remedy.cases.is_empty() {
+                continue;
+            }
+            let ids = remedy
+                .accept_ids
+                .iter()
+                .chain(remedy.not_accepted.iter().map(|n| &n.id));
+            for id in ids {
+                let given = remedy.cases.iter().find(|(i, _)| i == id);
+                assert!(
+                    given.is_some_and(|(_, c)| !c.is_empty()),
+                    "{id}: names no case"
+                );
+            }
+            for (id, _) in remedy.cases {
+                let own = remedy.accept_ids.contains(id)
+                    || remedy.not_accepted.iter().any(|n| n.id == *id);
+                assert!(own, "{label}: a case is given for {id}");
+            }
+            for case in &engine {
+                let answered = remedy
+                    .accept_ids
+                    .iter()
+                    .any(|id| remedy.answers(id, Some(&[*case])));
+                let explicit = remedy.accept_ids.iter().filter(|id| {
+                    remedy
+                        .cases
+                        .iter()
+                        .any(|(i, c)| i == *id && c.contains(case))
+                });
+                assert!(
+                    answered && explicit.count() > 0,
+                    "{label}: no repair answers {case}"
+                );
+            }
+        }
+    }
+
+    /// F1.a3: a diagnostic of a known case keeps only the repairs of that case; an unknown case,
+    /// or a value no entry names, keeps every repair.
+    #[test]
+    fn a_known_case_keeps_only_its_repairs() {
+        let kept = |signal, case: Option<&[&str]>| {
+            let remedy = remedy(signal);
+            let ids = remedy.accept_ids.iter();
+            ids.filter(|id| remedy.answers(id, case))
+                .copied()
+                .collect::<Vec<_>>()
+        };
+        let (h, d) = (RiskSignal::HazardousText, RiskSignal::DiffSuppressed);
+        assert_eq!(kept(h, Some(&["bidi_control"])), ["hazardous_text:a1"]);
+        assert_eq!(kept(h, Some(&["path_traversal"])), ["hazardous_text:a2"]);
+        let both = ["hazardous_text:a1", "hazardous_text:a2"];
+        assert_eq!(kept(h, Some(&["invisible", "git_internal"])), both);
+        assert_eq!(kept(h, None), both);
+        assert_eq!(kept(h, Some(&["bidi_control", "a_new_kind"])), both);
+        assert_eq!(kept(d, Some(&["attribute"])), ["diff_suppressed:a1"]);
+        assert_eq!(kept(d, Some(&["content"])), ["diff_suppressed:a2"]);
+        assert_eq!(kept(d, Some(&["encoding"])), ["diff_suppressed:a3"]);
+        assert_eq!(kept(d, Some(&["unread"])).len(), 3);
+        let unsafe_added = RiskSignal::Code(EvidenceSignal::UnsafeAdded);
+        assert_eq!(kept(unsafe_added, Some(&["bidi_control"])).len(), 2);
+    }
+
+    /// F7.c1 (contract design 3.4, M19): an agent is shown a substitute only in its own
+    /// sentence, which names the spelling its witness proves and no variant this engine does not
+    /// see. Only an entry that raises a label may have one (the witness of
+    /// `tests/witness.rs` checks the raising), and each quotes at least one spelling.
+    #[test]
+    fn agent_sentences_name_no_unseen_variant() {
+        let mut sentences = 0;
+        for facts in vocabulary() {
+            for not in remedy(facts.signal).not_accepted {
+                let Some(agent) = not.agent else { continue };
+                sentences += 1;
+                let id = not.id;
+                assert!(
+                    not.raises.is_some(),
+                    "{id}: an agent sentence raises nothing"
+                );
+                let lower = agent.to_lowercase();
+                for word in ["not seen", "no signal", "unseen", "other spellings"] {
+                    assert!(
+                        !lower.contains(word),
+                        "{id}: names an unseen variant ({word:?}): {agent}"
+                    );
+                }
+                assert!(
+                    !lower
+                        .split(|c: char| !c.is_ascii_alphanumeric())
+                        .any(|w| w == "yet"),
+                    "{id}: names an unseen variant (\"yet\"): {agent}"
+                );
+                assert!(
+                    agent.matches('`').count() >= 2 && agent.matches('`').count() % 2 == 0,
+                    "{id}: quotes no spelling: {agent}"
+                );
+                assert_ne!(agent, not.substitute, "{id}: the people's sentence");
+            }
+        }
+        assert!(sentences > 0, "no agent sentence at all");
     }
 }

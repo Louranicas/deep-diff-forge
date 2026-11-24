@@ -221,6 +221,27 @@ pub struct Engine {
     log_format: crate::log::LogFormat,
     /// How long a client has to read one response ([`crate::serve::RESPONSE_WRITE_LIMIT`]).
     write_limit: std::time::Duration,
+    /// How a parse failure is worded in the protocol-2 methods' errors.
+    wording: Wording,
+}
+
+/// How an error worded from a [`deep_diff_forge_patch::PatchParseError`] reads: as released (the
+/// failing line quoted), or without any text of the input
+/// ([`deep_diff_forge_patch::PatchParseError::without_input`]): `diff.diagnostics` always, and
+/// every method of an engine built [`Engine::without_input_in_errors`] (MCP's).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Wording {
+    Released,
+    WithoutInput,
+}
+
+impl Wording {
+    fn parse(self, error: &deep_diff_forge_patch::PatchParseError) -> String {
+        match self {
+            Self::Released => error.to_string(),
+            Self::WithoutInput => error.without_input().to_string(),
+        }
+    }
 }
 
 // Every connection thread shares one engine, so a field that is not thread-safe fails the build
@@ -259,7 +280,28 @@ impl Engine {
             metrics: Metrics::new(),
             log_format: crate::log::LogFormat::Text,
             write_limit: crate::serve::RESPONSE_WRITE_LIMIT,
+            wording: Wording::Released,
         }
+    }
+
+    /// How `method` words a parse failure: protocol 3's `diff.diagnostics` names no text of the
+    /// patch on any engine; the protocol-2 methods keep their released message unless the engine
+    /// was built [`Self::without_input_in_errors`].
+    fn wording_of(&self, method: &str) -> Wording {
+        if method == "diff.diagnostics" {
+            Wording::WithoutInput
+        } else {
+            self.wording
+        }
+    }
+
+    /// Word every parse failure without the input's text, as `diff.diagnostics` does, in every
+    /// method this engine answers (an in-process server whose answers a model reads: MCP). The
+    /// socket daemon keeps the protocol-2 methods' released messages, which quote the line.
+    #[must_use]
+    pub const fn without_input_in_errors(mut self) -> Self {
+        self.wording = Wording::WithoutInput;
+        self
     }
 
     /// Let `review.change` read repositories at or under these roots, which the operator names
@@ -620,6 +662,13 @@ pub const METHODS: &[MethodSpec] = &[
         2,
         Work::Request,
     ),
+    method(
+        "diff.diagnostics",
+        "patch: string, require_files?: boolean, require_hunks?: boolean, max_bytes?: integer, cursor?: string",
+        "one page of the deep-diff-forge.diagnostics.v0 document `deep-diff-forge --stdin-patch --diagnostics --json` prints for the same patch: whole diagnostics within max_bytes (4096 to 16777216, the page as emitted), each file's cut entry with its first diagnostic, the texts they name, and page {first, count, total, next_cursor, document_sha256}, the SHA-256 of the document's bytes",
+        3,
+        Work::Request,
+    ),
 ];
 
 /// Dispatch a parsed request against the engine, returning the result value or
@@ -640,6 +689,7 @@ pub fn dispatch(request: &Request, engine: &Engine) -> Result<Value, RpcError> {
     refuse_unknown_params(spec, &request.params)?;
     // A request that waited out its client's deadline for admission is not started (C9).
     crate::deadline::check()?;
+    let wording = engine.wording_of(spec.name);
     match spec.name {
         "engine.initialize" => {
             // Versions are additive, so any version up to ours is served, and the answer lists the
@@ -688,21 +738,22 @@ pub fn dispatch(request: &Request, engine: &Engine) -> Result<Value, RpcError> {
             Ok(json!({"stopping": true}))
         }
         "diff.plan" => {
-            let files = parse_patch_param(request)?;
+            let files = parse_patch_param(request, wording)?;
             Ok(ranked_json(&rank(&files)))
         }
-        "diff.compute" => review_document(&sealed(request)?),
-        "diff.rank" => Ok(rank_document(&sealed(request)?)),
-        "review.change" => review_change(&request.params, &engine.allowed_repos),
+        "diff.compute" => review_document(&sealed(request, wording)?),
+        "diff.rank" => Ok(rank_document(&sealed(request, wording)?)),
+        "diff.diagnostics" => {
+            let page = page_param(&request.params)?;
+            crate::pages::page(&sealed(request, wording)?, &page)
+                .map_err(|e| RpcError::invalid_params(e.to_string()))
+        }
+        "review.change" => review_change(&request.params, &engine.allowed_repos, wording),
         "review.outline" => {
             let page = page_param(&request.params)?;
-            crate::views::outline(&sealed(request)?, &page).map_err(|e| view_error(&e))
+            crate::views::outline(&sealed(request, wording)?, &page).map_err(|e| view_error(&e))
         }
-        "review.hunks" => {
-            let selection = selection_param(&request.params)?;
-            let page = page_param(&request.params)?;
-            crate::views::hunks(&sealed(request)?, &selection, &page).map_err(|e| view_error(&e))
-        }
+        "review.hunks" => review_hunks(request, wording),
         "session.open" => session_open(request, engine),
         "session.snapshot" => {
             let id = str_param(&request.params, "session")?;
@@ -728,7 +779,7 @@ pub fn dispatch(request: &Request, engine: &Engine) -> Result<Value, RpcError> {
             }
             Ok(json!({"closed": closed}))
         }
-        "findings.verify" => findings_verify(request),
+        "findings.verify" => findings_verify(request, wording),
         "daemon.metrics" => Ok(engine.metrics.document(engine.started.elapsed(), version)),
         other => Err(RpcError::method_not_found(other)),
     }
@@ -737,7 +788,7 @@ pub fn dispatch(request: &Request, engine: &Engine) -> Result<Value, RpcError> {
 /// `session.open`: parse the patch outside the session lock, then retain it, counting the
 /// sessions it evicted to make room.
 fn session_open(request: &Request, engine: &Engine) -> Result<Value, RpcError> {
-    let files = parse_patch_param(request)?;
+    let files = parse_patch_param(request, engine.wording)?;
     let count = files.len();
     let payload = SessionPayload::new(files);
     let (id, evicted, retained) = {
@@ -773,7 +824,10 @@ fn health(engine: &Engine, version: &str) -> Value {
 /// The patch param sealed under the request's input contracts (`InputGuards`): the one parse →
 /// guard → seal path (anchor C-05) the CLI's `--stdin-patch` uses, so `diff.compute` and
 /// `diff.rank` answer for exactly the bytes they were sent.
-fn sealed(request: &Request) -> Result<deep_diff_forge_patch::SealedReview, RpcError> {
+fn sealed(
+    request: &Request,
+    wording: Wording,
+) -> Result<deep_diff_forge_patch::SealedReview, RpcError> {
     let patch = str_param(&request.params, "patch")?;
     let guards = deep_diff_forge_patch::InputGuards {
         files: bool_param(&request.params, "require_files")?,
@@ -788,7 +842,7 @@ fn sealed(request: &Request) -> Result<deep_diff_forge_patch::SealedReview, RpcE
         // The domain code is the CLI's exit code for the same refusal: 4 (PATCH_PARSE_FAILED),
         // or 3 for a header that is not UTF-8 (`PatchParseError::exit_code`).
         deep_diff_forge_patch::ReviewError::Parse(e) => {
-            RpcError::new(i64::from(e.exit_code()), e.to_string())
+            RpcError::new(i64::from(e.exit_code()), wording.parse(&e))
         }
         refused @ deep_diff_forge_patch::ReviewError::Refused(_) => {
             RpcError::new(INPUT_CONTRACT_REFUSED, refused.to_string())
@@ -797,6 +851,13 @@ fn sealed(request: &Request) -> Result<deep_diff_forge_patch::SealedReview, RpcE
     // The parse is the heaviest stage; past the deadline, the rest is not done (C9).
     crate::deadline::check()?;
     Ok(review)
+}
+
+/// `review.hunks`: the chosen hunks of the sealed patch, one page.
+fn review_hunks(request: &Request, wording: Wording) -> Result<Value, RpcError> {
+    let selection = selection_param(&request.params)?;
+    let page = page_param(&request.params)?;
+    crate::views::hunks(&sealed(request, wording)?, &selection, &page).map_err(|e| view_error(&e))
 }
 
 /// `diff.compute`: the review document the CLI's `--stdin-patch --json` prints for the same patch.
@@ -814,9 +875,9 @@ fn review_document(review: &deep_diff_forge_patch::SealedReview) -> Result<Value
 /// sealed patch. The findings are hashed as the JSONL they make: one compact object per line,
 /// keys sorted, UTF-8 unescaped, each line ending in a newline. The CLI hashes a file's exact
 /// bytes, so a file in that form gives the same `findings_sha256`.
-fn findings_verify(request: &Request) -> Result<Value, RpcError> {
+fn findings_verify(request: &Request, wording: Wording) -> Result<Value, RpcError> {
     use deep_diff_forge_agent::findings::{MAX_FINDINGS_BYTES, document, verify};
-    let review = sealed(request)?;
+    let review = sealed(request, wording)?;
     let Some(Value::Array(items)) = request.params.get("findings") else {
         return Err(RpcError::invalid_params(
             "findings must be an array of finding objects",
@@ -861,10 +922,10 @@ fn bool_param(params: &Value, key: &str) -> Result<bool, RpcError> {
     }
 }
 
-fn parse_patch_param(request: &Request) -> Result<Vec<ReviewFile>, RpcError> {
+fn parse_patch_param(request: &Request, wording: Wording) -> Result<Vec<ReviewFile>, RpcError> {
     let patch = str_param(&request.params, "patch")?;
     let files = deep_diff_forge_patch::parse(&patch)
-        .map_err(|e| RpcError::new(PATCH_PARSE_FAILED, e.to_string()))?;
+        .map_err(|e| RpcError::new(PATCH_PARSE_FAILED, wording.parse(&e)))?;
     crate::deadline::check()?;
     Ok(files)
 }
@@ -875,7 +936,7 @@ fn parse_patch_param(request: &Request) -> Result<Vec<ReviewFile>, RpcError> {
 const ECHO_BYTES: usize = 1024;
 
 /// A `review.change` acquisition error as the daemon answers it.
-fn acquire_error(e: deep_diff_forge_patch::GitAcquireError) -> RpcError {
+fn acquire_error(e: deep_diff_forge_patch::GitAcquireError, wording: Wording) -> RpcError {
     match e {
         deep_diff_forge_patch::GitAcquireError::InvalidSelection { .. } => {
             RpcError::invalid_params(e.to_string())
@@ -889,7 +950,15 @@ fn acquire_error(e: deep_diff_forge_patch::GitAcquireError) -> RpcError {
             format!("refused (a file name that is not UTF-8): {e}"),
         ),
         deep_diff_forge_patch::GitAcquireError::Parse(ref parse) => {
-            RpcError::new(i64::from(parse.exit_code()), e.to_string())
+            let message = match wording {
+                Wording::Released => e.to_string(),
+                // `GitAcquireError`'s own words around the parse failure, which it quotes.
+                Wording::WithoutInput => format!(
+                    "authoritative patch failed to parse: {}",
+                    parse.without_input()
+                ),
+            };
+            RpcError::new(i64::from(parse.exit_code()), message)
         }
         other => RpcError::new(crate::protocol::GIT_FAILED, other.to_string()),
     }
@@ -898,7 +967,57 @@ fn acquire_error(e: deep_diff_forge_patch::GitAcquireError) -> RpcError {
 /// `review.change`: acquire a change from Git in an allowed repository, seal it, and answer with
 /// the chosen view. Git runs with the acquisition crate's fixed argv and a 30 s limit; nothing
 /// is written. A repository outside every allowed root is refused before Git runs.
-fn review_change(params: &Value, allowed: &[std::path::PathBuf]) -> Result<Value, RpcError> {
+fn review_change(
+    params: &Value,
+    allowed: &[std::path::PathBuf],
+    wording: Wording,
+) -> Result<Value, RpcError> {
+    let (review, acquisition) = acquire_change(params, allowed, wording)?;
+    let mut answer = match params
+        .get("view")
+        .and_then(Value::as_str)
+        .unwrap_or("outline")
+    {
+        "outline" => {
+            crate::views::outline(&review, &page_param(params)?).map_err(|e| view_error(&e))?
+        }
+        "hunks" => crate::views::hunks(&review, &selection_param(params)?, &page_param(params)?)
+            .map_err(|e| view_error(&e))?,
+        "review" => review_document(&review)?,
+        "rank" => rank_document(&review),
+        other => {
+            return Err(RpcError::invalid_params(format!(
+                "view must be outline, hunks, review or rank, not {}",
+                deep_diff_forge_core::display_safe_bounded(other, ECHO_BYTES)
+            )));
+        }
+    };
+    answer["acquisition"] = acquisition;
+    Ok(answer)
+}
+
+/// `review.change`'s acquisition, for a caller that builds its own view of the change (MCP's
+/// `review_change` diagnostics view, F5b): the sealed review of the selected change in an allowed
+/// repository, under `require_files` and `require_hunks`, and the `acquisition` member that
+/// names it. The params and the checks are `review.change`'s, every one of them.
+///
+/// # Errors
+/// As `review.change`: an invalid param, a repository outside the allowed roots, a Git failure,
+/// a passed deadline or a refused input contract. A parse failure of the patch Git wrote names
+/// where it failed and none of its text ([`Engine::without_input_in_errors`]).
+pub fn change_review(
+    params: &Value,
+    allowed: &[std::path::PathBuf],
+) -> Result<(deep_diff_forge_patch::SealedReview, Value), RpcError> {
+    acquire_change(params, allowed, Wording::WithoutInput)
+}
+
+/// [`change_review`] with the parse failure worded as `wording` says.
+fn acquire_change(
+    params: &Value,
+    allowed: &[std::path::PathBuf],
+    wording: Wording,
+) -> Result<(deep_diff_forge_patch::SealedReview, Value), RpcError> {
     use deep_diff_forge_patch::{GitSelection, acquire_git};
     let repo = std::path::PathBuf::from(str_param(params, "repo")?);
     if allowed.is_empty() {
@@ -936,7 +1055,8 @@ fn review_change(params: &Value, allowed: &[std::path::PathBuf]) -> Result<Value
             )));
         }
     };
-    let acquisition = acquire_git(&canonical, &selection, &options).map_err(acquire_error)?;
+    let acquisition =
+        acquire_git(&canonical, &selection, &options).map_err(|e| acquire_error(e, wording))?;
     crate::deadline::check()?;
     // The repository is Git's top level, which can lie above the path asked for: a subdirectory
     // of a larger repository would otherwise expose the whole outer repository's change.
@@ -948,11 +1068,14 @@ fn review_change(params: &Value, allowed: &[std::path::PathBuf]) -> Result<Value
             deep_diff_forge_core::display_safe_bounded(&top.to_string_lossy(), ECHO_BYTES)
         )));
     }
-    let captured = acquisition.diff().capture().map_err(acquire_error)?;
+    let captured = acquisition
+        .diff()
+        .capture()
+        .map_err(|e| acquire_error(e, wording))?;
     let review = acquisition
         .diff()
         .sealed_review(&captured, env!("CARGO_PKG_VERSION"))
-        .map_err(acquire_error)?;
+        .map_err(|e| acquire_error(e, wording))?;
     crate::deadline::check()?;
     let guards = deep_diff_forge_patch::InputGuards {
         files: bool_param(params, "require_files")?,
@@ -962,26 +1085,7 @@ fn review_change(params: &Value, allowed: &[std::path::PathBuf]) -> Result<Value
         let refused = deep_diff_forge_patch::ReviewError::Refused(refusal);
         return Err(RpcError::new(INPUT_CONTRACT_REFUSED, refused.to_string()));
     }
-    let mut answer = match params
-        .get("view")
-        .and_then(Value::as_str)
-        .unwrap_or("outline")
-    {
-        "outline" => {
-            crate::views::outline(&review, &page_param(params)?).map_err(|e| view_error(&e))?
-        }
-        "hunks" => crate::views::hunks(&review, &selection_param(params)?, &page_param(params)?)
-            .map_err(|e| view_error(&e))?,
-        "review" => review_document(&review)?,
-        "rank" => rank_document(&review),
-        other => {
-            return Err(RpcError::invalid_params(format!(
-                "view must be outline, hunks, review or rank, not {}",
-                deep_diff_forge_core::display_safe_bounded(other, ECHO_BYTES)
-            )));
-        }
-    };
-    answer["acquisition"] = json!({
+    let acquisition = json!({
         "repo": top.to_string_lossy(),
         "selection": params.get("selection"),
         "base": acquisition.base(),
@@ -996,7 +1100,7 @@ fn review_change(params: &Value, allowed: &[std::path::PathBuf]) -> Result<Value
             .map(deep_diff_forge_patch::GitPath::display_lossy)
             .collect::<Vec<_>>(),
     });
-    Ok(answer)
+    Ok((review, acquisition))
 }
 
 /// A param the method does not take is refused, not ignored: a misspelt `require_file` passed an
@@ -1184,11 +1288,12 @@ mod tests {
             "range": "no-such-ref..HEAD",
         });
         // Control: with time left, the acquisition runs and refuses the range.
-        let ran = review_change(&params, &allowed).unwrap_err();
+        let ran = review_change(&params, &allowed, Wording::Released).unwrap_err();
         assert_ne!(ran.code, RESOURCE_EXHAUSTED, "{}", ran.message);
-        let stopped =
-            crate::deadline::within(crate::metrics::now(), || review_change(&params, &allowed))
-                .unwrap_err();
+        let stopped = crate::deadline::within(crate::metrics::now(), || {
+            review_change(&params, &allowed, Wording::Released)
+        })
+        .unwrap_err();
         assert_eq!(
             (stopped.code, stopped.message.contains("deadline")),
             (RESOURCE_EXHAUSTED, true),
@@ -1224,7 +1329,8 @@ mod tests {
         std::fs::write(&name, b"fn b() {}\n").unwrap();
         let params =
             serde_json::json!({"repo": root.to_str().unwrap(), "selection": "working_tree"});
-        let refused = review_change(&params, std::slice::from_ref(&root)).unwrap_err();
+        let refused =
+            review_change(&params, std::slice::from_ref(&root), Wording::Released).unwrap_err();
         assert_eq!(refused.code, PATCH_PARSE_FAILED, "{}", refused.message);
         assert!(
             refused.message.contains("a file name that is not UTF-8"),
@@ -1360,6 +1466,74 @@ mod tests {
                 .iter()
                 .any(|s| s == "public_api_surface")
         );
+    }
+
+    /// Lane M: `diff.diagnostics` words a parse failure without the patch's text on every engine;
+    /// the protocol-2 methods keep the released message, which quotes the line, unless the engine
+    /// is built `without_input_in_errors` (MCP's in-process engine).
+    #[test]
+    fn a_parse_failure_names_no_patch_text_where_a_model_reads_it() {
+        let marker = "zq7MARKER";
+        let methods = [
+            "diff.plan",
+            "diff.compute",
+            "diff.rank",
+            "diff.diagnostics",
+            "review.outline",
+            "review.hunks",
+            "session.open",
+        ];
+        let socket = Engine::new();
+        let in_process = Engine::new().without_input_in_errors();
+        for patch in [
+            format!("--- a/x\n+++ b/x\n@@ -1,{marker} +1 @@\n-a\n+b\n"),
+            format!("--- a/x\n+++ b/x\n+{marker}\n"),
+            format!("--- a/x\n+++ b/x\n@@ -1,1 +0,0 @@\n+{marker}\n"),
+        ] {
+            for method in methods {
+                let line = json!({"method": method, "params": {"patch": patch}}).to_string();
+                let released = call(&line, &socket).unwrap_err();
+                let worded = call(&line, &in_process).unwrap_err();
+                assert_eq!(released.code, PATCH_PARSE_FAILED, "{method}");
+                assert_eq!(worded.code, PATCH_PARSE_FAILED, "{method}");
+                assert!(
+                    !worded.message.contains(marker),
+                    "{method}: {}",
+                    worded.message
+                );
+                assert!(worded.message.contains(" at line "), "{}", worded.message);
+                if method == "diff.diagnostics" {
+                    assert_eq!(released.message, worded.message, "{method}");
+                } else {
+                    assert!(released.message.contains(marker), "{method}: released");
+                }
+            }
+            let findings =
+                json!({"method": "findings.verify", "params": {"patch": patch, "findings": []}});
+            let worded = call(&findings.to_string(), &in_process).unwrap_err();
+            assert!(!worded.message.contains(marker), "{}", worded.message);
+        }
+        // The patch Git wrote for `review.change` (MCP's `change_review`): the same rule.
+        let git = || {
+            deep_diff_forge_patch::GitAcquireError::Parse(
+                deep_diff_forge_patch::PatchParseError::MalformedHunkHeader {
+                    line_number: 9,
+                    text: format!("@@ -1,{marker} +1 @@"),
+                },
+            )
+        };
+        let released = acquire_error(git(), Wording::Released);
+        let worded = acquire_error(git(), Wording::WithoutInput);
+        assert!(released.message.contains(marker), "{}", released.message);
+        assert_eq!(worded.code, PATCH_PARSE_FAILED);
+        assert!(
+            worded.message.starts_with(
+                "authoritative patch failed to parse: malformed hunk header at line 9: "
+            ),
+            "{}",
+            worded.message
+        );
+        assert!(!worded.message.contains(marker), "{}", worded.message);
     }
 
     #[test]
@@ -1893,6 +2067,57 @@ mod tests {
         assert_eq!(at_limit(1).unwrap_err().code, RESOURCE_EXHAUSTED);
     }
 
+    /// Protocol 3 adds `diff.diagnostics` (F5a.2): a client that asks for protocol 2 is not told
+    /// about it, one that names no protocol or 3 is, and dispatch stays stateless, so a
+    /// protocol-2 client that calls it anyway is served.
+    #[test]
+    fn an_older_client_asking_for_protocol_2_does_not_see_diff_diagnostics() {
+        let e = Engine::new();
+        let listed = |line: &str| {
+            let v = call(line, &e).unwrap();
+            let names: Vec<String> = v["methods"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|m| m.as_str().unwrap().to_owned())
+                .collect();
+            (
+                v["protocol"].clone(),
+                names.iter().any(|n| n == "diff.diagnostics"),
+            )
+        };
+        assert_eq!(
+            listed(r#"{"method":"engine.initialize","params":{"protocol":2}}"#),
+            (json!(2), false),
+            "a protocol-2 client is told about diff.diagnostics"
+        );
+        for line in [
+            r#"{"method":"engine.initialize"}"#,
+            r#"{"method":"engine.initialize","params":{"protocol":3}}"#,
+        ] {
+            assert_eq!(listed(line), (json!(3), true), "{line}");
+        }
+        let spec = METHODS
+            .iter()
+            .find(|m| m.name == "diff.diagnostics")
+            .unwrap();
+        assert_eq!(spec.since, 3);
+        let v = call(r#"{"method":"engine.methods"}"#, &e).unwrap();
+        assert_eq!(v["methods"].as_array().unwrap().last().unwrap()["since"], 3);
+        let served = call(
+            r#"{"method":"engine.initialize","params":{"protocol":2}}"#,
+            &e,
+        )
+        .and_then(|_| {
+            call(
+                r#"{"method":"diff.diagnostics","params":{"patch":"--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n"}}"#,
+                &e,
+            )
+        })
+        .unwrap();
+        assert_eq!(served["schema"], "deep-diff-forge.diagnostics.v0");
+    }
+
     #[test]
     fn initialize_refuses_a_protocol_it_does_not_speak() {
         let e = Engine::new();
@@ -1946,7 +2171,7 @@ mod tests {
                 .unwrap()
                 .contains(&json!("findings.verify"))
         );
-        for other in ["3", "\"1\"", "1.5", "null", "-1"] {
+        for other in ["4", "\"1\"", "1.5", "null", "-1"] {
             let line =
                 format!(r#"{{"method":"engine.initialize","params":{{"protocol":{other}}}}}"#);
             assert_eq!(

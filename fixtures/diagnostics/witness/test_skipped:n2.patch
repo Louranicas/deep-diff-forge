@@ -1,0 +1,7 @@
+diff --git a/tests/t.rs b/tests/t.rs
+new file mode 100644
+--- /dev/null
++++ b/tests/t.rs
+@@ -0,0 +1,2 @@
++#[test]
++fn t() { assert!(true); }

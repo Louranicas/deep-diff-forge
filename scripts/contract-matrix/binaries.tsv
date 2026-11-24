@@ -1,5 +1,10 @@
 # Binaries scripts/contract_matrix.sh accepts, keyed by SHA-256 (never by version: forge-warden
-# 0.2.1 is stamped on builds that write verdict v2 and v3). Tab-separated: role, sha256, schema, what.
-# A forge-warden row is added when a build is recorded with its receipt (S3.33.d).
-ranker-0.9.0	83158afed4915dc2539543dd6cbb6108841f0951c668bfeefc1fc8ef717793cd	deep-diff-forge.rank.v0	deep-diff-forge v0.9.0, the released binary (tag v0.9.0, commit 7fb73f13)
-forge-warden	876a027692310e9fc2b4122b4434ba1f04b886b420120cd3a1bacf3316ab4d60	forge-warden.verdict.v3	forge-warden hub main db4c580eba68 (Train B14c), built 2026-11-22 for this matrix (S3.33.d); --version says 0.2.1
+# 0.2.1 is stamped on builds that write verdict v2 and v3). Tab-separated: role, sha256, schema, what,
+# name (the name a real row carries in brackets, `fw-recorded[005a1959]`).
+# A forge-warden row is added when a build is recorded with its receipt (S3.33.d). With
+# --require-real every forge-warden row must be given (FW_BIN or FW_BIN_OLDER), or it is red.
+ranker-0.9.0	83158afed4915dc2539543dd6cbb6108841f0951c668bfeefc1fc8ef717793cd	deep-diff-forge.rank.v0	deep-diff-forge v0.9.0, the released binary (tag v0.9.0, commit 7fb73f13)	ranker-0.9.0
+forge-warden	876a027692310e9fc2b4122b4434ba1f04b886b420120cd3a1bacf3316ab4d60	forge-warden.verdict.v3	forge-warden hub main db4c580eba68 (Train B14c), built 2026-11-22 for this matrix (S3.33.d); --version says 0.2.1	db4c580e
+ranker-0.10.0	121503a8d292da951c31e33e8b59bf33b54dd316e3d6ec3055e5c4bfac18e9ff	deep-diff-forge.rank.v0	deep-diff-forge v0.10.0, the released binary (tag v0.10.0; its archive checked against the release SHA256SUMS)	ranker-0.10.0
+forge-warden	2451dd117f7a34a7ef7fe18c3c20f393d89c6a12456467e05e3a199e6cfa789d	forge-warden.verdict.v3	forge-warden hub main 005a1959cd59 (Train B15), built 2026-11-24 for this matrix; the gate's judge from 0.11.0; --version says 0.2.1	005a1959
+forge-warden	821e531c176825d98107f9bd36acad5c1e86fe78b12c4354daa180319f521512	forge-warden.verdict.v2	forge-warden 0.2.1, a build of its release commit 6177426fc1b0 (tag v0.2.1), not the published file (no published sum on this machine to check it against); bound mode not in it	0.2.1-build

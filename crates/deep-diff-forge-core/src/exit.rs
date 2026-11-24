@@ -46,10 +46,11 @@ pub enum NextAction {
     /// Check what the message names (a file or stream, the terminal, the daemon); the command can
     /// succeed once that is fixed. For non-UTF-8 source files, fix the file.
     CheckEnvironment,
-    /// Change the input or the state the message names (a stale admission, an existing artifact),
-    /// or drop the contract that refused it; the same input is refused again.
+    /// Change the input or the state the message names (a stale admission, an existing artifact);
+    /// the same input is refused again.
     ChangeInput,
-    /// Read the evidence the council reported and decide; rerunning does not change it.
+    /// Read the reason and the evidence the message or the council reported; a person decides
+    /// what changes; rerunning does not change it.
     ReviewEvidence,
     /// Report a bug with the command and its input; do not retry blindly.
     ReportBug,
@@ -204,6 +205,152 @@ pub fn lookup(family: &str, code: i32) -> Option<&'static ExitCode> {
         .find(|e| e.family == family && e.code == code)
 }
 
+/// What a refused command leaves on stdout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stdout {
+    /// An input refusal: nothing is written.
+    Empty,
+    /// A verdict refusal: the judged document is written, then the refusal.
+    Document,
+}
+
+impl Stdout {
+    /// The name in JSON (`schema exit-codes`, `explain --json`, MCP).
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Empty => "empty",
+            Self::Document => "document",
+        }
+    }
+}
+
+/// One reason class of the engine's exit 7 ([`INPUT_CONTRACT_REFUSED`]). Exit 7 has one meaning;
+/// stderr names the class in one line, `refused: <text> (<tag>)`, whose text holds counts, flag,
+/// label and class names only, never text from the input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Refusal {
+    /// The class's name: snake case, unique, never reused.
+    pub class: &'static str,
+    /// What the reason line ends with, inside the parentheses: unique.
+    pub tag: &'static str,
+    /// The commands that can refuse with this class.
+    pub commands: &'static str,
+    /// What the refused command leaves on stdout.
+    pub stdout: Stdout,
+    /// What to do next: it refines exit 7's action for this class.
+    pub action: NextAction,
+    /// The release in which this refusal first shipped.
+    pub since: &'static str,
+}
+
+/// Every reason class of the engine's exit 7, in the order their reason lines are written. A class
+/// enters here in the commit that makes it reachable. The "Refusal reasons (exit 7)" table of
+/// `docs/reference/output-and-exit-codes.md` lists these rows.
+pub const REFUSALS: &[Refusal] = &[
+    Refusal {
+        class: "require_files",
+        tag: "--require-files",
+        commands: "`--stdin-patch`, `--git-*`, `<old> <new>`, `findings verify`; daemon `require_files`",
+        stdout: Stdout::Empty,
+        action: NextAction::ChangeInput,
+        since: "0.3.0",
+    },
+    Refusal {
+        class: "require_hunks",
+        tag: "--require-hunks",
+        commands: "`--stdin-patch`, `--git-*`, `<old> <new>`, `findings verify`; daemon `require_hunks`",
+        stdout: Stdout::Empty,
+        action: NextAction::ChangeInput,
+        since: "0.3.0",
+    },
+    Refusal {
+        class: "require_findings",
+        tag: "--require-findings",
+        commands: "`findings verify`",
+        stdout: Stdout::Document,
+        action: NextAction::ReviewEvidence,
+        since: "0.8.0",
+    },
+    Refusal {
+        class: "require_all",
+        tag: "--require-all",
+        commands: "`findings verify`",
+        stdout: Stdout::Document,
+        action: NextAction::ReviewEvidence,
+        since: "0.5.0",
+    },
+    Refusal {
+        class: "eval_failed",
+        tag: "eval",
+        commands: "`eval`",
+        stdout: Stdout::Document,
+        action: NextAction::ReviewEvidence,
+        since: "0.5.0",
+    },
+    Refusal {
+        class: "chain_not_ready",
+        tag: "agent doctor",
+        commands: "`agent doctor`",
+        stdout: Stdout::Document,
+        action: NextAction::CheckEnvironment,
+        since: "0.9.0",
+    },
+    Refusal {
+        class: "fail_on_label",
+        tag: "--fail-on",
+        commands: "`--rank` and `--diagnostics` of `--stdin-patch`, `--git-*`, `<old> <new>`",
+        stdout: Stdout::Document,
+        action: NextAction::ReviewEvidence,
+        since: "0.11.0",
+    },
+    Refusal {
+        class: "fail_on_truncated",
+        tag: "--fail-on evidence_truncated",
+        commands: "`--rank` and `--diagnostics` of `--stdin-patch`, `--git-*`, `<old> <new>`",
+        stdout: Stdout::Document,
+        action: NextAction::ReviewEvidence,
+        since: "0.11.0",
+    },
+    Refusal {
+        class: "require_pass_no_unit",
+        tag: "--require-pass no_unit",
+        commands: "`agent check`",
+        stdout: Stdout::Document,
+        action: NextAction::ReviewEvidence,
+        since: "0.11.0",
+    },
+    Refusal {
+        class: "require_pass_not_pass",
+        tag: "--require-pass not_pass",
+        commands: "`agent check`",
+        stdout: Stdout::Document,
+        action: NextAction::ReviewEvidence,
+        since: "0.11.0",
+    },
+    Refusal {
+        class: "branch_unverified",
+        tag: "verify-branch",
+        commands: "`agent verify-branch`",
+        stdout: Stdout::Document,
+        action: NextAction::ReviewEvidence,
+        since: "0.11.0",
+    },
+];
+
+/// The registered reason class named `class`.
+///
+/// # Panics
+/// When no class has that name: callers name a class of [`REFUSALS`] literally, and every class is
+/// driven by the CLI's tests.
+#[must_use]
+pub fn refusal(class: &str) -> &'static Refusal {
+    REFUSALS
+        .iter()
+        .find(|r| r.class == class)
+        .unwrap_or_else(|| panic!("no refusal class {class}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,6 +420,39 @@ mod tests {
             .filter(|a| a.may_be_transient())
             .collect();
         assert_eq!(transient, [NextAction::CheckEnvironment]);
+    }
+
+    /// F7.h1: a class and a tag name one reason each, so a gate reading the line's tag knows the
+    /// class; every class is snake case and every tag fits the reason grammar's tag.
+    #[test]
+    fn every_refusal_class_and_tag_is_unique() {
+        for (i, a) in REFUSALS.iter().enumerate() {
+            for b in &REFUSALS[i + 1..] {
+                assert_ne!(a.class, b.class, "two classes named {}", a.class);
+                assert_ne!(
+                    a.tag, b.tag,
+                    "{} and {} share the tag {}",
+                    a.class, b.class, a.tag
+                );
+            }
+            assert!(
+                a.class.bytes().all(|c| c.is_ascii_lowercase() || c == b'_'),
+                "{}",
+                a.class
+            );
+            let tag = a.tag.trim_start_matches('-');
+            let (head, tail) = tag.split_once(' ').unwrap_or((tag, ""));
+            assert!(
+                a.tag.len() - tag.len() <= 2
+                    && head.starts_with(|c: char| c.is_ascii_lowercase())
+                    && head.bytes().all(|c| c.is_ascii_lowercase() || c == b'-')
+                    && tail.bytes().all(|c| c.is_ascii_lowercase() || c == b'_'),
+                "{}: the tag {:?} does not fit the reason grammar",
+                a.class,
+                a.tag
+            );
+            assert_eq!(refusal(a.class), a);
+        }
     }
 
     #[test]

@@ -6,8 +6,18 @@ an exceptional one. This policy documents the maintained security boundary,
 the controls enforced by the repository, and the limits operators must account
 for.
 
-## Status of 0.10.0 and the releases before it
+## Status of 0.11.0 and the releases before it
 
+- 0.11.0 fixes one miss of 0.10.0 and earlier, with an advisory:
+  [DDF-2026-011](docs/advisories/DDF-2026-011.md) (`eval` and `agent doctor --gate` exited 0
+  when the reader of their output had gone); and it closes the miss
+  [DDF-2026-006](docs/advisories/DDF-2026-006.md) declared (a source file that a stray byte
+  makes binary is read). The advisory is published with the release: as a file in
+  `docs/advisories/` of the signed tag `v0.11.0`, which is published on GitLab (the place of
+  release), Gitea and Forgejo with a binary built locally for Linux x86_64 and its
+  `RELEASE-MANIFEST.json` signed beside `SHA256SUMS`, mirrored on GitHub with its release page,
+  and with its crates on crates.io. Its known issues, its contract changes and the order of the
+  cutover with forge-warden are in its [release notes](docs/release-notes/0.11.0.md).
 - 0.10.0 reads a `diff --git` section only if its headers are a shape Git's own diff writes, and
   fixes six misses of 0.9.0 and earlier, each with an advisory:
   [DDF-2026-004](docs/advisories/DDF-2026-004.md) (one fault during `council import-tuicr
@@ -100,7 +110,8 @@ Fixes land on `main` first and reach users in the next tagged release.
 | Version | State | Security fixes |
 | --- | --- | --- |
 | `main` | Unreleased work after the newest tag | Land here first. |
-| `v0.10.0` (2026-11-23) | Published | While it is the newest released minor line. |
+| `v0.11.0` (2026-11-25) | Published | While it is the newest released minor line. |
+| `v0.10.0` (2026-11-23) | Published, superseded | No. `eval` and `agent doctor --gate` with the reader of their output gone ([DDF-2026-011](docs/advisories/DDF-2026-011.md)), and a source file a stray byte makes binary ([DDF-2026-006](docs/advisories/DDF-2026-006.md), the miss it declared); 0.11.0 fixes them. |
 | `v0.9.0` (2026-11-18) | Published, superseded | No. A journal one fault could block ([DDF-2026-004](docs/advisories/DDF-2026-004.md)), a quoted CI privilege grant ([DDF-2026-005](docs/advisories/DDF-2026-005.md)), a source change an attribute made unreadable ([DDF-2026-006](docs/advisories/DDF-2026-006.md)), GitLab and fine-grained GitHub tokens ([DDF-2026-007](docs/advisories/DDF-2026-007.md)), a judge's leftover process ([DDF-2026-008](docs/advisories/DDF-2026-008.md)) and a findings gate with its reader gone ([DDF-2026-010](docs/advisories/DDF-2026-010.md)); 0.10.0 fixes them. |
 | `v0.8.4` (2026-11-17) | Published, superseded | No. A process spawn cut across two sections of one path, and the cost of one long word or run of secret prefixes ([DDF-2026-003](docs/advisories/DDF-2026-003.md)); 0.9.0 fixes them. |
 | `v0.8.3` (2026-11-11 UTC) | Published, superseded | No. G1/G2 ([DDF-2026-001](docs/advisories/DDF-2026-001.md)) and the Rust code view ([DDF-2026-002](docs/advisories/DDF-2026-002.md)); 0.8.4 fixes them. |
@@ -237,7 +248,10 @@ selection.
   a diagnostic that cannot be written (`2>/dev/full`) leaves the exit code as it was. Before
   0.10.0 `findings verify --require-findings` and `--require-all` exited 0 when the reader had
   gone ([DDF-2026-010](docs/advisories/DDF-2026-010.md)), and an unwritable stderr turned any
-  exit into 101.
+  exit into 101. From 0.11.0 every verdict refusal (`eval` and `agent doctor` as well) goes
+  through one door and keeps its exit 7 and its reason when stdout's reader has gone or stdout
+  cannot be written; 0.8.3 to 0.10.0 exited 0 for `eval` and `agent doctor --gate` when the
+  reader had gone ([DDF-2026-011](docs/advisories/DDF-2026-011.md)).
 - Annotation provenance is fail-closed: a claimed `source` is not trusted until
   evidence grounds it.
 
@@ -811,7 +825,10 @@ bounded form.** What it holds to:
   --gate` fails a registered timeout under 50. Each step is given the time that is left.
   Before, the steps' own limits added up to several minutes, and a client that ended the
   hook dropped its answer, which reads as a pass.
-- **Every child DDF waits for runs in a process group of its own.** The judge, the helper
+- **Every child DDF's process runner waits for runs in a process group of its own.** Git in a
+  review's acquisition (`--git-*`, `review_change`, `review.change`) is not run by it: that
+  runner kills Git alone at the time limit and returns, and a process Git started runs on
+  (see "Git subprocesses have a time limit" below). The judge, the helper
   that hashes the rankers, and the council's Git and tuicr calls are each the leader of their
   own group, and the whole group is killed when the call ends, however it ends (time limit,
   output cap, normal exit); the call returns by its time limit even when something holds its
@@ -835,16 +852,20 @@ bounded form.** What it holds to:
   Every command a hook names is this binary's own absolute path, quoted for the shell.
 - **The gate reads the notes of the judge's verdict on its probe.** A note `claims_unverified`
   (a policy that requires verified claims) fails the link `claims_verified` of `agent doctor
-  --gate`: the hook gives the judge no `--repo`, `--base` or `--head`, so every stop there
-  holds and none passes; an uncommitted or staged change can never be verified.
+  --gate`. With a judge that takes bound mode (0.11.0, S3.25.b) a commit with one parent is
+  judged with `--repo`, `--base` and `--head` and can pass; an uncommitted or staged change, a
+  root commit and a merge commit still hold, and with a judge that does not take bound mode
+  every stop holds. What is not committed can never be verified.
 - **The patch given to the judge has forge-warden's patch-maker options** (full index lines,
   `--submodule=short`, `--ignore-submodules=none`, the store's commit-graph and multi-pack
   index not read), held byte for byte by a test that runs a recorded copy of `make_patch.sh`.
 - **Not a boundary: work hidden with Git's own rules.** A judged agent can hide work from the
-  hooks with a directory of mode 000, an untracked `.gitignore` that ignores itself, or a
-  directory named `.git` below the top, whose content Git never lists (the stop is then silent), or make staging run out of time with a very large sparse file (UNJUDGED,
-  with no run of the judge). These are stated limits of 0.10.0: the working tree and the merge
-  request still show the work, and release 0.11.0 targets them (F12, F13).
+  hooks with a directory of mode 000, an untracked `.gitignore` that ignores itself, a
+  directory named `.git` below the top, or a plain directory at a path the base records as a
+  submodule, whose content Git never lists (the stop is then silent), or make staging run
+  out of time with a very large sparse file (UNJUDGED, with no run of the judge). These are
+  stated limits, measured again on the 0.11.0 candidate, where each still holds: the working
+  tree and the merge request still show the work.
 - **`agent doctor --gate` reads a registered stop hook only in the form `agent setup --hooks`
   prints.** One program and its arguments, written with plain characters and single quotes:
   no comment, second command, pipe, redirection or substitution. The program word must be
@@ -898,7 +919,19 @@ bounded form.** What it holds to:
   state turns a judged fail into a pass; but whoever edits the file can move the base, and
   with it what is judged. A base in the file is believed only as a full commit id. "The same
   failure" is the rule, the signal, the path and the number of items the judge cites: a new
-  item blocks again. A state that cannot be kept is said with the stop's decision.
+  item blocks again. A state that cannot be kept is said with the stop's decision. A state
+  of a newer schema than a build reads (a newer build of the hooks wrote it) is refused by
+  its name and never written over, and its refusal advises no removal; where file locks do
+  not keep two hooks of a session apart, a newer build that writes between a hook's last
+  read of the file and its write is not seen, and is written over: the read narrows that
+  race and does not close it (`docs/reference/agent-hooks.md`, "The state's schema"). Since
+  0.11.0 (hook state v12) no file of the state directory holds text from the patch, the
+  judge or Git: every digest the hooks keep is an HMAC under the user's key file, and the
+  file of judged commits keeps rule ids and class codes only. A copy of a state file, a
+  ledger or a log without the key no longer confirms a guessed line, rule or path; whoever
+  can read the key file (the same user, the agent included) can still compute the digest of
+  a guess. The key is not a boundary against the judged agent: it bounds what a copied file
+  gives away.
 - **Not a boundary:** the agent runs as the user. It can edit the settings that install the
   hooks, the state file, or the judge on `PATH`. An agent that edits Git's own
   administrative files (`gitdir`, `commondir`, `core.worktree`, a tree's `.git` file) can make one tree be read
@@ -1189,6 +1222,16 @@ says when it closed:
 - The project does not claim isolation suitable for hosting unrelated tenants,
   cryptographic secrecy for review content, or safe display by downstream tools
   that bypass its rendering APIs.
+- The project's ledger (`.git/deep-diff-forge/ledger.jsonl`) is written with the user's
+  permissions, the agent's included: a record is evidence of a stop, not proof, and
+  `agent verify-branch` run where the agent can write is advice; the pull request's judge is
+  the boundary.
+- The hooks' frontier of judged commits (0.11.0) is that ledger's `baseline`, `start` and
+  stop records: evidence kept where the agent can write. An agent that removes or edits the
+  ledger is judged at its stops as before 0.11.0 (its own session's commits only), and a
+  stop whose session state cannot be used then judges the tree under the policy at `HEAD`,
+  which a commit of the session can have loosened. Neither is a boundary; the pull request's
+  judge reads the policy at the base.
 
 ## Hardening provenance
 

@@ -10,7 +10,10 @@ Standard library only. Two transports speak the same protocol:
 ``deep-diff-forge --stdin-patch --json`` prints for the same bytes. A JSON-RPC error raises
 ``RpcError``, whose ``code`` is the daemon's: 4 for a patch that does not parse, 7 for a broken
 input contract (``require_files``, ``require_hunks``), -32601 for an unknown method.
+``diagnostics_patch`` fetches the ``deep-diff-forge.diagnostics.v0`` document page by page from a
+daemon of engine protocol 3; an older daemon raises ``ProtocolTooOld``.
 """
+import hashlib
 import itertools
 import json
 import os
@@ -20,10 +23,11 @@ import struct
 import subprocess
 import time
 
-__all__ = ["RpcError", "TransportError", "StdioClient", "SocketClient"]
+__all__ = ["RpcError", "TransportError", "ProtocolTooOld", "PagingError", "UnknownMembers", "Diagnostics",
+           "StdioClient", "SocketClient"]
 
 # The workspace version this client was released with (cli/tests/python_sdk.rs keeps it equal).
-__version__ = "0.10.0"
+__version__ = "0.11.0"
 
 # The daemon refuses a request line longer than this (deep_diff_forge_daemon::MAX_REQUEST_BYTES).
 MAX_REQUEST_BYTES = 80 * 1024 * 1024
@@ -40,6 +44,146 @@ class RpcError(Exception):
 
 class TransportError(Exception):
     """The peer could not be reached, or its answer was not a valid response to the request."""
+
+
+class ProtocolTooOld(Exception):
+    """The daemon speaks an engine protocol older than ``method`` needs: it answered
+    ``engine.initialize`` with that protocol with error 2, or the method with -32601. Nothing is
+    built in its place from what the older daemon can answer."""
+
+    def __init__(self, daemon, needed, method):
+        if isinstance(daemon, int) and not isinstance(daemon, bool) and daemon >= needed:
+            # It reported the protocol and still answered -32601 for the method.
+            super().__init__(f"protocol too old: the daemon reported engine protocol {daemon} and does not know {method}")
+        else:
+            super().__init__(f"protocol too old: {method} needs engine protocol {needed}; the daemon speaks {daemon}")
+        self.daemon = daemon
+        self.needed = needed
+        self.method = method
+
+
+class PagingError(TransportError):
+    """The daemon's diagnostics pages broke the paging contract: ``problem`` names how, at page
+    ``pages`` (counting from 1). A fixed sentence; it holds no text of the patch."""
+
+    def __init__(self, pages, problem):
+        super().__init__(f"the daemon's diagnostics pages failed at page {pages}: {problem}")
+        self.pages = pages
+        self.problem = problem
+
+
+class UnknownMembers(PagingError):
+    """The daemon's diagnostics pages carry members this SDK does not know (a newer schema of v0,
+    whose members are only added): this SDK version cannot rebuild their bytes, so the document
+    cannot be checked against ``document_sha256`` and is not returned. Upgrade the SDK.
+    ``members`` are their names (``tool.build``, ``diagnostics[].x``), escaped, at most 8, each
+    cut to 64 characters."""
+
+    def __init__(self, pages, members):
+        TransportError.__init__(self, "the daemon's diagnostics document has members this SDK does not know ("
+                                + ", ".join(members) + "): this SDK version cannot rebuild its bytes, so the "
+                                "document cannot be checked against document_sha256; upgrade the SDK")
+        self.pages = pages
+        self.problem = "members this SDK does not know"
+        self.members = members
+
+
+class Diagnostics(dict):
+    """A ``deep-diff-forge.diagnostics.v0`` document as a dict, members in the document's order;
+    ``canonical_bytes`` is its exact bytes, what ``deep-diff-forge --stdin-patch --diagnostics
+    --json`` prints (newline included), which hash to the pages' ``document_sha256``."""
+
+    def __init__(self, document, canonical_bytes):
+        super().__init__(document)
+        self.canonical_bytes = canonical_bytes
+
+
+# The byte form of docs/reference/diagnostics.md ("Byte form"): the escapes of a string, and the
+# order of the members of each object.
+_HIDDEN = ((0x00AD, 0x00AD), (0x034F, 0x034F), (0x061C, 0x061C), (0x115F, 0x1160), (0x17B4, 0x17B5),
+           (0x180B, 0x180F), (0x200B, 0x200F), (0x202A, 0x202E), (0x2060, 0x206F), (0x3164, 0x3164),
+           (0xFE00, 0xFE0F), (0xFEFF, 0xFEFF), (0xFFA0, 0xFFA0), (0xFFF0, 0xFFFB), (0x1BCA0, 0x1BCA3),
+           (0x1D173, 0x1D17A), (0xE0000, 0xE0FFF))
+_NAMED = {'"': '\\"', "\\": "\\\\", "\n": "\\n", "\r": "\\r", "\t": "\\t", "\b": "\\b", "\f": "\\f"}
+_ORDER = {"tool": ("name", "version", "scorer_sha256"), "judge": ("state", "ranker_sha256"),
+          "counts": ("files", "diagnostics", "agent", "person", "cut_files"), "cut": ("path", "rows_kept"),
+          "diagnostic": ("key", "code", "label", "class", "path", "anchor", "side", "line", "occurrence",
+                         "reading", "audience", "cases", "repairs", "not_accepted", "test_likely", "judge_sees")}
+
+
+def _string(text):
+    out = []
+    for c in text:
+        n = ord(c)
+        if c in _NAMED:
+            out.append(_NAMED[c])
+        elif n < 0x20 or 0x7F <= n <= 0x9F or n in (0x2028, 0x2029) or any(a <= n <= b for a, b in _HIDDEN):
+            units = [n] if n <= 0xFFFF else [0xD800 + ((n - 0x10000) >> 10), 0xDC00 + ((n - 0x10000) & 0x3FF)]
+            out.extend("\\u%04x" % u for u in units)
+        else:
+            out.append(c)
+    return '"' + "".join(out) + '"'
+
+
+def _value(v):
+    if isinstance(v, str):
+        return _string(v)
+    if v is None or isinstance(v, bool):
+        return {None: "null", True: "true", False: "false"}[v]
+    if isinstance(v, int):
+        return str(v)
+    return "[" + ", ".join(_value(x) for x in v) + "]"
+
+
+def _object(d, kind):
+    return "{" + ", ".join(_string(k) + ": " + _value(d[k]) for k in _ORDER[kind] if k in d) + "}"
+
+
+def _block(items, opening, closing):
+    return opening + closing if not items else opening + "\n    " + ",\n    ".join(items) + "\n  " + closing
+
+
+def _diagnostics_bytes(header, cut, diagnostics, texts):
+    """The document's bytes, written in the byte form from the reassembled members."""
+    members = [("schema", _string(header["schema"])), ("input_sha256", _string(header["input_sha256"]))]
+    members += [(k, _object(header[k], k)) for k in ("tool", "judge", "counts")]
+    members.append(("cut", _block([_object(c, "cut") for c in cut], "[", "]")))
+    members.append(("diagnostics", _block([_object(d, "diagnostic") for d in diagnostics], "[", "]")))
+    ids = sorted(texts, key=lambda k: k.encode())
+    members.append(("texts", _block([_string(k) + ": " + _string(texts[k]) for k in ids], "{", "}")))
+    return ("{\n" + ",\n".join("  " + _string(k) + ": " + v for k, v in members) + "\n}\n").encode()
+
+
+_KNOWN = {"": ("schema", "input_sha256", "tool", "judge", "counts", "cut", "diagnostics", "texts"),
+          "tool.": _ORDER["tool"], "judge.": _ORDER["judge"], "counts.": _ORDER["counts"],
+          "cut[].": _ORDER["cut"], "diagnostics[].": _ORDER["diagnostic"]}
+
+
+def _shown(name):
+    """A member name as an error shows it: hidden and control characters as escapes, cut to 64."""
+    out = "".join(c if (_string(c) == '"' + c + '"' and c not in "\\\"") else _string(c)[1:-1] for c in name[:64])
+    return out + ("..." if len(name) > 64 else "")
+
+
+def _unknown_members(pages):
+    """The names of the members of the pages' document that this SDK does not know, sorted, at
+    most 8."""
+    found = set()
+
+    def look(prefix, value):
+        if isinstance(value, dict):
+            found.update(prefix + _shown(k) for k in value if k not in _KNOWN[prefix])
+    first = pages[0] if isinstance(pages[0], dict) else {}
+    look("", {k: v for k, v in first.items() if k != "page"})
+    for member in ("tool", "judge", "counts"):
+        look(member + ".", first.get(member))
+    for page in pages:
+        if not isinstance(page, dict):
+            continue
+        for member, place in (("cut", "cut[]."), ("diagnostics", "diagnostics[].")):
+            for item in page.get(member) if isinstance(page.get(member), list) else []:
+                look(place, item)
+    return sorted(found)[:8]
 
 
 def _result(response, request_id):
@@ -128,6 +272,101 @@ class _Client:
     def methods(self):
         """Every daemon method with its params, result and protocol version."""
         return self.call("engine.methods")["methods"]
+
+    def diagnostics_patch(self, patch, require_files=False, require_hunks=False, max_bytes=None):
+        """The ``deep-diff-forge.diagnostics.v0`` document of ``patch`` (``diff.diagnostics``,
+        engine protocol 3), fetched in pages of at most ``max_bytes`` (the daemon's default when
+        None) and returned as ``Diagnostics``: the document as a dict, and its exact bytes.
+
+        It sends ``engine.initialize`` with protocol 3 once for the call, then follows the
+        cursors. A daemon that speaks an older protocol raises ``ProtocolTooOld`` (never worked
+        around). The pages must keep one ``total`` and one ``document_sha256``, each must start
+        where the last ended and hold a diagnostic, no cursor may come back and the cursors must
+        end with the document: at most ``total`` pages (one for an empty document), ``total`` no
+        more than the patch's length in bytes; otherwise ``PagingError``. The document is rebuilt
+        in the documented byte form and returned only when its bytes hash to ``document_sha256``.
+        A parse failure's ``RpcError`` message is cut before the text of the line it quotes."""
+        method, needed = "diff.diagnostics", 3
+        try:
+            daemon = self.call("engine.initialize", protocol=needed).get("protocol")
+        except RpcError as error:
+            if error.code != 2:
+                raise
+            raise ProtocolTooOld(self.call("engine.initialize").get("protocol"), needed, method) from None
+        if not isinstance(daemon, int) or isinstance(daemon, bool) or daemon < needed:
+            raise ProtocolTooOld(daemon, needed, method)
+        params = {"patch": patch, "require_files": require_files, "require_hunks": require_hunks}
+        if max_bytes is not None:
+            params["max_bytes"] = max_bytes
+        limit = len(patch.encode("utf-8", "surrogatepass"))
+        pages, cursors, expected, total, digest = [], set(), 0, None, None
+        while True:
+            try:
+                page = self.call(method, **params)
+            except RpcError as error:
+                if error.code == -32601:
+                    raise ProtocolTooOld(daemon, needed, method) from None
+                # Raised as the daemon worded it: diff.diagnostics names where a patch failed to
+                # parse and none of its text, so the SDK reads no English here.
+                raise
+
+            def bad(problem, at=len(pages) + 1):
+                return PagingError(at, problem)
+            member = page.get("page") if isinstance(page, dict) else None
+            numbers = [member.get(k) if isinstance(member, dict) else None for k in ("first", "count", "total")]
+            sha = member.get("document_sha256") if isinstance(member, dict) else None
+            if not all(isinstance(n, int) and not isinstance(n, bool) and n >= 0 for n in numbers) \
+                    or not isinstance(sha, str):
+                raise bad("a page has no page member of the contract")
+            first, count, this_total = numbers
+            held = page.get("diagnostics")
+            if not isinstance(held, list) or len(held) != count:
+                raise bad("a page's count is not the diagnostics it holds")
+            total = this_total if total is None else total
+            digest = sha if digest is None else digest
+            if this_total != total:
+                raise bad("total changed between pages")
+            if sha != digest:
+                raise bad("document_sha256 changed between pages")
+            if first != expected:
+                raise bad("a page does not start where the last one ended")
+            if this_total > limit:
+                raise bad("total is more diagnostics than the patch has bytes")
+            if count == 0 and this_total > 0:
+                raise bad("a page holds no diagnostic")
+            expected = first + count
+            if expected > this_total:
+                raise bad("a page goes past total")
+            cursor = member.get("next_cursor")
+            if cursor is not None and not isinstance(cursor, str):
+                raise bad("next_cursor is neither a string nor null")
+            if cursor is None:
+                if expected != this_total:
+                    raise bad("the cursors ended before the document did")
+                pages.append(page)
+                break
+            if expected == this_total:
+                raise bad("the cursors did not end with the document")
+            if cursor in cursors:
+                raise bad("a cursor came back")
+            cursors.add(cursor)
+            params["cursor"] = cursor
+            pages.append(page)
+        members = _unknown_members(pages)
+        if members:
+            raise UnknownMembers(len(pages), members)
+        try:
+            cut = [c for p in pages for c in p["cut"]]
+            diagnostics = [d for p in pages for d in p["diagnostics"]]
+            texts = {}
+            for p in pages:
+                texts.update(p["texts"])
+            canonical = _diagnostics_bytes(pages[0], cut, diagnostics, texts)
+        except (KeyError, TypeError, AttributeError):
+            raise PagingError(len(pages), "a page is not a deep-diff-forge.diagnostics.v0 page") from None
+        if hashlib.sha256(canonical).hexdigest() != digest:
+            raise PagingError(len(pages), "the rebuilt document does not hash to document_sha256")
+        return Diagnostics(json.loads(canonical.decode("utf-8")), canonical)
 
 
 class StdioClient(_Client):

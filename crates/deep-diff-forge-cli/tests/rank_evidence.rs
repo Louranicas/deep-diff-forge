@@ -195,3 +195,61 @@ fn evidence_is_capped_and_says_so() {
     assert_eq!(rank["ranked"][0]["evidence"].as_array().unwrap().len(), 32);
     assert_eq!(rank["ranked"][0]["evidence_truncated"], true);
 }
+
+/// D1 (0.11.0), the coordinator's probes after F2b: since OD-E `#[allow(` in a comment or a
+/// string is no suppression, so the reader must know where a comment or a string ends. A real
+/// `#[allow(dead_code)]` on the line after each of these still raises `check_suppressed` on its
+/// own line; and an `#[allow(` on a line inside a raw string over lines still raises it (a reader
+/// of one line cannot tell, and it keeps the label: conservative, stated).
+#[test]
+fn a_real_allowance_after_quotes_lifetimes_and_closed_comments_still_raises() {
+    let cases: [(&str, &[&str]); 8] = [
+        ("a quote character", &["const Q: char = '\"';"]),
+        ("a quote byte", &["const Q: u8 = b'\"';"]),
+        ("a lifetime", &["fn f<'a>(x: &'a str) -> &'a str { x }"]),
+        (
+            "a nested block comment that closed",
+            &["/* outer /* inner */ still */"],
+        ),
+        (
+            "a raw string that closed",
+            &["const R: &str = r#\"a \" b\"#;"],
+        ),
+        ("an escaped quote", &["const S: &str = \"a \\\" b\";"]),
+        ("a macro body", &["macro_rules! m { () => {"]),
+        ("a raw string over lines", &["const R: &str = r#\""]),
+    ];
+    for (what, before) in cases {
+        let mut lines: Vec<&str> = before.to_vec();
+        lines.push("#[allow(dead_code)]");
+        lines.push("fn a() {}");
+        if what == "a macro body" {
+            lines.push("}; }");
+        }
+        if what == "a raw string over lines" {
+            lines.push("\"#;");
+        }
+        let mut patch = format!(
+            "diff --git a/src/a.rs b/src/a.rs\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/src/a.rs\n@@ -0,0 +1,{} @@\n",
+            lines.len()
+        );
+        for line in &lines {
+            writeln!(patch, "+{line}").unwrap();
+        }
+        let rank: Value =
+            serde_json::from_str(&run(&patch, &["--stdin-patch", "--rank", "--json"])).unwrap();
+        let line = u64::try_from(before.len() + 1).unwrap();
+        // A file with no evidence has no `evidence` member: that is "not found" too.
+        let found = rank["ranked"][0]["evidence"]
+            .as_array()
+            .is_some_and(|rows| {
+                rows.iter()
+                    .any(|e| e["signal"] == "check_suppressed" && e["line"] == line)
+            });
+        assert!(
+            found,
+            "after {what}: no check_suppressed at line {line}: {}",
+            rank["ranked"][0]
+        );
+    }
+}

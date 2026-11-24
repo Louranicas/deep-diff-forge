@@ -1,10 +1,69 @@
-# The comparison corpus that the "nothing a release found is lost" claims of 0.10.0 cite.
-# The corpus is not in this repository (7,421 patches, 45 planted Git repositories, the frozen
-# release binaries); it is named here by the SHA-256 of its manifest. The local gate's step
-# "comparison corpus manifest" verifies the corpus where it exists.
+# The comparison corpus that the "nothing a release found is lost" claims of 0.10.0 and 0.11.0
+# cite. The corpus is not in this repository (7,715 patches, 72 planted Git repositories, the
+# frozen release binaries); it is named here by the SHA-256 of its manifest, the last line of
+# this file. The local gate's step "comparison corpus manifest" verifies the corpus where it
+# exists.
 #
+# 0.11.0. Added to the corpus on 2026-11-24, which is why its digest moved from the 0.10.0 one
+# (a6e6baff0360a41860ce9c1d24a7bdc3a58b0989c2cd3f6c8f1e57adb0674ec2, the record further down):
+# four sibling batteries for the readings this release widened (assert-class, let-drop,
+# panic-macro, cfg-test: 294 patches), nine planted Git rows for a source file that a stray byte
+# makes binary by content (27 repositories; the 45 earlier ones rebuild unchanged), the
+# published 0.10.0 binary and the binaries below.
+#
+# The release-prepared commit 2843998a (version 0.11.0; binary sha256
+# 32fe5aa132aafd11cac94a4873ad884d5bd28038b49291db834591857f7f12dc, a release-profile Cargo build
+# of that commit, not the release build), run 2026-11-24T15:47Z, record
+# runs/20261124T154702Z-32fe5aa132aa of the corpus: every figure and every result file of the
+# record below, and with the version string written as 0.11.0 the same stdout, stderr and exit
+# code as the reviewed binary c19cf99c… on all 7,715 patches in --json, --rank --json and
+# --diagnostics --json. No Rust source file changes between the two commits; the version does.
+#
+# Whole-tree record for the candidate after the tree review's fix round, commit b8532c32 (version
+# 0.11.0-dev; binary sha256 c19cf99c6c2e3509be4d4dc1050cd2b8c65c459faef56a609c9d8ce25d9ea208, the
+# release-profile Cargo build of that commit), run 2026-11-24T13:34Z, record
+# runs/20261124T133439Z-c19cf99c6c2e of the corpus:
+#   identity control                               lost 0    gained 0
+#   against the published 0.10.0 (121503a8…)       lost 106  gained 1002  (see note 3)
+#   against v0.9.0 code (5ba0a366…)                lost 160  gained 1244  (note 3: 106; note 2: 54)
+#   against v0.8.4 (0c93b3ed…)                     lost 101  gained 2394  (note 3: 100; note 1: 1)
+#   against v0.8.3 (4cafd0ad…)                     lost 101  gained 2432  (note 3: 100; note 1: 1)
+#   Refusals against the published 0.10.0: 1,410 patches refused by both, none differs.
+#   Git selections against the published 0.10.0, 72 planted repositories and 8 history ranges:
+#   no planted repository loses an item in any mode, and 7 in each mode gain one (the stray-byte
+#   rows: diff_suppressed, and the code label where there is one, where 0.10.0 gave binary_change
+#   alone). In 2 of the 8 history ranges items are lost: 49 check_suppressed, each of note 3, and
+#   30 panic_path_added in four files whose evidence list is cut at its 32 rows in both builds:
+#   this build lists items it gained on earlier lines, every lost row lies after its last listed
+#   row, and each file keeps the label.
+# Note 3, a listed exception to the floor (0.11.0, the contract register's row F2b.g): `#[allow(`
+#   inside a Rust comment or a string is no check_suppressed, and `r#unsafe`, an identifier, is
+#   no unsafe_added. All 106 patches lost against 0.10.0 are that and nothing else, read from the
+#   item differences with nothing cut (the corpus's tools/diffitems.py and tools/lostclass.py):
+#   251 items in lists neither build cut, on 95 patches (197 in a string, 50 in a line comment, 1
+#   in a block comment, 3 `r#unsafe`), each read at its line; 14 files in 11 patches that lose
+#   the label on a list 0.10.0 had cut at its 32 rows, where every added line naming `allow(` is
+#   a comment or a string; and 172 rows that are in one build's cut list and not the other's, in
+#   files that keep the label (the bound). Counted over every list, cut or not, it is the 478
+#   rows and 116 files the changelog gives. This note first said "191 listed items": that was
+#   the count of a log that prints five items a file (corrected 2026-11-25 after the tree
+#   review, finding A0110-L2).
+# The same record was taken before on 5030ae9b (binary 704f66e9…, record
+#   runs/20261124T103801Z-704f66e94b68), on b337eb2c (b329a52b…, runs/20261124T105927Z-b329a52b8f89)
+#   and on 4ad1ca73 (6e49cb19…, runs/20261124T113029Z-6e49cb194eab, the commit the reviewers
+#   read), which differ from this commit in texts of the hooks and in what `agent verify-branch`
+#   refuses: every result file is the same in the four but for the binary's name, and the four
+#   binaries give the same stdout, stderr and exit code on all 7,715 patches in --json,
+#   --rank --json and --diagnostics --json.
+#
+# 0.10.0 (corpus digest a6e6baff0360a41860ce9c1d24a7bdc3a58b0989c2cd3f6c8f1e57adb0674ec2: 7,421
+# patches, 45 planted Git repositories).
 # Whole-tree record for the release-prepared commit 2343eef1 (version 0.10.0; binary sha256
-# df8359c42d99a957c5266825b1d8e87c84b7b7d6aaeb30753527454b321c3e6f), run 2026-11-23T02:31Z,
+# df8359c42d99a957c5266825b1d8e87c84b7b7d6aaeb30753527454b321c3e6f, the release-profile Cargo
+# build of that commit; the published 0.10.0 binary, its reproducible build, is
+# 121503a8d292da951c31e33e8b59bf33b54dd316e3d6ec3055e5c4bfac18e9ff: named 2026-11-23, EVIDENCE.md
+# "0.10.0 binaries and commits by name"; "v0.9.0 code (5ba0a366…)" below is a build of the
+# 0.9.0 code, the published 0.9.0 binary being 83158afe…), run 2026-11-23T02:31Z,
 # record runs/20261123T023136Z-df8359c42d99 of the corpus:
 #   identity control                 lost 0   gained 0
 #   against v0.8.3 (4cafd0ad…)       lost 1   gained 2063   (see note 1)
@@ -23,4 +82,4 @@
 # Note 2: all 54 are trivial_assert on Python lines where "assert True" is followed by more
 #   (for example "assert True == False"), which 0.9.0 labelled though they can fail: the narrowing
 #   of task S3.16, a recorded exception to the floor.
-a6e6baff0360a41860ce9c1d24a7bdc3a58b0989c2cd3f6c8f1e57adb0674ec2  MANIFEST.sha256
+bddd0a41ffc48a67fd798f6805e36da4324fb30adde0a903e363436962004dc6  MANIFEST.sha256

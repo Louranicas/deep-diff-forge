@@ -1,0 +1,7 @@
+diff --git a/app/run.py b/app/run.py
+new file mode 100644
+--- /dev/null
++++ b/app/run.py
+@@ -0,0 +1,2 @@
++cmd = "ls " + arg
++eval(cmd)

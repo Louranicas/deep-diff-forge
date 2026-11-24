@@ -11,7 +11,7 @@ mod util;
 
 pub use deploy::{DeploymentStatus, GateResult, GateState, MaturityLevel};
 pub use release::{ReleasePlan, ReleaseTarget, TargetState};
-pub use seal::{InputSeal, Sha256, sha256, sha256_hex};
+pub use seal::{InputSeal, Sha256, hmac_sha256, hmac_sha256_hex, sha256, sha256_hex};
 pub use util::{
     display_safe, display_safe_bounded, is_unsafe_in_untrusted_text, json_escape, json_line_safe,
     path_hazards, text_hazards,
@@ -215,6 +215,14 @@ pub struct PatchTwin {
     /// `--text`: why Git called the file binary. Only a Git acquisition sets it; a patch read
     /// from input never does.
     pub diff_suppressed: Option<DiffSuppression>,
+    /// Since 0.11.0 (S3.27.h): `Some` for a binary section no attribute covers, which Git's NUL
+    /// check called binary and whose second reading as text, of the same change, was obtained and
+    /// is not valid UTF-8 (nor UTF-16 or UTF-32); `None` for every other section. It holds the
+    /// hunks of that reading decoded lossily when it is text with a few stray bytes, and none when
+    /// it is not (over the acquisition's bound) or does not parse. Only code evidence is read from
+    /// them; they are no part of the patch (its bytes, status and `binary_change` stay). Only a
+    /// Git acquisition sets it.
+    pub stray_text: Option<Vec<PatchHunk>>,
 }
 
 /// A recorded header line that makes its section binary to Git: `GIT binary patch`,
@@ -241,7 +249,9 @@ impl PatchTwin {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffSuppression {
     /// The path's `diff` attribute is unset (`-diff`, the `binary` macro) or names a diff
-    /// driver, from any attributes file Git reads.
+    /// driver, from any attributes file Git reads. Also given when `git check-attr` fails for a
+    /// reason other than the time limit (its 64 KiB output cap included) or the path cannot be
+    /// passed to it as an argument: the cause is then not known, and the label is kept.
     Attribute,
     /// No `diff` attribute applies: Git's own content check (a NUL byte) called it binary.
     Content,
@@ -249,7 +259,8 @@ pub enum DiffSuppression {
     /// NUL in every pair): Git's content check called it binary for the NULs of its encoding.
     Encoding,
     /// No attribute label covers the file and DDF could not read it again within its limits:
-    /// the second reading or `git check-attr` was cut off by the byte budget or the time limit.
+    /// `git check-attr` was cut off by the time limit, or the second reading was cut off by the
+    /// byte budget or the time limit, failed, or gave an answer that could not be used.
     Unread,
 }
 

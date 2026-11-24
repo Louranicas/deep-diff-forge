@@ -6,6 +6,85 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-25
+
+**The agent-loop release.** 0.11.0 is built for an agent that works under Deep-Diff-Forge's
+hooks. While it works it is told what its change carries, as items of a new document,
+`deep-diff-forge.diagnostics.v0`: one diagnostic for each place a label stands, with the
+repairs that answer it, printed by `--diagnostics`, served in pages by the daemon's engine
+protocol 3 and by MCP, and read and checked by both SDKs. When it stops, forge-warden's verdict
+decides, and the stop judges more than before: the commits an ended session left and the
+commits merged between sessions (the project's frontier, kept in a ledger of stops under the
+repository's Git directory), the working tree even when the session's state cannot be used, and
+each commit with one parent in the judge's bound mode, so that such a commit can pass under a
+policy that requires verified claims. Every exit 7 has one meaning and names its reason class;
+`agent check` judges on demand what a stop judges, and `agent verify-branch` reads the ledger.
+It fixes one miss of released versions with an advisory: `eval` and `agent doctor --gate`
+exited 0 when the reader of their output had gone (DDF-2026-011). It closes the miss
+DDF-2026-006 declared: a source file that a stray byte makes binary by content is read.
+
+Know four things before installing. The hooks' state is schema v13: the published 0.9.0 and
+0.10.0 refuse a session this build has written (UNJUDGED, its files kept), so do not run both
+on one session. The Rust readers of four integrity labels and of `check_suppressed` and
+`build_hook` read more, and a listed exception to the floor removes two readings (`#[allow(` in
+a Rust comment or string, and `r#unsafe`), so a forge-warden policy that forbids these labels
+holds more changes and a few others no longer. Under a policy that requires verified claims
+only a commit with one parent can pass, and `agent doctor --gate` exits 7 there. The Rust
+library API changes where a type gains a variant or a public field. And one limit the review of
+this release left stated, under [Known issues](docs/release-notes/0.11.0.md#known-issues): a
+commit that a session leaves without a stop can pass the next session's stop under its own edit
+of the policy, so the judge on the pull request stays the boundary. Each change on purpose is
+under [Changed on purpose from 0.10.0](docs/release-notes/0.11.0.md#changed-on-purpose-from-0100); install it in the order
+under [Cutover with forge-warden](docs/release-notes/0.11.0.md#cutover-with-forge-warden), and keep the published 0.10.0
+binary as a ranker until every policy admits 0.11.0.
+
+Published as the signed tag `v0.11.0` on GitLab, the place of release, with mirrors on Gitea and
+Forgejo and a Linux x86_64 binary built on the owner's machine, with its `RELEASE-MANIFEST.json`
+signed beside `SHA256SUMS`; GitHub mirrors the release page and crates.io carries the crates from
+the tag, as for 0.10.0.
+
+### Security
+
+- **`eval` and `agent doctor` name their refusal on stderr and exit 7 when the reader of stdout has gone**
+- **A source file that a stray byte makes binary is read**
+- **MCP writes hidden characters as escapes**
+- **A patch that does not parse is refused without its text**
+- **Nothing the hooks keep holds text from the patch, the judge or Git**
+- **The marks an advice hook leaves under `.git/deep-diff-forge/`**
+
+### Added
+
+- **`deep-diff-forge.diagnostics.v0`**
+- **`--diagnostics`**
+- **`--rank --fail-on LIST`**
+- **The vocabulary as data with ids**
+- **`agent check`**
+- **The project's ledger**
+- **`agent verify-branch BASE..HEAD`**
+- **The judged frontier belongs to the project**
+- and 11 more, in the full notes
+
+### Changed
+
+- **Exit 7 has one meaning, with a registry of reason classes**
+- **Stop hook, changed on purpose (owner decision OD-J): a stop the agent itself can make unjudgeable no longer goes through at no cost**
+- **Stop hook, changed on purpose: a stop whose session state cannot be used**
+- **Stop hook, changed on purpose: a commit can pass under a policy that requires verified claims**
+- **Hook state**
+- **The advice after a tool call is an excerpt of the diagnostics document**
+- **`check_suppressed` and `build_hook` read more**
+- **Changed, by owner decision OD-E**
+- and 4 more, in the full notes
+
+### Fixed
+
+- **A hook's scratch directory is owned by a lock**
+- **`agent doctor --gate` and `agent check` compare `--ranker-dir`**
+- **A session's start says its last sentence**
+- **`--help` and the reference**
+
+Full notes: [docs/release-notes/0.11.0.md](docs/release-notes/0.11.0.md)
+
 ## [0.10.0] - 2026-11-23
 
 **Security and contract release.** 0.10.0 reads a `diff --git` section only if its headers are

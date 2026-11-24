@@ -935,3 +935,137 @@ fn a_text_reading_that_was_not_used_is_unread() {
         assert!(of(&doc, "c.png").get("diff_suppressed").is_none(), "{doc}");
     }
 }
+
+/// S3.27.h: a source file with no attribute, one NUL byte (Git's content check calls it binary)
+/// and one byte that is not UTF-8 (so its second reading is not UTF-8): `before`, and `after`
+/// with a process spawn added.
+fn stray(spawn: bool) -> Vec<u8> {
+    let mut text = b"fn main() {\n    // caf\xe9 \0 note\n    let x = 1;\n".to_vec();
+    if spawn {
+        text.extend_from_slice(b"    let _ = std::process::Command::new(\"sh\");\n");
+    }
+    text.extend_from_slice(b"    println!(\"{x}\");\n}\n");
+    text
+}
+
+/// What a document must never hold of a lossy reading: a replacement character, written or
+/// escaped, and a raw byte the reading replaced.
+fn holds_no_decoding(doc: &[u8], what: &str) {
+    let text = String::from_utf8(doc.to_vec()).unwrap_or_else(|_| panic!("{what}: not UTF-8"));
+    for needle in ["\u{fffd}", "\\ufffd", "\\uFFFD", " note"] {
+        assert!(!text.contains(needle), "{what} holds {needle:?}: {text}");
+    }
+}
+
+/// S3.27.h, the miss of release 0.10.0 (DDF-2026-006): one stray byte that is not UTF-8 beside a
+/// NUL hid the file's text from every reader (`binary_changed 3 [binary_change]`). Its lossy
+/// reading is now read for evidence beside the binary change, which stays; the act is labelled
+/// `diff_suppressed` (content) because the reading gave evidence. Nothing of the reading reaches
+/// a document but positions and labels, and the decoding's replacement characters raise no
+/// `hazardous_text` (ruling 3); `review.change` and `--diagnostics` say the same (ruling 4).
+#[test]
+fn a_text_file_with_a_stray_byte_is_read_beside_its_binary_change() {
+    use deep_diff_forge_daemon::{Engine, dispatch, parse_request};
+    for mode in MODES {
+        let r = custom(mode, b"", "m.rs", &stray(false), &stray(true));
+        let entry = ranked(&r, mode, "m.rs");
+        let row = format!("{mode}: {entry}");
+        assert_eq!(entry["status"], "binary_changed", "{row}");
+        assert_eq!(
+            signals(&entry),
+            ["binary_change", "diff_suppressed", "process_spawn"],
+            "a text file with a stray byte is unread: {row}"
+        );
+        assert_eq!(entry["diff_suppressed"], "content", "{row}");
+        assert_eq!(evidence(&entry), ["process_spawn"], "{row}");
+        assert_eq!(entry["evidence"][0]["line"], 4, "{row}");
+        for view in ["--rank", "--diagnostics"] {
+            let out = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+                .envs(ISOLATE)
+                .args(selection(mode))
+                .arg("--repo")
+                .arg(&r.0)
+                .args([view, "--json"])
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{row}");
+            holds_no_decoding(&out.stdout, &format!("{mode} {view}"));
+            holds_no_decoding(&out.stderr, &format!("{mode} {view} stderr"));
+            if view == "--diagnostics" {
+                let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+                let suppressed = doc["diagnostics"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|d| d["code"] == "diff_suppressed@file")
+                    .cloned()
+                    .unwrap_or_else(|| panic!("{mode}: no diff_suppressed@file in {doc}"));
+                assert_eq!(suppressed["cases"], json!(["content"]), "{mode}");
+                assert_eq!(
+                    suppressed["repairs"],
+                    json!(["diff_suppressed:a2"]),
+                    "{mode}"
+                );
+            }
+        }
+    }
+    let r = custom("--git-staged", b"", "m.rs", &stray(false), &stray(true));
+    let engine = Engine::new()
+        .allowing_repos(std::slice::from_ref(&r.0))
+        .unwrap();
+    let line = json!({"method": "review.change", "params": {"repo": r.0, "selection": "staged", "view": "rank"}})
+        .to_string();
+    let answer = dispatch(&parse_request(&line).unwrap(), &engine).unwrap();
+    assert_eq!(answer["ranked"][0], ranked(&r, "--git-staged", "m.rs"));
+}
+
+/// Bytes that are no text whatever the file is called: 4 KiB of a fixed pseudo-random sequence,
+/// NUL and every other value among them, with `line` put in the middle.
+fn bytes_with(line: &[u8]) -> Vec<u8> {
+    let mut state = 0x2545_f491_u32;
+    let mut bytes: Vec<u8> = (0..4096)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state.to_le_bytes()[0]
+        })
+        .collect();
+    bytes.splice(2048..2048, line.iter().copied());
+    bytes[100] = 0;
+    bytes
+}
+
+/// S3.27.h, ruling 1: bytes are not read for evidence, also when their name says source and they
+/// hold a line a reader would label: before the reader runs, a reading with more than one odd byte
+/// (not UTF-8, or a control) in eight of what it shows is bytes, not text. A text drowned in stray
+/// bytes is bytes too. On a path of a language the readers read, either still carries
+/// `diff_suppressed` (content): the gate has not seen a source file's text (coordinator's ruling
+/// 2). The same bytes as an image stay `binary_change` only.
+#[test]
+fn bytes_are_not_read_for_evidence_and_a_source_path_is_labelled() {
+    let line = b"\n#[allow(dead_code)]\nfn f() { std::process::Command::new(\"sh\"); }\n";
+    let mut drowned = stray(true);
+    for at in (0..drowned.len()).rev().step_by(3) {
+        drowned.insert(at, 0xff);
+    }
+    for mode in MODES {
+        for (name, after) in [("bytes", bytes_with(line)), ("drowned", drowned.clone())] {
+            let r = custom(mode, b"", "m.rs", &bytes_with(b""), &after);
+            let entry = ranked(&r, mode, "m.rs");
+            let row = format!("{name} {mode}: {entry}");
+            assert_eq!(entry["status"], "binary_changed", "{row}");
+            assert_eq!(
+                signals(&entry),
+                ["binary_change", "diff_suppressed"],
+                "a source file Git found binary is unlabelled or read as text: {row}"
+            );
+            assert_eq!(entry["diff_suppressed"], "content", "{row}");
+            assert!(evidence(&entry).is_empty(), "{row}");
+        }
+        let r = custom(mode, b"", "img.png", &bytes_with(b""), &bytes_with(line));
+        let image = ranked(&r, mode, "img.png");
+        assert_eq!(signals(&image), ["binary_change"], "{mode}: {image}");
+        assert!(image.get("diff_suppressed").is_none(), "{mode}: {image}");
+    }
+}

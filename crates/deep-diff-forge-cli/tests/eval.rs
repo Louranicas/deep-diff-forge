@@ -195,14 +195,51 @@ use std::process::Command;
 /// forms that releases 0.5.0 to 0.9.0 missed, six GitLab prefixes, the routable GitLab form and a
 /// fine-grained GitHub token, and five near misses): precision 186 of 211, recall 186 of 264,
 /// 106 declared. Both floors rose.
+/// Since 0.11.0 (F2b) `#[expect(..)]` is a suppression: line 8 of `src/allow.rs` leaves the
+/// declared misses for the expected items, and line 5 of `evidence/rust-negatives` is expected:
+/// precision 188 of 213, recall 188 of 265, 105 declared. The floors stay.
+/// F2b.c reads `cfg_attr(all(), allow(...))`: line 6 of `src/allow.rs` is expected too:
+/// precision 189 of 214, recall 189 of 265, 104 declared.
+/// Measured again on 61 cases (D1, 0.11.0): `evidence/cargo-lints-suppressed` (Cargo's lint
+/// keys and compiler flags, a build script declared in the manifest; `--cap-lints` and `allow`
+/// as two strings over lines a declared miss) and `evidence/rust-allow-in-comment-and-string`
+/// (OD-E: `#[allow(` in a comment or string is no evidence, `r#unsafe` no `unsafe_added`):
+/// precision 195 of 220, recall 195 of 272, 105 declared. The floors stay.
+/// F2a.a (0.11.0) reads an assertion that cannot fail as a class: `evidence/rust-assertion-class`
+/// (six forms, each beside a near miss; the same call on both sides is a near miss, two equal
+/// strings a declared miss) is added: precision 201 of 226, recall 201 of 279, 106 declared.
+/// F2a.b reads a `Result` of the standard library dropped with `let _ =`:
+/// `evidence/rust-dropped-result` (three drops, two near misses, `let _unused =` and `.ok();`
+/// declared): precision 204 of 229, recall 204 of 284, 108 declared.
+/// F2a.c reads `panic!` and `unreachable!`: `evidence/rust-panic-macros` (two, a near miss in a
+/// comment, `assert!(false, …)` declared): precision 206 of 231, recall 206 of 287, 109 declared.
+/// F2a.d reads a test compiled out by `cfg`: line 2 of `tests/any.rs` in
+/// `evidence/independent-review-20261114` leaves the declared misses for the expected items, and
+/// `evidence/rust-test-compiled-out` (two, `cfg(unix)` a near miss, a module compiled out
+/// declared) is added: precision 209 of 234, recall 209 of 290, 109 declared.
+/// F2a.d as a class (ruling 2): `evidence/rust-tests-module-compiled-out` (a module of tests and
+/// a file of tests compiled out; a module of another name and a file outside the tests as near
+/// misses): precision 211 of 236, recall 211 of 292, 109 declared.
+/// S3.35.d (0.11.0) adds the integrity labels beyond Rust: `evidence/lang-python`,
+/// `evidence/lang-javascript` and `evidence/lang-go` (every form the readers read, each with a near
+/// miss): precision 233 of 258, recall 233 of 314, 109 declared. Then (2026-11-24, the
+/// coordinator's ruling) the 46 forms a reviewer would expect that no reader reads are declared
+/// as misses in those cases and in `evidence/lang-shell`, `lang-yaml`, `lang-dockerfile` and
+/// `lang-makefile`: recall 233 of 360, 155 declared, no item found before lost. The floors are
+/// re-based on that: recall and precision at what is measured, and a floor on the count of
+/// expected items found ([`EVIDENCE_FOUND_FLOOR`]), so that declaring more misses, which grows
+/// the denominator, can never hide a lost item.
 const RANKING_PAIRS_FLOOR: u64 = 800_000;
-const EVIDENCE_PRECISION_FLOOR: u64 = 881_516;
-const EVIDENCE_RECALL_FLOOR: u64 = 704_545;
+const EVIDENCE_PRECISION_FLOOR: u64 = 903_100;
+const EVIDENCE_RECALL_FLOOR: u64 = 647_222;
+/// The expected evidence items the engine finds (`evidence_recall`'s `right`): a lost item fails
+/// the gate whatever the fraction.
+const EVIDENCE_FOUND_FLOOR: u64 = 233;
 const FINDINGS_FLOOR: u64 = 1_000_000;
 /// Declared misses (plan N4): each counts as wrong in its metric above. The receipt's
 /// `known_misses` keeps its first meaning, the evidence `known_miss` items; `declared` lists all.
-const DECLARED: u64 = 106;
-const EVIDENCE_KNOWN_MISSES: u64 = 78;
+const DECLARED: u64 = 155;
+const EVIDENCE_KNOWN_MISSES: u64 = 127;
 /// The smallest corpus the gate accepts, and the fewest cases of each kind.
 const MIN_CASES: usize = 30;
 const MIN_CASES_PER_KIND: usize = 3;
@@ -237,6 +274,10 @@ fn the_corpus_meets_its_floors() {
         "{m:#}"
     );
     assert!(ppm("evidence_recall") >= EVIDENCE_RECALL_FLOOR, "{m:#}");
+    assert!(
+        m["evidence_recall"]["right"].as_u64().unwrap() >= EVIDENCE_FOUND_FLOOR,
+        "fewer expected evidence items found than the floor: {m:#}"
+    );
     assert!(ppm("findings_verdicts") >= FINDINGS_FLOOR, "{m:#}");
     assert_eq!(receipt["known_misses"], EVIDENCE_KNOWN_MISSES);
     assert_eq!(
@@ -279,7 +320,8 @@ fn the_corpus_meets_its_floors() {
 
 /// S3.35.b: the receipt splits evidence precision and recall by signal (`by_signal`) and by
 /// the language of the item's file (`by_language`), and each split adds up to the aggregate the
-/// floors hold. The `trivial_assert` pair (precision and recall; S3.16 narrowed it) and
+/// floors hold. The `trivial_assert` pair (precision and recall; S3.16 narrowed it, F2a.a widened
+/// it to the class: 14 of 14 and 14 of 29 before; S3.35.d added its Python and JavaScript forms) and
 /// the Python case count are held exactly, so a change to them shows here by name.
 #[test]
 fn eval_receipt_carries_per_signal_tallies() {
@@ -288,13 +330,13 @@ fn eval_receipt_carries_per_signal_tallies() {
     assert_eq!(
         receipt["by_signal"]["trivial_assert"],
         serde_json::json!({
-            "precision": {"right": 14, "total": 14, "ppm": 1_000_000},
-            "recall": {"right": 14, "total": 29, "ppm": 482_758},
-            "cases": 13
+            "precision": {"right": 23, "total": 23, "ppm": 1_000_000},
+            "recall": {"right": 23, "total": 45, "ppm": 511_111},
+            "cases": 18
         }),
         "the trivial_assert pair in {receipt:#}"
     );
-    assert_eq!(receipt["by_language"]["python"]["cases"], 14, "{receipt:#}");
+    assert_eq!(receipt["by_language"]["python"]["cases"], 15, "{receipt:#}");
     let m = &receipt["metrics"];
     for member in ["by_signal", "by_language"] {
         let split = receipt[member].as_object().unwrap();
@@ -355,14 +397,14 @@ fn the_summary_names_each_metric_and_each_failure() {
     let (code, text) = run(&corpus());
     assert_eq!(code, Some(0), "{text}");
     assert!(
-        text.starts_with("deep-diff-forge eval: 59 cases\n"),
+        text.starts_with("deep-diff-forge eval: 73 cases\n"),
         "{text}"
     );
     for line in [
         "  ranking_pairs        12/15",
-        "  evidence_precision   186/211",
-        "  evidence_recall      186/264",
-        "  declared             106",
+        "  evidence_precision   233/258",
+        "  evidence_recall      233/360",
+        "  declared             155",
         "  KNOWN ranking/auth-check-removed: src/handlers/delete.rs ranks below docs/CHANGES.md",
         "  KNOWN evidence/shell-heredoc: reports (\"scripts/docs.sh\", \"network_fetch\", \"new\", 3)",
     ] {
@@ -758,7 +800,7 @@ fn a_declared_miss_must_still_be_a_miss() {
     );
     assert_eq!(
         metrics["evidence_recall"],
-        serde_json::json!({"right": 186, "total": 263, "ppm": 707_224})
+        serde_json::json!({"right": 233, "total": 359, "ppm": 649_025})
     );
 
     // A declared false positive the engine does not report.
@@ -776,7 +818,7 @@ fn a_declared_miss_must_still_be_a_miss() {
     );
     assert_eq!(
         metrics["evidence_precision"],
-        serde_json::json!({"right": 186, "total": 211, "ppm": 881_516})
+        serde_json::json!({"right": 233, "total": 258, "ppm": 903_100})
     );
 
     // A declared false positive that is also expected.
@@ -792,7 +834,7 @@ fn a_declared_miss_must_still_be_a_miss() {
             .unwrap()
             .ends_with("is not reported, or is expected: remove it")
     );
-    assert_eq!(metrics["evidence_precision"]["right"], 187);
+    assert_eq!(metrics["evidence_precision"]["right"], 234);
     assert_eq!(known, usize::try_from(DECLARED).unwrap() - 1);
 }
 

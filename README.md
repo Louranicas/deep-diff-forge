@@ -192,24 +192,25 @@ refuses each whole.
 **Prebuilt binaries.** From 0.8.4 a release ships one binary, for Linux x86_64, built and
 tested on the owner's machine; Linux arm64 and macOS are not built for this release, and v0.8.3
 is the last release with binaries for them ([supported platforms](#supported-platforms)).
-GitLab is the place of release: **0.10.0** (the signed tag `v0.10.0`, 2026-11-23), **0.9.0**
-(`v0.9.0`, 2026-11-18) and **0.8.4** (`v0.8.4`, 2026-11-17) are on its [releases page](https://gitlab.com/lukeomahoney/deep-diff-forge/-/releases)
+GitLab is the place of release: **0.11.0** (the signed tag `v0.11.0`, 2026-11-25), **0.10.0**
+(`v0.10.0`, 2026-11-23), **0.9.0** (`v0.9.0`, 2026-11-18) and **0.8.4** (`v0.8.4`, 2026-11-17) are on its [releases page](https://gitlab.com/lukeomahoney/deep-diff-forge/-/releases)
 with the archive and its `.sha256`, the SBOM, the build receipt, `SHA256SUMS` and the owner's
-signature of it, `SHA256SUMS.sig`. GitHub's [releases page](https://github.com/Louranicas/deep-diff-forge/releases)
+signature of it, `SHA256SUMS.sig`, and from 0.11.0 `RELEASE-MANIFEST.json` with the owner's
+signature of it, `RELEASE-MANIFEST.json.sig`. GitHub's [releases page](https://github.com/Louranicas/deep-diff-forge/releases)
 mirrors the same files (since 2026-11-22):
 
 ```bash
-curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.10.0/deep-diff-forge-v0.10.0-x86_64-unknown-linux-gnu.tar.gz
-curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.10.0/deep-diff-forge-v0.10.0-x86_64-unknown-linux-gnu.tar.gz.sha256
-sha256sum -c deep-diff-forge-v0.10.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.11.0/deep-diff-forge-v0.11.0-x86_64-unknown-linux-gnu.tar.gz
+curl -LO https://github.com/Louranicas/deep-diff-forge/releases/download/v0.11.0/deep-diff-forge-v0.11.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+sha256sum -c deep-diff-forge-v0.11.0-x86_64-unknown-linux-gnu.tar.gz.sha256
 ```
 
 Check all the downloaded files from a clone with
-`scripts/release_local.sh verify v0.10.0 <dir> .github/release_allowed_signers`: the tag's signature, every checksum and
+`scripts/release_local.sh verify v0.11.0 <dir> .github/release_allowed_signers`: the tag's signature, every checksum and
 its signature, and a rebuild that must give the same binary
 ([local release](docs/RELEASE_AND_PUBLICATION.md#local-release-from-084)).
 
-**From crates.io** (0.9.0 since 2026-11-23; 0.10.0 from its tag): `cargo install deep-diff-forge-cli --locked`
+**From crates.io** (0.9.0 since 2026-11-23; 0.10.0 and 0.11.0 from their tags): `cargo install deep-diff-forge-cli --locked`
 builds the same CLI from the fourteen published crates.
 
 **From source** (`main` on GitLab, mirrored to GitHub: everything in this README). This needs
@@ -219,7 +220,7 @@ Rust **1.88+** (edition 2024):
 git clone https://gitlab.com/lukeomahoney/deep-diff-forge.git
 cd deep-diff-forge
 cargo build --release --locked -p deep-diff-forge-cli
-target/release/deep-diff-forge --version        # deep-diff-forge 0.10.0
+target/release/deep-diff-forge --version        # deep-diff-forge 0.11.0
 target/release/deep-diff-forge --self-test
 ```
 
@@ -310,7 +311,8 @@ git diff | deep-diff-forge --stdin-patch --rank --json --require-files --require
 
 With Claude Code's hooks, this binary tells the agent what its own change looks like while it is
 still working, and asks a judge before it stops.
-`deep-diff-forge agent setup --client claude --hooks` prints the settings and writes nothing. The
+`deep-diff-forge agent setup --client claude --hooks` prints the settings and writes nothing
+(`--judge PATH`, `--policy NAME` and `--ranker-dir DIR` go into the commands it prints). The
 hooks guard against an agent's honest mistakes and shortcuts; they are not a boundary against an
 agent that sets out to evade them (that boundary is the judge on the pull request). The events,
 the rule of the stop hook and the stated limits are in [the agent hooks reference](docs/reference/agent-hooks.md).
@@ -326,6 +328,7 @@ moved from this page. The release archive ships this README alone: read them in 
 | [For agents: told while it works, judged when it stops](docs/reference/agent-hooks.md#for-agents-told-while-it-works-judged-when-it-stops) | The agent hooks: what each event gives the agent, the rule of the stop hook, what a stop judges, and the stated limits. |
 | [Command reference](docs/reference/commands.md#command-reference) | Every command by task: review a change, compare two files, the review cockpit, source files, machine surfaces, learning, analysis, deployment and diagnostics, and the review council. |
 | [Output formats and schemas](docs/reference/output-and-exit-codes.md#output-formats-and-schemas) · [Exit codes](docs/reference/output-and-exit-codes.md#exit-codes) · [Machine contract (`ddf.result.v1`)](docs/reference/output-and-exit-codes.md#machine-contract-ddfresultv1) | The schema each machine document names; each exit code, its meaning and next action; the `ddf.result.v1` envelope. |
+| [Diagnostics](docs/reference/diagnostics.md#diagnostics) | The contract of `deep-diff-forge.diagnostics.v0` (from 0.11.0): one diagnostic for each place a label stands, with the repairs that answer it, printed by `--diagnostics` and served in pages by the daemon and MCP. |
 | [MCP server](docs/reference/mcp-sdk-daemon.md#mcp-server) · [SDKs](docs/reference/mcp-sdk-daemon.md#sdks) · [The optional daemon](docs/reference/mcp-sdk-daemon.md#the-optional-daemon) | Read-only MCP tools over stdio; the Rust `deep-diff-forge-sdk` crate and the Python client; a JSON-RPC 2.0 server on an owner-private Unix domain socket, never required. |
 | [Verified agent findings](docs/reference/verified-agent-findings.md#verified-agent-findings) | Agent findings, one JSON object per line, checked against patch truth before anyone reads them. |
 | [Benchmarks and evaluation](docs/reference/evaluation.md#benchmarks-and-evaluation) | `bench`, which times the hot paths on generated inputs, and `eval`, which scores the engine against the labelled corpus in `fixtures/eval`. |
@@ -337,14 +340,14 @@ moved from this page. The release archive ships this README alone: read them in 
 
 ## Project status
 
-- **Released:** 0.10.0 (2026-11-23), a signed tag on GitLab, Gitea and Forgejo, with release
+- **Released:** 0.11.0 (2026-11-25), a signed tag on GitLab, Gitea and Forgejo, with release
   pages on GitLab and, mirrored, on GitHub, and its crates on crates.io (0.9.0's since
   2026-11-23); from 0.8.4 a release is built only for `x86_64-unknown-linux-gnu`
   ([supported platforms](#supported-platforms)). With forge-warden as the judge, upgrade in the
-  [cutover order](docs/release-notes/0.10.0.md#cutover-with-forge-warden).
+  [cutover order](docs/release-notes/0.11.0.md#cutover-with-forge-warden).
 - **Readiness:** the last verdict (2026-11-18) found 0.9.0 not production-ready yet; none of
-  0.8.4, 0.9.0 and 0.10.0 has had an independent rescore.
-- **Not claimed:** multi-user or shared-host daemon deployment; the known issues of 0.10.0 are in [its notes](docs/release-notes/0.10.0.md#known-issues), the known limits in the [0.9.0 notes](docs/release-notes/0.9.0.md#status-at-release).
+  0.8.4, 0.9.0, 0.10.0 and 0.11.0 has had an independent rescore.
+- **Not claimed:** multi-user or shared-host daemon deployment; the known issues of 0.11.0 are in [its notes](docs/release-notes/0.11.0.md#known-issues), the known limits in the [0.9.0 notes](docs/release-notes/0.9.0.md#status-at-release).
 - **History:** the notes of every release, and the dated history of this section, are in [`docs/release-notes/`](docs/release-notes/README.md).
 - **Known issues:** issues found after a release are listed on its [release page](https://gitlab.com/lukeomahoney/deep-diff-forge/-/releases).
 

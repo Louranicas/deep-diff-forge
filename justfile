@@ -188,8 +188,9 @@ release-local-build commit outdir:
     scripts/release_local.sh build "{{commit}}" "{{outdir}}"
 
 # Checks a local release: the tag's signature and its commit on gitlab/main, SHA256SUMS and its
-# signature (namespace deep-diff-forge-release-sha256sums), then a fresh build of the tag.
-# signers: .github/release_allowed_signers (the release key, for both namespaces).
+# signature (namespace deep-diff-forge-release-sha256sums), RELEASE-MANIFEST.json and its signature
+# (namespace deep-diff-forge-release-manifest, from 0.11.0), then a fresh build of the tag.
+# signers: .github/release_allowed_signers (the release key, for each of its namespaces).
 [group("release")]
 release-local-verify tag outdir signers:
     scripts/release_local.sh verify "{{tag}}" "{{outdir}}" "{{signers}}"

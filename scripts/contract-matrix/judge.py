@@ -8,7 +8,9 @@ that belongs to the outcome (0 pass, 7 fail, 8 hold).
 
 answer.json: {"schema": "v2" | "v3" | a schema name this build does not read,
               "outcome": "pass" | "hold" | "fail", "exit": <int>, "notes": [...],
-              "hang": true (sleeps until it is killed), "refuse": true (exit 4, no document)}
+              "hang": true (sleeps until it is killed), "refuse": true (exit 4, no document),
+              "when": [[word, {members}], ...] (the members of the first entry whose word the
+              patch holds replace the answer's own: one answer per commit of a branch)}
 
 The documents are forge-warden's own: v2 from tests/fixtures/forge-warden-0.2.0/<outcome>.json
 (forge-warden 0.2.0), v3 from tests/fixtures/forge-warden-main-fbd621e0/demo.verdict.json with
@@ -72,6 +74,11 @@ def main():
     policy, patch, ranker = value(args, "--policy"), value(args, "--patch"), value(args, "--ranker")
     if patch:
         shutil.copyfile(patch, row / "judged.patch")
+        text = pathlib.Path(patch).read_bytes()
+        for word, members in answer.get("when", []):
+            if word.encode() in text:
+                answer = {**answer, **members}
+                break
     if answer.get("hang"):
         time.sleep(3600)
     if answer.get("refuse"):

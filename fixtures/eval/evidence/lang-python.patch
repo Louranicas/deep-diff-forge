@@ -1,0 +1,147 @@
+--- a/src/a_read_0.py
++++ b/src/a_read_0.py
+@@ -1,1 +1,2 @@
+ x0
++x = f()  # noqa: E501
+--- a/src/a_read_1.py
++++ b/src/a_read_1.py
+@@ -1,1 +1,2 @@
+ x0
++y = g()  # type: ignore[arg-type]
+--- a/src/a_near_2.py
++++ b/src/a_near_2.py
+@@ -1,1 +1,2 @@
+ x0
++x = f()  # no qa here
+--- a/src/a_miss_3.py
++++ b/src/a_miss_3.py
+@@ -1,1 +1,2 @@
+ x0
++x = f()  # pylint: disable=unused-variable
+--- a/src/a_miss_4.py
++++ b/src/a_miss_4.py
+@@ -1,1 +1,2 @@
+ x0
++x = f()  # ruff: noqa: F841
+--- a/src/a_miss_5.py
++++ b/src/a_miss_5.py
+@@ -1,1 +1,2 @@
+ x0
++warnings.filterwarnings("ignore")
+--- a/tests/test_a_read_6.py
++++ b/tests/test_a_read_6.py
+@@ -1,3 +1,1 @@
+ x0
+-def test_add():
+-    assert add(1, 2) == 3
+--- a/tests/test_a_near_7.py
++++ b/tests/test_a_near_7.py
+@@ -1,3 +1,1 @@
+ x0
+-def helper():
+-    return 3
+--- a/tests/test_a_miss_8.py
++++ b/tests/test_a_miss_8.py
+@@ -1,2 +1,1 @@
+ x0
+-class TestAdd(unittest.TestCase):
+--- a/tests/test_a_read_9.py
++++ b/tests/test_a_read_9.py
+@@ -1,1 +1,2 @@
+ x0
++@pytest.mark.skip(reason="later")
+--- a/tests/test_a_read_10.py
++++ b/tests/test_a_read_10.py
+@@ -1,1 +1,2 @@
+ x0
++@pytest.mark.skipif(sys.platform == "win32", reason="x")
+--- a/tests/test_a_near_11.py
++++ b/tests/test_a_near_11.py
+@@ -1,1 +1,2 @@
+ x0
++@pytest.mark.parametrize("x", [1, 2])
+--- a/tests/test_a_miss_12.py
++++ b/tests/test_a_miss_12.py
+@@ -1,1 +1,2 @@
+ x0
++pytest.importorskip("numpy")
+--- a/tests/test_a_miss_13.py
++++ b/tests/test_a_miss_13.py
+@@ -1,1 +1,2 @@
+ x0
++@unittest.expectedFailure
+--- a/tests/test_a_read_14.py
++++ b/tests/test_a_read_14.py
+@@ -1,1 +1,2 @@
+ x0
++    assert True
+--- a/tests/test_a_read_15.py
++++ b/tests/test_a_read_15.py
+@@ -1,1 +1,2 @@
+ x0
++    self.assertTrue(True)
+--- a/tests/test_a_near_16.py
++++ b/tests/test_a_near_16.py
+@@ -1,1 +1,2 @@
+ x0
++    assert True == ready()
+--- a/tests/test_a_miss_17.py
++++ b/tests/test_a_miss_17.py
+@@ -1,1 +1,2 @@
+ x0
++    assert 1
+--- a/tests/test_a_miss_18.py
++++ b/tests/test_a_miss_18.py
+@@ -1,1 +1,2 @@
+ x0
++    self.assertEqual(x, x)
+--- a/src/a_read_19.py
++++ b/src/a_read_19.py
+@@ -1,1 +1,2 @@
+ x0
++    raise NotImplementedError
+--- a/src/a_near_20.py
++++ b/src/a_near_20.py
+@@ -1,1 +1,2 @@
+ x0
++    raise ValueError("not implemented yet")
+--- a/src/a_miss_21.py
++++ b/src/a_miss_21.py
+@@ -1,1 +1,3 @@
+ x0
++def f():
++    ...
+--- a/src/a_read_22.py
++++ b/src/a_read_22.py
+@@ -1,1 +1,5 @@
+ x0
++try:
++    f()
++except Exception:
++    pass
+--- a/src/a_near_23.py
++++ b/src/a_near_23.py
+@@ -1,1 +1,5 @@
+ x0
++try:
++    f()
++except Exception:
++    raise
+--- a/src/a_miss_24.py
++++ b/src/a_miss_24.py
+@@ -1,1 +1,2 @@
+ x0
++with contextlib.suppress(Exception):
+--- a/src/a_miss_25.py
++++ b/src/a_miss_25.py
+@@ -1,1 +1,5 @@
+ x0
++try:
++    f()
++except Exception:
++    return None
+--- a/src/a_miss_26.py
++++ b/src/a_miss_26.py
+@@ -1,1 +1,2 @@
+ x0
++    sys.exit(1)

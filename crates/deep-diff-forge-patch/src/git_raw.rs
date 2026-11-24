@@ -155,6 +155,9 @@ pub struct GitChange {
     /// Git first gave this change as binary and its block is the text read again
     /// ([`deep_diff_forge_core::PatchTwin::diff_suppressed`]); `None` for a first reading.
     pub diff_suppressed: Option<deep_diff_forge_core::DiffSuppression>,
+    /// The lossy text reading of a binary change that is text with a few stray bytes
+    /// ([`deep_diff_forge_core::PatchTwin::stray_text`]); `None` otherwise.
+    pub stray_text: Option<Vec<deep_diff_forge_core::PatchHunk>>,
 }
 
 impl GitChange {
@@ -489,6 +492,7 @@ impl StructuredDiff {
             for file in slots.by_ref().take(change.block_count) {
                 path.clone_into(&mut file.path);
                 file.patch_twin.diff_suppressed = change.diff_suppressed;
+                file.patch_twin.stray_text.clone_from(&change.stray_text);
             }
         }
         Ok(files)
@@ -787,6 +791,7 @@ fn pair(
         patch_range,
         block_count: roles.len(),
         diff_suppressed: None,
+        stray_text: None,
     })
 }
 

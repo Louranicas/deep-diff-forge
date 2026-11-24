@@ -338,7 +338,8 @@ fn one_text_in_hunks(pick: u8, text: &str) {
 /// A rule token and the signal it is evidence of.
 type Rules = &'static [(&'static str, EvidenceSignal)];
 
-/// What three Rust token rules find in the reading of 0.8.3 alone is in the file's evidence.
+/// What three Rust token rules find in the reading of 0.8.3 alone is in the file's evidence (but
+/// for the listed floor exception of `r#unsafe`; `check_suppressed`, the other one, is not here).
 fn released_reading_is_found(file: &deep_diff_forge_core::ReviewFile) {
     let evidence = file_evidence(file);
     for hunk in &file.patch_twin.hunks {
@@ -369,6 +370,8 @@ fn released_reading_is_found(file: &deep_diff_forge_core::ReviewFile) {
             let (Some(number), Some(view)) = (number, view) else {
                 continue;
             };
+            // the listed floor exception of OD-E: `r#unsafe` is an identifier, not the keyword
+            let view = view.replace("r#unsafe", "        ");
             for (token, signal) in rules {
                 assert!(
                     !has_token(&view, token)

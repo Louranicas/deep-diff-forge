@@ -1,0 +1,15 @@
+--- a/d0/Makefile
++++ b/d0/Makefile
+@@ -1,1 +1,2 @@
+ x0
++.IGNORE:
+--- a/d1/Makefile
++++ b/d1/Makefile
+@@ -1,2 +1,1 @@
+ x0
+-	cargo test
+--- a/d2/Makefile
++++ b/d2/Makefile
+@@ -1,1 +1,2 @@
+ x0
++	-make check

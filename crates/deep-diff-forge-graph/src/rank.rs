@@ -27,6 +27,21 @@ pub struct RankedFile {
     pub evidence_truncated: bool,
     /// Why Git gave this text file's change as binary, when it did (`diff_suppressed`).
     pub diff_suppressed: Option<deep_diff_forge_core::DiffSuppression>,
+    /// The code signals no item of which a reading of this version finds, over every item, not
+    /// only the listed ones ([`Evidence::read_now`]): `floor_only` in `diagnostics.v0`.
+    pub floor_only: Vec<EvidenceSignal>,
+    /// The side and number of every changed line whose text raises `hazardous_text`, in the
+    /// file's order (`hazardous_text@line` in `diagnostics.v0`); empty when the label is not
+    /// raised, and when only the path raises it.
+    pub hazard_lines: Vec<(crate::Side, u32)>,
+    /// More lines raise `hazardous_text` than the [`MAX_EVIDENCE_PER_FILE`] that
+    /// `hazard_lines` holds.
+    pub hazard_lines_cut: bool,
+    /// The kinds of hazard behind each of `hazard_lines`: its own and its paths'. With
+    /// `hazard_kinds`, every kind behind the label in the file, the `cases` of `diagnostics.v0`;
+    /// never printed in `rank.v0`.
+    pub hazard_line_kinds: Vec<Vec<&'static str>>,
+    pub hazard_kinds: Vec<&'static str>,
 }
 
 impl RankedFile {
@@ -50,7 +65,19 @@ impl RankedFile {
 
     fn sharing(file: &ReviewFile, share: Share) -> Self {
         let (assessment, _) = assess_file_marked(file, share);
+        let floor_only = EvidenceSignal::ALL.into_iter().filter(|signal| {
+            let mut of = assessment.evidence.iter().filter(|e| e.signal == *signal);
+            of.next().is_some_and(|first| !first.read_now) && !of.any(|e| e.read_now)
+        });
+        let floor_only = floor_only.collect();
         let (evidence, evidence_truncated) = listed(assessment.evidence);
+        let suppressed = assessment.signals.contains(&RiskSignal::DiffSuppressed);
+        let (hazard_lines, hazard_line_kinds, hazard_lines_cut, hazard_kinds) =
+            if assessment.signals.contains(&RiskSignal::HazardousText) {
+                crate::risk::hazard_lines(file)
+            } else {
+                Default::default()
+            };
         Self {
             path: file.path.clone(),
             status: file.status,
@@ -58,7 +85,16 @@ impl RankedFile {
             signals: assessment.signals,
             evidence,
             evidence_truncated,
-            diff_suppressed: file.patch_twin.diff_suppressed,
+            // S3.27.h: a stray-byte reading that gave evidence: Git's NUL check, no attribute
+            diff_suppressed: file.patch_twin.diff_suppressed.or_else(|| {
+                (crate::risk::stray(file) && suppressed)
+                    .then_some(deep_diff_forge_core::DiffSuppression::Content)
+            }),
+            floor_only,
+            hazard_lines,
+            hazard_lines_cut,
+            hazard_line_kinds,
+            hazard_kinds,
         }
     }
 }
