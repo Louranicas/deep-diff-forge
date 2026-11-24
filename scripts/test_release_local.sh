@@ -54,7 +54,7 @@ flip_byte() { python3 -I -c 'import sys; p=sys.argv[1]; b=bytearray(open(p,"rb")
 mkdir "$t/keys"
 ssh-keygen -q -t ed25519 -N '' -C reltool-test-good -f "$t/keys/good"
 ssh-keygen -q -t ed25519 -N '' -C reltool-test-other -f "$t/keys/other"
-printf 'reltool-test@example.invalid namespaces="git,%s" %s\n' "$ns" "$(cut -d' ' -f1,2 "$t/keys/good.pub")" >"$t/allowed_signers"
+printf 'reltool-test@example.invalid namespaces="git,%s,%s" %s\n' "$ns" "$ns_manifest" "$(cut -d' ' -f1,2 "$t/keys/good.pub")" >"$t/allowed_signers"
 
 git clone --quiet --no-local --no-tags "$repo" "$t/repo"
 cd "$t/repo"
@@ -98,6 +98,8 @@ assert isinstance(m["engine"]["protocol"], int) and "diff.diagnostics" in m["eng
 assert r["artefacts_sha256"]["RELEASE-MANIFEST.json"] == hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest()
 print("manifest ok:", json.dumps({k: m[k] for k in m if k != "sources"}))' "$t/out/RELEASE-MANIFEST.json" \
   "$t/out/release-receipt.json" "$t/out/$dist" "$head" "$version"
+# (the manifest as built, one line, for the record of the run)
+echo "    manifest: $(python3 -I -c 'import json, sys; print(json.dumps(json.load(open(sys.argv[1]))))' "$t/out/RELEASE-MANIFEST.json")"
 expect "1b verify v$version" 0 "verify v$version: PASS" "$tool" verify "v$version" "$t/out" "$t/allowed_signers"
 
 # 2: a byte changed in the archive after the build.
@@ -179,6 +181,7 @@ open(p, "w").write(json.dumps(m, indent=2) + "\n")' "$t/p-manifest-$member/RELEA
     "$tool" verify "v$version" "$t/p-manifest-$member" "$t/allowed_signers"
 done
 cp -r "$t/out" "$t/p-manifest-ns"
+rm "$t/p-manifest-ns/RELEASE-MANIFEST.json.sig"
 ssh-keygen -q -Y sign -f "$t/keys/good" -n "$ns" "$t/p-manifest-ns/RELEASE-MANIFEST.json"
 expect "9 a manifest signed in the namespace of SHA256SUMS" 1 "RELEASE-MANIFEST.json.sig does not verify" \
   "$tool" verify "v$version" "$t/p-manifest-ns" "$t/allowed_signers"
