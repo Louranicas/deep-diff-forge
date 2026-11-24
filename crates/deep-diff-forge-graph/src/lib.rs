@@ -12,6 +12,7 @@
 
 mod diagnostics;
 pub mod evidence;
+pub mod guard_paths;
 pub mod lexical;
 mod rank;
 mod risk;

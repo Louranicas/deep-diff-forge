@@ -2315,6 +2315,24 @@ fn a_closed_stdout_keeps_every_verdict_refusal() {
     assert!(verdicts >= 4, "{verdicts} verdict classes");
 }
 
+/// F6.c: the stated limits of the advice after a tool call name what it never notices (files
+/// Git ignores, what `.git/info/exclude` hides, `.git/info/attributes`, `.git/config`) and that
+/// the stop's `--policy` can differ from the advice's.
+#[test]
+fn the_advice_states_what_it_never_notices() {
+    let doc = repo_text("docs/reference/agent-hooks.md");
+    let flat = doc.split_whitespace().collect::<Vec<_>>().join(" ");
+    for words in [
+        "What the advice never notices (F6.c).",
+        "leaves out files Git ignores (`.gitignore`, the user's excludes file, and what `.git/info/exclude` hides) unless they are in the index",
+        "an edit of `.git/info/attributes`, `.git/info/exclude` or `.git/config` gets no item and no guard notice",
+        "The advice's `--policy` and the stop's are each the one their command in the client's settings names.",
+        "The stops read their policy at the session's base whatever the advice said.",
+    ] {
+        assert!(flat.contains(words), "agent-hooks.md: {words}");
+    }
+}
+
 /// The hooks' reason classes (`crates/deep-diff-forge-cli/src/reason.rs`, the rows of
 /// `ReasonClass::row` between its marks) and the table "Reason classes" of
 /// `docs/reference/agent-hooks.md` are the same rows in the same order: code, what the stop

@@ -261,6 +261,36 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   is said once more and a failure blocks once more (F7.e).
 - `deep_diff_forge_core::hmac_sha256` and `hmac_sha256_hex` (RFC 2104 on the crate's SHA-256,
   held by RFC 4231).
+- Hooks: the advice after a tool call is an excerpt of the diagnostics document. Each item is a
+  diagnostic for the agent of class `security` or `integrity`, with its code, class, escaped
+  path, line, side, case and repair ids as `--diagnostics --json` gives them for the same tree,
+  then each repair id once with its sentence. Where the engine cannot tell a case, every repair
+  is listed with a sentence saying so. The item text changed (`- "a.rs":2:
+  check_suppressed@line (integrity, new side, read as lexical); repairs: check_suppressed:a1,
+  check_suppressed:a2.`) (F6.a).
+- Hooks: a `shape` diagnostic (a new or deleted file, a lockfile, a public API path, a large
+  change) is no longer advised or counted, and a change that raises only such labels gets no
+  advice after a tool call: it orders a person's review, and advice that said there was nothing
+  to repair after every added file taught an agent to skip the advice. A `floor_only` reading
+  is not advised either (F6.a).
+- Hooks: a file whose name this version cannot read (not UTF-8) no longer turns the advice off
+  for the session. It is one item naming it as Git quoted it, and the other files are advised.
+  A change not ranked in the advice hook's time is said once to be "advice cut short" (F6.a).
+- Hooks: an edit of a guard file (the policy file, a `.gitattributes`, a CI workflow, lint or
+  tool configuration, the client's hook settings), matched on whole path components, is named
+  by the advice once for each content of the file, as information and never a block. `agent
+  setup` gives the post-tool hook `--policy`. The table is `deep_diff_forge_graph::guard_paths`
+  (F6.b).
+- Hook state v13: `guards`, the guard-file changes the advice has named (at most 64; past that
+  one is named after every tool call). A v12 state is read and written back as v13; a build
+  that writes v12 refuses a v13 state as newer (F6.b).
+- Hooks: the marks an advice hook leaves under `.git/deep-diff-forge/` when no state can
+  remember a reason are keyed (HMAC-SHA-256 under a key file of that directory); a mark of the
+  old unkeyed form is removed when met, and its reason is said once more (F6.b).
+- `docs/reference/agent-hooks.md` states what the advice never notices (ignored files,
+  `.git/info/exclude`, `.git/info/attributes`, `.git/config`), that the advice's `--policy` can
+  differ from the stop's, that guard notices wait for a call that ranks, and that a damaged
+  marks key silences the advice beside the state but not a stop (F6.c).
 
 ## [0.10.0] - 2026-11-23
 

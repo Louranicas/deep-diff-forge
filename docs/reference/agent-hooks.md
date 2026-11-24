@@ -29,7 +29,7 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
 | Event | Command | What the agent gets |
 | --- | --- | --- |
 | `SessionStart` | `agent hook session-start` | What the hooks do, the commit the session's changes are measured from, and whether a stop can be judged here: the chain is checked the way `agent doctor --gate` checks it, and a link that is missing is named instead of a promise. |
-| `PostToolUse`, after every tool | `agent hook post-tool` | **Advice, never a block.** The evidence that is new in the working tree since the session began (commits pulled or made by others in that time are in that range too): label, path, line, how the line was read (the rung of the ranking that found it: `lexical` for one line, `hunk` for tokens read across the lines of a hunk), and the change that answers the signal. A signal of a file that has no row of evidence (`hazardous_text`, `executable_bit`, `symlink_change`, and a code signal the ranking's 32 rows left out) is said for the file. A finding is said once per session, also when the line moves. When advice cannot be given (a file name that is not UTF-8, a sparse checkout, Git refusing the repository), the user and the model are told once that it is off and why. |
+| `PostToolUse`, after every tool | `agent hook post-tool` | **Advice, never a block.** What is new in the working tree since the session began (commits pulled or made by others in that time are in that range too), as items of the [diagnostics document](diagnostics.md) of that change whose audience is the agent and whose class is `security` or `integrity` (from 0.11.0): a `shape` diagnostic (a new or deleted file, a lockfile, a public API path, a large change) orders a person's review, so it is neither listed nor counted, and a change that raises only such labels gets no advice; advice that said there was nothing to repair after every tool call that added a file taught an agent to skip the advice. Each item is `"path":line: code (class, side, read as …); case: …; repairs: id, id.` for a located diagnostic, `"path": code (class, read as …); …` for one at its file, then each repair id once with its sentence. The items, their cases and repair ids are those `--diagnostics --json` gives for the same tree in those two classes; "read as" is the rung of the ranking that found a row (`lexical` for one line, `hunk` for tokens read across the lines of a hunk), which the document does not carry. Where the engine cannot tell a diagnostic's case the item says so and lists every repair. A reading kept for compatibility with 0.8.3 (`floor_only`, for a person) is not advised. Each file's diagnostics at the file come before its located ones; a file whose located diagnostics were cut at 32 is said to be. At most 20 items and about 5,600 bytes are listed; the items that do not fit (the last in the document's order) are counted and said after the next tool call. A finding is said once per session, also when the line moves. A file whose change this version cannot read (a name that is not UTF-8) is one item naming it as Git quoted it, and the other files are advised; a change not ranked in the hook's time is said once to be "advice cut short". When advice cannot be given (a sparse checkout, Git refusing the repository), the user and the model are told once that it is off and why. An edit of a guard file (the policy file `--policy` names, `warden.toml` by default; a `.gitattributes`; a CI workflow under `.github/workflows/`, `.forgejo/workflows/` or `.gitea/workflows/`, `.gitlab-ci.yml`, `.circleci/config.yml`; lint and tool configuration such as `clippy.toml`, `rustfmt.toml`, `deny.toml`, `.cargo/config.toml`; the client's `.claude/settings.json` and `settings.local.json`), matched on whole path components, is named before the items with what the file decides, as information: "… is a file that decides how this work is judged or checked: … This is information, not a block: the edit is part of the change a stop judges." It is named once for each content of the file, so a later edit is named again; at most 8 in one advice. `agent setup` gives this hook `--policy` when it gives one to the others. |
 | `Stop` | `agent hook stop` | A verdict on your uncommitted and staged changes, and on each commit made since the session began that your branches, tags, stash, `HEAD` or their history name: each commit once, by its own change. **Only a fail holds the stop**: a commit's at the stop that first judges it, an uncommitted change's once while it is there. The message has the rules that failed and what answers them. A hold is reported for a person. With no judge, no policy, or no ranker the policy admits, the result is **UNJUDGED**, said plainly, and never a pass. |
 
 - **One project and one base for a session.** The session's first hook fixes three things:
@@ -772,7 +772,7 @@ project and not judged at every stop while it is true, as stated above):
   until the directory is gone or it is a tree again"), and a stop made from inside it is
   UNJUDGED. It is forgotten when its directory is gone (the ordinary
   `git worktree remove`), or when it is a tree again and the judge's own reading finds
-  that tree clean. For this the session's state (schema `deep-diff-forge.hook-state.v12`)
+  that tree clean. For this the session's state (schema `deep-diff-forge.hook-state.v13`)
   records the top level of each linked tree it remembers a failure of (a state of the
   schema before, `v9`, which no release wrote, was read with no tree recorded until
   0.10.0; since 0.11.0 it is refused as older than the last release: "The state's schema",
@@ -915,6 +915,29 @@ Stated limits, which the judge on the pull request covers:
 - Advice after a tool call covers the project's working tree against the session's base
   only: not a linked working tree the session is in, and not commits that are no longer in
   the tree. The stop has both judged.
+- What the advice never notices (F6.c). It reads the change the hooks' patch is made of,
+  which leaves out files Git ignores (`.gitignore`, the user's excludes file, and what
+  `.git/info/exclude` hides) unless they are in the index, and holds nothing of the Git
+  directory: an edit of `.git/info/attributes`, `.git/info/exclude` or `.git/config` gets no
+  item and no guard notice, and neither does an ignored guard file (often
+  `.claude/settings.local.json`). Each of these can change what Git shows or runs; a stop's
+  judge sees no more of them than the advice does.
+- The advice's `--policy` and the stop's are each the one their command in the client's
+  settings names. `agent setup` from 0.11.0 gives both the same; settings printed before
+  0.11.0 give the post-tool command none, and settings edited by hand can give another. The
+  advice then names an edit of `warden.toml` (or of its own `--policy`) as the policy file
+  while the stops judge with another, and an edit of the stops' policy file gets no notice as
+  one. The stops read their policy at the session's base whatever the advice said.
+- Guard notices are said only by an advice that ranks the change. A session whose every tool
+  call is cut short ("advice cut short") or whose change cannot be made (a skip-worktree mark,
+  Git failing) never hears them while that lasts; the first call that ranks names them. A
+  stop judges such a change as any other: the judge is given the guard file's edit with the
+  rest when the change can be made, and when it cannot the stop is UNJUDGED with the reason.
+- When no state can remember a reason the advice hook gave, it marks it under
+  `.git/deep-diff-forge/` with a key of that directory. If that key file is no key (a link,
+  a FIFO, a directory, another length), the advice hook says nothing beside the state and
+  writes no mark, and no byte of the file is said; a stop says the reason every time, as it
+  always does.
 - "No repository here" is read from Git's own English message, with `LC_ALL=C` set for that
   call. A Git that words it otherwise is read as a failure, which is said, not as silence.
 - The scratch directory of a hook that was killed is removed only where the file system has
@@ -1011,14 +1034,14 @@ Stated limits, which the judge on the pull request covers:
     verdict kept the judge's or Git's words: such a line is read for the class its words say
     and written again in v12's form.
   - What is read. A build reads every schema from the one the last release wrote (v10,
-    written by 0.9.0 and 0.10.0) to its own (v12 since 0.11.0), and writes its own; one of a
+    written by 0.9.0 and 0.10.0) to its own (v13 since 0.11.0), and writes its own; one of a
     schema in that range below its own is written in its own by the first hook that keeps
     state. A v10 or v11 state keeps its base, its list of commits and its judged commits (a
     judged commit is not judged again); what it kept as plain digests is emptied (below,
     "Keyed history"), so a failure that blocked blocks once more. A state
     of an older schema is refused by its name: "this session's state file … is of schema
     v9, written by a deep-diff-forge older than the last release; this one reads v10 to
-    v12, and nothing is recorded over it (removing it makes the next hook take the commit
+    v13, and nothing is recorded over it (removing it makes the next hook take the commit
     HEAD names as this session's base: what this session committed before would not be
     judged)". A damaged one (not JSON, a schema that is not one, a member missing or not
     what the hooks write) says why and the same about removing it. That is what removing
@@ -1030,7 +1053,7 @@ Stated limits, which the judge on the pull request covers:
     HEAD names then: what this session committed before is not judged)".
   - A newer state is never written over. A state of a schema above this build's own (a
     newer build of the hooks wrote it) is refused by its name: "this session's state file
-    … is of schema v13, written by a newer deep-diff-forge; this one reads v10 to v12, and
+    … is of schema v14, written by a newer deep-diff-forge; this one reads v10 to v13, and
     nothing was written over it". No hook writes the state, `.tips` or `.judged` then (a
     stop, an advice hook, a session's start; the lock may be taken), and the message names
     no removal: the newer build reads its state again. The stop is UNJUDGED, as for any
@@ -1059,7 +1082,8 @@ Stated limits, which the judge on the pull request covers:
     writes it as v11: a failure that blocked under 0.10.0 says FAIL STANDS and a commit it
     judged is not judged again. A commit that 0.10.0 judged HOLD for a label the judge does
     not know keeps that answer: it is not held once after the upgrade (its line in `.judged`
-    is a hold like any other).
+    is a hold like any other). v13 adds `guards`, the guard-file changes the advice has
+    named: a build that writes v12 refuses a v13 state as newer, at every hook, and keeps it.
   - Keyed history (v12, rule V8). No file of the state directory holds text from the patch,
     the judge or Git: every digest the hooks keep (what was said as a finding, what was said
     once, every line of `blocked`: a rule, a rule with its signal and path, what the judge
@@ -1075,11 +1099,21 @@ Stated limits, which the judge on the pull request covers:
     the agent included) can still compute the digest of a guess. The key is not a boundary
     against the judged agent; it bounds what a copied file gives away. A key file that is no
     key (a link, a FIFO, a directory, another length, unreadable) ends the hook as a damaged
-    state does (UNJUDGED, did not run); no byte of a key is ever said.
+    state does (UNJUDGED, did not run); no byte of a key is ever said. The marks an advice
+    hook leaves under `.git/deep-diff-forge/` when no state can remember a reason it said
+    (`said-` and 64 hex digits) are keyed too, under a key file `key` of that directory,
+    made the same way, since the state's key may be what cannot be read (F6); a mark of the
+    form before (`said-`, 16 hex digits, `-`, 16 more: plain digests of the session and the
+    reason) is removed when an advice hook meets it, and its reason is said once more.
+  - Guard changes (v13, F6.b). `guards` holds the keys of the guard-file changes the advice
+    has named, HMAC-SHA-256 of the path and what Git says of the file's content in the change
+    (its `index` line with both blob ids, its modes), at most 64: a set of their own, so that
+    they never take the places of the 32 reasons an advice hook says once. A change past 64 is
+    named after every tool call rather than never, and says so.
   - What emptying costs. When a state's digests cannot be used (a state before v12, whose
     digests were plain; a key that was replaced or lost, which `key_id` shows), `reported`,
-    `noticed` and `blocked` are emptied and nothing else: a finding already said is said
-    once more, a failure that already blocked blocks once more and then stands, and a cause
+    `noticed`, `guards` and `blocked` are emptied and nothing else: a finding or a guard
+    change already said is said once more, a failure that already blocked blocks once more and then stands, and a cause
     that holds once holds again with its count begun anew. So the bound of three holds for
     one cause is per key and per schema, not per session: a session that is upgraded from
     v11 and whose key is replaced once can be held by one cause 3 × 3 = 9 times at worst,
@@ -1087,7 +1121,7 @@ Stated limits, which the judge on the pull request covers:
     have held or blocked: it can only make a stop hold or block once more.
   - The fixtures `crates/deep-diff-forge-cli/tests/fixtures/hook-state/<schema>-<release>/`
     hold the three files the published 0.9.0 and 0.10.0 binaries wrote, and the same files
-    written by a build of this tree in v11 (each directory's
+    written by builds of this tree in v11, v12 and v13 (with the key file from v12; each directory's
     `ORIGIN` names the binary by its SHA-256 and says whether it was published), captured once by
     `scripts/capture_hook_state.sh` and never edited; the test
     `every_schema_since_the_last_release_is_read` has the build under test read each.
