@@ -33,7 +33,7 @@
 use crate::lexical::{
     Carried, Language, Readings, RustStart, ScanState, carried_view, code_view, has_token,
     is_boundary_blocker, is_ident, rust_legacy_views, rust_shebang, rust_side, rust_white,
-    scalar_reading,
+    scalar_reading, toml_strings,
 };
 use crate::rust_tokens;
 use deep_diff_forge_core::{FileStatus, HunkId, PatchHunk, PatchLine, PatchLineKind, ReviewFile};
@@ -264,6 +264,54 @@ pub struct Evidence {
     /// not changed since. The bounded list of a file keeps these items first
     /// ([`crate::rank::RankedFile::evidence`]); the mark is not printed.
     pub released: bool,
+    /// A reading of this version finds it, alone or with another; false when only a reading
+    /// kept for the floor does (0.8.3's of a Rust hunk, the frozen 0.8.4 one). By reader, not
+    /// by `released`: a diagnostic's `reading` (`floor_only` when false). Not printed.
+    pub read_now: bool,
+    /// On [`EvidenceSignal::PanicPathAdded`] only, since 0.11.0 (F2a): the forms of the panic
+    /// paths on this line, the case of its diagnostic, whose repairs differ. Not printed.
+    pub panic_forms: PanicForms,
+}
+
+/// The forms of the panic paths on one line ([`Evidence::panic_forms`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PanicForms {
+    /// Not a panic path, or one no reading says the form of.
+    #[default]
+    None,
+    /// A call that panics on failure: `unwrap`, `expect`.
+    Call,
+    /// A macro that panics where it is reached: `panic!`, `unreachable!`.
+    Macro,
+    /// Both on one line.
+    Both,
+}
+
+impl PanicForms {
+    /// The forms the bits of the reader of tokens name (`BY_CALL`, `BY_MACRO`).
+    const fn of(bits: u8) -> Self {
+        match (
+            bits & rust_tokens::BY_CALL != 0,
+            bits & rust_tokens::BY_MACRO != 0,
+        ) {
+            (true, true) => Self::Both,
+            (true, false) => Self::Call,
+            (false, true) => Self::Macro,
+            (false, false) => Self::None,
+        }
+    }
+
+    /// A call is among them.
+    #[must_use]
+    pub const fn call(self) -> bool {
+        matches!(self, Self::Call | Self::Both)
+    }
+
+    /// A macro is among them.
+    #[must_use]
+    pub const fn by_macro(self) -> bool {
+        matches!(self, Self::Macro | Self::Both)
+    }
 }
 
 /// One finding of a hunk's scan: the side, the signal, the line, and whether the reading every
@@ -294,6 +342,11 @@ enum Scope {
     BuildScript,
     /// `package.json`.
     PackageJson,
+    /// Cargo's manifest (`Cargo.toml`) and its configuration (`.cargo/config.toml`,
+    /// `.cargo/config`), read as TOML ([`toml_strings`]).
+    CargoFile,
+    /// Cargo's manifest (`Cargo.toml`).
+    CargoManifest,
 }
 
 /// What a rule looks for.
@@ -312,6 +365,10 @@ enum Match {
     /// An error handler with nothing in it ([`empty_handler`]). It reads the line and the next
     /// line on the same side of the hunk, so what it finds has [`Basis::Hunk`].
     EmptyHandler,
+    /// A lint switched off in a Cargo file ([`lint_off`]).
+    LintOff,
+    /// A build script or a procedural macro declared in Cargo's manifest ([`builds`]).
+    Builds,
     /// One of `heads` (a whole word, with no [`is_boundary_blocker`] before it) followed by one
     /// of `tails`, with any whitespace before the tail and between its bytes: `# [allow(` is
     /// `#` and `[allow(`.
@@ -330,6 +387,8 @@ impl Match {
             | Self::AnyCode
             | Self::Secret
             | Self::Imports(_)
+            | Self::LintOff
+            | Self::Builds
             | Self::Spaced { .. } => Basis::Lexical,
         }
     }
@@ -522,6 +581,13 @@ const RULES: &[Rule] = &[
         S::BuildHook,
         Side::New,
         View::Raw,
+        Scope::CargoManifest,
+        Match::Builds,
+    ),
+    rule(
+        S::BuildHook,
+        Side::New,
+        View::Raw,
         Scope::PackageJson,
         Match::Tokens(&[
             "\"preinstall\"",
@@ -540,12 +606,14 @@ const RULES: &[Rule] = &[
     rule(
         S::CheckSuppressed,
         Side::New,
-        View::Raw,
+        // the code: `#[allow(` in a comment or a string switches nothing off ([`floor_view`])
+        View::Code,
         Scope::Languages(RUST),
-        // whatever the spacing: `# [allow(` and `#! [allow(` are the same attributes
+        // whatever the spacing: `# [allow(` and `#! [allow(` are the same attributes; `expect`
+        // switches the lint off as `allow` does
         Match::Spaced {
             heads: &["#"],
-            tails: &["[allow(", "![allow("],
+            tails: &["[allow(", "![allow(", "[expect(", "![expect("],
         },
     ),
     rule(
@@ -579,6 +647,13 @@ const RULES: &[Rule] = &[
         View::Raw,
         Scope::Languages(GO),
         Match::Tokens(&["//nolint", "// nolint", "#nosec"]),
+    ),
+    rule(
+        S::CheckSuppressed,
+        Side::New,
+        View::Raw,
+        Scope::CargoFile,
+        Match::LintOff,
     ),
     rule(
         S::TestRemoved,
@@ -712,7 +787,8 @@ const RULES: &[Rule] = &[
 
 /// The rules release 0.8.3 had for a Rust file: the entries of `RULES` at commit `d4dbc91` (the
 /// signed tag `v0.8.3`) that a Rust file can admit, in their order, as they were. They read the
-/// view of that release ([`legacy_hits`]) and no other view.
+/// view of that release ([`legacy_hits`]) and no other view, with the listed floor exceptions
+/// ([`floor_view`]).
 const LEGACY_RUST_RULES: &[Rule] = &[
     rule(
         S::UnsafeAdded,
@@ -773,7 +849,8 @@ const LEGACY_RUST_RULES: &[Rule] = &[
 /// The rules of releases 0.8.3 and 0.8.4 as they were: the table `RULES` of commit `d4dbc91`
 /// (the signed tag `v0.8.3`), which release 0.8.4 (`0a27bc2`) kept unchanged, in its order.
 /// The reading of release 0.8.4 ([`HunkLabels`]) asks these and no others, so that it finds
-/// what that release finds; [`LEGACY_RUST_RULES`] are the ones of them a Rust file can admit.
+/// what that release finds, but for the listed floor exceptions ([`floor_view`]);
+/// [`LEGACY_RUST_RULES`] are the ones of them a Rust file can admit.
 const RELEASED_RULES: &[Rule] = &[
     rule(
         S::UnsafeAdded,
@@ -1061,6 +1138,30 @@ struct FileKind {
     ci_workflow: bool,
     build_script: bool,
     package_json: bool,
+    cargo: Option<Cargo>,
+}
+
+/// Which of Cargo's files a file is ([`Scope::CargoFile`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Cargo {
+    /// `Cargo.toml`.
+    Manifest,
+    /// `.cargo/config.toml` or `.cargo/config`.
+    Config,
+}
+
+impl Cargo {
+    fn of(path: &str) -> Option<Self> {
+        let name = path.rsplit('/').next().unwrap_or(path);
+        if name == "Cargo.toml" {
+            return Some(Self::Manifest);
+        }
+        (matches!(name, "config.toml" | "config")
+            && path[..path.len() - name.len()]
+                .strip_suffix(".cargo/")
+                .is_some_and(|above| above.is_empty() || above.ends_with('/')))
+        .then_some(Self::Config)
+    }
 }
 
 impl FileKind {
@@ -1090,6 +1191,7 @@ impl FileKind {
             // signal they do not apply under a generated or vendored path. Token rules do.
             build_script: (name == "build.rs" || name == "setup.py") && !generated,
             package_json: name == "package.json" && !generated,
+            cargo: Cargo::of(path),
         }
     }
 
@@ -1171,6 +1273,7 @@ impl FileKind {
             // signal they do not apply under a generated or vendored path. Token rules do.
             build_script: (name == "build.rs" || name == "setup.py") && !generated,
             package_json: name == "package.json" && !generated,
+            cargo: Cargo::of(path),
         }
     }
 
@@ -1190,6 +1293,8 @@ impl FileKind {
             Scope::CiWorkflow => self.ci_workflow,
             Scope::BuildScript => self.build_script,
             Scope::PackageJson => self.package_json,
+            Scope::CargoFile => self.cargo.is_some(),
+            Scope::CargoManifest => self.cargo == Some(Cargo::Manifest),
         }
     }
 }
@@ -1232,6 +1337,24 @@ pub fn file_evidence_released(file: &ReviewFile) -> Vec<bool> {
 /// ([`Evidence::released`]); with the hunks the reading of release 0.8.4 reads together that
 /// `share` says.
 pub(crate) fn file_evidence_marked(file: &ReviewFile, share: Share) -> (Vec<Evidence>, Vec<bool>) {
+    // S3.27.h: a binary change whose text with a few stray bytes the acquisition read lossily
+    // has no hunk of its own; its code evidence is read from that reading, as from a text file
+    // of the same path (no binary marker, no payload)
+    if file.patch_twin.hunks.is_empty()
+        && file
+            .patch_twin
+            .stray_text
+            .as_ref()
+            .is_some_and(|hunks| !hunks.is_empty())
+    {
+        let mut text = file.clone();
+        text.patch_twin.hunks = text.patch_twin.stray_text.take().unwrap_or_default();
+        text.patch_twin.binary_body.clear();
+        text.patch_twin
+            .metadata
+            .retain(|meta| !deep_diff_forge_core::is_binary_marker(meta));
+        return file_evidence_marked(&text, Share::Own);
+    }
     let hunks = &file.patch_twin.hunks;
     let mut out: Vec<Evidence> = Vec::new();
     for (hunk, hits) in hunks.iter().zip(hunk_hits(file, share)) {
@@ -1252,6 +1375,12 @@ pub(crate) fn file_evidence_marked(file: &ReviewFile, share: Share) -> (Vec<Evid
                 line: hit.number,
                 test_likely: hit.signal == S::PanicPathAdded && hit.side == Side::New && hit.likely,
                 released: hit.released,
+                read_now: hit.read_now,
+                panic_forms: if hit.signal == S::PanicPathAdded {
+                    PanicForms::of(hit.forms)
+                } else {
+                    PanicForms::None
+                },
             });
         }
     }
@@ -1311,6 +1440,8 @@ fn hits_of_items(hunk: &PatchHunk, items: &[Item]) -> Vec<Hit> {
                 likely: false,
                 from_code: false,
                 released,
+                read_now: false,
+                forms: rust_tokens::BY_CALL,
             });
         }
     }
@@ -1897,6 +2028,18 @@ fn hinted_joins(
 /// ([`FileKind::readings`]): for each hunk, in line order and then the order of
 /// [`EvidenceSignal::ALL`], an item once however many kinds, texts and readings find it.
 fn file_found(file: &ReviewFile, joined: &[Text], only: Option<usize>) -> Vec<Vec<Hit>> {
+    let mut found = file_found_of_kinds(file, joined, only);
+    // an inner `#![cfg(…)]` taken to be its file's skips tests only in a file of tests (F2a)
+    if !crate::risk::is_test(&file.path) {
+        for hits in &mut found {
+            hits.retain(|hit| hit.signal != S::TestSkipped || hit.forms != rust_tokens::IN_A_FILE);
+        }
+    }
+    found
+}
+
+/// [`file_found`] before a file's own path is applied.
+fn file_found_of_kinds(file: &ReviewFile, joined: &[Text], only: Option<usize>) -> Vec<Vec<Hit>> {
     let mut found: Vec<Vec<Hit>> = Vec::new();
     for (place, kind) in FileKind::readings(file).iter().enumerate() {
         let rules: Vec<&Rule> = RULES.iter().filter(|r| kind.admits(r.scope)).collect();
@@ -1938,6 +2081,13 @@ fn texts_found(
     let hunks = &file.patch_twin.hunks;
     let language = kind.language;
     let legacy = kind.legacy_rules();
+    // The signals that release had a rule for in a file of this kind (it had none for Cargo's
+    // files, read since 0.11.0: F2b).
+    let had = |signal: EvidenceSignal| {
+        RELEASED_RULES
+            .iter()
+            .any(|r| r.signal == signal && kind.admits(r.scope))
+    };
     let mut found: Vec<Vec<Hit>> = vec![Vec::new(); hunks.len()];
     let mut read = |text: &[usize], top: bool| {
         let mut lines: Vec<&PatchLine> = Vec::new();
@@ -1961,7 +2111,10 @@ fn texts_found(
             while let Some(hit) = hits.next_if(|hit| hit.at < end) {
                 own.push(Hit {
                     at: hit.at - start,
-                    released: as_released && hit.from_code && hit.signal.in_release_0_8_3(),
+                    released: as_released
+                        && hit.from_code
+                        && hit.signal.in_release_0_8_3()
+                        && had(hit.signal),
                     ..hit
                 });
             }
@@ -1989,6 +2142,30 @@ fn texts_found(
         }
     }
     found
+}
+
+/// The view a rule reads, with the listed floor exceptions to "nothing scores lower than 0.8.3"
+/// (owner decision OD-E, 2026-11-23; T-08): the Rust rule of `check_suppressed` reads the code in
+/// every reading, its released rows too, so `#[allow(` in a comment or a string, which switches
+/// nothing off, is no suppression. The other exception is in [`tokens_hit`].
+fn floor_view(rule: &Rule) -> View {
+    if rule.signal == S::CheckSuppressed && rule.scope == Scope::Languages(RUST) {
+        View::Code
+    } else {
+        rule.view
+    }
+}
+
+/// Whether `text` holds one of a rule's `tokens`, with the second listed floor exception (OD-E):
+/// `r#unsafe` is an identifier named `unsafe`, not the keyword, so `unsafe_added` reads the text
+/// with each such name blanked ([`without_raw_prefixes`], which the views of this version are
+/// read through already; the readings of 0.8.3 and 0.8.4 have their own views).
+fn tokens_hit(rule: &Rule, text: &str, tokens: &[&str]) -> bool {
+    let unraw = (rule.signal == S::UnsafeAdded)
+        .then(|| without_raw_prefixes(text))
+        .flatten();
+    let text = unraw.as_deref().unwrap_or(text);
+    tokens.iter().any(|t| token_in(text, t))
 }
 
 /// What release 0.8.3 found in `hunk` of a Rust file, `legacy` being the rules of that release
@@ -2062,16 +2239,20 @@ fn legacy_hits(hunk: &PatchHunk, rules: &[&Rule], views: &Views) -> Vec<Hit> {
         };
         let Some(number) = number else { continue };
         let hits = |rule: &Rule| {
-            let text = match rule.view {
+            let text = match floor_view(rule) {
                 View::Raw => line.text.as_str(),
                 View::Code => view.unwrap_or(line.text.as_str()),
             };
             match rule.matches {
-                Match::Tokens(tokens) => tokens.iter().any(|t| token_in(text, t)),
+                Match::Tokens(tokens) => tokens_hit(rule, text, tokens),
                 Match::AnyCode => !text.trim().is_empty(),
                 Match::Secret => looks_like_secret(text),
                 // The release had no other kind of rule for Rust.
-                Match::Imports(_) | Match::EmptyHandler | Match::Spaced { .. } => false,
+                Match::Imports(_)
+                | Match::EmptyHandler
+                | Match::Spaced { .. }
+                | Match::LintOff
+                | Match::Builds => false,
             }
         };
         for signal in EvidenceSignal::ALL {
@@ -2089,6 +2270,8 @@ fn legacy_hits(hunk: &PatchHunk, rules: &[&Rule], views: &Views) -> Vec<Hit> {
                     likely: false,
                     from_code: false,
                     released: true,
+                    read_now: false,
+                    forms: rust_tokens::BY_CALL,
                 });
             }
         }
@@ -2308,6 +2491,10 @@ fn quote_hash_records(texts: &[&str]) -> Vec<usize> {
 /// One item one reading of a text found: on the line at `at` of the text (in what
 /// [`texts_found`] gives, of its hunk).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "four marks of one hit, each read alone"
+)]
 pub(crate) struct Hit {
     at: usize,
     side: Side,
@@ -2322,6 +2509,12 @@ pub(crate) struct Hit {
     /// Release 0.8.3 reported it ([`Evidence::released`]). No reading sets it but that
     /// release's own: [`texts_found`] does.
     released: bool,
+    /// [`Evidence::read_now`]: true where `text_hits` makes it, false where the readings kept
+    /// for the floor make theirs (`legacy_hits`, `hits_of_items`); [`unite`] ORs it.
+    read_now: bool,
+    /// The forms of a panic path ([`rust_tokens::Item::forms`]): a rule of a table reads only
+    /// calls; [`unite`] ORs it.
+    forms: u8,
 }
 
 /// Every signal found on a changed line of the text `lines` (`top`: Git must put its first
@@ -2496,6 +2689,8 @@ fn unite(one: &[Hit], other: &[Hit]) -> Vec<Hit> {
                 },
                 from_code: x.from_code || y.from_code,
                 released: x.released || y.released,
+                read_now: x.read_now || y.read_now,
+                forms: x.forms | y.forms,
                 ..*x
             }),
         };
@@ -2593,7 +2788,7 @@ fn view_matches(
                 View::Code => view.unwrap_or(line.text.as_str()),
             };
             match rule.matches {
-                Match::Tokens(tokens) => tokens.iter().any(|t| token_in(text, t)),
+                Match::Tokens(tokens) => tokens_hit(rule, text, tokens),
                 Match::AnyCode => !text.trim().is_empty(),
                 Match::Secret => looks_like_secret(text),
                 Match::Imports(modules) => imports_module(text, &line.text, modules),
@@ -2601,6 +2796,8 @@ fn view_matches(
                     language.is_some_and(|l| empty_handler(l, text, next_on(side, at)))
                 }
                 Match::Spaced { heads, tails } => spaced(text, heads, tails),
+                Match::LintOff => lint_off(text),
+                Match::Builds => builds(text),
             }
         };
         for signal in EvidenceSignal::ALL {
@@ -2612,6 +2809,7 @@ fn view_matches(
                 .map(|r| r.matches.basis())
                 .max();
             let mut likely = false;
+            let mut forms = u8::from(basis.is_some()) * rust_tokens::BY_CALL;
             // The reader's items are in the order this loop goes in: by line, then by signal.
             while read
                 .get(*read_to)
@@ -2624,6 +2822,7 @@ fn view_matches(
             {
                 basis = basis.max(Some(item.basis));
                 likely = item.test_likely && side == Side::New;
+                forms |= item.forms;
             }
             if let Some(basis) = basis {
                 found.push(Hit {
@@ -2635,6 +2834,8 @@ fn view_matches(
                     likely,
                     from_code,
                     released: false,
+                    read_now: true,
+                    forms,
                 });
             }
         }
@@ -2669,12 +2870,59 @@ fn without_raw_prefixes(text: &str) -> Option<String> {
             .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_' || !b.is_ascii());
         if starts && names {
             let out = out.get_or_insert_with(|| bytes.to_vec());
-            out[at] = b' ';
-            out[at + 1] = b' ';
+            // `r#unsafe` is the identifier `unsafe`, never the keyword: blanked whole (a listed
+            // floor exception, [`tokens_hit`])
+            let name = if text[at + 2..].starts_with("unsafe") {
+                8
+            } else {
+                2
+            };
+            out[at..at + name].fill(b' ');
         }
     }
     // Only two ASCII bytes were replaced by two ASCII bytes: still UTF-8.
     out.and_then(|bytes| String::from_utf8(bytes).ok())
+}
+
+/// Whether `line`, a line of a Cargo file, switches a lint off (F2b): a key whose value is the
+/// string `allow` (`dead_code = "allow"`, `'allow'`, the `level` of an inline table in a
+/// `[lints]` table), or a string of flags for the compiler (one that starts with `-`, as in
+/// `rustflags`) holding `-A` or `-A<lint>`, `--allow` or `--allow=<lint>`, `--cap-lints=allow`,
+/// or `--cap-lints` followed by `allow`, also in the next string of the line.
+fn lint_off(line: &str) -> bool {
+    let mut cap = false;
+    toml_strings(line, |held, value| {
+        if value && held == "allow" {
+            return true;
+        }
+        let flags = held.trim_start().starts_with('-');
+        held.split_ascii_whitespace().any(|arg| {
+            let off = (cap && arg == "allow")
+                || (flags
+                    && (arg.starts_with("-A")
+                        || arg == "--allow"
+                        || arg.starts_with("--allow=")
+                        || arg == "--cap-lints=allow"));
+            cap = flags && arg == "--cap-lints";
+            off
+        })
+    })
+}
+
+/// Whether `line`, a line of Cargo's manifest, declares code that runs at build time (F2b): a
+/// build script (`build = "…"`, `build = true`) or a procedural macro (`proc-macro = true`,
+/// `proc_macro = true`), as a key of its own or the last part of a dotted key.
+fn builds(line: &str) -> bool {
+    let Some((key, value)) = line.split_once('=') else {
+        return false;
+    };
+    let key = key.trim().trim_matches(['"', '\'']);
+    let value = value.trim_start();
+    match key.rsplit('.').next() {
+        Some("build") => value.starts_with(['"', '\'']) || value.starts_with("true"),
+        Some("proc-macro" | "proc_macro") => value.starts_with("true"),
+        _ => false,
+    }
 }
 
 /// Whether `text` holds one of `heads`, whole and with no [`is_boundary_blocker`] byte before
@@ -3625,12 +3873,12 @@ impl Asking<'_> {
     fn hits_in(&self, rule: &Rule, text: &str) -> bool {
         self.work.rules.set(self.work.rules.get() + 1);
         match rule.matches {
-            Match::Tokens(tokens) => tokens.iter().any(|t| token_in(text, t)),
+            Match::Tokens(tokens) => tokens_hit(rule, text, tokens),
             Match::AnyCode => !text.trim().is_empty(),
             Match::Secret => looks_like_secret(text),
             Match::Imports(modules) => imports_module(text, self.raw, modules),
             // Releases 0.8.3 and 0.8.4 had no rule of these kinds ([`RELEASED_RULES`]).
-            Match::EmptyHandler | Match::Spaced { .. } => false,
+            Match::EmptyHandler | Match::Spaced { .. } | Match::LintOff | Match::Builds => false,
         }
     }
 
@@ -3645,12 +3893,14 @@ impl Asking<'_> {
     fn first(&self, view: Option<&str>) -> u16 {
         let mut bits = 0u16;
         for (at, signal) in EvidenceSignal::ALL.into_iter().enumerate() {
-            let hit = self.of_signal(signal).any(|rule| match (rule.view, view) {
-                (View::Code, Some(view)) => self.hits_in(rule, view),
-                // A rule that reads the line as it is; and a rule that reads code where
-                // there is no language to read it in (`Scope::Any` code rules).
-                (View::Raw, _) | (View::Code, None) => self.hits_in(rule, self.raw),
-            });
+            let hit = self
+                .of_signal(signal)
+                .any(|rule| match (floor_view(rule), view) {
+                    (View::Code, Some(view)) => self.hits_in(rule, view),
+                    // A rule that reads the line as it is; and a rule that reads code where
+                    // there is no language to read it in (`Scope::Any` code rules).
+                    (View::Raw, _) | (View::Code, None) => self.hits_in(rule, self.raw),
+                });
             bits |= u16::from(hit) << at;
         }
         bits
@@ -3953,6 +4203,7 @@ mod tests {
             Scope::CiWorkflow => ".github/workflows/ci.yml",
             Scope::BuildScript => "build.rs",
             Scope::PackageJson => "package.json",
+            Scope::CargoFile | Scope::CargoManifest => "Cargo.toml",
         }
     }
 
@@ -4064,6 +4315,8 @@ mod tests {
                     test_likely: false,
                     // release 0.8.3 reported both
                     released: true,
+                    read_now: true,
+                    panic_forms: PanicForms::None,
                 },
                 Evidence {
                     signal: S::ProcessSpawn,
@@ -4075,6 +4328,8 @@ mod tests {
                     test_likely: false,
                     // release 0.8.3 reported both
                     released: true,
+                    read_now: true,
+                    panic_forms: PanicForms::None,
                 },
             ]
         );
@@ -4910,6 +5165,26 @@ mod tests {
         assert!(found > 1_000, "{found} empty handlers");
     }
 
+    /// The triggers of the long-line test for the readings of Cargo's files (F2b).
+    fn cargo_triggers(matches: Match) -> Vec<String> {
+        let triggers: &[&str] = if matches == Match::Builds {
+            &["build = \"b.rs\"", "proc-macro = true", "build=", "x.build"]
+        } else {
+            &[
+                "x = \"allow\"",
+                "x = 'allow'",
+                "x = { level = \"allow\" }",
+                "[\"-A\", \"x\"]",
+                "\"-Awarnings\"",
+                "\"--cap-lints\", \"allow\"",
+                "\"\\u0061",
+                "\"\"\"",
+                "\'\'\'",
+            ]
+        };
+        triggers.iter().map(|t| (*t).to_owned()).collect()
+    }
+
     /// The lines of the long-line test: every trigger the readers know, in the path of each
     /// language its table names (2026-11-18, the rule of the class "cost quadratic in the length
     /// of one line": no check walks from a match to the end of its line more than once for a
@@ -4981,6 +5256,7 @@ mod tests {
                 .map(str::to_owned)
                 .to_vec(),
                 Match::AnyCode => Vec::new(),
+                Match::LintOff | Match::Builds => cargo_triggers(rule.matches),
             };
             for path in &paths {
                 for trigger in &triggers {
@@ -5660,6 +5936,12 @@ mod tests {
                     line,
                     test_likely: false,
                     released,
+                    read_now: false,
+                    panic_forms: if signal == S::PanicPathAdded {
+                        PanicForms::Call
+                    } else {
+                        PanicForms::None
+                    },
                 });
             }
         }
@@ -7961,13 +8243,75 @@ mod tests {
             signals(&added("src/x.rs", &["#[allow(dead_code)]"])),
             [S::CheckSuppressed]
         );
-        assert_eq!(
-            signals(&added(
-                "src/x.rs",
-                &["#[expect(dead_code, reason = \"r\")]"]
-            )),
-            []
+        // since 0.11.0 (F2b) an expectation is a suppression, with a reason as without, as an
+        // allowance with a reason is
+        for line in [
+            "#[expect(dead_code, reason = \"r\")]",
+            "#[allow(dead_code, reason = \"r\")]",
+        ] {
+            assert_eq!(signals(&added("src/x.rs", &[line])), [S::CheckSuppressed]);
+        }
+    }
+
+    /// A conditional allowance through a raw identifier (`r#allow`, `r#cfg_attr`) is the
+    /// attribute it names (the views read a raw identifier as the identifier it is).
+    #[test]
+    fn a_conditional_allow_through_a_raw_identifier_is_a_suppression() {
+        for line in [
+            "#[cfg_attr(test, r#allow(dead_code))]",
+            "#[r#cfg_attr(test, r#expect(dead_code))]",
+        ] {
+            assert_eq!(
+                signals(&added("src/x.rs", &[line])),
+                [S::CheckSuppressed],
+                "{line}"
+            );
+        }
+    }
+
+    /// `#[expect(..)]` and `#![expect(..)]` switch a lint off as `allow` does, whatever the
+    /// spacing, through a raw identifier, inside a macro's body, with or without a reason; a
+    /// method `expect`, an attribute named otherwise, one in a comment or with no list are not.
+    #[test]
+    fn an_expectation_is_a_suppression() {
+        let suppressed = [
+            "#[expect(dead_code)]",
+            "#![expect(clippy::all)]",
+            "# [ expect ( unused ) ]",
+            "#! [expect(unused)]",
+            "#[r#expect(dead_code)]",
+            "#[expect(unused, reason = \"kept for the next release\")]",
+            "macro_rules! m { () => { #[expect(dead_code)] fn f() {} } }",
+            "#[expect(",
+        ];
+        for line in suppressed {
+            let file = added("src/x.rs", &[line]);
+            let lines: Vec<u32> = file_evidence(&file)
+                .iter()
+                .filter(|e| e.signal == S::CheckSuppressed)
+                .map(|e| e.line)
+                .collect();
+            assert_eq!(lines, [2], "check_suppressed not on line 2 for {line:?}");
+        }
+        // over two lines, which the reader of tokens reads (the spaced row reads one line)
+        let file = added("src/x.rs", &["#[", "expect(dead_code)]"]);
+        assert!(
+            signals(&file).contains(&S::CheckSuppressed),
+            "`#[` and `expect(dead_code)]` over two lines is no suppression"
         );
+        for line in [
+            "let v = x.expect(\"present\");",
+            "#[should_panic(expected = \"x\")]",
+            "// #[expect(dead_code)]",
+            "#[expect]",
+            "#[expected(x)]",
+        ] {
+            let file = added("src/x.rs", &[line]);
+            assert!(
+                !signals(&file).contains(&S::CheckSuppressed),
+                "{line:?} is not a suppression"
+            );
+        }
     }
 
     #[test]
@@ -9191,6 +9535,27 @@ mod tests {
         );
     }
 
+    /// The arguments of `nested_ignore_passed_functions_and_spaced_allow` that apply `allow(…)`
+    /// after a condition, in a whole attribute: since 0.11.0 (F2b) each is a suppression as well.
+    const CONDITIONAL_ALLOWANCES: [&str; 6] = [
+        "all(a, b), allow(x), ignore)]",
+        "ignore, allow(x))]",
+        "miri, allow(ignore))]",
+        "a, allow(x), cfg_attr(b, inline, ignore))]",
+        "all(), cfg_attr(ignore, allow(x)))]",
+        "cfg_attr(a, ignore), allow(x))]",
+    ];
+
+    /// What `#[cfg_attr(` and `arguments` on line 2 give: a suppression for the conditional
+    /// allowances, a skip where `skips`.
+    fn conditional_items(arguments: &str, skips: bool) -> Vec<Item> {
+        let suppresses = CONDITIONAL_ALLOWANCES.contains(&arguments);
+        [(suppresses, S::CheckSuppressed), (skips, S::TestSkipped)]
+            .into_iter()
+            .filter_map(|(on, signal)| on.then_some((signal, Basis::Lexical, 2)))
+            .collect()
+    }
+
     /// Independent review, IR-L-2 and IR-L-3: an `ignore` that belongs to another attribute is
     /// no skipped test; a function passed by name is a panic path; and `allow` is read
     /// whatever its spacing. (The arguments of a `cfg_attr`, case by case, are in the token
@@ -9249,11 +9614,7 @@ mod tests {
             ("miri, ignore)] fn a() {}", true),
             ("miri)] fn a() {}", false),
         ] {
-            let expected: &[(EvidenceSignal, Basis, u32)] = if skips {
-                &[(S::TestSkipped, Basis::Lexical, 2)]
-            } else {
-                &[]
-            };
+            let expected = conditional_items(arguments, skips);
             let line = format!("+#[cfg_attr({arguments}");
             assert_eq!(found(&hunk_of("tests/a.rs", &[&line])), expected, "{line}");
         }
@@ -9305,6 +9666,207 @@ mod tests {
                 [S::CheckSuppressed],
                 "{line}"
             );
+        }
+    }
+
+    /// One widened form of the reader of tokens (F2a) in places that mislead a lexer (ruling 5,
+    /// N89): each `(lines, signals)` read from a hunk of `src/w.rs`.
+    fn misled(cases: &[(&[&str], &[EvidenceSignal])]) {
+        for (lines, signals) in cases {
+            let read: Vec<EvidenceSignal> = found(&hunk_of("src/w.rs", lines))
+                .iter()
+                .map(|item| item.0)
+                .collect();
+            assert_eq!(read, *signals, "{lines:?}");
+        }
+    }
+
+    /// F2a, ruling 5 (N89): each widened form of the reader of tokens, in the places that mislead
+    /// a lexer. In a comment, a doc comment's code block, a string or a raw string over lines it
+    /// is no code and no item (a doc test's assertion is a stated limit); after a quote
+    /// character literal or a lifetime, inside a macro's body, split over lines, behind a path
+    /// or written as a raw identifier it is read. A name bound by `use … as` is not the word.
+
+    #[test]
+    fn an_assertion_that_cannot_fail_is_read_where_a_lexer_could_be_misled() {
+        misled(&[
+            (&["+// assert_eq!(x, x);"], &[]),
+            (&["+/// assert_eq!(x, x);"], &[]),
+            (&["+/** assert_eq!(x, x); */"], &[]),
+            (&["+/* /* */ assert_eq!(x, x); */"], &[]),
+            (&["+let s = \"assert_eq!(x, x);\";"], &[]),
+            (&["+let s = r#\"", "+assert_eq!(x, x);", "+\"#;"], &[]),
+            (&["+let s = \"\\\"assert_eq!(x, x);\";"], &[]),
+            (&["+/* */ assert_eq!(x, x);"], &[S::TrivialAssert]),
+            (&["+let q = '\"'; assert_eq!(x, x);"], &[S::TrivialAssert]),
+            (&["+let q = '\\''; assert_ne!(1, 2);"], &[S::TrivialAssert]),
+            (
+                &["+fn f<'a>(x: &'a u8) { assert_eq!(x, x); }"],
+                &[S::TrivialAssert],
+            ),
+            (
+                &["+macro_rules! m { () => { assert!(!false) } }"],
+                &[S::TrivialAssert],
+            ),
+            (
+                &["+assert_eq!(", "+    x,", "+    x", "+);"],
+                &[S::TrivialAssert],
+            ),
+            (&["+std::assert_eq!(x, x);"], &[S::TrivialAssert]),
+            (&["+core::assert_ne!(1, 2);"], &[S::TrivialAssert]),
+            (&["+::std::debug_assert!(1 == 1);"], &[S::TrivialAssert]),
+            (&["+r#assert_eq!(x, x);"], &[S::TrivialAssert]),
+            (&["+use std::assert_eq as same;", "+same!(x, x);"], &[]),
+        ]);
+    }
+
+    /// F2a.b: as `an_assertion_that_cannot_fail_is_read_where_a_lexer_could_be_misled`.
+
+    #[test]
+    fn a_dropped_result_is_read_where_a_lexer_could_be_misled() {
+        misled(&[
+            (&["+// let _ = std::fs::remove_file(p);"], &[]),
+            (&["+/// let _ = std::fs::remove_file(p);"], &[]),
+            (&["+let s = \"let _ = std::fs::remove_file(p);\";"], &[]),
+            (
+                &[
+                    "+let s = r#\"",
+                    "+let _ = std::fs::remove_file(p);",
+                    "+\"#;",
+                ],
+                &[],
+            ),
+            (
+                &["+let q = '\"'; let _ = std::fs::remove_file(p);"],
+                &[S::ErrorSwallowed],
+            ),
+            (
+                &["+fn f<'a>(p: &'a str) { let _ = std::fs::remove_file(p); }"],
+                &[S::ErrorSwallowed],
+            ),
+            (
+                &["+macro_rules! m { () => { let _ = std::fs::remove_file(p); } }"],
+                &[S::ErrorSwallowed],
+            ),
+            (
+                &["+let _ =", "+    std::fs::remove_file(p);"],
+                &[S::ErrorSwallowed],
+            ),
+            (
+                &["+let _ = ::std::fs::remove_file(p);"],
+                &[S::ErrorSwallowed],
+            ),
+            (&["+let r#_x = std::fs::remove_file(p);"], &[]),
+            (
+                &["+let _ = std::fs::r#remove_file(p);"],
+                &[S::ErrorSwallowed],
+            ),
+        ]);
+    }
+
+    /// F2a.c: as `an_assertion_that_cannot_fail_is_read_where_a_lexer_could_be_misled`.
+
+    #[test]
+    fn a_panic_macro_is_read_where_a_lexer_could_be_misled() {
+        misled(&[
+            (&["+// panic!(\"x\");"], &[]),
+            (&["+/// unreachable!();"], &[]),
+            (&["+let s = \"panic!(\\\"x\\\")\";"], &[]),
+            (&["+let s = r#\"", "+unreachable!();", "+\"#;"], &[]),
+            (&["+let q = '\"'; panic!(\"x\");"], &[S::PanicPathAdded]),
+            (
+                &["+fn f<'a>(x: &'a u8) { unreachable!() }"],
+                &[S::PanicPathAdded],
+            ),
+            (
+                &["+macro_rules! m { () => { panic!() } }"],
+                &[S::PanicPathAdded],
+            ),
+            (&["+panic", "+!(", "+\"x\")"], &[S::PanicPathAdded]),
+            (&["+std::panic!(\"x\");"], &[S::PanicPathAdded]),
+            (&["+core::unreachable!();"], &[S::PanicPathAdded]),
+            (&["+::core::panic!();"], &[S::PanicPathAdded]),
+            (&["+r#panic!(\"x\");"], &[S::PanicPathAdded]),
+            (&["+use std::panic as stop;", "+stop!(\"x\");"], &[]),
+        ]);
+    }
+
+    /// F2a.d: as `an_assertion_that_cannot_fail_is_read_where_a_lexer_could_be_misled`.
+
+    #[test]
+    fn a_test_compiled_out_is_read_where_a_lexer_could_be_misled() {
+        misled(&[
+            (&["+// #[cfg(any())]", "+#[test]"], &[]),
+            (&["+/// #[cfg(any())]", "+#[test]"], &[]),
+            (&["+let s = \"#[cfg(any())]\";", "+#[test]"], &[]),
+            (
+                &["+let q = '\"'; #[cfg(any())]", "+#[test]"],
+                &[S::TestSkipped],
+            ),
+            (
+                &["+#[cfg(not(test))] // '", "+#[test] fn f<'a>() {}"],
+                &[S::TestSkipped],
+            ),
+            (
+                &["+macro_rules! m { () => { #[cfg(any())] #[test] fn t() {} } }"],
+                &[S::TestSkipped],
+            ),
+            (
+                &["+#[cfg(", "+    any()", "+)]", "+#[test]"],
+                &[S::TestSkipped],
+            ),
+            (&["+#[cfg(any())]", "+#[::core::prelude::v1::test]"], &[]),
+            (&["+#[r#cfg(r#any())]", "+#[r#test]"], &[S::TestSkipped]),
+            (
+                &["+#[cfg(feature = \"a b\")]", "+#[test]"],
+                &[S::TestSkipped],
+            ),
+        ]);
+    }
+
+    /// Ruling 2 on F2a.d: an inner `#![cfg(…)]` that compiles out its file is a skipped test in a
+    /// file of tests by its path and nowhere else; a module of tests compiled out is one wherever
+    /// it stands; in a comment or a string neither is code.
+    #[test]
+    fn a_module_or_a_file_of_tests_compiled_out_is_read_where_a_lexer_could_be_misled() {
+        let read = |path: &str, lines: &[&str]| -> Vec<EvidenceSignal> {
+            found(&hunk_of(path, lines))
+                .iter()
+                .map(|item| item.0)
+                .collect()
+        };
+        let skip: &[EvidenceSignal] = &[S::TestSkipped];
+        let cases: &[(&str, &[&str], &[EvidenceSignal])] = &[
+            ("tests/it.rs", &["+#![cfg(any())]"], skip),
+            (
+                "crates/x/tests/it.rs",
+                &["+#![cfg(feature = \"never\")]"],
+                skip,
+            ),
+            ("src/lib.rs", &["+#![cfg(any())]"], &[]),
+            (
+                "src/lib.rs",
+                &["-#[cfg(test)]", "+#[cfg(any())]", " mod tests {"],
+                skip,
+            ),
+            ("src/lib.rs", &["+#[cfg(any())]", " mod parser {"], &[]),
+            ("src/lib.rs", &[" mod tests {", "+    #![cfg(any())]"], skip),
+            ("tests/it.rs", &["+// #![cfg(any())]"], &[]),
+            ("tests/it.rs", &["+let s = \"#![cfg(any())]\";"], &[]),
+            (
+                "src/lib.rs",
+                &["+let q = '\"'; #[cfg(any())]", " mod tests {"],
+                skip,
+            ),
+            (
+                "src/lib.rs",
+                &["+#[cfg(", "+    any()", "+)]", " mod tests {"],
+                skip,
+            ),
+            ("tests/it.rs", &["+#![r#cfg(r#any())]"], skip),
+        ];
+        for (path, lines, signals) in cases {
+            assert_eq!(read(path, lines), *signals, "{path} {lines:?}");
         }
     }
 
@@ -9638,18 +10200,22 @@ mod tests {
             )),
             [(S::TestSkipped, Basis::Lexical, 2)]
         );
-        for line in [
-            "+#[cfg_attr(all(), cfg_attr(ignore, allow(x)))]",
-            "+#[cfg_attr(all(), serde(cfg_attr(all(), ignore)))]",
+        // since 0.11.0 (F2b) the allowance a nested `cfg_attr` applies is a suppression
+        for (line, expected) in [
+            (
+                "+#[cfg_attr(all(), cfg_attr(ignore, allow(x)))]",
+                &[(S::CheckSuppressed, Basis::Lexical, 2)][..],
+            ),
+            ("+#[cfg_attr(all(), serde(cfg_attr(all(), ignore)))]", &[]),
         ] {
             assert_eq!(
                 found(&hunk_of("tests/a.rs", &[line, "+struct A;"])),
-                [],
+                expected,
                 "{line}"
             );
             assert_eq!(
                 found(&hunk_of("tests/a.rs", &[&format!("{line} // {pad}")])),
-                [],
+                expected,
                 "{line}"
             );
         }
@@ -10818,7 +11384,7 @@ mod tests {
             "retodo ! ();",
             "x.unwrap_or ();",
             "unwrap ();",
-            "#[cfg_attr(miri, allow(ignore_me))]",
+            "#[cfg_attr(miri, doc(ignore_me))]",
             "ass ert!(true)",
             "assert!(tru",
             "assert_ne!(true, true)",
@@ -11204,6 +11770,8 @@ mod tests {
             likely,
             from_code,
             released: false,
+            read_now: from_code,
+            forms: 0,
         };
         let key = |hits: &[Hit]| -> Vec<(usize, S, Basis, bool)> {
             hits.iter()
@@ -13737,5 +14305,241 @@ mod tests {
         });
         // A debug build takes a few tenths of a second; the search of every run took minutes.
         assert!(spent < COST_BOUND, "{spent:?}");
+    }
+
+    /// The frozen reading of release 0.8.4 makes its hits not read now, and a union is read now
+    /// when either reading is ([`Evidence::read_now`]). No patch of the comparison corpus has an
+    /// item that reading alone finds, so the reader is held where it makes its hits.
+    #[test]
+    fn an_item_only_the_0_8_4_reading_finds_reads_floor_only() {
+        let file = parse("--- a/x.py\n+++ b/x.py\n@@ -1,1 +1,2 @@\n a\n+b\n").unwrap();
+        let floor = hits_of_items(
+            &file[0].patch_twin.hunks[0],
+            &[(Side::New, S::ProcessSpawn, 2, false)],
+        );
+        assert_eq!(floor.len(), 1);
+        assert!(!floor[0].read_now, "the 0.8.4 reading's hit reads now");
+        assert!(
+            !unite(&floor, &[])[0].read_now,
+            "a union of floor hits reads now"
+        );
+        let now = Hit {
+            read_now: true,
+            ..floor[0]
+        };
+        for united in [unite(&floor, &[now]), unite(&[now], &floor)] {
+            assert_eq!(united.len(), 1);
+            assert!(
+                united[0].read_now,
+                "a union with a current hit does not read now"
+            );
+        }
+    }
+
+    /// The listed floor exception of OD-E (T-08): `#[allow(` in a Rust comment or string
+    /// switches nothing off, so no reading reports it, the readings of releases 0.8.3 and 0.8.4
+    /// included; the attribute in code still is a suppression, in every reading.
+    #[test]
+    fn a_rust_allow_in_a_comment_or_a_string_is_no_suppression() {
+        let lines = [
+            "// see #[allow(dead_code)] note",
+            "let s = \"#[allow(unused)]\";",
+            "/* #![allow(clippy::all)] */",
+            "let r = r#\"#[allow(x)]\"#;",
+            "#[allow(dead_code)]",
+        ];
+        for top in [false, true] {
+            let file = if top {
+                let mut text = String::from("--- /dev/null\n+++ b/src/x.rs\n@@ -0,0 +1,5 @@\n");
+                for line in lines {
+                    let _ = writeln!(text, "+{line}");
+                }
+                parse(&text).unwrap().remove(0)
+            } else {
+                added("src/x.rs", &lines)
+            };
+            let at: Vec<u32> = file_evidence(&file)
+                .iter()
+                .filter(|e| e.signal == S::CheckSuppressed)
+                .map(|e| e.line)
+                .collect();
+            let code = if top { 5 } else { 6 };
+            assert_eq!(at, [code], "check_suppressed lines (created file: {top})");
+            let kinds = FileKinds::of(&file);
+            assert_eq!(hunk_signals(&file, 0), Some(vec![S::CheckSuppressed]));
+            assert_eq!(
+                hunk_signals_alone(&file, 0, &kinds),
+                Some(vec![S::CheckSuppressed])
+            );
+            let kind = FileKind::readings(&file).remove(0);
+            let hunk = &file.patch_twin.hunks[0];
+            let legacy: Vec<u32> = legacy_hits(hunk, &kind.legacy_rules(), &legacy_views(hunk))
+                .iter()
+                .map(|hit| hit.number)
+                .collect();
+            assert_eq!(legacy, [code], "the reading of 0.8.3 (created file: {top})");
+        }
+    }
+
+    /// The second listed floor exception of OD-E: `r#unsafe` is an identifier named `unsafe`,
+    /// not the keyword, in every reading; the keyword beside it, or `r#` that starts no
+    /// identifier, is still unsafe code.
+    #[test]
+    fn a_raw_identifier_named_unsafe_is_not_unsafe_code() {
+        for line in [
+            "let r#unsafe = 1;",
+            "f(r#unsafe);",
+            "x.r#unsafe()",
+            "let r#unsafe_x = 2;",
+        ] {
+            assert_eq!(signals(&added("src/x.rs", &[line])), [], "{line}");
+        }
+        for line in [
+            "unsafe { f() }",
+            "let r#unsafe = 1; unsafe { f() }",
+            "bar#unsafe { f() }",
+        ] {
+            assert_eq!(
+                signals(&added("src/x.rs", &[line])),
+                [S::UnsafeAdded],
+                "{line}"
+            );
+        }
+    }
+
+    /// Cargo's `[lints]` tables and the compiler flags of its configuration switch lints off
+    /// (F2b): a key whose value is the string `allow`, in every quoting TOML has, and `-A`,
+    /// `--allow`, `--cap-lints allow` in a string of flags, also on a line of an array over
+    /// lines. Not: another level, a comment, a key named `allow`, a string that does not close,
+    /// a near spelling, the same text in a file that is not Cargo's.
+    #[test]
+    fn a_lint_allowed_in_cargo_is_a_suppression_in_every_quoting() {
+        let on = |path: &str, line: &str| -> Vec<u32> {
+            file_evidence(&added(path, &[line]))
+                .iter()
+                .filter(|e| e.signal == S::CheckSuppressed)
+                .map(|e| e.line)
+                .collect()
+        };
+        for line in [
+            r#"dead_code = "allow""#,
+            "dead_code = 'allow'",
+            r#"dead_code = """allow""""#,
+            "dead_code = '''allow'''",
+            r#"dead_code = "allow""#,
+            r#"dead_code = "allow""#,
+            r#""dead_code" = "allow""#,
+            r#"lints.rust.dead_code = "allow""#,
+            r#"all = { level = "allow", priority = -1 }"#,
+            "all = {level='allow'}",
+            r#"dead_code = "allow" # until the next release"#,
+            r#"rustflags = ["-A", "dead_code"]"#,
+            r#"rustflags = ["-Awarnings"]"#,
+            r#"rustflags = "-C opt-level=2 -A warnings""#,
+            r#"rustflags = ["--allow=unused"]"#,
+            r#"rustflags = ["--allow", "unused"]"#,
+            r#"rustflags = ["--cap-lints=allow"]"#,
+            r#"rustflags = ["--cap-lints", "allow"]"#,
+            "rustflags = ['--cap-lints allow']",
+            r#"    "-Awarnings","#,
+        ] {
+            for path in [
+                "Cargo.toml",
+                "crates/x/Cargo.toml",
+                ".cargo/config.toml",
+                "ws/.cargo/config",
+            ] {
+                assert_eq!(on(path, line), [2], "{line} in {path}");
+            }
+        }
+        for line in [
+            r#"dead_code = "warn""#,
+            r#"dead_code = { level = "deny" }"#,
+            r#"# dead_code = "allow""#,
+            r#"x = "deny" # "allow""#,
+            "allow = true",
+            r#"allow = ["x"]"#,
+            r#"description = "use -A to allow""#,
+            r#"rustflags = ["-D", "warnings"]"#,
+            r#"rustflags = ["--cap-lints=warn"]"#,
+            r#"rustflags = ["--cap-lints", "warn"]"#,
+            r#"dead_code = """"#,
+            r#"dead_code = "allow"#,
+            r#"dead_code = "\q" b = "allow""#,
+            r#"dead_code = "allowed""#,
+            r#"dead_code = "Allow""#,
+        ] {
+            assert_eq!(on("Cargo.toml", line), [], "{line}");
+        }
+        for path in [
+            "pyproject.toml",
+            "config.toml",
+            "x/config.toml",
+            ".cargo/other.toml",
+            "Cargo.lock",
+            "src/x.rs",
+        ] {
+            assert_eq!(on(path, r#"dead_code = "allow""#), [], "{path}");
+        }
+    }
+
+    /// A TOML literal string `'allow'` and a basic one `"allow"` read the same (F2b).
+    #[test]
+    fn a_toml_literal_allow_and_a_basic_allow_read_the_same() {
+        let read = |line: &str| -> Vec<_> {
+            file_evidence(&added("Cargo.toml", &[line]))
+                .iter()
+                .map(|e| (e.signal, e.basis, e.line, e.released, e.read_now))
+                .collect()
+        };
+        let basic = read(r#"unsafe_code = "allow""#);
+        // no release before 0.11.0 read Cargo's files: the item is current and not released
+        assert_eq!(
+            basic,
+            [(S::CheckSuppressed, Basis::Lexical, 2, false, true)]
+        );
+        assert_eq!(read("unsafe_code = 'allow'"), basic);
+    }
+
+    /// A build script or a procedural macro declared in Cargo's manifest is a build hook (F2b),
+    /// beside `build.rs` itself (kept). Not: `build = false`, another key that holds the word,
+    /// a comment, the table header `[build]` of Cargo's configuration, another file.
+    #[test]
+    fn a_cargo_build_script_or_proc_macro_is_a_build_hook() {
+        let hooks = |path: &str, line: &str| -> Vec<u32> {
+            file_evidence(&added(path, &[line]))
+                .iter()
+                .filter(|e| e.signal == S::BuildHook)
+                .map(|e| e.line)
+                .collect()
+        };
+        for line in [
+            r#"build = "build.rs""#,
+            "build = 'tools/gen.rs'",
+            "build = true",
+            r#"  build   =   "b.rs""#,
+            r#"package.build = "b.rs""#,
+            r#""build" = "b.rs""#,
+            "proc-macro = true",
+            "proc_macro = true",
+            "lib.proc-macro = true",
+        ] {
+            assert_eq!(hooks("Cargo.toml", line), [2], "{line}");
+            assert_eq!(hooks("crates/m/Cargo.toml", line), [2], "{line}");
+        }
+        for line in [
+            "build = false",
+            "proc-macro = false",
+            r#"build-dependencies = "1""#,
+            r#"rebuild = "x""#,
+            r#"# build = "build.rs""#,
+            "[build]",
+            r#"build.rustflags = ["-Cx"]"#,
+        ] {
+            assert_eq!(hooks("Cargo.toml", line), [], "{line}");
+        }
+        assert_eq!(hooks(".cargo/config.toml", r#"build = "b.rs""#), []);
+        assert_eq!(hooks("pyproject.toml", r#"build = "b.rs""#), []);
+        assert_eq!(hooks("build.rs", "fn main() {}"), [2]);
     }
 }

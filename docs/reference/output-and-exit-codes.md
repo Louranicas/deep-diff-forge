@@ -11,6 +11,7 @@ empty.
 | `--stdin-patch --json`, `--git-* --json` | `deep-diff-forge.review.v0` |
 | `--stdin-patch --jsonl` | line events `{"event":"diff.file",…}` |
 | `--rank --json` · `--cluster --json` | `deep-diff-forge.rank.v0` · `deep-diff-forge.cluster.v0` |
+| `--diagnostics --json` (`--stdin-patch`, `--git-*`, `<old> <new>`) | `deep-diff-forge.diagnostics.v0` ([Diagnostics](diagnostics.md#diagnostics); `schema diagnostics` prints its JSON Schema) |
 | `--git-* --acquisition-json` | `deep-diff-forge.git-acquisition.v0` |
 | `--outline` · `--hunks`, `review.outline` · `review.hunks` · `review.change`, MCP `review_outline` · `review_hunks` · `review_change` | `deep-diff-forge.review-outline.v0` · `deep-diff-forge.review-hunks.v0` |
 | `semantic --json` · `structural --json` | `deep-diff-forge.semantic.v0` · `deep-diff-forge.structural.v0` |
@@ -19,11 +20,11 @@ empty.
 | `deploy status --json` · `deploy release --json` · `deploy doctor --json` | `deep-diff-forge.deployment-status.v0` · `deep-diff-forge.release.v0` · `deep-diff-forge.deploy-doctor.v0` |
 | MCP `review_patch` / `rank_patch` over 256 KiB | `deep-diff-forge.review-summary.v0` · `deep-diff-forge.rank-summary.v0` |
 | `envelope` | `ddf.result.v1` |
-| `agent setup --json` · `agent doctor --json` | `deep-diff-forge.agent-setup.v0` · `deep-diff-forge.agent-doctor.v0` |
+| `agent setup --json` · `agent doctor --json` · `agent check --json` · `agent verify-branch --json` | `deep-diff-forge.agent-setup.v0` · `deep-diff-forge.agent-doctor.v0` · `deep-diff-forge.agent-check.v0` · `deep-diff-forge.agent-verify-branch.v0` |
 | `findings verify`, `findings.verify`, MCP `verify_findings` | `deep-diff-forge.findings.v0` (input: one `deep-diff-forge.finding.v0` object per finding) |
 | `daemon metrics`, `daemon.metrics` | `deep-diff-forge.daemon-metrics.v0` (`--format prometheus`: Prometheus text 0.0.4) |
 | `bench --json` · `eval --json` | `deep-diff-forge.bench.v0` · `deep-diff-forge.eval.v0` (corpus: `deep-diff-forge.eval-manifest.v0`) |
-| `daemon`, `rpc` | JSON-RPC 2.0, protocol 2 |
+| `daemon`, `rpc` | JSON-RPC 2.0, protocol 3 |
 
 **Input sealing.** `review.v0`, `rank.v0`, `cluster.v0`, `semantic.v0` and
 `git-acquisition.v0` carry two members right after `schema`:
@@ -85,8 +86,12 @@ An empty list never means the text is safe. They also raise the file's rank
 the final newline, are the document's canonical form on every surface: the daemon's `diff.rank`
 (and so `rpc` and the Python SDK's `rank_patch`) answers with the document's value plus the member
 `canonical_json`, a string holding exactly those bytes, and MCP's `rank_patch` gives them as its
-text, with the value as `structuredContent`. Seal or compare the bytes, not a re-serialisation of
-the value. Before 0.10.0 the daemon, `rpc` and MCP gave only a compact form with sorted keys,
+text with one difference: each hidden character (a bidi control, an invisible character, a
+control character other than line feed and tab, a line separator) is written there as a `\u`
+escape ([MCP server](mcp-sdk-daemon.md#mcp-server), *Text*), so that text equals the bytes only
+when the document holds none, and always equals them in value; the value is also given as
+`structuredContent`. Seal or compare the bytes, not a re-serialisation of the value; on MCP,
+compare the value, or the bytes after reading the escapes back. Before 0.10.0 the daemon, `rpc` and MCP gave only a compact form with sorted keys,
 equal in value but not in bytes. `diff.plan` and `session.snapshot` still answer with the bare
 `ranked` array, unsealed; `cluster.v0`'s `ranked` list uses the same entries without
 `evidence`, `evidence_truncated` and `diff_suppressed`.
@@ -111,16 +116,17 @@ another), `mode_changed` (only the mode changed, such as the executable bit), `b
 | 3 | I/O or encoding failure: reading input (stdin, a file, Git, the learning store), non-UTF-8 input, or writing output. | `check_environment` |
 | 4 | Invalid input: a patch or analysis input that fails to parse or validate, `--stdin-patch` input in which Git finds no patch (`no_patch_in_input`), input over the byte budget, an invalid receipt, a named path that is not a regular file, or a refused Git acquisition or file pair. | `change_input` |
 | 6 | Daemon / interactive-terminal failure. | `check_environment` |
-| 7 | Input contract refused. `--require-files`: the (well-formed) patch describes 0 files — stderr `refused: 0 files in input (--require-files)`. `--require-hunks`: the patch has 0 hunks or 0 added+removed lines (header-only, rename-only, context-only) — stderr `refused: 0 hunks in input (--require-hunks)`. Gates should pass both. | `change_input` |
+| 7 | Input contract refused. A contract the caller asked for, or the check the command exists to make, did not hold; stderr names the reason class in one line `refused: <text> (<tag>)` (see [Refusal reasons (exit 7)](#refusal-reasons-exit-7)). Gates should pass both `--require-files` and `--require-hunks`. | `change_input` |
 | 101 | Internal error (a panic). Report it as a bug. | `report_bug` |
 
 On `--stdin-patch` the refusals come in this order: a parse error (4), then `--require-files` / `--require-hunks` (7), then input in which Git finds no patch (4, stderr `error: no_patch_in_input: …`, unless `--allow-empty`).
 
 A reader that closes stdout ends a command with exit 0 (`… | head`), except while a
-`--require-*` refusal is pending: each is decided before the output is written and exits 7
-with its reason on stderr even when the reader has gone or stdout cannot be written (since 0.10.0;
-[DDF-2026-010](../advisories/DDF-2026-010.md)). A diagnostic that cannot be written
-(`2>/dev/full`) leaves the exit code as it is; before 0.10.0 it exited 101. A daemon socket path of
+refusal is pending: every verdict refusal (`findings verify --require-findings` and
+`--require-all` since 0.10.0, [DDF-2026-010](../advisories/DDF-2026-010.md); `eval` and
+`agent doctor` since 0.11.0, [DDF-2026-011](../advisories/DDF-2026-011.md); `--rank --fail-on`, `agent check --require-pass` and `agent verify-branch` from their first release, 0.11.0) is decided before its document is written and exits 7 with its
+reason lines on stderr even when the reader has gone or stdout cannot be written (`>/dev/full`).
+A diagnostic that cannot be written (`2>/dev/full`) leaves the exit code as it is; before 0.10.0 it exited 101. A daemon socket path of
 108 bytes or more is a usage error (exit 2) of `daemon path` and `daemon start` since 0.10.0.
 
 The `council` subcommands use their own family ([review council](../REVIEW_COUNCIL.md)):
@@ -141,11 +147,47 @@ and the MCP tools report it as `action`, with `may_be_transient`, which is true 
 - `check_environment`: check what the message names (a file or stream, the terminal, the daemon);
   the same command can succeed once that is fixed.
 - `change_input`: change the input or the state the message names (a stale admission, an
-  existing artifact), or drop the contract that refused it; the same input is refused again.
-- `review_evidence`: read the evidence the council reported and decide; rerunning does not change it.
+  existing artifact); the same input is refused again.
+- `review_evidence`: read the reason and the evidence the message or the council reported; a
+  person decides what changes; rerunning does not change it.
 - `report_bug`: report the command and its input; do not retry blindly.
 
 Both tables come from one registry in the binary, and a test fails if this document drifts from it.
+
+### Refusal reasons (exit 7)
+
+Exit 7 of the engine family has one meaning, and every exit 7 names its reason class on stderr: for
+each reason that holds, one line `refused: <text> (<tag>)`, in the order of this table; the first
+is the primary reason. The text holds counts, flag names, label names and class names, never a
+path or other text of the input; other stderr lines may come before or after it. A class's **Next**
+refines exit 7's `change_input` for that class. `schema exit-codes` lists the classes as
+`refusals` beside `codes`; `explain 7 [--json]` and the MCP tools `explain_exit_code` (code 7) and
+`exit_code_registry` list the same. The list is new in 0.11.0 (0.10.0's `schema exit-codes` has
+`codes` only); **Since** is the release in which the refusal itself first shipped, and its
+reason line may be newer.
+
+| Class | Tag | Commands | Stdout | Next | Since | Reason line |
+| --- | --- | --- | --- | --- | --- | --- |
+| `require_files` | `--require-files` | `--stdin-patch`, `--git-*`, `<old> <new>`, `findings verify`; daemon `require_files` | `empty` | `change_input` | 0.3.0 | `refused: 0 files in input (--require-files)` |
+| `require_hunks` | `--require-hunks` | `--stdin-patch`, `--git-*`, `<old> <new>`, `findings verify`; daemon `require_hunks` | `empty` | `change_input` | 0.3.0 | `refused: 0 hunks in input (--require-hunks)` |
+| `require_findings` | `--require-findings` | `findings verify` | `document` | `review_evidence` | 0.8.0 | `refused: 0 findings in the findings file (--require-findings)` |
+| `require_all` | `--require-all` | `findings verify` | `document` | `review_evidence` | 0.5.0 | `refused: N of M findings were refused or over the limit (--require-all)` |
+| `eval_failed` | `eval` | `eval` | `document` | `review_evidence` | 0.5.0 | `refused: N cases failed (eval)` |
+| `chain_not_ready` | `agent doctor` | `agent doctor` | `document` | `check_environment` | 0.9.0 | `refused: N checks failed (agent doctor)` |
+| `fail_on_label` | `--fail-on` | `--rank` and `--diagnostics` of `--stdin-patch`, `--git-*`, `<old> <new>` | `document` | `review_evidence` | 0.11.0 | `refused: N files carry a label of LIST (--fail-on)` |
+| `fail_on_truncated` | `--fail-on evidence_truncated` | `--rank` and `--diagnostics` of `--stdin-patch`, `--git-*`, `<old> <new>` | `document` | `review_evidence` | 0.11.0 | `refused: the evidence of N files was cut at 32 rows (--fail-on evidence_truncated)` |
+| `require_pass_no_unit` | `--require-pass no_unit` | `agent check` | `document` | `review_evidence` | 0.11.0 | `refused: there is no unit to judge (--require-pass no_unit)` |
+| `require_pass_not_pass` | `--require-pass not_pass` | `agent check` | `document` | `review_evidence` | 0.11.0 | `refused: N of M units did not pass (--require-pass not_pass)` |
+| `branch_unverified` | `verify-branch` | `agent verify-branch` | `document` | `review_evidence` | 0.11.0 | `refused: N of M commits are not verified by the ledger (verify-branch)` |
+Input refusals (stdout `empty`) end the command before anything is written. Verdict refusals
+(stdout `document`) print the judged document first, then the reason. `--require-hunks` refuses a
+patch with 0 hunks or 0 added and removed lines (header-only, rename-only, context-only).
+`--fail-on` follows each of its reason lines with one line per file it names (at most 32, then
+`  and N more files`): two spaces, the path quoted with every control, bidi and invisible
+character escaped and a long path cut in the middle, `: `, what the reason found in that file
+(the selected labels it carries, or `evidence_truncated`). No such line can match the reason
+grammar, because it starts with two spaces. `LIST` is the `--fail-on` value as given; every
+token in it is a class or a label, checked before the input is read.
 
 ### Machine contract (`ddf.result.v1`)
 
@@ -153,6 +195,7 @@ Both tables come from one registry in the binary, and a test fails if this docum
 deep-diff-forge envelope -- --stdin-patch --json < change.patch   # one ddf.result.v1 object
 deep-diff-forge schema result        # JSON Schema (2020-12) of the envelope
 deep-diff-forge schema exit-codes    # the registry: family, code, name, meaning, action
+deep-diff-forge schema diagnostics   # JSON Schema (2020-12) of deep-diff-forge.diagnostics.v0
 deep-diff-forge explain 7 --family council
 ```
 

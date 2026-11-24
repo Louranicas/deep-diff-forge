@@ -18,6 +18,7 @@ const SETUP_ONLY: &[&str] = &["install host cargo-deny", "install cargo-audit"];
 const LOCAL_ONLY: &[&str] = &[
     "release-script self-test",
     "comparison corpus manifest",
+    "diagnostics contract",
     "contract matrix",
 ];
 

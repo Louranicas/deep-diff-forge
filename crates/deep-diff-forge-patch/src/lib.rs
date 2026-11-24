@@ -45,10 +45,10 @@ pub use git_raw::{
 };
 pub use guards::{InputGuards, has_reviewable_hunks};
 pub use judge_patch::{
-    CommitAndParent, HeadState, JudgePatch, JudgePatchError, NAMED_COMMITS_CAP, Named, RefTips,
-    Worktree, commit_patch, commits_beyond, dirty_submodules, file_at_commit, has_commits_beyond,
-    has_uncommitted_changes, head_contains, head_state, judge_patch, merge_base, named_commits,
-    ref_tips, staged_patch, worktrees,
+    CommitAndParent, HeadState, JudgePatch, JudgePatchError, NAMED_COMMITS_CAP, Named, Opens,
+    RefTips, Worktree, commit_patch, commits_beyond, dirty_submodules, file_at_commit,
+    has_commits_beyond, has_uncommitted_changes, head_contains, head_state, judge_patch,
+    judge_patch_probed, merge_base, named_commits, ref_tips, staged_patch, worktrees,
 };
 pub use parser::{ParseOptions, parse, parse_decoded, parse_with};
 pub use render::{old_path, render_unified};
@@ -431,6 +431,112 @@ impl std::fmt::Display for PatchParseError {
     }
 }
 
+impl PatchParseError {
+    /// The refusal as a surface that a model reads renders it (MCP, the daemon's
+    /// `diff.diagnostics`, the SDKs): what the engine found, at which line of the patch, and the
+    /// engine's own explanation, with no text of the input. [`Display`](std::fmt::Display) is
+    /// the command line's and the protocol-2 methods' released message and stays as it is: it
+    /// quotes the failing line. Here a variant that quotes a line gives the rule the line broke
+    /// instead, and the one variant whose message names a path ([`Self::PathInSeveralSections`])
+    /// shows it as the diagnostics text form shows a path: quoted, `\` and `"` escaped, every
+    /// control, bidi and invisible character escaped, and cut after [`ERROR_EXCERPT_BYTES`]
+    /// rendered bytes with the number of bytes left out. Every other variant's message holds
+    /// only numbers and the engine's fixed words, and reads as `Display` does.
+    #[must_use]
+    pub const fn without_input(&self) -> WithoutInput<'_> {
+        WithoutInput(self)
+    }
+}
+
+/// A [`PatchParseError`] rendered with no text of the input ([`PatchParseError::without_input`]).
+#[derive(Debug, Clone, Copy)]
+pub struct WithoutInput<'a>(&'a PatchParseError);
+
+impl std::fmt::Display for WithoutInput<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            PatchParseError::MalformedHunkHeader { line_number, .. } => write!(
+                f,
+                "malformed hunk header at line {line_number}: a line that begins with @@ is not a hunk header in Git's grammar (@@ -a[,b] +c[,d] @@, single spaces, digits only)"
+            ),
+            PatchParseError::BodyLineOutsideHunk { line_number, .. } => write!(
+                f,
+                "diff body line outside any hunk at line {line_number}: a line that begins with + or - stands where no hunk header has opened a hunk"
+            ),
+            PatchParseError::HunkLineCountMismatch { line_number, .. } => write!(
+                f,
+                "hunk body line at line {line_number} exceeds the count declared by its header: the hunk already holds the old and new lines its @@ header declared"
+            ),
+            PatchParseError::PathInSeveralSections {
+                line_number,
+                path,
+                same_section: true,
+            } => write!(
+                f,
+                "the file section beginning at line {line_number} renames {} to itself, removing and writing one path in one section, which no tool writes",
+                SafePath(path)
+            ),
+            PatchParseError::PathInSeveralSections {
+                line_number, path, ..
+            } => write!(
+                f,
+                "the file section beginning at line {line_number} writes or removes {}, which an earlier section also writes or removes; git apply does not apply such sections one after the other",
+                SafePath(path)
+            ),
+            // The match names every variant, so a new one does not compile until it is decided
+            // whether its message holds text of the input.
+            PatchParseError::InvalidEofMarker { .. }
+            | PatchParseError::UnsupportedFormat { .. }
+            | PatchParseError::InvalidPath { .. }
+            | PatchParseError::InvalidMode { .. }
+            | PatchParseError::MisplacedHeader { .. }
+            | PatchParseError::InconsistentHeader { .. }
+            | PatchParseError::UnterminatedLine { .. }
+            | PatchParseError::BudgetExceeded { .. }
+            | PatchParseError::LineBudgetExceeded { .. }
+            | PatchParseError::MisplacedHunk { .. }
+            | PatchParseError::HunkWithoutChange { .. }
+            | PatchParseError::SectionWithoutPatch { .. }
+            | PatchParseError::HeaderNotWrittenByGit { .. }
+            | PatchParseError::HunkPlacedElsewhere { .. }
+            | PatchParseError::GitCannotWrite { .. }
+            | PatchParseError::LossyHeader { .. }
+            | PatchParseError::TruncatedHunk { .. } => std::fmt::Display::fmt(self.0, f),
+        }
+    }
+}
+
+/// A path as [`WithoutInput`] shows it: quoted, `\` and `"` escaped, each control, bidi and
+/// invisible character written as the core crate's `display_safe` writes it, and cut after
+/// [`ERROR_EXCERPT_BYTES`] rendered bytes (never inside an escape) with the bytes left out
+/// counted after the closing quote.
+struct SafePath<'a>(&'a str);
+
+impl std::fmt::Display for SafePath<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut shown = String::new();
+        let mut consumed = 0;
+        for c in self.0.chars() {
+            let mut one = [0; 4];
+            let rendered = match c {
+                '\\' => std::borrow::Cow::Borrowed("\\\\"),
+                '"' => std::borrow::Cow::Borrowed("\\\""),
+                _ => deep_diff_forge_core::display_safe(c.encode_utf8(&mut one)),
+            };
+            if shown.len() + rendered.len() > ERROR_EXCERPT_BYTES {
+                break;
+            }
+            shown.push_str(&rendered);
+            consumed += c.len_utf8();
+        }
+        write!(f, "\"{shown}\"")?;
+        if consumed < self.0.len() {
+            write!(f, "… (+{} bytes)", self.0.len() - consumed)?;
+        }
+        Ok(())
+    }
+}
+
 /// Bytes of an offending line a parse error quotes; the rest is counted, not echoed.
 pub const ERROR_EXCERPT_BYTES: usize = 120;
 
@@ -530,5 +636,199 @@ impl CapturedPatch {
     #[must_use]
     pub fn files(&self) -> &[deep_diff_forge_core::ReviewFile] {
         &self.files
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MARKER: &str = "zq7MARKER";
+
+    /// Every variant's name. The match names every variant, so a new refusal does not compile
+    /// here until it is given a name, and the coverage check below then asks for its case.
+    fn variant(error: &PatchParseError) -> &'static str {
+        match error {
+            PatchParseError::InvalidEofMarker { .. } => "InvalidEofMarker",
+            PatchParseError::UnsupportedFormat { .. } => "UnsupportedFormat",
+            PatchParseError::InvalidPath { .. } => "InvalidPath",
+            PatchParseError::InvalidMode { .. } => "InvalidMode",
+            PatchParseError::MisplacedHeader { .. } => "MisplacedHeader",
+            PatchParseError::InconsistentHeader { .. } => "InconsistentHeader",
+            PatchParseError::UnterminatedLine { .. } => "UnterminatedLine",
+            PatchParseError::BudgetExceeded { .. } => "BudgetExceeded",
+            PatchParseError::LineBudgetExceeded { .. } => "LineBudgetExceeded",
+            PatchParseError::MisplacedHunk { .. } => "MisplacedHunk",
+            PatchParseError::HunkWithoutChange { .. } => "HunkWithoutChange",
+            PatchParseError::SectionWithoutPatch { .. } => "SectionWithoutPatch",
+            PatchParseError::PathInSeveralSections { .. } => "PathInSeveralSections",
+            PatchParseError::HeaderNotWrittenByGit { .. } => "HeaderNotWrittenByGit",
+            PatchParseError::HunkPlacedElsewhere { .. } => "HunkPlacedElsewhere",
+            PatchParseError::GitCannotWrite { .. } => "GitCannotWrite",
+            PatchParseError::LossyHeader { .. } => "LossyHeader",
+            PatchParseError::MalformedHunkHeader { .. } => "MalformedHunkHeader",
+            PatchParseError::BodyLineOutsideHunk { .. } => "BodyLineOutsideHunk",
+            PatchParseError::TruncatedHunk { .. } => "TruncatedHunk",
+            PatchParseError::HunkLineCountMismatch { .. } => "HunkLineCountMismatch",
+        }
+    }
+
+    /// The variants whose released message quotes a line of the input.
+    const QUOTING: [&str; 3] = [
+        "MalformedHunkHeader",
+        "BodyLineOutsideHunk",
+        "HunkLineCountMismatch",
+    ];
+
+    /// The parse failure of `patch` on the one path the daemon, the CLI and the SDKs share.
+    fn refusal(patch: &[u8]) -> PatchParseError {
+        let guards = InputGuards {
+            files: false,
+            hunks: false,
+        };
+        match SealedReview::new(patch, guards, "t") {
+            Err(ReviewError::Parse(error)) => error,
+            Err(other) => panic!("refused, not a parse failure: {other}"),
+            Ok(_) => panic!("parsed: {}", String::from_utf8_lossy(patch)),
+        }
+    }
+
+    /// One real patch per variant, each with the marker on the line the parser fails at, or in
+    /// a header the section names (N75: one probe per way out of `without_input`).
+    fn cases() -> Vec<PatchParseError> {
+        let m = MARKER;
+        let path = format!("src/{m}\u{202e}\u{200b}\u{feff}.rs");
+        let section = |from: &str, to: &str| {
+            format!(
+                "diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-{from}\n+{to}\n"
+            )
+        };
+        let text = [
+            format!(
+                "--- a/{m}\n+++ b/{m}\n@@ -1 +1 @@\n-a\n\\ No newline at end of file\n\\ No newline at end of file\n"
+            ),
+            format!(
+                "diff --git a/{m}.bin b/{m}.bin\nindex 1111111..2222222 100644\nGIT binary patch\nliteral 8\nD~~~~~\n\n"
+            ),
+            format!("diff --git a/x b/{m}\ncopy from x\n"),
+            format!("diff --git a/{m} b/{m}\nold mode 100644\nnew mode 100664\n"),
+            format!("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\nrename to {m}\n"),
+            format!(
+                "diff --git a/{m} b/{m}\ndeleted file mode 100644\n--- /dev/null\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n"
+            ),
+            format!("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+{m}"),
+            format!("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n{m}\n@@ -5 +5 @@\n-c\n+d\n"),
+            format!("--- a/x\n+++ b/x\n@@ -1 +1 @@\n {m}\n"),
+            format!("--- a/{m}\n+++ b/{m}\n--- a/y\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\n"),
+            format!(
+                "{}diff --git a/{path} b/{path}\ndeleted file mode 100644\nindex 2222222..0000000\n--- a/{path}\n+++ /dev/null\n@@ -1 +0,0 @@\n-{m}\n",
+                section("a", "b")
+            ),
+            format!(
+                "diff --git a/{path} b/{path}\nsimilarity index 100%\nrename from {path}\nrename to {path}\n"
+            ),
+            format!("diff --git a/{m} b/{m}\nold mode 100664\nnew mode 100744\n"),
+            format!("--- a/x\n+++ b/x\n@@ -3 +3 @@\n-a\n+{m}\n"),
+            format!(
+                "diff --git a/d b/d\nnew file mode 100644\n--- /dev/null\n+++ b/d\n@@ -0,0 +1 @@\n+a\ndiff --git a/d/{m} b/d/{m}\nnew file mode 100644\n--- /dev/null\n+++ b/d/{m}\n@@ -0,0 +1 @@\n+b\n"
+            ),
+            format!("--- a/x\n+++ b/x\n@@ -1,{m} +1 @@\n-a\n+b\n"),
+            format!("--- a/x\n+++ b/x\n+{m}\n"),
+            format!("--- a/x\n+++ b/x\n@@ -1,2 +1,3 @@\n-{m}\n+b\n"),
+            format!("--- a/x\n+++ b/x\n@@ -1,1 +0,0 @@\n+{m}\n"),
+        ];
+        let mut cases: Vec<PatchParseError> = text.iter().map(|p| refusal(p.as_bytes())).collect();
+        let mut lossy = format!("--- a/{m}").into_bytes();
+        lossy.extend_from_slice(b"\xe9\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n");
+        cases.push(refusal(&lossy));
+        let big = format!("--- a/{m}\n+++ b/{m}\n@@ -1 +1 @@\n-a\n+b\n");
+        cases.push(parse_with(&big, ParseOptions { byte_budget: 8 }).unwrap_err());
+        let long = format!("{m}\n").repeat(DEFAULT_LINE_BUDGET + 1);
+        let options = ParseOptions {
+            byte_budget: long.len(),
+        };
+        cases.push(parse_with(&long, options).unwrap_err());
+        cases
+    }
+
+    /// N75: every variant, from a real patch, rendered without the input: no byte of the line it
+    /// failed at (the marker), no raw hidden character, the same line number; a path only inside
+    /// its escaped quote; and every variant that quotes nothing reads exactly as released.
+    #[test]
+    fn every_parse_error_renders_without_the_input() {
+        let cases = cases();
+        let mut covered: Vec<&str> = cases.iter().map(variant).collect();
+        covered.sort_unstable();
+        covered.dedup();
+        assert_eq!(covered.len(), 21, "a variant has no case: {covered:?}");
+        for error in &cases {
+            let name = variant(error);
+            let released = error.to_string();
+            let safe = error.without_input().to_string();
+            assert!(
+                !safe.contains(deep_diff_forge_core::is_unsafe_in_untrusted_text),
+                "{name}: a raw hidden character in {safe:?}"
+            );
+            let head = released
+                .split_once(": ")
+                .map_or(&*released, |(head, _)| head);
+            assert!(
+                safe.starts_with(head),
+                "{name}: the rendering does not say what and where as released does: {safe:?} / {released:?}"
+            );
+            if name == "PathInSeveralSections" {
+                let escaped = format!("\"src/{MARKER}\\u{{202e}}\\u{{200b}}\\u{{feff}}.rs\"");
+                assert_eq!(
+                    safe.matches(MARKER).count(),
+                    safe.matches(&escaped).count(),
+                    "{name}: patch text outside the escaped path: {safe:?}"
+                );
+                assert_eq!(safe.matches(&escaped).count(), 1, "{safe:?}");
+            } else {
+                assert!(
+                    !safe.contains(MARKER),
+                    "{name}: the rendering holds text of the input: {safe:?}"
+                );
+            }
+            if QUOTING.contains(&name) {
+                assert!(released.contains(MARKER), "{name}: {released:?}");
+                assert!(safe.len() > head.len() + 2, "{name}: no reason: {safe:?}");
+            } else if name != "PathInSeveralSections" {
+                assert_eq!(safe, released, "{name}: changed where nothing is quoted");
+            }
+        }
+    }
+
+    /// The two messages the brief names, word for word.
+    #[test]
+    fn a_rendering_without_the_input_keeps_the_engines_explanation() {
+        let truncated = refusal(b"--- a/x\n+++ b/x\n@@ -1,2 +1,3 @@\n-a\n+b\n");
+        assert_eq!(
+            truncated.without_input().to_string(),
+            "truncated hunk ending at line 5: 1 old / 2 new line(s) declared but missing"
+        );
+        let header =
+            refusal(format!("--- a/x\n+++ b/x\n@@ -1,{MARKER} +1 @@\n-a\n+b\n").as_bytes());
+        assert_eq!(
+            header.without_input().to_string(),
+            "malformed hunk header at line 3: a line that begins with @@ is not a hunk header in Git's grammar (@@ -a[,b] +c[,d] @@, single spaces, digits only)"
+        );
+    }
+
+    /// A long path is cut after `ERROR_EXCERPT_BYTES` rendered bytes, never inside an escape, and
+    /// the bytes left out are counted after the closing quote.
+    #[test]
+    fn a_long_path_is_bounded_and_counted() {
+        let path = "\u{202e}".repeat(400);
+        let shown = SafePath(&path).to_string();
+        let (quoted, rest) = shown.rsplit_once('"').unwrap();
+        assert!(quoted.len() <= ERROR_EXCERPT_BYTES + 1, "{shown}");
+        assert!(
+            quoted.ends_with("\\u{202e}"),
+            "cut inside an escape: {shown}"
+        );
+        let kept = quoted.matches("\\u{202e}").count();
+        assert_eq!(rest, format!("… (+{} bytes)", 3 * (400 - kept)));
+        assert_eq!(SafePath("a\"b\\c").to_string(), "\"a\\\"b\\\\c\"");
     }
 }

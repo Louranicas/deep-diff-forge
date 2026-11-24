@@ -1,0 +1,4 @@
+binary: deep-diff-forge 0.10.0
+sha256: 121503a8d292da951c31e33e8b59bf33b54dd316e3d6ec3055e5c4bfac18e9ff
+origin: the published release artefact deep-diff-forge-v0.10.0-x86_64-unknown-linux-gnu.tar.gz (its line in the release SHA256SUMS: 0814da452e1c3cdc70b4f3c4fee3b14744e51406b7100a95500c3a0e018ecede)
+captured: by scripts/capture_hook_state.sh; session id "fixture"; commits dated 2026-11-20T00:00:00+0000 by ddf <ddf@example.invalid>

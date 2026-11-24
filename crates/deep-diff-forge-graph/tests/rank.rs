@@ -59,3 +59,72 @@ fn ranking_a_real_combined_review_is_deterministic() {
     let files = parse(&all).unwrap();
     assert_eq!(rank(&files), rank(&files));
 }
+
+/// S3.34.c: outside Rust a hunk read alone is release 0.8.3's reading, so what it finds of a
+/// signal 0.8.3 had is a released finding, and a ranked file's bounded list holds those first. A
+/// Python, a JavaScript and a shell file, one hunk each: the item is marked released; a Python file
+/// whose only finding is a signal 0.8.3 did not have (`test_skipped`) is not. The missed mutant of
+/// `texts_found` (the field `released` deleted from the hit it keeps) passes this test: the reading
+/// of release 0.8.4 marks the same items and the union keeps either mark, so that mutant is
+/// equivalent (measured on 29,646 files of the comparison corpus and the eval corpus, every mark
+/// equal). This test holds the mark whichever reading gives it.
+#[test]
+fn a_finding_outside_rust_of_a_signal_release_had_is_marked_released() {
+    use deep_diff_forge_graph::{file_evidence, file_evidence_released};
+    let marks = |path: &str, line: &str| {
+        let patch = format!(
+            "diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1,2 +1,3 @@\n keep = 1\n+{line}\n other = 2\n"
+        );
+        let files = parse(&patch).unwrap();
+        let items = file_evidence(&files[0]);
+        let signals: Vec<String> = items.iter().map(|e| format!("{:?}", e.signal)).collect();
+        (signals, file_evidence_released(&files[0]))
+    };
+    for (path, line) in [
+        ("tools/run.py", "subprocess.run([\"ls\"])"),
+        ("web/run.js", "require(\"child_process\").exec(\"ls\")"),
+        ("scripts/run.sh", "eval \"$cmd\""),
+    ] {
+        let (signals, released) = marks(path, line);
+        assert!(!signals.is_empty(), "{path}: nothing found in {line:?}");
+        assert!(
+            released.iter().all(|&r| r),
+            "{path}: a finding of a signal release 0.8.3 had, in a hunk read alone, is not marked released: {signals:?} {released:?}"
+        );
+    }
+    let (signals, released) = marks("tests/test_a.py", "@pytest.mark.skip");
+    assert_eq!(signals, ["TestSkipped"], "the near miss found otherwise");
+    assert_eq!(
+        released,
+        [false],
+        "a signal release 0.8.3 did not have was marked released"
+    );
+}
+
+/// S3.34.c, the mutant of `score_path_and_shape` (`+=` to `-=` where a generated or vendored file's
+/// suppressed diff is weighed): the 0.10.0 mutation run timed it out, but the workspace's tests
+/// pass on it in 496 seconds, so it was a missed mutant; no test ranked a vendored file whose diff
+/// Git suppressed. Such a file ranks above the same file with its diff shown, by the signal's
+/// weight, and says why.
+#[test]
+fn a_vendored_file_whose_diff_is_suppressed_ranks_above_the_same_file_shown() {
+    use deep_diff_forge_core::DiffSuppression;
+    let patch = "diff --git a/vendor/lib/a.txt b/vendor/lib/a.txt\n--- a/vendor/lib/a.txt\n+++ b/vendor/lib/a.txt\n@@ -1 +1 @@\n-a\n+b\n";
+    let shown = parse(patch).unwrap();
+    let mut hidden = shown.clone();
+    hidden[0].patch_twin.diff_suppressed = Some(DiffSuppression::Attribute);
+    let (shown, hidden) = (&rank(&shown)[0], &rank(&hidden)[0]);
+    assert!(
+        shown.signals.contains(&RiskSignal::GeneratedOrVendored),
+        "{shown:?}"
+    );
+    assert!(
+        hidden.signals.contains(&RiskSignal::DiffSuppressed),
+        "{hidden:?}"
+    );
+    assert_eq!(
+        hidden.score,
+        shown.score + RiskSignal::DiffSuppressed.weight(),
+        "a vendored file whose diff Git suppressed did not rank above it shown by the signal's weight"
+    );
+}

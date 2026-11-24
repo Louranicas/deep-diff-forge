@@ -45,10 +45,10 @@ Across the tree:
   Non-provider patterns and validity checks are not available for this user-owned repository, so
   gitleaks (the `secret scan` check and the versioned pre-push hook) is the compensating control
   ([SECURITY.md](../../SECURITY.md#supply-chain-and-releases)).
-- **Local replica.** `scripts/ci_local.sh` (`just ci`) runs the CI gate jobs locally: 35 steps
-  from 0.10.0 (32 before). It prints the commit it gates and writes nothing into the checkout: the
+- **Local replica.** `scripts/ci_local.sh` (`just ci`) runs the CI gate jobs locally: 36 steps
+  from 0.11.0 (35 in 0.10.0, 32 before). It prints the commit it gates and writes nothing into the checkout: the
   SBOM step generates into the gate's own scratch directory and compares, so `sbom.spdx.json` is
-  never rewritten, also when the step is stopped. Three steps run only there; they are listed as
+  never rewritten, also when the step is stopped. Four steps run only there; they are listed as
   `LOCAL_ONLY` in `crates/deep-diff-forge-cli/tests/ci_replica.rs`, since GitHub's workflow is a
   mirror and is not changed for them (every step is a `ci.yml` step or a member of the list, and
   every member is a step): the **release-script self-test** (`scripts/test_release_local.sh`: a
@@ -56,23 +56,63 @@ Across the tree:
   `scripts/check_glibc_floor.sh` on the release binary, and the test step runs it on the test
   binary), the **comparison corpus manifest** (`sha256sum -c` of the corpus's `MANIFEST.sha256`
   where the corpus is on the machine, `DDF_COMPARE_CORPUS`; elsewhere the step passes and says
-  `skipped: no corpus here`) and the **contract matrix**. `scripts/release_local.sh` writes the
+  `skipped: no corpus here`), the **diagnostics contract** (from 0.11.0: `agent doctor` on the
+  built binary must list `diagnostics_parity` and find it true, and two tests run by their exact
+  names, each required to be the one test that ran: the test in which every doctor check fails
+  its condition, and the canary that puts a marker in every patch-derived place of a patch and
+  finds it only in the escaped path of `diff.diagnostics`) and the **contract matrix**. `scripts/release_local.sh` writes the
   checks run on the artefact and the gate's result (from the log `DDF_GATE_LOG` names) into the
-  release receipt.
-- **Contract matrix.** `scripts/contract_matrix.sh <binary>` plays the contract between the stop
-  hook and forge-warden, one scratch repository per row. Stand-in judges
-  (`scripts/contract-matrix/judge.py`, answering with forge-warden's own v2 and v3 documents)
-  give PASS, HOLD and FAIL in both schemas, a FAIL whose document cannot be read (held once, then
-  it stands), exit 4, a hang, and a hold for claims a `require_verified` policy cannot verify (also
-  the `claims_verified` link of `agent doctor --gate`); the patch the judge is given must be the
-  bytes of forge-warden's recorded `make_patch.sh`. A known-bad control row (a FAIL expected to
-  pass the stop) must come out red. With `FW_BIN=<path>` the rows that need a real forge-warden run
-  too: the binary is accepted by its SHA-256 in `scripts/contract-matrix/binaries.tsv`, never by
-  its version, and must judge a stop the hook reads, hold a change that raises a label of
-  `schema signals` it does not know (the row names those labels), read this build's rank document, and refuse an empty patch as ruled (no verdict and "the ranker
-  exited 4" with this build as ranker; a holding verdict with the 0.9.0 ranker,
-  `DDF_RANKER_090`). Without `FW_BIN` those rows are skipped by name; with `--require-real` they
-  are red. The gate runs the stand-in rows always and the real ones when `FW_BIN` is set.
+  release receipt, and beside it `RELEASE-MANIFEST.json` (what the binary reads and writes, read
+  from the binary itself; [the release document](../RELEASE_AND_PUBLICATION.md)), which the
+  self-test holds (a manifest without a member, or signed in the namespace of `SHA256SUMS`,
+  fails verify).
+- **Contract matrix.** `scripts/contract_matrix.sh [--require-real] <binary>` plays the contract
+  between the stop hook and forge-warden, and between this build and the published ones, one
+  scratch repository and home per row, run the client's way (no configuration of the user or
+  the system). The stand-in judge is `scripts/contract-matrix/judge.py`, answering with
+  forge-warden's own v2 and v3 documents. The real rows run once for each forge-warden given:
+  `FW_BIN` (the gate's judge) and each path of `FW_BIN_OLDER` (colon-separated); a row's id
+  carries the judge's name, `fw-recorded[005a1959]`. Every binary is accepted by its SHA-256 in
+  `scripts/contract-matrix/binaries.tsv`, never by its version: the forge-wardens `005a1959`
+  (hub main, Train B15, the gate's judge from 0.11.0), `db4c580e` (Train B14c) and `0.2.1-build`
+  (a build of the release commit of forge-warden 0.2.1, not the published file), and the
+  published deep-diff-forge 0.9.0 and 0.10.0 (`DDF_RANKER_090`, `DDF_RANKER_0100`). Without
+  `FW_BIN` the real rows are skipped by name; with `--require-real` a missing binary is red, and
+  so is every forge-warden `binaries.tsv` records that was not given (row `fw-given[<name>]`).
+  The gate runs the stand-in rows always and passes `--require-real` when `FW_BIN` is set.
+  `fw-unknown-labels-hold` builds a stand-in ranker with `rustc`. The rows, and what each needs:
+
+  | Row | Needs | What it holds |
+  | --- | --- | --- |
+  | `v2-pass`, `v2-hold`, `v2-fail`, `v3-pass`, `v3-hold`, `v3-fail` | stand-in | each verdict is read as what it says; a FAIL blocks |
+  | `unread-fail-holds-once-then-stands` | stand-in | a FAIL whose document cannot be read (exit 7) holds once, then stands |
+  | `exit-4-is-unjudged`, `a-hanging-judge-is-unjudged` | stand-in | a refusal and a hang are UNJUDGED, never a pass |
+  | `require-verified-claims-holds-never-passes` | stand-in | the uncommitted change holds for claims it cannot verify; `agent doctor --gate` names `claims_verified` weak |
+  | `the-judged-patch-is-make-patch-bytes` | stand-in | the judge is given the bytes of forge-warden's recorded `make_patch.sh` |
+  | `verify-branch-fail`, `verify-branch-refuse`, `verify-branch-pass` | stand-in | `agent verify-branch` refuses a commit that failed or was not judged, and verifies one that passed |
+  | `verify-branch-every-outcome` | stand-in | one branch with a pass, a FAIL that stands, a HOLD, an UNJUDGED and a commit no stop saw: four of five refused (exit 7) |
+  | `control-a-fail-let-through-is-red` | stand-in | the known-bad control: a FAIL expected to pass the stop must come out red |
+  | `a-first-stop-is-never-silent` | stand-in | a stop that is its session's first hook says the session's start was not recorded, and runs no judge |
+  | `stateless-stop-damaged`, `-older`, `-newer`, `-lists_damaged`, `-lock_busy`, `-no_directory` | stand-in | each way a state cannot be used whose stop judges the tree without it: the failing tree blocks and the class is named |
+  | `stray-bytes-in-a-source-file-are-read-in-a-git-mode` | this build | `--git-range` reads a source file Git calls binary for a stray NUL beside a byte that is not UTF-8: `check_suppressed` and `diff_suppressed` (the published 0.10.0 gave `binary_change` alone) |
+  | `diagnostics-paged-and-put-together-rpc`, `-mcp` | this build | `diff.diagnostics` (at 4,096 bytes) and MCP `diagnose_patch` (at 12,364) page the document and the pages make it again, with its SHA-256 on every page |
+  | `state-written-by-<0.9.0, 0.10.0>-is-carried-over-by-this-build` | the published binary | its v10 session is written again as v13 by this build's stop; the failure blocks once more, then stands; the commit judged is not judged again |
+  | `state-written-by-this-build-is-refused-and-kept-by-<0.9.0, 0.10.0>` | the published binary | a v13 session: the published stop is UNJUDGED ("cannot be read as a state") and its files are kept byte for byte |
+  | `states-v11-to-v13-are-refused-and-kept-by-<0.9.0, 0.10.0>` | the published binary | the same for the v11, v12 and v13 states of `tests/fixtures/hook-state/` |
+  | `fw-recorded` | each forge-warden | the binary is the one recorded, with the verdict schema recorded |
+  | `fw-judges-the-stop` | each forge-warden | the stop reads the real verdict (it holds under the starter policy) |
+  | `fw-a-commit-passes-in-bound-mode` | each forge-warden | a one-parent commit passes; with `005a1959` and `db4c580e` (whose usage names `--repo`) it is judged in bound mode under a policy that requires verified claims; with `0.2.1-build` it is never bound, and passes because its starter policy (v0) requires none |
+  | `fw-unknown-labels-hold` | each forge-warden, `rustc` | with `db4c580e` and `0.2.1-build` a ranking that carries one of the six labels they do not know (`stub_added`) holds as unknown; with `005a1959` it holds by a rule of the policy (`no-placeholders`); with every judge a made-up label holds as unknown |
+  | `fw-reads-the-rank` | each forge-warden | the judge reads this build's rank document (with `scorer_sha256`) without a rank refusal |
+  | `fw-empty-patch-this-ranker`, `-ranker-0.9.0`, `-ranker-0.10.0` | each forge-warden, the published binaries | an empty patch: `005a1959` passes `--allow-empty` to its ranker and holds (`empty_ranking`) with this build and 0.10.0, and gets "the ranker exited 2" from 0.9.0; `db4c580e` and `0.2.1-build` get "the ranker exited 4" from this build and 0.10.0, and hold with 0.9.0 |
+  | `fw-an-older-ranker-is-admitted-0.9.0`, `-0.10.0` | each forge-warden, the published binaries | a policy that admits only a published ranker: the stop finds it in `--ranker-dir`, gives it to the judge as `--ranker`, and the commit passes |
+  | `fw-the-frontier-judges-a-commit-left-behind` | each forge-warden | a commit left by a session that never stopped blocks the next session's stop with the real judge's FAIL, marked as not this session's |
+  | `fw-agent-check-equals-the-stop` | each forge-warden | `agent check --session` after a stop says it equals the stop in its units and inputs, and each unit has the stop's outcome |
+  | `fw-given[<name>]` | `--require-real` | every forge-warden `binaries.tsv` records was given |
+
+  Rows that would only repeat a test of `tests/agent_hook.rs` on its stand-in are left to the
+  test (this build on every state fixture: `every_schema_since_the_last_release_is_read`); the
+  first-stop and stateless rows repeat theirs the client's way, side by side.
 
 The engine is hardened against:
 - terminal-escape injection;

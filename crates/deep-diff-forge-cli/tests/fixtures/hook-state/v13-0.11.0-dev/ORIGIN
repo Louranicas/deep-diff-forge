@@ -1,0 +1,4 @@
+binary: deep-diff-forge 0.11.0-dev
+sha256: f3b0d4125df2ae4992a0139aa5f665e1cc37671702a94a12605f478ddb90a4db
+origin: not a published artefact: a release build (cargo build --release --locked) of the sources of the commit that adds this fixture (lane w11H4, task F6.b), which writes v13; the fixture and the tests were added after the build
+captured: by scripts/capture_hook_state.sh; session id "fixture"; commits dated 2026-11-20T00:00:00+0000 by ddf <ddf@example.invalid>

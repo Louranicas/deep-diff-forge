@@ -1,0 +1,17 @@
+diff --git a/tests/slow.rs b/tests/slow.rs
+--- a/tests/slow.rs
++++ b/tests/slow.rs
+@@ -1,2 +1,13 @@
+ #[test]
+ fn fast() {}
++#[cfg(any())]
++#[test]
++fn compiled_out() {}
++#[cfg(unix)]
++#[test]
++fn unix_only() {}
++#[test]
++#[cfg(not(test))]
++fn never() {}
++#[cfg(any())]
++mod more { #[test] fn t() {} }

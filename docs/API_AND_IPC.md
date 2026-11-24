@@ -7,7 +7,7 @@ section says whether it describes what ships today or a planned design.
 ## Status 2026-10-28 (0.3.0), updated 2026-11-01
 
 - **Ships today:** the CLI, the optional Unix-socket daemon (JSON-RPC 2.0,
-  protocol 2), `rpc` (the same protocol over stdio, no daemon), `mcp` (a
+  protocol 3 on this branch; 0.10.0 published protocol 2), `rpc` (the same protocol over stdio, no daemon), `mcp` (a
   read-only MCP stdio server), `envelope` / `schema` / `explain`, the Rust SDK
   crate `deep-diff-forge-sdk` and the Python SDK `sdk/python/deep_diff_forge.py`.
 - **Ships since 2026-10-31:** `deep-diff-forge <old> <new>` for two regular files
@@ -129,16 +129,16 @@ deep-diff-forge review [--probe [--cols N] [--rows N]] [--side] [--palette | --c
 deep-diff-forge daemon {path|start [--foreground] [--allow-repo PATH]... [--log-format text|json]|health|status|metrics [--format json|prometheus] [--out PATH]|stop} [--socket PATH]
 deep-diff-forge learn {status|record --stdin} [--json]
 deep-diff-forge <old> <new> [<--stdin-patch output flags but --allow-empty>]
-deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side | --outline | --hunks [--address A]... [--path P]...] [--max-bytes N] [--cursor C] [--require-files] [--require-hunks]
+deep-diff-forge --stdin-patch [--json | --jsonl | --rank [--fail-on LIST] | --diagnostics [--fail-on LIST] | --cluster [--parallel serial|auto|N] | --layout inline|side-by-side | --outline | --hunks [--address A]... [--path P]...] [--max-bytes N] [--cursor C] [--require-files] [--require-hunks] [--allow-empty]
 deep-diff-forge {--git-working-tree [--include-untracked] | --git-staged | --git-range A..B} [--repo PATH] [--acquisition-json | <--stdin-patch output flags>]
-deep-diff-forge agent {setup --client claude|codex [--allow-repo PATH]... [--hooks] | doctor [--gate] | hook session-start|post-tool|stop --client claude} [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--json]
+deep-diff-forge agent {setup --client claude|codex [--allow-repo PATH]... [--hooks [--judge PATH] [--policy NAME] [--ranker-dir DIR]] [--json] | doctor [--gate [--judge PATH] [--policy NAME] [--ranker-dir DIR]] [--json] | check [--session ID | --base REV] [--range A..B] [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--require-pass] [--json] | verify-branch BASE..HEAD [--json] | hook session-start|post-tool|stop --client claude [--judge PATH] [--policy NAME] [--ranker-dir DIR]}
 # internal, started by the stop hook itself: agent hook seal-rankers [--ranker-dir DIR]
 #   prints one JSON list of {"path", "sha256"} or {"path", "refused"} for the candidate rankers
 deep-diff-forge mcp [--allow-repo PATH]...
 deep-diff-forge rpc [--allow-repo PATH]...
 deep-diff-forge envelope -- <command> [args…]
-deep-diff-forge schema [result|exit-codes|signals]
-deep-diff-forge explain {<code> [--family engine|council] | signal <label>} [--json]
+deep-diff-forge schema [result|exit-codes|signals|diagnostics]
+deep-diff-forge explain {<code> [--family engine|council] | signal <label> [--audience agent|person]} [--json]
 deep-diff-forge claude-code-contract
 deep-diff-forge chain-contract
 deep-diff-forge cluster-contract
@@ -180,13 +180,14 @@ path that exists but is not a regular file is exit 4, and stays so until the inp
 | `git difftool` | planned | Old/new file paths and labels. Not implemented. |
 | Pager | planned | No pager or ANSI mode for `--stdin-patch`; it prints plain text. |
 
-## JSON-RPC Methods (shipped, protocol 2)
+## JSON-RPC Methods (protocol 3; release 0.10.0 shipped protocol 2)
 
 The daemon and `rpc` speak newline-delimited JSON-RPC 2.0. `engine.methods` is
 the authoritative list. `METHODS` in `handler.rs` is the only route into the
 dispatcher, and a test keeps the two in step. Protocol versions are additive: a
 client may pass `{"protocol": N}` to `engine.initialize` for any integer N from 0
-to 2, and the answer lists that version's methods. A newer or non-integer
+to 3, and the answer lists that version's methods (with `protocol: 2`, no
+`diff.diagnostics`). A newer or non-integer
 version is refused with domain error 2.
 
 | Method | Params | Result | Since |
@@ -207,6 +208,7 @@ version is refused with domain error 2.
 | `session.close` | `session: string` | `{closed}` | 0 |
 | `daemon.metrics` | — | `deep-diff-forge.daemon-metrics.v0`: requests, errors and latency per method; admission, connection and engine counters since start ([operations](OPERATIONS_AND_DAEMON.md#observability)) | 2 |
 | `findings.verify` | `patch: string, findings: [object], require_files?, require_hunks?` | `deep-diff-forge.findings.v0`: each finding accepted (anchor, address and line checked against the sealed review, body sanitised) or refused with a reason; `claim_verified` is always `false` | 2 |
+| `diff.diagnostics` | `patch: string, require_files?, require_hunks?, max_bytes?: integer, cursor?: string` | one page of the `deep-diff-forge.diagnostics.v0` document `--stdin-patch --diagnostics --json` prints for the same patch: whole diagnostics within `max_bytes` (4096 to 16777216, the page as emitted), and `page {first, count, total, next_cursor, document_sha256}`, the SHA-256 of the document's bytes; `dg0` cursor ([paging](reference/diagnostics.md#paging)) | 3 |
 
 `cache_entries` is always 0: there is no response cache (`handler.rs`, decision
 D-03).
@@ -285,7 +287,8 @@ message per line (`crates/deep-diff-forge-cli/src/mcp.rs`).
 | `rank_patch` | `patch`, `require_files?`, `require_hunks?` | `diff.rank`: the sealed `rank.v0` document, its text the canonical bytes `--rank --json` prints and `structuredContent` their value; a ranking whose canonical bytes are over 256 KiB returns `deep-diff-forge.rank-summary.v0` with the same seal (before 0.10.0 the cap counted the compact form, so a ranking near the cap now comes back as a summary sooner) |
 | `review_outline` | `patch`, `require_files?`, `require_hunks?`, `max_bytes?`, `cursor?` | `review.outline`; `max_bytes` (2 KiB–32 MiB, default 32 KiB) covers the whole answer, both copies: the view starts at half and is re-paged smaller while the escaped text copy still pushes the answer over |
 | `review_hunks` | `patch`, `addresses?` or `paths?`, `require_files?`, `require_hunks?`, `max_bytes?`, `cursor?` | `review.hunks`, budgeted the same way |
-| `review_change` | `repo`, `selection`, `range?`, `include_untracked?`, `view?` (`outline` or `hunks`), and that view's arguments | `review.change`, only when the server was started with `mcp --allow-repo PATH`; budgeted the same way |
+| `diagnose_patch` | `patch`, `require_files?`, `require_hunks?`, `max_bytes?`, `cursor?` | the daemon's pager of `diff.diagnostics`, in the server's process: one page of `diagnostics.v0`, its text the page as the daemon emits it; `max_bytes` (12,364 to 32 MiB, default 32 KiB) counts the tool result as written, both copies |
+| `review_change` | `repo`, `selection`, `range?`, `include_untracked?`, `view?` (`outline`, `hunks` or `diagnostics`), and that view's arguments | `review.change`, only when the server was started with `mcp --allow-repo PATH`; budgeted the same way |
 | `explain_exit_code` | `code`, `family?` (`engine` or `council`) | the exit-code registry |
 | `verify_findings` | `patch`, `findings` (array of finding objects), `require_files?`, `require_hunks?` | `findings.verify` |
 | `exit_code_registry` | — | the exit-code registry |
@@ -299,9 +302,12 @@ can correct its input; an unknown tool or malformed JSON-RPC is a JSON-RPC error
 **Rust (`crates/deep-diff-forge-sdk`):** `review(patch, Guards) -> Result<Review, Error>`,
 `rank(&Review) -> Vec<RankedFile>`, `Review::to_json()` (the `review.v0`
 document), `Review::files()`, `Review::seal()`, `Guards::{none, all,
-require_files, require_hunks}`, the `exit` registry re-export, and, on Unix only,
-`Client::at(socket).call(method, &params)`. `Error` is `#[non_exhaustive]`
-(`Parse`, `Refused`, `Rpc`, `Transport`). `crates/deep-diff-forge-sdk/tests/api.rs`
+require_files, require_hunks}`, the `exit` registry re-export, `diagnostics(&Review) ->
+Diagnostics` (the `diagnostics.v0` document and its typed model; `Diagnostics::from_json`,
+`Diagnostics::to_json`), and, on Unix only, `Client::at(socket).call(method, &params)` and
+`Client::diagnostics(patch, Guards, Option<usize>)` (paged from a protocol-3 daemon, rebuilt and
+checked against `document_sha256`). `Error` is `#[non_exhaustive]` (`Parse`, `Refused`, `Rpc`,
+`Transport`, `ProtocolTooOld`, `UnknownMembers`, `Document`). `crates/deep-diff-forge-sdk/tests/api.rs`
 pins the public signatures.
 
 **Python (`sdk/python/deep_diff_forge.py`, standard library only; installable with
@@ -312,7 +318,10 @@ pins the public signatures.
 `rank_patch(patch, require_files=False, require_hunks=False)` (`diff.rank`; its
 `canonical_json` holds the exact bytes `--rank --json` prints),
 `verify_findings(patch, findings, require_files=False, require_hunks=False)`
-(`findings.verify`, protocol 2) and `methods()`.
+(`findings.verify`, protocol 2), `diagnostics_patch(patch, require_files=False,
+require_hunks=False, max_bytes=None)` (`diff.diagnostics`, protocol 3: a dict with
+`canonical_bytes`; `ProtocolTooOld` for an older daemon, `PagingError` and its subclass
+`UnknownMembers` for pages it cannot check) and `methods()`.
 A JSON-RPC error raises `RpcError` (with the daemon's `code`); a transport
 failure, including an answer that is not UTF-8 JSON or not a response to the
 request, raises `TransportError`. `StdioClient`'s `timeout` covers the whole
@@ -417,7 +426,7 @@ reason.
 
 ## Protocol Versioning
 
-Shipped: `engine.protocol = 2` (`protocol.rs`, `PROTOCOL_VERSION`; 0 and 1 still negotiate),
+On this branch: `engine.protocol = 3` (`protocol.rs`, `PROTOCOL_VERSION`; 0, 1 and 2 still negotiate; release 0.10.0 shipped 2),
 negotiated through `engine.initialize` as described above. Documents carry their own schema
 names (`deep-diff-forge.review.v0`, `ddf.result.v1` and so on).
 

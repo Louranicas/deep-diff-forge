@@ -12,6 +12,7 @@
 use crate::mcp::entry_json;
 use deep_diff_forge_core::exit::{self, EXIT_CODES, lookup};
 use serde_json::{Value, json};
+use std::fmt::Write as _;
 use std::io::Read;
 use std::process::{Command, Stdio};
 
@@ -21,11 +22,12 @@ pub const RESULT_SCHEMA: &str = "ddf.result.v1";
 pub const EXIT_CODES_SCHEMA: &str = "ddf.exit-codes.v1";
 /// The signal vocabulary's schema identifier.
 pub const SIGNALS_SCHEMA: &str = "deep-diff-forge.signals.v0";
+/// The diagnostics document's schema identifier (`docs/reference/diagnostics.md`).
+pub const DIAGNOSTICS_SCHEMA: &str = "deep-diff-forge.diagnostics.v0";
 /// The schema identifier of one signal's explanation.
 pub const SIGNAL_EXPLAIN_SCHEMA: &str = "deep-diff-forge.signal-explain.v0";
 /// The usage line of `explain`.
-pub const EXPLAIN_USAGE: &str =
-    "explain {<code> [--family engine|council] | signal <label>} [--json]";
+pub const EXPLAIN_USAGE: &str = "explain {<code> [--family engine|council] | signal <label> [--audience agent|person]} [--json]";
 /// Captured stdout beyond this many bytes is cut and the envelope reports `truncated`.
 pub const STDOUT_CAP: usize = 16 * 1024 * 1024;
 /// Captured stderr beyond this many bytes is cut and the envelope reports `truncated`.
@@ -73,15 +75,32 @@ pub fn explain(args: &[String]) -> Result<String, String> {
     let code = code.ok_or_else(|| format!("usage: {EXPLAIN_USAGE}"))?;
     let entry = lookup(family, code)
         .ok_or_else(|| format!("exit code {code} is not documented for the {family} family"))?;
-    Ok(if json {
-        format!("{}\n", entry_json(entry))
-    } else {
-        format!(
-            "{} {} ({}): {}\n",
-            entry.family, entry.code, entry.name, entry.meaning
-        )
-    })
+    if json {
+        return Ok(format!("{}\n", crate::mcp::explained_json(entry)));
+    }
+    let mut text = format!(
+        "{} {} ({}): {}\n",
+        entry.family, entry.code, entry.name, entry.meaning
+    );
+    // F7.h1: engine 7 has one meaning and names its reason class on stderr.
+    if (entry.family, entry.code) == ("engine", exit::INPUT_CONTRACT_REFUSED) {
+        text.push_str(REFUSAL_PREAMBLE);
+        for r in exit::REFUSALS {
+            let _ = writeln!(
+                text,
+                "  {:<18} ({}) stdout {}, next {}",
+                r.class,
+                r.tag,
+                r.stdout.name(),
+                r.action.name()
+            );
+        }
+    }
+    Ok(text)
 }
+
+/// What `explain 7` says exit 7 covers, before its reason classes.
+const REFUSAL_PREAMBLE: &str = "A contract the caller asked for, or the check the command exists to make, did not hold; stderr names the reason class in a line `refused: <text> (<tag>)`:\n";
 
 /// The `tool` member every document of this binary carries.
 fn tool() -> Value {
@@ -102,15 +121,27 @@ fn signal_json(facts: &deep_diff_forge_graph::SignalFacts) -> Value {
     })
 }
 
-/// `explain signal <label> [--json]`: why a signal matters, what answers it, what does not, and
-/// the compiler or linter rules that prevent it.
+/// `explain signal <label> [--audience agent|person] [--json]`: why a signal matters, what
+/// answers it, what does not, and the compiler or linter rules that prevent it. The people's
+/// form (the default, `"audience": "person"`) lists every substitute; `--audience agent` prints
+/// what an agent is shown (F7.c1, contract design 3.4): the same repairs, and of the substitutes
+/// only those with an `agent` sentence, in that sentence. The JSON names each entry's id beside it
+/// (`accept_ids` in the order of `accept`; `id` in each `not_accepted` entry; F1.a2), and for a
+/// label whose repairs answer different cases, the cases of each id shown (`cases`; F1.a3).
 fn explain_signal(args: &[String]) -> Result<String, String> {
     use std::fmt::Write as _;
-    let mut json = false;
-    let mut label = None;
-    for arg in args {
+    let (mut json, mut agent, mut label) = (false, false, None);
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
         match arg.as_str() {
             "--json" => json = true,
+            "--audience" => {
+                agent = match rest.next().map(String::as_str) {
+                    Some("agent") => true,
+                    Some("person") => false,
+                    _ => return Err("--audience takes agent or person".into()),
+                };
+            }
             value if label.is_none() => label = Some(value),
             value => return Err(format!("unexpected argument: {value}")),
         }
@@ -124,22 +155,30 @@ fn explain_signal(args: &[String]) -> Result<String, String> {
     })?;
     let facts = deep_diff_forge_graph::facts(signal);
     let remedy = deep_diff_forge_graph::remedy(signal);
+    let shown = substitutes(&remedy, agent);
     if json {
         let mut value = signal_json(&facts);
         value["schema"] = json!(SIGNAL_EXPLAIN_SCHEMA);
         value["tool"] = tool();
         value["why"] = json!(remedy.why);
         value["accept"] = json!(remedy.accept);
-        value["not_accepted"] = remedy
-            .not_accepted
+        value["accept_ids"] = json!(remedy.accept_ids);
+        let named =
+            |id: &&str| remedy.accept_ids.contains(id) || shown.iter().any(|(e, _)| e["id"] == *id);
+        value["cases"] = remedy
+            .cases
             .iter()
-            .map(|n| json!({"substitute": n.substitute, "raises": n.raises}))
-            .collect();
+            .filter(|(id, _)| named(id))
+            .map(|(id, case)| ((*id).to_owned(), json!(case)))
+            .collect::<serde_json::Map<_, _>>()
+            .into();
+        value["not_accepted"] = shown.into_iter().map(|(entry, _)| entry).collect();
         value["native_lints"] = remedy
             .native_lints
             .iter()
             .map(|l| json!({"language": l.language, "tool": l.tool, "rule": l.rule}))
             .collect();
+        value["audience"] = json!(if agent { "agent" } else { "person" });
         return Ok(format!("{value}\n"));
     }
     let mut text = String::new();
@@ -154,24 +193,16 @@ fn explain_signal(args: &[String]) -> Result<String, String> {
     );
     let _ = writeln!(text, "why: {}", remedy.why);
     let _ = writeln!(text, "accept:");
-    for line in remedy.accept {
-        let _ = writeln!(text, "  - {line}");
+    for (line, id) in remedy.accept.iter().zip(remedy.accept_ids) {
+        let _ = match remedy.cases.iter().find(|(i, _)| i == id) {
+            Some((_, case)) => writeln!(text, "  - {line} (cases: {})", case.join(", ")),
+            None => writeln!(text, "  - {line}"),
+        };
     }
-    if !remedy.not_accepted.is_empty() {
+    if !shown.is_empty() {
         let _ = writeln!(text, "not accepted:");
-        for not in remedy.not_accepted {
-            match not.raises {
-                Some(raised) => {
-                    let _ = writeln!(text, "  - {} (raises {raised})", not.substitute);
-                }
-                None => {
-                    let _ = writeln!(
-                        text,
-                        "  - {} (no signal sees this yet; it is still not a repair)",
-                        not.substitute
-                    );
-                }
-            }
+        for (_, line) in shown {
+            let _ = writeln!(text, "  - {line}");
         }
     }
     if !remedy.native_lints.is_empty() {
@@ -180,26 +211,71 @@ fn explain_signal(args: &[String]) -> Result<String, String> {
             let _ = writeln!(text, "  - {}, {}: {}", lint.language, lint.tool, lint.rule);
         }
     }
+    if agent {
+        let _ = writeln!(text, "audience: agent");
+    } else {
+        let _ = writeln!(
+            text,
+            "audience: person (deep-diff-forge explain signal {} --audience agent prints what an agent is shown)",
+            facts.label()
+        );
+    }
     Ok(text)
 }
 
-/// `schema [result|exit-codes|signals]`: the JSON Schema of the envelope, the exit-code registry,
-/// or the signal vocabulary.
+/// The substitutes of `remedy` as its audience reads them, each as its JSON entry and its text
+/// line: for people every one, with the label it raises or that none sees it; for an agent only
+/// those with an `agent` sentence, in that sentence and nothing else (F7.c1).
+fn substitutes(remedy: &deep_diff_forge_graph::Remedy, agent: bool) -> Vec<(Value, String)> {
+    let shown = remedy.not_accepted.iter();
+    if agent {
+        return shown
+            .filter_map(|n| {
+                n.agent.map(|a| {
+                    (
+                        json!({"id": n.id, "agent": a, "raises": n.raises}),
+                        a.into(),
+                    )
+                })
+            })
+            .collect();
+    }
+    shown
+        .map(|n| {
+            let line = match n.raises {
+                Some(raised) => format!("{} (raises {raised})", n.substitute),
+                None => format!(
+                    "{} (no signal sees this yet; it is still not a repair)",
+                    n.substitute
+                ),
+            };
+            (
+                json!({"id": n.id, "substitute": n.substitute, "raises": n.raises}),
+                line,
+            )
+        })
+        .collect()
+}
+
+/// `schema [result|exit-codes|signals|diagnostics]`: the JSON Schema of the envelope, the exit-code
+/// registry, the signal vocabulary, or the JSON Schema of `deep-diff-forge.diagnostics.v0`.
 pub fn schema(args: &[String]) -> Result<String, String> {
     let value = match args.first().map(String::as_str) {
         None | Some("result") => result_schema(),
         Some("exit-codes") => json!({
             "schema": EXIT_CODES_SCHEMA,
             "codes": EXIT_CODES.iter().map(entry_json).collect::<Vec<_>>(),
+            "refusals": crate::mcp::refusals_json(),
         }),
         Some("signals") => json!({
             "schema": SIGNALS_SCHEMA,
             "tool": tool(),
             "signals": deep_diff_forge_graph::vocabulary().iter().map(signal_json).collect::<Vec<_>>(),
         }),
+        Some("diagnostics") => diagnostics_schema(),
         Some(other) => {
             return Err(format!(
-                "unknown schema: {other} (result|exit-codes|signals)"
+                "unknown schema: {other} (result|exit-codes|signals|diagnostics)"
             ));
         }
     };
@@ -240,6 +316,88 @@ fn result_schema() -> Value {
             "truncated": {"type": "array", "items": {"enum": ["stdout", "stderr"]}},
         },
     })
+}
+
+/// The JSON Schema of `deep-diff-forge.diagnostics.v0`: members only added, so objects stay open;
+/// the codes and labels are the vocabulary's (`code_of`), the pinned table of the reference page.
+fn diagnostics_schema() -> Value {
+    let vocabulary = deep_diff_forge_graph::vocabulary();
+    let codes: Vec<String> = vocabulary
+        .iter()
+        .flat_map(|f| [true, false].map(|line| deep_diff_forge_graph::code_of(f.signal, line)))
+        .flatten()
+        .collect();
+    let labels: Vec<&str> = vocabulary
+        .iter()
+        .map(deep_diff_forge_graph::SignalFacts::label)
+        .collect();
+    let (count, hex) = (
+        json!({"type": "integer", "minimum": 0}),
+        json!({"type": "string", "pattern": "^[0-9a-f]{64}$"}),
+    );
+    let ids = json!({"type": "array", "items": {"type": "string"}});
+    let object = |required: &[&str], properties: Value| json!({"type": "object", "required": required, "properties": properties});
+    let diagnostic = object(
+        &[
+            "key",
+            "code",
+            "label",
+            "class",
+            "path",
+            "anchor",
+            "side",
+            "line",
+            "occurrence",
+            "reading",
+            "audience",
+            "repairs",
+            "not_accepted",
+        ],
+        json!({
+            "key": hex, "code": {"enum": codes}, "label": {"enum": labels},
+            "class": {"enum": ["security", "integrity", "shape"]}, "path": {"type": "string"},
+            "anchor": {"enum": ["line", "file"]}, "side": {"enum": ["new", "old", null]},
+            "line": {"type": ["integer", "null"]}, "occurrence": count,
+            "reading": {"enum": ["current", "floor_only"]}, "audience": {"enum": ["agent", "person"]},
+            "cases": ids, "repairs": ids, "not_accepted": ids,
+            "test_likely": {"type": "boolean"}, "judge_sees": {"type": "boolean"},
+        }),
+    );
+    let mut schema = object(
+        &[
+            "schema",
+            "input_sha256",
+            "tool",
+            "judge",
+            "counts",
+            "cut",
+            "diagnostics",
+            "texts",
+        ],
+        json!({
+            "schema": {"const": DIAGNOSTICS_SCHEMA}, "input_sha256": hex,
+            "tool": object(&["name", "version", "scorer_sha256"], json!({"scorer_sha256": hex})),
+            "judge": object(&["state", "ranker_sha256"], json!({
+                "state": {"enum": ["unknown", "same", "different", "none_admitted"]},
+                "ranker_sha256": {"type": ["string", "null"]},
+            })),
+            "counts": object(&["files", "diagnostics", "agent", "person", "cut_files"], json!({
+                "files": count, "diagnostics": count, "agent": count, "person": count, "cut_files": count,
+            })),
+            "cut": {"type": "array", "items": object(&["path", "rows_kept"], json!({"path": {"type": "string"}, "rows_kept": count}))},
+            "diagnostics": {"type": "array", "items": diagnostic},
+            "texts": {"type": "object", "additionalProperties": {"type": "string"}},
+        }),
+    );
+    schema["$schema"] = json!("https://json-schema.org/draft/2020-12/schema");
+    schema["$id"] = json!(format!(
+        "https://github.com/Louranicas/deep-diff-forge/schemas/{DIAGNOSTICS_SCHEMA}.json"
+    ));
+    schema["title"] = json!(DIAGNOSTICS_SCHEMA);
+    schema["description"] = json!(
+        "What `--diagnostics --json` prints: every label of the ranking of one input, at the evidence row that locates it or at its file (docs/reference/diagnostics.md). Members are only added, so readers ignore members they do not know."
+    );
+    schema
 }
 
 /// Read at most `cap` bytes and report whether more followed.
@@ -556,9 +714,24 @@ mod tests {
                 .starts_with("engine 0 (success)")
         );
         assert!(explain(&args(&["7", "4"])).is_err());
+        // F7.h1: the first line as before, then exit 7's reason classes, one line each.
+        let seven = explain(&args(&["7"])).unwrap();
+        assert!(
+            seven.starts_with(
+                "engine 7 (input_contract_refused): Input contract refused.\nA contract the caller asked for"
+            ),
+            "{seven}"
+        );
         assert_eq!(
-            explain(&args(&["7"])).unwrap(),
-            "engine 7 (input_contract_refused): Input contract refused.\n"
+            seven.lines().count(),
+            2 + deep_diff_forge_core::exit::REFUSALS.len(),
+            "{seven}"
+        );
+        assert!(
+            seven.contains(
+                "  require_all        (--require-all) stdout document, next review_evidence\n"
+            ),
+            "{seven}"
         );
         assert!(
             explain(&args(&["7", "--family", "council"]))
@@ -583,7 +756,7 @@ mod tests {
         assert_eq!(v["codes"].as_array().unwrap().len(), EXIT_CODES.len());
         assert_eq!(
             schema(&args(&["other"])).unwrap_err(),
-            "unknown schema: other (result|exit-codes|signals)"
+            "unknown schema: other (result|exit-codes|signals|diagnostics)"
         );
     }
 
@@ -663,6 +836,133 @@ mod tests {
             unsafe_added["native_lints"],
             json!([{"language": "Rust", "tool": "rustc", "rule": "unsafe_code"}])
         );
+    }
+
+    /// F7.c1 (contract design 3.4): `explain signal` is the people's channel and says so; its
+    /// agent form prints what an agent is shown: the same repairs, and of the substitutes only
+    /// the witnessed `agent` sentences.
+    #[test]
+    fn explain_signal_names_its_audience() {
+        let person = explain(&args(&["signal", "test_skipped"])).unwrap();
+        assert!(
+            person.ends_with("\naudience: person (deep-diff-forge explain signal test_skipped --audience agent prints what an agent is shown)\n"),
+            "{person}"
+        );
+        assert_eq!(
+            explain(&args(&["signal", "--audience", "person", "test_skipped"])).unwrap(),
+            person
+        );
+        let agent = explain(&args(&["signal", "test_skipped", "--audience", "agent"])).unwrap();
+        assert!(agent.ends_with("\naudience: agent\n"), "{agent}");
+        assert!(agent.contains("\naccept:\n  - Make the test pass and remove the skip.\n"));
+        assert!(
+            agent.contains("`#[test]`") && agent.contains("`assert!(true)`"),
+            "{agent}"
+        );
+        let json = |list: &[&str]| -> Value {
+            serde_json::from_str(&explain(&args(list)).unwrap()).unwrap()
+        };
+        let p = json(&["signal", "test_skipped", "--json"]);
+        let a = json(&["signal", "test_skipped", "--json", "--audience", "agent"]);
+        assert_eq!(
+            (&p["audience"], &a["audience"]),
+            (&json!("person"), &json!("agent"))
+        );
+        assert_eq!((&p["accept"], &p["why"]), (&a["accept"], &a["why"]));
+        let raised: Vec<&Value> = a["not_accepted"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| &n["raises"])
+            .collect();
+        assert_eq!(raised, [&json!("test_removed"), &json!("trivial_assert")]);
+        for label in deep_diff_forge_graph::vocabulary()
+            .iter()
+            .map(deep_diff_forge_graph::SignalFacts::label)
+        {
+            let agent = explain(&args(&["signal", label, "--audience", "agent"])).unwrap();
+            let a = json(&["signal", label, "--json", "--audience", "agent"]);
+            let remedy =
+                deep_diff_forge_graph::remedy(deep_diff_forge_graph::signal_named(label).unwrap());
+            // no people's sentence of a substitute, and no pointer back to the people's channel
+            for not in remedy.not_accepted {
+                assert!(!agent.contains(not.substitute), "{label}: {agent}");
+                assert!(!a.to_string().contains(not.substitute), "{label}: {a}");
+            }
+            assert!(!agent.contains("explain signal"), "{label}: {agent}");
+            let sentences = remedy
+                .not_accepted
+                .iter()
+                .filter(|n| n.agent.is_some())
+                .count();
+            assert_eq!(
+                a["not_accepted"].as_array().unwrap().len(),
+                sentences,
+                "{label}"
+            );
+            assert_eq!(
+                agent.contains("\nnot accepted:\n"),
+                sentences > 0,
+                "{label}"
+            );
+        }
+        assert_eq!(
+            explain(&args(&["signal", "new_file", "--audience", "model"])).unwrap_err(),
+            "--audience takes agent or person"
+        );
+        assert_eq!(
+            explain(&args(&["signal", "new_file", "--audience"])).unwrap_err(),
+            "--audience takes agent or person"
+        );
+    }
+
+    /// F1.a2: `signal-explain.v0` names the vocabulary id of every repair (`accept_ids`, in the
+    /// order of `accept`) and of every substitute it shows (`id`), for both audiences, and each
+    /// id is one of the pinned `fixtures/diagnostics/ids.v0.txt`.
+    #[test]
+    fn explain_signal_names_the_id_of_every_entry() {
+        let pinned = include_str!("../../../fixtures/diagnostics/ids.v0.txt");
+        let pinned: Vec<&str> = pinned.lines().collect();
+        let doc = |list: &[&str]| -> Value {
+            serde_json::from_str(&explain(&args(list)).unwrap()).unwrap()
+        };
+        for facts in deep_diff_forge_graph::vocabulary() {
+            let label = facts.label();
+            let remedy = deep_diff_forge_graph::remedy(facts.signal);
+            for audience in ["person", "agent"] {
+                let v = doc(&["signal", label, "--json", "--audience", audience]);
+                let ids = v["accept_ids"].as_array().expect("accept_ids");
+                assert_eq!(
+                    *ids,
+                    json!(remedy.accept_ids).as_array().unwrap().clone(),
+                    "{label}"
+                );
+                assert_eq!(ids.len(), v["accept"].as_array().unwrap().len(), "{label}");
+                let shown = v["not_accepted"].as_array().unwrap();
+                for entry in shown {
+                    let id = entry["id"]
+                        .as_str()
+                        .unwrap_or_else(|| panic!("{label}: {entry}"));
+                    let not = remedy.not_accepted.iter().find(|n| n.id == id).unwrap();
+                    let text = if audience == "agent" {
+                        not.agent
+                    } else {
+                        Some(not.substitute)
+                    };
+                    let member = if audience == "agent" {
+                        "agent"
+                    } else {
+                        "substitute"
+                    };
+                    assert_eq!(entry[member].as_str(), text, "{id}");
+                }
+                for id in ids.iter().chain(shown.iter().map(|e| &e["id"])) {
+                    let id = id.as_str().unwrap();
+                    assert!(pinned.contains(&id), "{id} is not pinned");
+                    assert!(id.starts_with(&format!("{label}:")), "{id}");
+                }
+            }
+        }
     }
 
     #[test]

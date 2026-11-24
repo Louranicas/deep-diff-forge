@@ -177,7 +177,20 @@ pub(crate) struct Item {
     /// For a panic path: every one found on this line stands inside the braces of an item whose
     /// attribute spells a test. A hint, never proof ([`TestStretch`]).
     pub test_likely: bool,
+    /// For a panic path, its forms on this line: [`BY_CALL`] (`unwrap`, `expect`), [`BY_MACRO`]
+    /// (`panic!`, `unreachable!`), or both; 0 for every other signal. The case of a diagnostic
+    /// (since 0.11.0, F2a, ruling 6): its repairs differ.
+    pub forms: u8,
 }
+
+/// [`Item::forms`]: a call that panics on failure.
+pub(crate) const BY_CALL: u8 = 1;
+/// [`Item::forms`]: a macro that panics where it is reached.
+pub(crate) const BY_MACRO: u8 = 2;
+/// [`Item::forms`] of a skipped test: an inner `#![cfg(…)]` that is not the first item of a module
+/// of tests, taken to be its file's; it skips tests only in a file that is test code by its path,
+/// and the reading of the file keeps it only there (`evidence::file_found`).
+pub(crate) const IN_A_FILE: u8 = 4;
 
 /// What the reader found on the two sides of a hunk, each sorted by line and then by signal,
 /// one item for each pair of them.
@@ -244,15 +257,24 @@ enum Word {
     DebugAssert,
     AssertEq,
     DebugAssertEq,
+    AssertNe,
+    DebugAssertNe,
     Todo,
     Unimplemented,
+    Panic,
+    Unreachable,
     Ignore,
     CfgAttr,
     Cfg,
+    Any,
+    All,
+    Not,
     Test,
     Rstest,
     Tokio,
     True,
+    False,
+    Nan,
     Result,
     Option,
     Command,
@@ -276,6 +298,8 @@ enum Word {
     Become,
     Do,
     Yeet,
+    Let,
+    Underscore,
     Other,
 }
 
@@ -315,22 +339,31 @@ impl Word {
 }
 
 /// The words the reader knows ([`Word::of`]).
-const WORDS: [(&[u8], Word); 38] = [
+const WORDS: [(&[u8], Word); 49] = [
     (b"unwrap", Word::Unwrap),
     (b"expect", Word::Expect),
     (b"assert", Word::Assert),
     (b"debug_assert", Word::DebugAssert),
     (b"assert_eq", Word::AssertEq),
     (b"debug_assert_eq", Word::DebugAssertEq),
+    (b"assert_ne", Word::AssertNe),
+    (b"debug_assert_ne", Word::DebugAssertNe),
     (b"todo", Word::Todo),
     (b"unimplemented", Word::Unimplemented),
+    (b"panic", Word::Panic),
+    (b"unreachable", Word::Unreachable),
     (b"ignore", Word::Ignore),
     (b"cfg_attr", Word::CfgAttr),
     (b"cfg", Word::Cfg),
+    (b"any", Word::Any),
+    (b"all", Word::All),
+    (b"not", Word::Not),
     (b"test", Word::Test),
     (b"rstest", Word::Rstest),
     (b"tokio", Word::Tokio),
     (b"true", Word::True),
+    (b"false", Word::False),
+    (b"NAN", Word::Nan),
     (b"Result", Word::Result),
     (b"Option", Word::Option),
     (b"Command", Word::Command),
@@ -354,6 +387,8 @@ const WORDS: [(&[u8], Word); 38] = [
     (b"become", Word::Become),
     (b"do", Word::Do),
     (b"yeet", Word::Yeet),
+    (b"let", Word::Let),
+    (b"_", Word::Underscore),
 ];
 
 /// The names of [`WORDS`], for the test that ranks a long line of each.
@@ -373,8 +408,11 @@ enum What {
 
 /// One token and where it stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Token {
+struct Token<'a> {
     what: What,
+    /// Its bytes in the code view: an assertion's operands are compared by them (since 0.11.0,
+    /// F2a).
+    text: &'a str,
     /// The index of its line in `hunk.lines`.
     line: usize,
     /// The byte column it starts at.
@@ -403,9 +441,9 @@ struct Tokens<'a, I> {
 }
 
 impl<'a, I: Iterator<Item = SideLine<'a>>> Iterator for Tokens<'a, I> {
-    type Item = Token;
+    type Item = Token<'a>;
 
-    fn next(&mut self) -> Option<Token> {
+    fn next(&mut self) -> Option<Token<'a>> {
         loop {
             let Some(line) = self.line else {
                 self.line = Some(self.lines.next()?);
@@ -438,6 +476,7 @@ impl<'a, I: Iterator<Item = SideLine<'a>>> Iterator for Tokens<'a, I> {
             };
             return Some(Token {
                 what,
+                text: line.code.get(column..self.at).unwrap_or_default(),
                 line: line.index,
                 column,
                 changed: line.changed,
@@ -451,7 +490,7 @@ impl<'a, I: Iterator<Item = SideLine<'a>>> Iterator for Tokens<'a, I> {
 /// never held whole (a side of 60 MiB of `}` is as many tokens).
 struct Window<'a, I> {
     source: Tokens<'a, I>,
-    held: Vec<Token>,
+    held: Vec<Token<'a>>,
     /// The current token's place in `held`.
     at: usize,
 }
@@ -491,11 +530,11 @@ impl<'a, I: Iterator<Item = SideLine<'a>>> Window<'a, I> {
     }
 
     /// The token at place `at` of the window, if it holds one there.
-    fn token(&self, at: usize) -> Option<Token> {
+    fn token(&self, at: usize) -> Option<Token<'a>> {
         self.held.get(at).copied()
     }
 
-    fn here(&self) -> Option<Token> {
+    fn here(&self) -> Option<Token<'a>> {
         self.token(self.at)
     }
 
@@ -610,6 +649,26 @@ impl<'a, I: Iterator<Item = SideLine<'a>>> Window<'a, I> {
         None
     }
 
+    /// Whether the tokens from `a.0` to `a.1` are those from `b.0` to `b.1`, one by one, and
+    /// none is a quote (the code view blanks the text of a string or a character, so `"a"` and
+    /// `"b"` would be the same), the name `NAN` (`f64::NAN == f64::NAN` is false), or a `(`, `{`
+    /// or `!`: a call, a block or a macro can answer otherwise each time, and the same call on
+    /// both sides is how a test checks that code is deterministic (`assert_eq!(rank(&files),
+    /// rank(&files))`: seven such lines in this project's history, none of which cannot fail).
+    fn same(&self, a: (usize, usize), b: (usize, usize)) -> bool {
+        a.1 - a.0 == b.1 - b.0
+            && (0..=a.1 - a.0).all(|k| match (self.token(a.0 + k), self.token(b.0 + k)) {
+                (Some(x), Some(y)) => {
+                    x.text == y.text
+                        && !matches!(
+                            x.what,
+                            What::Mark(b'"' | b'\'' | b'(' | b'{' | b'!') | What::Name(Word::Nan)
+                        )
+                }
+                _ => false,
+            })
+    }
+
     /// The first changed line among the tokens from `first` to `last`, and the rung a construct
     /// made of them stands on: `lexical` on one line, `hunk` over several.
     fn extent(&self, first: usize, last: usize) -> (Option<usize>, Basis) {
@@ -722,8 +781,473 @@ fn trivial_assert<'a, I: Iterator<Item = SideLine<'a>>>(
     (window.marks(next, b',') || window.marks(next, close)).then_some((at, next))
 }
 
+/// What an assertion asks of its operands: `assert!` and `debug_assert!` that the one is true,
+/// the `_eq` forms that the two are equal, the `_ne` forms that they differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Asks {
+    True,
+    Equal,
+    Unequal,
+}
+
+/// An operand's value as far as its tokens alone give it ([`operand`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Value {
+    Bool(bool),
+    /// An integer literal.
+    Int(i128),
+    /// Anything else; for one run of tokens with none of the reading's operators in it, the
+    /// places of its first and last token, which [`Window::same`] compares.
+    Unknown(Option<(usize, usize)>),
+}
+
+/// The comparisons, which hold or not by how two values are ordered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Compare {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+impl Compare {
+    fn holds(self, order: std::cmp::Ordering) -> bool {
+        use std::cmp::Ordering::{Equal, Greater, Less};
+        match self {
+            Self::Eq => order == Equal,
+            Self::Ne => order != Equal,
+            Self::Lt => order == Less,
+            Self::Le => order != Greater,
+            Self::Gt => order == Greater,
+            Self::Ge => order != Less,
+        }
+    }
+}
+
+/// The operators [`operand`] knows, and an open parenthesis on its stack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Operator {
+    Open,
+    Or,
+    And,
+    Compare(Compare),
+    Not,
+}
+
+impl Operator {
+    /// How tightly it binds, as in Rust: `!`, then the comparisons, `&&`, `||`.
+    const fn binds(self) -> u8 {
+        match self {
+            Self::Open => 0,
+            Self::Or => 1,
+            Self::And => 2,
+            Self::Compare(_) => 3,
+            Self::Not => 4,
+        }
+    }
+
+    /// `left self right` ([`Self::Not`] takes `left` alone): `||` is true where either side is
+    /// (`x || true` too: whatever `x` is, the condition is not false), `&&` false where either
+    /// is; a comparison of two literals, or of two runs of the same tokens (`x == x`).
+    fn apply<'a, I: Iterator<Item = SideLine<'a>>>(
+        self,
+        window: &Window<'a, I>,
+        left: Value,
+        right: Value,
+    ) -> Value {
+        use Value::{Bool, Int, Unknown};
+        match (self, left, right) {
+            (Self::Not, Bool(value), _) => Bool(!value),
+            (Self::Or, Bool(true), _) | (Self::Or, _, Bool(true)) => Bool(true),
+            (Self::Or, Bool(false), Bool(false)) | (Self::And, Bool(true), Bool(true)) => {
+                Bool(self == Self::And)
+            }
+            (Self::And, Bool(false), _) | (Self::And, _, Bool(false)) => Bool(false),
+            (Self::Compare(compare), Bool(a), Bool(b)) => Bool(compare.holds(a.cmp(&b))),
+            (Self::Compare(compare), Int(a), Int(b)) => Bool(compare.holds(a.cmp(&b))),
+            (Self::Compare(compare), Unknown(Some(a)), Unknown(Some(b))) if window.same(a, b) => {
+                Bool(compare.holds(std::cmp::Ordering::Equal))
+            }
+            _ => Unknown(None),
+        }
+    }
+}
+
+/// The operator at `at` and how many tokens it is: `&&`, `||` and the comparisons.
+fn operator<'a, I: Iterator<Item = SideLine<'a>>>(
+    window: &Window<'a, I>,
+    at: usize,
+) -> Option<(Operator, usize)> {
+    use Compare as C;
+    let pairs = [
+        (b'&', b'&', Operator::And),
+        (b'|', b'|', Operator::Or),
+        (b'=', b'=', Operator::Compare(C::Eq)),
+        (b'!', b'=', Operator::Compare(C::Ne)),
+        (b'<', b'=', Operator::Compare(C::Le)),
+        (b'>', b'=', Operator::Compare(C::Ge)),
+    ];
+    if let Some((_, _, operator)) = pairs.iter().find(|(a, b, _)| window.pair(at, *a, *b)) {
+        return Some((*operator, 2));
+    }
+    if window.marks(at, b'<') {
+        return Some((Operator::Compare(C::Lt), 1));
+    }
+    (window.marks(at, b'>') && !window.arrow(at)).then_some((Operator::Compare(C::Gt), 1))
+}
+
+/// The integer literal at `at`, a `-` before one too, and the place after it: decimal, `0x`,
+/// `0o` or `0b`, with `_` and an integer type's suffix or none.
+fn literal<'a, I: Iterator<Item = SideLine<'a>>>(
+    window: &Window<'a, I>,
+    at: usize,
+) -> Option<(i128, usize)> {
+    const SUFFIXES: [&str; 12] = [
+        "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize",
+    ];
+    let (negative, at) = if window.marks(at, b'-') {
+        (true, at + 1)
+    } else {
+        (false, at)
+    };
+    let text = window.token(at)?.text;
+    if !text.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    let text = SUFFIXES
+        .iter()
+        .find_map(|suffix| text.strip_suffix(suffix))
+        .unwrap_or(text)
+        .replace('_', "");
+    let (digits, radix) = match text.get(..2) {
+        Some("0x") => (&text[2..], 16),
+        Some("0o") => (&text[2..], 8),
+        Some("0b") => (&text[2..], 2),
+        _ => (text.as_str(), 10),
+    };
+    let value = i128::from_str_radix(digits, radix).ok()?;
+    Some((if negative { -value } else { value }, at + 1))
+}
+
+/// The end of a run of tokens from `at`: up to an operator of [`operator`] or a `)` outside
+/// its own brackets, or `to`. Generic arguments after `::` are passed over whole. `None` for a
+/// `]` or `}` that closes nothing of it, or a lone `=`.
+fn run<'a, I: Iterator<Item = SideLine<'a>>>(
+    window: &Window<'a, I>,
+    mut at: usize,
+    to: usize,
+) -> Option<usize> {
+    let mut depth = 0usize;
+    while at < to {
+        if depth == 0 && (operator(window, at).is_some() || window.marks(at, b')')) {
+            break;
+        }
+        match window.token(at)?.what {
+            What::Mark(b'(' | b'[' | b'{') => depth += 1,
+            What::Mark(b')' | b']' | b'}') => depth = depth.checked_sub(1)?,
+            What::Mark(b'=') if depth == 0 => return None,
+            What::Mark(b':') if window.path(at) && window.marks(at + 2, b'<') => {
+                at = window.closes(at + 2)?;
+            }
+            _ => {}
+        }
+        at += 1;
+    }
+    (depth == 0).then_some(at)
+}
+
+/// The value of the operand whose tokens are from `from` to before `to`, read once from the
+/// left with two stacks (nothing recurses): `!`, parentheses, `&&`, `||`, the six
+/// comparisons, `true`, `false`, integer literals and runs of other tokens ([`run`]). `None`
+/// for a shape it does not read.
+fn operand<'a, I: Iterator<Item = SideLine<'a>>>(
+    window: &Window<'a, I>,
+    from: usize,
+    to: usize,
+) -> Option<Value> {
+    let (mut values, mut operators) = (Vec::<Value>::new(), Vec::<Operator>::new());
+    let reduce = |values: &mut Vec<Value>, operator: Operator| {
+        let right = values.pop()?;
+        let left = values.pop()?;
+        values.push(operator.apply(window, left, right));
+        Some(())
+    };
+    // a value is whole: the prefixes before it apply
+    let push = |values: &mut Vec<Value>, operators: &mut Vec<Operator>, mut value: Value| {
+        while operators.last() == Some(&Operator::Not) {
+            operators.pop();
+            value = Operator::Not.apply(window, value, value);
+        }
+        values.push(value);
+    };
+    let (mut at, mut value_next) = (from, true);
+    while at < to {
+        if value_next {
+            let ends =
+                |at: usize| at >= to || window.marks(at, b')') || operator(window, at).is_some();
+            let (value, end) = match window.token(at)?.what {
+                What::Mark(b'!' | b'(') => {
+                    let open = window.marks(at, b'(');
+                    operators.push(if open { Operator::Open } else { Operator::Not });
+                    at += 1;
+                    continue;
+                }
+                What::Name(word @ (Word::True | Word::False)) if ends(at + 1) => {
+                    (Value::Bool(word == Word::True), at + 1)
+                }
+                _ => {
+                    if let Some((value, end)) = literal(window, at).filter(|(_, end)| ends(*end)) {
+                        (Value::Int(value), end)
+                    } else {
+                        let end = run(window, at, to).filter(|end| *end > at)?;
+                        (Value::Unknown(Some((at, end - 1))), end)
+                    }
+                }
+            };
+            push(&mut values, &mut operators, value);
+            (at, value_next) = (end, false);
+        } else if window.marks(at, b')') {
+            loop {
+                match operators.pop()? {
+                    Operator::Open => break,
+                    operator => reduce(&mut values, operator)?,
+                }
+            }
+            let value = values.pop()?;
+            push(&mut values, &mut operators, value);
+            at += 1;
+        } else {
+            let (operator, length) = operator(window, at)?;
+            while let Some(&top) = operators.last()
+                && top != Operator::Open
+                && top.binds() >= operator.binds()
+            {
+                operators.pop();
+                reduce(&mut values, top)?;
+            }
+            operators.push(operator);
+            (at, value_next) = (at + length, true);
+        }
+    }
+    if value_next {
+        return None;
+    }
+    while let Some(operator) = operators.pop() {
+        if operator == Operator::Open {
+            return None;
+        }
+        reduce(&mut values, operator)?;
+    }
+    (values.len() == 1).then(|| values[0])
+}
+
+/// An assertion that cannot fail, read as a class (since 0.11.0, F2a), when the current token
+/// is an assertion's word: `!`, an opening bracket, then its operands up to the first comma
+/// outside brackets each (one, or two for the `_eq` and `_ne` forms), within [`AHEAD`] tokens.
+/// `assert!` whose operand is true by its tokens alone (`!false`, `(true)`, `1 == 1`,
+/// `true || x`, `x == x`); `assert_eq!` whose operands are equal literals or the same tokens
+/// (`x, x`; `v.0, v.0`); `assert_ne!` whose operands are unequal literals (`1, 2`). Not read
+/// ([`Window::same`]): the same call, block or macro on both sides (`f(2), f(2)`, which can
+/// answer otherwise each time), `NAN`, and two strings or characters, which the code view
+/// blanks; nor what holds only by the type (`v.is_ok() || v.is_err()`, `matches!(v, _)`). The construct is from the word to the comma or bracket after the last
+/// operand, so a change of the message alone is none.
+fn cannot_fail<'a, I: Iterator<Item = SideLine<'a>>>(
+    window: &Window<'a, I>,
+    asks: Asks,
+) -> Option<(usize, usize)> {
+    let at = window.at;
+    if !window.marks(at + 1, b'!') {
+        return None;
+    }
+    let What::Mark(open) = window.token(at + 2)?.what else {
+        return None;
+    };
+    let close = closer(open)?;
+    let wanted = if asks == Asks::True { 1 } else { 2 };
+    let (mut spans, mut found) = ([(0, 0); 2], 0);
+    let (mut start, mut next, mut depth) = (at + 3, at + 3, 0usize);
+    while found < wanted {
+        if next > at + AHEAD {
+            return None;
+        }
+        match window.token(next)?.what {
+            What::Mark(b'(' | b'[' | b'{') => depth += 1,
+            What::Mark(mark @ (b')' | b']' | b'}')) if depth == 0 => {
+                if mark != close || found + 1 != wanted {
+                    return None;
+                }
+                (spans[found], found) = ((start, next), found + 1);
+            }
+            What::Mark(b')' | b']' | b'}') => depth -= 1,
+            What::Mark(b',') if depth == 0 => {
+                (spans[found], found, start) = ((start, next), found + 1, next + 1);
+            }
+            What::Mark(b':') if window.path(next) && window.marks(next + 2, b'<') => {
+                next = window.closes(next + 2)?;
+            }
+            _ => {}
+        }
+        next += 1;
+    }
+    let value = |(from, to): (usize, usize)| operand(window, from, to);
+    let holds = match asks {
+        Asks::True => value(spans[0])?,
+        Asks::Equal | Asks::Unequal => {
+            let compare = if asks == Asks::Equal {
+                Compare::Eq
+            } else {
+                Compare::Ne
+            };
+            Operator::Compare(compare).apply(window, value(spans[0])?, value(spans[1])?)
+        }
+    };
+    (holds == Value::Bool(true)).then_some((at, spans[wanted - 1].1))
+}
+
+/// The calls of the standard library (and `killpg`) that answer with a `Result` whose error is
+/// a failure, and that code drops with `let _ =`: the last call of a dropped statement must be
+/// one of these for the drop to be read ([`dropped`]), with the number of arguments where a
+/// standard homonym that answers with no such `Result` takes another number: `join()` of a
+/// thread (`Path::join(p)` and a slice's `join(sep)` take one), `wait()` of a child
+/// (`Condvar::wait(guard)`, whose `Result` holds the lock's guard, takes one), `copy(a, b)` of
+/// `fs` and `io` (`ptr::copy` takes three). Homonyms with no token-level difference are stated
+/// limits: `Barrier::wait()`, `Vec::set_len(n)` (in `unsafe` code), and any type's own method
+/// of one of these names (`precision/b-homonyms.md` of lane w11G lists each).
+const FALLIBLE: [(&str, Option<usize>); 29] = [
+    ("remove_file", None),
+    ("remove_dir", None),
+    ("remove_dir_all", None),
+    ("create_dir", None),
+    ("create_dir_all", None),
+    ("rename", None),
+    ("copy", Some(2)),
+    ("hard_link", None),
+    ("set_permissions", None),
+    ("write_all", None),
+    ("flush", None),
+    ("sync_all", None),
+    ("sync_data", None),
+    ("set_len", None),
+    ("read_to_end", None),
+    ("read_to_string", None),
+    ("read_exact", None),
+    ("send", None),
+    ("try_send", None),
+    ("recv", None),
+    ("join", Some(0)),
+    ("kill", None),
+    ("killpg", None),
+    ("wait", Some(0)),
+    ("try_wait", None),
+    ("shutdown", None),
+    ("set_nonblocking", None),
+    ("set_read_timeout", None),
+    ("set_write_timeout", None),
+];
+
+/// How many arguments the call whose parentheses are at `open` and `close` has: commas outside
+/// its brackets and outside generic arguments written with `::<`, a comma before `)` not counted.
+fn arguments<'a, I: Iterator<Item = SideLine<'a>>>(
+    window: &Window<'a, I>,
+    open: usize,
+    close: usize,
+) -> Option<usize> {
+    if close == open + 1 {
+        return Some(0);
+    }
+    let (mut count, mut depth, mut at) = (1, 0usize, open + 1);
+    while at < close {
+        match window.token(at)?.what {
+            What::Mark(b'(' | b'[' | b'{') => depth += 1,
+            What::Mark(b')' | b']' | b'}') => depth = depth.checked_sub(1)?,
+            What::Mark(b',') if depth == 0 && at + 1 < close => count += 1,
+            What::Mark(b':') if window.path(at) && window.marks(at + 2, b'<') => {
+                at = window.closes(at + 2)?;
+            }
+            _ => {}
+        }
+        at += 1;
+    }
+    Some(count)
+}
+
+/// A result dropped by a statement (since 0.11.0, F2a), when the current token is `let` or
+/// `_`: `let _ =` (or `let _: Type =`), or `_ =` where a statement begins (after `;`, a brace or
+/// nothing the side shows), then an expression with no `?` in it whose last call, outside
+/// brackets, is one of [`FALLIBLE`] by name (a method or a path: `child.kill()`,
+/// `std::fs::remove_file(p)`), then `;`, within [`AHEAD`] tokens. The reader cannot know a
+/// call's type, so it reads only names whose standard function answers with a `Result`: on
+/// this project's history most other calls dropped this way were a `String` written with
+/// `write!`/`writeln!` (no error exists), a value computed for its effect in a test, or a
+/// function of the project (of 450 such lines a third dropped a `Result`). Not read: a call of
+/// another name (a function of the patch's own, `write!(…)`), a name that only begins with `_`
+/// (`let _e =`), a pattern (`let (_, _) =`), `.ok();`, `drop(…)`, an expression that ends
+/// otherwise (`.await`, a block), and `connect`, `bind`, `status`, `output` and `spawn`, names
+/// that other crates' calls with no `Result` share and that the paths of `network_fetch` and
+/// `process_spawn` already read. A method of one of the names read that answers with no
+/// `Result` (`Path::join`, `[…].join(…)`) is a false item.
+fn dropped<'a, I: Iterator<Item = SideLine<'a>>>(window: &Window<'a, I>) -> Option<(usize, usize)> {
+    let at = window.at;
+    let begins = |before: usize| b";{}".iter().any(|m| window.marks(before, *m));
+    let mut next = match window.word(at)? {
+        Word::Let if window.word(at + 1) == Some(Word::Underscore) => at + 2,
+        Word::Underscore if at.checked_sub(1).is_none_or(begins) => at + 1,
+        _ => return None,
+    };
+    let (mut depth, mut angles, mut open) = (0usize, 0usize, None);
+    if window.marks(next, b':') && !window.path(next) {
+        // the type, up to the `=` outside its brackets
+        next += 1;
+        while !(depth == 0 && angles == 0 && window.marks(next, b'=')) {
+            match window.token(next)?.what {
+                What::Mark(b'(' | b'[') => depth += 1,
+                What::Mark(b')' | b']') => depth = depth.checked_sub(1)?,
+                What::Mark(b'<') => angles += 1,
+                What::Mark(b'>') if !window.arrow(next) => angles = angles.checked_sub(1)?,
+                What::Mark(b';' | b'{' | b'}') => return None,
+                _ => {}
+            }
+            next = (next < at + AHEAD).then_some(next + 1)?;
+        }
+    }
+    if !window.marks(next, b'=') || window.pair(next, b'=', b'=') || window.pair(next, b'=', b'>') {
+        return None;
+    }
+    for end in next + 1..=at + AHEAD {
+        match window.token(end)?.what {
+            What::Mark(b'?') => return None,
+            What::Mark(b'(') if depth == 0 => {
+                open = Some(end);
+                depth = 1;
+            }
+            What::Mark(b'(' | b'[' | b'{') => depth += 1,
+            What::Mark(b')' | b']' | b'}') => depth = depth.checked_sub(1)?,
+            What::Mark(b';') if depth == 0 => {
+                // the `(` that the last `)` closes follows the name of what is called
+                let called = open.is_some_and(|open| {
+                    let Some(name) = open.checked_sub(1).and_then(|n| window.token(n)) else {
+                        return false;
+                    };
+                    let known = FALLIBLE.iter().find(|(known, _)| *known == name.text);
+                    matches!(name.what, What::Name(_))
+                        && known.is_some_and(|(_, count)| {
+                            count
+                                .is_none_or(|count| arguments(window, open, end - 1) == Some(count))
+                        })
+                });
+                return (called && window.marks(end - 1, b')')).then_some((at, end));
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// A placeholder, when the current token is `todo` or `unimplemented`: `!` and an opening
-/// bracket.
+/// bracket. The same shape is a panic path when the token is `panic` or `unreachable` (since
+/// 0.11.0, F2a): `panic!(…)` and `unreachable!(…)` stop the program where they are reached.
 fn stub<'a, I: Iterator<Item = SideLine<'a>>>(window: &Window<'a, I>) -> Option<(usize, usize)> {
     let at = window.at;
     let opened = matches!(window.token(at + 2)?.what, What::Mark(mark) if closer(mark).is_some());
@@ -773,8 +1297,8 @@ fn ignored<'a, I: Iterator<Item = SideLine<'a>>>(window: &Window<'a, I>) -> Opti
 /// independent review, IR3-L-4: only the bare three were read).
 fn test_attribute<'a, I: Iterator<Item = SideLine<'a>>>(
     window: &Window<'a, I>,
+    at: usize,
 ) -> Option<(usize, usize)> {
-    let at = window.at;
     if !window.marks(at + 1, b'[') {
         return None;
     }
@@ -784,6 +1308,226 @@ fn test_attribute<'a, I: Iterator<Item = SideLine<'a>>>(
         _ => return None,
     };
     (window.marks(end, b']') || window.marks(end, b'(')).then_some((at, end))
+}
+
+/// What a `cfg` predicate is in a build of the tests: true, false, or true on some platforms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Holds {
+    Yes,
+    No,
+    Depends,
+}
+
+impl Holds {
+    /// `self` and `other` taken together by `any` (`or`) or by `all`.
+    fn join(self, other: Self, or: bool) -> Self {
+        let (wins, loses) = if or {
+            (Self::Yes, Self::No)
+        } else {
+            (Self::No, Self::Yes)
+        };
+        if self == wins || other == wins {
+            wins
+        } else if self == loses && other == loses {
+            loses
+        } else {
+            Self::Depends
+        }
+    }
+}
+
+/// Whether the predicate of `#[cfg(…)]` from `from` to before `to` switches a test off: it is
+/// false in every default build of the tests (`cargo test` on any platform, no feature and no
+/// cfg of the build's own set): `any()`, `all(any())`, `not(all())`, `not(test)`, `FALSE`,
+/// `feature = "…"`, `fw_fixture`. `test` holds; the platform's predicates (`unix`, `windows`,
+/// every `target_…`, `panic`, `miri`, `debug_assertions`) and one with arguments of its own
+/// (`version(…)`) may hold; every other name is unset, so `not(fw_fixture)` holds (the tests run
+/// by default, and a special build leaves them out: no skip). `any`, `all` and `not` combine
+/// them, read with one stack. `None` for tokens a predicate does not have.
+fn switched_off<'a, I: Iterator<Item = SideLine<'a>>>(
+    window: &Window<'a, I>,
+    from: usize,
+    to: usize,
+) -> Option<bool> {
+    const PLATFORM: [&str; 5] = ["unix", "windows", "panic", "miri", "debug_assertions"];
+    // the lists open: `any` (or), `all` or `not`, and what their arguments give so far
+    let mut lists: Vec<(Option<Word>, Option<Holds>)> = vec![(None, None)];
+    let mut at = from;
+    while at < to {
+        let token = window.token(at)?;
+        let value = match token.what {
+            What::Mark(b',') => None,
+            What::Mark(b')') => {
+                let (word, held) = lists.pop()?;
+                Some(match (word?, held) {
+                    (Word::Any, held) => held.unwrap_or(Holds::No),
+                    (Word::All, held) => held.unwrap_or(Holds::Yes),
+                    (_, Some(Holds::Yes)) => Holds::No,
+                    (_, Some(Holds::No)) => Holds::Yes,
+                    (_, held) => held?,
+                })
+            }
+            What::Name(word @ (Word::Any | Word::All | Word::Not))
+                if window.marks(at + 1, b'(') =>
+            {
+                lists.push((Some(word), None));
+                at += 1;
+                None
+            }
+            What::Name(_) if window.marks(at + 1, b'(') => {
+                // a predicate with arguments of its own (`version(…)`): it may hold
+                at = window.matching(at + 1)?;
+                Some(Holds::Depends)
+            }
+            What::Name(word) => {
+                let name = token.text;
+                // `key = "…"`: the string is blank in the code view, its quotes are two tokens
+                if window.marks(at + 1, b'=') && window.marks(at + 2, b'"') {
+                    at = (at + 3..to).find(|q| window.marks(*q, b'"'))?;
+                }
+                Some(if word == Word::Test {
+                    Holds::Yes
+                } else if PLATFORM.contains(&name) || name.starts_with("target_") {
+                    Holds::Depends
+                } else {
+                    Holds::No
+                })
+            }
+            What::Mark(_) => return None,
+        };
+        if let Some(value) = value {
+            let (word, held) = lists.last_mut()?;
+            *held = Some(match (*word, *held) {
+                (_, None) => value,
+                (Some(Word::Any), Some(was)) => was.join(value, true),
+                (Some(Word::All), Some(was)) => was.join(value, false),
+                // a second argument of `not`, or of the predicate itself
+                _ => return None,
+            });
+        }
+        at += 1;
+    }
+    match lists[..] {
+        [(None, Some(held))] => Some(held == Holds::No),
+        _ => None,
+    }
+}
+
+/// Whether `name` names a module of tests: `test`, `tests`, or a name that ends in `_test` or
+/// `_tests`.
+fn tests_module(name: &str) -> bool {
+    matches!(name, "test" | "tests") || name.ends_with("_test") || name.ends_with("_tests")
+}
+
+/// The place of the name of a module of tests declared from `at`: `mod tests`, `pub mod tests`,
+/// `pub(crate) mod tests`.
+fn module_of_tests<'a, I: Iterator<Item = SideLine<'a>>>(
+    window: &Window<'a, I>,
+    mut at: usize,
+) -> Option<usize> {
+    if window.token(at)?.text == "pub" {
+        at += 1;
+        if window.marks(at, b'(') {
+            at = window.matching(at)? + 1;
+        }
+    }
+    (window.token(at)?.text == "mod" && tests_module(window.token(at + 1)?.text)).then_some(at + 1)
+}
+
+/// The skipped test of the constructs from `one.0` to `one.1` and from `other.0` to `other.1`:
+/// on the first changed line of the two, on [`Basis::Hunk`] when they begin on two lines.
+fn skipped<'a, I: Iterator<Item = SideLine<'a>>>(
+    window: &Window<'a, I>,
+    one: (usize, usize),
+    other: (usize, usize),
+) -> Option<Item> {
+    let (first, rung) = window.extent(one.0, one.1);
+    let (second, basis) = window.extent(other.0, other.1);
+    let line = match (first, second) {
+        (Some(a), Some(b)) => a.min(b),
+        (a, b) => a.or(b)?,
+    };
+    let apart = window.held[one.0].line != window.held[other.0].line;
+    Some(Item {
+        line,
+        signal: EvidenceSignal::TestSkipped,
+        basis: if apart { Basis::Hunk } else { rung.max(basis) },
+        test_likely: false,
+        forms: 0,
+    })
+}
+
+/// A module or a file of tests compiled out by an inner attribute (since 0.11.0, F2a), when the
+/// current token is `#`: `#![cfg(…)]` whole, whose predicate switches it off ([`switched_off`]).
+/// Right after the `{` of a module of tests ([`tests_module`]) it is that module's; anywhere
+/// else it is taken to be its file's ([`IN_A_FILE`]): the reader does not know the path, and an
+/// inner attribute inside another module or a function is read the same way.
+fn compiled_out_inner<'a, I: Iterator<Item = SideLine<'a>>>(
+    window: &Window<'a, I>,
+) -> Option<Item> {
+    let at = window.at;
+    let inner = window.marks(at + 1, b'!')
+        && window.marks(at + 2, b'[')
+        && window.word(at + 3) == Some(Word::Cfg)
+        && window.marks(at + 4, b'(');
+    if !inner {
+        return None;
+    }
+    let close = window.matching(at + 2)?;
+    if window.matching(at + 4) != Some(close - 1)
+        || switched_off(window, at + 5, close - 1) != Some(true)
+    {
+        return None;
+    }
+    let module = at.checked_sub(3).filter(|module| {
+        window.marks(at - 1, b'{')
+            && window.token(*module).is_some_and(|m| m.text == "mod")
+            && window
+                .token(module + 1)
+                .is_some_and(|name| tests_module(name.text))
+    });
+    let (line, basis) = window.extent(module.unwrap_or(at), close);
+    Some(Item {
+        line: line?,
+        signal: EvidenceSignal::TestSkipped,
+        basis,
+        test_likely: false,
+        forms: if module.is_some() { 0 } else { IN_A_FILE },
+    })
+}
+
+/// A test compiled out (since 0.11.0, F2a), when the current token is `#`: among the whole
+/// outer attributes that follow one another from here, within [`AHEAD`] tokens, a test's
+/// attribute ([`test_attribute`]) and `#[cfg(…)]` whose predicate switches it off
+/// ([`switched_off`]), in either order: `#[cfg(any())] #[test]`. The item is on the first
+/// changed line of the two attributes (a test added under such a `cfg` is one too), with the
+/// rung of the two. The same holds for a module of tests ([`module_of_tests`]) declared right
+/// after the attributes (`#[cfg(any())] #[cfg(test)] mod tests`): a module of another name is
+/// production code, and compiling it out skips no test. Not read: a test attribute that
+/// `cfg_attr` applies; a module whose `mod` line the side does not show.
+fn compiled_out<'a, I: Iterator<Item = SideLine<'a>>>(window: &Window<'a, I>) -> Option<Item> {
+    let (mut at, mut test, mut off) = (window.at, None, None);
+    while window.marks(at, b'#') && window.marks(at + 1, b'[') && at < window.at + AHEAD {
+        let close = window.matching(at + 1)?;
+        if test_attribute(window, at).is_some() {
+            test = test.or(Some((at, close)));
+        }
+        let whole = window.matching(at + 3) == Some(close - 1);
+        if off.is_none()
+            && window.word(at + 2) == Some(Word::Cfg)
+            && whole
+            && switched_off(window, at + 4, close - 1) == Some(true)
+        {
+            off = Some((at, close));
+        }
+        if let (Some(test), Some(off)) = (test, off) {
+            return skipped(window, test, off);
+        }
+        at = close + 1;
+    }
+    let off = off.filter(|_| test.is_none())?;
+    let name = module_of_tests(window, at)?;
+    skipped(window, off, (at, name))
 }
 
 /// How many names before the last one are passed over in `<a::b::Name>::function`
@@ -909,7 +1653,9 @@ fn released_path<'a, I: Iterator<Item = SideLine<'a>>>(
 }
 
 /// `#[allow(` and `#![allow(`, when the current token is `#`: what release 0.8.3 keyed
-/// `check_suppressed` on, with anything between the tokens (a comment, a line end).
+/// `check_suppressed` on, with anything between the tokens (a comment, a line end); and since
+/// 0.11.0 `#[expect(` and `#![expect(`, which switch the lint off as `allow` does (and report
+/// only when it would not have fired).
 fn allowed<'a, I: Iterator<Item = SideLine<'a>>>(window: &Window<'a, I>) -> Option<(usize, usize)> {
     let at = window.at;
     let open = if window.marks(at + 1, b'!') {
@@ -918,14 +1664,14 @@ fn allowed<'a, I: Iterator<Item = SideLine<'a>>>(window: &Window<'a, I>) -> Opti
         at + 1
     };
     (window.marks(open, b'[')
-        && window.word(open + 1) == Some(Word::Allow)
+        && matches!(window.word(open + 1), Some(Word::Allow | Word::Expect))
         && window.marks(open + 2, b'('))
     .then_some((at, open + 2))
 }
 
 /// The signals the reader gives, in the order of [`EvidenceSignal`], which is the order its
 /// items come out in for one line.
-const READ: [EvidenceSignal; 8] = [
+const READ: [EvidenceSignal; 9] = [
     EvidenceSignal::ProcessSpawn,
     EvidenceSignal::NetworkFetch,
     EvidenceSignal::CheckSuppressed,
@@ -933,6 +1679,7 @@ const READ: [EvidenceSignal; 8] = [
     EvidenceSignal::TestSkipped,
     EvidenceSignal::TrivialAssert,
     EvidenceSignal::StubAdded,
+    EvidenceSignal::ErrorSwallowed,
     EvidenceSignal::PanicPathAdded,
 ];
 
@@ -945,7 +1692,7 @@ pub(crate) fn reads(signal: EvidenceSignal, old_side: bool) -> bool {
 
 /// What one line holds: for each of [`READ`], the basis and the hint of the constructs of that
 /// signal found on it so far, taken together.
-type OnLine = [Option<(Basis, bool)>; READ.len()];
+type OnLine = [Option<(Basis, bool, u8)>; READ.len()];
 
 /// What the reader found, as it finds it: one entry for each line that holds something, and in
 /// it one place for each signal. A construct found again on a line joins what is there.
@@ -989,8 +1736,12 @@ impl Found {
             }
         };
         on_line[place] = Some(match on_line[place] {
-            Some((basis, likely)) => (basis.max(item.basis), likely && item.test_likely),
-            None => (item.basis, item.test_likely),
+            Some((basis, likely, forms)) => (
+                basis.max(item.basis),
+                likely && item.test_likely,
+                forms | item.forms,
+            ),
+            None => (item.basis, item.test_likely, item.forms),
         });
     }
 
@@ -1001,7 +1752,7 @@ impl Found {
         window: &Window<'a, I>,
         signal: EvidenceSignal,
         (first, last): (usize, usize),
-        test_likely: bool,
+        (test_likely, forms): (bool, u8),
     ) {
         let (changed, basis) = window.extent(first, last);
         if let Some(line) = changed {
@@ -1010,6 +1761,7 @@ impl Found {
                 signal,
                 basis,
                 test_likely,
+                forms,
             });
         }
     }
@@ -1020,8 +1772,8 @@ impl Found {
         fn join(into: &mut OnLine, from: OnLine) {
             for (place, more) in from.into_iter().enumerate() {
                 into[place] = match (into[place], more) {
-                    (Some((basis, likely)), Some((other, also))) => {
-                        Some((basis.max(other), likely && also))
+                    (Some((basis, likely, forms)), Some((other, also, more))) => {
+                        Some((basis.max(other), likely && also, forms | more))
                     }
                     (was, more) => was.or(more),
                 };
@@ -1030,12 +1782,13 @@ impl Found {
         let mut out = Vec::new();
         let mut push = |line: usize, on_line: OnLine| {
             for (signal, held) in READ.into_iter().zip(on_line) {
-                if let Some((basis, test_likely)) = held {
+                if let Some((basis, test_likely, forms)) = held {
                     out.push(Item {
                         line,
                         signal,
                         basis,
                         test_likely,
+                        forms,
                     });
                 }
             }
@@ -1083,6 +1836,11 @@ struct List {
     /// its own: the first changed line of the list up to that `ignore`, and the line the
     /// `ignore` is on.
     candidate: Option<(Option<usize>, usize)>,
+    /// The argument is `allow` or `expect` so far, and a `(` next makes it the lint attribute:
+    /// as `candidate`.
+    lint: Option<(Option<usize>, usize)>,
+    /// The suppression it holds so far, as `skip` (since 0.11.0, F2b).
+    suppression: Option<(usize, Basis)>,
     /// The skip it holds so far: the first changed line of the list up to an `ignore` that is
     /// an attribute of its own, and the rung. It is noted only when the list closes and the
     /// attribute's `]` follows (a list past [`CFG_ATTR_LISTS`] is not followed at all).
@@ -1126,6 +1884,13 @@ impl List {
 /// `cfg_attr(all(), ignore(` goes on as anything (VD3R18-M-1). The one exception: a list opened
 /// past [`CFG_ATTR_LISTS`] is not followed and is taken to hold a skip, with no `ignore` and no
 /// `]` (a writer's false item; round 19 of Vesper's review, VD3R19-M-1; IR12-L-2).
+///
+/// By the same rule, since 0.11.0 (F2b), the conditional suppressions: an argument after a
+/// condition that is `allow(` or `expect(` (`cfg_attr(test, allow(dead_code))`, nested too)
+/// switches lints off where the condition holds, and is noted as `check_suppressed` when the
+/// attribute is whole; `serde(allow(…))`, another attribute's argument, is not. A list past
+/// [`CFG_ATTR_LISTS`] is taken to hold no suppression: an allowance nested that deep is not
+/// read (taking it, like the skip, would add a writer's false item, VD3R19-M-1).
 #[derive(Default)]
 struct Skips {
     open: Vec<List>,
@@ -1143,13 +1908,14 @@ impl Skips {
         changed.map(|line| (line, basis))
     }
 
-    /// Note a skip.
-    fn note(found: &mut Found, (line, basis): (usize, Basis)) {
+    /// Note a skip, or a suppression.
+    fn note(found: &mut Found, signal: EvidenceSignal, (line, basis): (usize, Basis)) {
         found.note(Item {
             line,
-            signal: EvidenceSignal::TestSkipped,
+            signal,
             basis,
             test_likely: false,
+            forms: 0,
         });
     }
 
@@ -1166,10 +1932,13 @@ impl Skips {
         });
         if closed && let Some(inner) = self.open.pop() {
             // the attribute is whole: its list closed here, and its `]` follows
-            if window.marks(window.at + 1, b']')
-                && let Some(skip) = inner.skip
-            {
-                Self::note(found, skip);
+            if window.marks(window.at + 1, b']') {
+                if let Some(skip) = inner.skip {
+                    Self::note(found, EvidenceSignal::TestSkipped, skip);
+                }
+                if let Some(suppression) = inner.suppression {
+                    Self::note(found, EvidenceSignal::CheckSuppressed, suppression);
+                }
             }
             if let Some(around) = self.open.last_mut() {
                 // the inner list's `(` was a bracket of the list around it, and so were its
@@ -1208,13 +1977,16 @@ impl Skips {
             tokens: 0,
             head: None,
             candidate: None,
+            lint: None,
+            suppression: None,
             skip: None,
             closed: false,
         };
         if self.open.len() >= CFG_ATTR_LISTS {
-            // not followed: taken to hold a skip
+            // not followed: taken to hold a skip (and no suppression: a list that deep is
+            // a declared limit of that reading)
             if let Some(skip) = Self::skip(&list, changed, token.line) {
-                Self::note(found, skip);
+                Self::note(found, EvidenceSignal::TestSkipped, skip);
             }
             return;
         }
@@ -1222,7 +1994,7 @@ impl Skips {
     }
 
     /// One token of the innermost open list.
-    fn follow(list: &mut List, token: Token) {
+    fn follow(list: &mut List, token: Token<'_>) {
         if let Some((changed, line)) = list.candidate.take()
             && matches!(token.what, What::Mark(b',' | b')' | b'=' | b'('))
             && let Some((first, basis)) = Self::skip(list, changed, line)
@@ -1230,6 +2002,15 @@ impl Skips {
             // every `ignore` of the list has the same first changed line: it is set once
             list.skip = Some(
                 list.skip
+                    .map_or((first, basis), |(at, was)| (at, was.max(basis))),
+            );
+        }
+        if let Some((changed, line)) = list.lint.take()
+            && token.what == What::Mark(b'(')
+            && let Some((first, basis)) = Self::skip(list, changed, line)
+        {
+            list.suppression = Some(
+                list.suppression
                     .map_or((first, basis), |(at, was)| (at, was.max(basis))),
             );
         }
@@ -1245,8 +2026,14 @@ impl Skips {
             What::Name(word) => {
                 if list.tokens == 0 {
                     list.head = Some(word);
-                    if word == Word::Ignore && list.argument > 0 && !list.spent {
-                        list.candidate = Some((list.changed, token.line));
+                    if list.argument > 0 && !list.spent {
+                        match word {
+                            Word::Ignore => list.candidate = Some((list.changed, token.line)),
+                            Word::Allow | Word::Expect => {
+                                list.lint = Some((list.changed, token.line));
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 list.count_token();
@@ -1324,7 +2111,7 @@ impl Attribute {
     }
 
     /// One token of the attribute, after its `#`. `false` when the token closes it.
-    fn read(&mut self, token: Token) -> bool {
+    fn read(&mut self, token: Token<'_>) -> bool {
         let top = self.depth == 1;
         match token.what {
             // the attribute's own `[`
@@ -1481,18 +2268,34 @@ pub(crate) fn read_new<'a>(lines: impl Iterator<Item = SideLine<'a>>) -> Vec<Ite
     while let Some(token) = window.here() {
         tests.read(&window);
         skips.read(&window, &mut found);
+        if token.what == What::Mark(b'#')
+            && let Some(item) = compiled_out(&window).or_else(|| compiled_out_inner(&window))
+        {
+            found.note(item);
+        }
         let construct = match token.what {
             What::Name(Word::Unwrap | Word::Expect) => {
                 panic_path(&window).map(|extent| (S::PanicPathAdded, extent))
             }
-            What::Name(Word::Assert | Word::DebugAssert) => {
-                trivial_assert(&window, 1).map(|extent| (S::TrivialAssert, extent))
-            }
-            What::Name(Word::AssertEq | Word::DebugAssertEq) => {
-                trivial_assert(&window, 2).map(|extent| (S::TrivialAssert, extent))
+            // the reading of release 0.9.0 stays one reading (`trivial_assert`), and the class
+            // is another (`cannot_fail`, since 0.11.0)
+            What::Name(Word::Assert | Word::DebugAssert) => trivial_assert(&window, 1)
+                .or_else(|| cannot_fail(&window, Asks::True))
+                .map(|extent| (S::TrivialAssert, extent)),
+            What::Name(Word::AssertEq | Word::DebugAssertEq) => trivial_assert(&window, 2)
+                .or_else(|| cannot_fail(&window, Asks::Equal))
+                .map(|extent| (S::TrivialAssert, extent)),
+            What::Name(Word::AssertNe | Word::DebugAssertNe) => {
+                cannot_fail(&window, Asks::Unequal).map(|extent| (S::TrivialAssert, extent))
             }
             What::Name(Word::Todo | Word::Unimplemented) => {
                 stub(&window).map(|extent| (S::StubAdded, extent))
+            }
+            What::Name(Word::Panic | Word::Unreachable) => {
+                stub(&window).map(|extent| (S::PanicPathAdded, extent))
+            }
+            What::Name(Word::Let | Word::Underscore) => {
+                dropped(&window).map(|extent| (S::ErrorSwallowed, extent))
             }
             What::Mark(b'#') => ignored(&window)
                 .map(|extent| (S::TestSkipped, extent))
@@ -1504,7 +2307,12 @@ pub(crate) fn read_new<'a>(lines: impl Iterator<Item = SideLine<'a>>) -> Vec<Ite
         };
         if let Some((signal, extent)) = construct {
             let likely = signal == S::PanicPathAdded && tests.holds();
-            found.construct(&window, signal, extent, likely);
+            let forms = match token.what {
+                _ if signal != S::PanicPathAdded => 0,
+                What::Name(Word::Panic | Word::Unreachable) => BY_MACRO,
+                _ => BY_CALL,
+            };
+            found.construct(&window, signal, extent, (likely, forms));
         }
         window.step();
     }
@@ -1520,9 +2328,9 @@ pub(crate) fn read_old<'a>(lines: impl Iterator<Item = SideLine<'a>>) -> Vec<Ite
     let mut found = Found::default();
     while let Some(token) = window.here() {
         if token.what == What::Mark(b'#')
-            && let Some(extent) = test_attribute(&window)
+            && let Some(extent) = test_attribute(&window, window.at)
         {
-            found.construct(&window, EvidenceSignal::TestRemoved, extent, false);
+            found.construct(&window, EvidenceSignal::TestRemoved, extent, (false, 0));
         }
         window.step();
     }
@@ -1552,6 +2360,7 @@ mod tests {
             signal,
             basis,
             test_likely,
+            forms: u8::from(signal == S::PanicPathAdded),
         };
         for line in [3usize, 7] {
             for round in 0..100_000 {
@@ -1648,10 +2457,17 @@ mod tests {
             .collect()
     }
 
-    fn tokens(lines: &[&str]) -> Vec<Token> {
-        let side = side(lines);
+    fn tokens<'a>(lines: &[&'a str]) -> Vec<Token<'a>> {
+        let side: Vec<SideLine<'a>> = side(lines)
+            .into_iter()
+            .map(|(index, code, changed)| SideLine {
+                index,
+                code,
+                changed,
+            })
+            .collect();
         Tokens {
-            lines: lines_of(&side),
+            lines: side.into_iter(),
             line: None,
             at: 0,
         }
@@ -1732,7 +2548,11 @@ mod tests {
             ]
         );
         assert_eq!(
-            words("+unwrap_or unwrapé éunwrap 1unwrap ignored Test result _todo todo_ assert_ne"),
+            words("+assert_ne debug_assert_ne false NAN"),
+            [Word::AssertNe, Word::DebugAssertNe, Word::False, Word::Nan]
+        );
+        assert_eq!(
+            words("+unwrap_or unwrapé éunwrap 1unwrap ignored Test result _todo todo_ assert_nee"),
             [Word::Other; 10]
         );
     }
@@ -1967,7 +2787,6 @@ mod tests {
             "+assert!(true_enough());",
             "+assert!(true == x);",
             "+assert!(true && x);",
-            "+assert!((true));",
             "+assert!(true",
             "+assert!(true]",
             "+assert!{true)",
@@ -1981,6 +2800,270 @@ mod tests {
             "+it.map(assert);",
         ] {
             assert_eq!(signals(&[line]), [], "{line}");
+        }
+    }
+
+    /// F2a.a: an assertion that cannot fail is read as a class, beside the reading of 0.9.0
+    /// (`assert!(true)`, `assert_eq!(true, true)`): a condition true by its tokens alone, two
+    /// equal literals or the same tokens for the `_eq` forms, two unequal literals for the
+    /// `_ne` forms. One that fails on every run (`assert_eq!(1, 2)`, `assert_ne!(x, x)`,
+    /// `assert!(false)`) or can pass and fail is none.
+    #[test]
+    fn an_assertion_of_equal_operands_cannot_fail() {
+        for lines in [
+            &["+assert!(!false);"][..],
+            &["+assert!((true));"],
+            &["+assert!(1 == 1);"],
+            &["+assert!(true || x);"],
+            &["+assert!(x || true);"],
+            &["+debug_assert!(!(1 > 2) && 0x10 >= 16, \"\");"],
+            &["+assert!(x == x);"],
+            &["+assert!(a.len <= a.len);"],
+            &["+assert_eq!(x, x);"],
+            &["+assert_eq!(v.0[1], v.0[1]);"],
+            &["+assert_eq!(1, 1_u8);"],
+            &["+assert_eq!(-1, -0b1, \"\");"],
+            &["+debug_assert_eq!(Map::<u8, u8>::MAX, Map::<u8, u8>::MAX);"],
+            &["+assert_eq!(x.0, x.0,);"],
+            &["+assert_ne!(1, 2);"],
+            &["+debug_assert_ne!(true, false, \"\");"],
+            &["+assert_ne!{0, 1}"],
+            &["+assert_eq!(", "+    value,", "+    value", "+);"],
+        ] {
+            assert_eq!(signals(lines), [S::TrivialAssert], "{lines:?}");
+        }
+        for line in [
+            "+assert_eq!(1, 2);",
+            "+assert_eq!(x, y);",
+            "+assert_eq!(x, x.0);",
+            "+assert_ne!(x, x);",
+            "+assert_ne!(1, 0x1);",
+            "+assert_ne!(1, x);",
+            "+assert!(false);",
+            "+assert!(1 == 2);",
+            "+assert!(x || false);",
+            "+assert!(x == y);",
+            "+assert!(x != x);",
+            "+assert!(true && x);",
+            "+assert!(!x);",
+            "+assert!(1 << 2 == 4);",
+            "+assert!(x = x);",
+            "+assert_eq!(\"a\", \"b\");",
+            "+assert_eq!('a', 'b');",
+            "+assert_eq!(f64::NAN, f64::NAN);",
+            "+assert_eq!(f(2), f(2));",
+            "+assert_eq!(rank(&files), rank(&files));",
+            "+assert!(a.len() <= a.len());",
+            "+assert_eq!(vec![x], vec![x]);",
+            "+assert_eq!({ x }, { x });",
+            "+assert!(f64::NAN == f64::NAN);",
+            "+assert_eq!(x, x",
+            "+assert_eq!(x, x];",
+            "+assert_eq!(x);",
+            "+assert_ne(1, 2);",
+        ] {
+            assert_eq!(signals(&[line]), [], "{line}");
+        }
+        // a change of the message alone is none: the construct ends at the comma
+        assert_eq!(signals(&[" assert_eq!(x, x,", "+    \"now\");"]), []);
+        // operands longer than the window are not read
+        let long = format!("+assert_eq!({0}, {0});", ["x"; 40].join(" + "));
+        assert_eq!(signals(&[&long]), []);
+    }
+
+    /// F2a.b: a statement that drops what a call returns, `let _ = call();`, is a swallowed
+    /// error where the call returns a `Result`; the reader cannot know a type, and reads the
+    /// calls of the standard library that do by name.
+    #[test]
+    fn a_dropped_result_is_a_swallowed_error() {
+        for lines in [
+            &["+let _ = std::fs::remove_file(\"x\");"][..],
+            &["+    let _ = tx.send(1);"],
+            &["+let _ : Result<(), Box<dyn Iterator<Item = u8>>> = rx.recv();"],
+            &["+let _ = handle.join();"],
+            &["+let _ = std::fs::copy(a, b);"],
+            &["+let _ = std::io::copy(&mut HashMap::<u8, u8>::new(), &mut out);"],
+            &["+let _ = child.wait();"],
+            &["+let _ = std::io::copy(&mut pipe, &mut std::io::sink());"],
+            &["+{ _ = child.kill(); }"],
+            &["+_ = child.wait();"],
+            &[
+                "+let _ = File::create(p)",
+                "+    .and_then(|mut f| f.write_all(b))",
+                "+    .flush();",
+            ],
+            &["+let", "+_", "+=", "+fs::remove_dir_all(p)", "+;"],
+        ] {
+            assert_eq!(signals(lines), [S::ErrorSwallowed], "{lines:?}");
+        }
+        for line in [
+            "+let _ = x;",
+            "+let _ = f();",
+            "+let _ = a.b(c)(d);",
+            "+let _ = writeln!(out, \"x\");",
+            "+let _ = write!(out, \"x\");",
+            "+let _ = std::fs::remove_file(p).is_ok();",
+            "+let _ = std::fs::remove_file;",
+            "+let _ = remove_file!(p);",
+            "+let _ = p.join(\"x\");",
+            "+let _ = v.join(\",\");",
+            "+let _ = std::thread::JoinHandle::join(h);",
+            "+let _ = cvar.wait(guard);",
+            "+let _ = std::ptr::copy(a, b, n);",
+            "+let _ = s.parse::<u32>();",
+            "+let _e = child.kill();",
+            "+let _x = child.kill();",
+            "+let (_, _) = child.kill();",
+            "+let _ = child.kill()?;",
+            "+let _ = kill(x?);",
+            "+let _ = (child.kill(), b);",
+            "+let _ = child.wait().await;",
+            "+let _ = { child.kill() };",
+            "+let _ = child.kill()",
+            "+child.kill().ok();",
+            "+drop(child.kill());",
+            "+x = _ == child.kill();",
+            "+let _ == child.kill();",
+            "+if let _ = child.kill() {}",
+            "+match x { _ => child.kill(), };",
+        ] {
+            assert_eq!(signals(&[line]), [], "{line}");
+        }
+    }
+
+    /// F2a.c: `panic!` and `unreachable!` are panic paths, read as a stub is (the word, `!`, an
+    /// opening bracket), with the hint of a test's braces as every panic path has it.
+    #[test]
+    fn panic_and_unreachable_are_panic_paths() {
+        for lines in [
+            &["+panic!(\"x\");"][..],
+            &["+unreachable!();"],
+            &["+    _ => panic!(\"{x:?}\"),"],
+            &["+std::panic!{};"],
+            &["+core::unreachable![]"],
+            &["+$crate::panic!(\"x\")"],
+            &["+panic", "+!", "+(", "+)"],
+        ] {
+            assert_eq!(signals(lines), [S::PanicPathAdded], "{lines:?}");
+        }
+        for line in [
+            "+std::panic::catch_unwind(f);",
+            "+#[should_panic]",
+            "+panic!",
+            "+panic!;",
+            "+unreachable_unchecked();",
+            "+my_panic!();",
+            "+panic(x);",
+            "+let panic = 1;",
+        ] {
+            assert_eq!(signals(&[line]), [], "{line}");
+        }
+        assert_eq!(
+            hints(&[
+                "+#[test]",
+                "+fn t() { unreachable!(); }",
+                "+fn u() { panic!(); }"
+            ]),
+            [(1, true), (2, false)]
+        );
+    }
+
+    /// F2a.d: a test compiled out by `#[cfg(…)]` whose predicate is false in every build of the
+    /// tests or names anything but the platform's is a skipped test, whichever of the two
+    /// attributes comes first and whichever line the change made.
+    #[test]
+    fn a_test_compiled_out_by_an_empty_any_is_skipped() {
+        let skipped = |lines: &[&str]| -> Vec<(EvidenceSignal, usize)> {
+            new(lines).iter().map(|item| (item.0, item.2)).collect()
+        };
+        for (lines, line) in [
+            (&["+#[cfg(any())]", "+#[test]", "+fn e() {}"][..], 0),
+            (&["+#[cfg(all(any()))]", "+#[test]"], 0),
+            (&["+#[cfg(not(all()))]", "+#[test]"], 0),
+            (&["+#[cfg(FALSE)]", "+#[test]"], 0),
+            (&["+#[cfg(not(test))]", "+#[test]"], 0),
+            (&["+#[cfg(feature = \"slow\")]", "+#[test]"], 0),
+            (&["+#[cfg(all(unix, any()))]", "+#[test]"], 0),
+            (&[" #[test]", "+#[cfg(any())]", " fn e() {}"], 1),
+            (&[" #[cfg(any())]", "+#[tokio::test]"], 1),
+            (&[" #[cfg(any())]", " #[allow(x)]", "+#[test]"], 2),
+            (&["+#[cfg(any())] #[should_panic] #[rstest(a)]"], 0),
+            (&["+#[test]", "+#[cfg", "+(", "+any", "+(", "+)", "+)]"], 0),
+        ] {
+            assert_eq!(skipped(lines), [(S::TestSkipped, line)], "{lines:?}");
+        }
+        for lines in [
+            &["+#[cfg(test)]", "+#[test]"][..],
+            &["+#[cfg(any(unix))]", "+#[test]"],
+            &["+#[cfg(all(target_os = \"linux\", not(miri)))]", "+#[test]"],
+            &["+#[cfg(any(test, FALSE))]", "+#[test]"],
+            &["+#[cfg(not(fw_fixture))]", "+#[test]"],
+            &["+#[cfg(not(feature = \"slow\"))]", "+#[test]"],
+            &["+#[cfg(any(unix, version(\"1.80\")))]", "+#[test]"],
+            &["+#[cfg(any())]", "+fn e() {}"],
+            &["+#[cfg(any())]", "+fn e() {}", "+#[test]"],
+            &["+#[cfg(any()]", "+#[test]"],
+            &["+#[cfg(not(unix, windows))]", "+#[test]"],
+            &[" #[cfg(any())]", " #[test]", "+fn e() {}"],
+        ] {
+            assert_eq!(skipped(lines), [], "{lines:?}");
+        }
+    }
+
+    /// Ruling 2 on F2a.d: a module of tests compiled out, by `#[cfg(…)]` before its `mod` or by
+    /// `#![cfg(…)]` as its first item, and a file compiled out by `#![cfg(…)]` (kept by the
+    /// reading of the file only where the path is test code: [`IN_A_FILE`]).
+    #[test]
+    fn a_module_or_a_file_of_tests_compiled_out_is_skipped() {
+        let read = |lines: &[&str]| -> Vec<(EvidenceSignal, usize, u8)> {
+            read_new(lines_of(&side(lines)))
+                .iter()
+                .map(|item| (item.signal, item.line, item.forms))
+                .collect()
+        };
+        for (lines, line, forms) in [
+            (&["+#[cfg(any())]", " mod tests {"][..], 0, 0),
+            (&["+#[cfg(any())]", "+mod tests {}"], 0, 0),
+            (&["+#[cfg(any())]", " #[cfg(test)]", " mod tests {"], 0, 0),
+            (
+                &[
+                    " #[cfg(test)]",
+                    "+#[allow(x)] #[cfg(not(test))]",
+                    " pub(crate) mod parse_tests {",
+                ],
+                1,
+                0,
+            ),
+            (&["+#[cfg(FALSE)] mod it_test {}"], 0, 0),
+            (&[" mod tests {", "+    #![cfg(any())]"], 1, 0),
+            (&["+#![cfg(any())]"], 0, IN_A_FILE),
+            (&["+#![cfg(feature = \"never\")]"], 0, IN_A_FILE),
+        ] {
+            let read: Vec<_> = read(lines)
+                .into_iter()
+                .filter(|item| item.0 == S::TestSkipped)
+                .collect();
+            assert_eq!(read, [(S::TestSkipped, line, forms)], "{lines:?}");
+        }
+        for lines in [
+            &["+#[cfg(test)]", " mod tests {"][..],
+            &["+#[cfg(all(test, unix))]", " mod tests {"],
+            &[
+                "+#[cfg(test)]",
+                "+#[cfg(not(fw_fixture_cli))]",
+                " mod tests {",
+            ],
+            &["+#[cfg(unix)]", " mod tests {"],
+            &["+#[cfg(any())]", " mod parser {"],
+            &["+#[cfg(any())]", " mod testsuite {"],
+            &["+#[cfg(any())]", " fn tests() {}"],
+            &[" #[cfg(any())]", " mod tests {", "+    fn t() {}"],
+            &["+#![cfg(test)]"],
+            &["+#![cfg(unix)]"],
+            &["+#![cfg(any()]"],
+            &["+#[cfg(any())]"],
+        ] {
+            assert_eq!(read(lines), [], "{lines:?}");
         }
     }
 
@@ -2066,6 +3149,73 @@ mod tests {
         assert_eq!(signals(&["+#[allow(ignore)]"]), [S::CheckSuppressed]);
     }
 
+    /// The cases of the conditional skip's tables that apply `allow(…)` after a condition, in a
+    /// whole attribute: since 0.11.0 (F2b) each is a suppression as well.
+    const SUPPRESSING: [&str; 6] = [
+        "all(a, b), allow(x), ignore)]",
+        "ignore, allow(x))]",
+        "miri, allow(ignore))]",
+        "a, allow(x), cfg_attr(b, inline, ignore))]",
+        "all(), cfg_attr(ignore, allow(x)))]",
+        "cfg_attr(a, ignore), allow(x))]",
+    ];
+
+    /// `#[cfg_attr(condition, allow(…))]` and `expect(…)` switch lints off where the
+    /// condition holds, also through a `cfg_attr` that a `cfg_attr` applies, whatever the
+    /// spacing and over lines, inner or outer (with a raw identifier in the evidence tests): a suppression on the
+    /// first changed line of the list, when the attribute is whole. Not: the condition,
+    /// another attribute's argument, a longer name, a path, no list, a list the side leaves open.
+    #[test]
+    fn a_conditional_allow_is_a_suppression() {
+        for line in [
+            "+#[cfg_attr(all(), allow(dead_code))]",
+            "+#[cfg_attr(test, expect(unused))]",
+            "+#![cfg_attr(not(test), allow(clippy::all))]",
+            "+# [ cfg_attr ( miri , allow ( x ) ) ]",
+            "+#[cfg_attr(all(), cfg_attr(test, expect(dead_code)))]",
+            "+#[cfg_attr(a, inline, allow(x, reason = \"r\"))]",
+            "+#[cfg_attr(feature = \"x\", allow(x))] fn f() {}",
+        ] {
+            assert_eq!(signals(&[line]), [S::CheckSuppressed], "{line}");
+            if line.contains('"') {
+                continue;
+            }
+            // the same over lines: every token on a line of its own
+            let spread: Vec<String> = tokens(&[line])
+                .iter()
+                .map(|token| {
+                    let rest = &line[1 + token.column..];
+                    let end = rest
+                        .bytes()
+                        .position(|byte| !names(byte))
+                        .map_or(rest.len(), |end| end.max(1));
+                    format!("+{}", &rest[..end])
+                })
+                .collect();
+            let spread: Vec<&str> = spread.iter().map(String::as_str).collect();
+            let items = new(&spread);
+            assert_eq!(items.len(), 1, "{line}, a token a line");
+            assert_eq!(
+                (items[0].0, items[0].1),
+                (S::CheckSuppressed, Basis::Hunk),
+                "{line}, a token a line"
+            );
+        }
+        for line in [
+            "+#[cfg_attr(feature = \"serde\", serde(allow(x)))]",
+            "+#[cfg_attr(allow(x), inline)]",
+            "+#[cfg_attr(test, allow)]",
+            "+#[cfg_attr(test, allowed(x))]",
+            "+#[cfg_attr(test, allow::x(y))]",
+            "+#[cfg_attr(test, allow(x)",
+            "+#[cfg_attr(test, allow(x))",
+            "+#[cfg_attr(test, inline) allow(x)]",
+            "+#[serde(allow(x))]",
+        ] {
+            assert_eq!(signals(&[line]), [], "{line}");
+        }
+    }
+
     /// The conditional skip, argument by argument. Independent review IR-L-2 (an `ignore`
     /// that is another attribute's), second independent review IR2-M-2 (a `cfg_attr` that a
     /// `cfg_attr` applies). These are the cases the line rule's `cfg_attr_skips` was held to,
@@ -2129,7 +3279,15 @@ mod tests {
             ),
             ("a, cfg_attr(b, inline))] fn f(x: u8, ignore: u8) {}", false),
         ] {
-            let expected: &[EvidenceSignal] = if skips { &[S::TestSkipped] } else { &[] };
+            // since 0.11.0 (F2b) an `allow(…)` after a condition of a whole attribute is a
+            // suppression as well
+            let suppresses = SUPPRESSING.contains(&arguments);
+            let expected: &[EvidenceSignal] = match (suppresses, skips) {
+                (true, true) => &[S::CheckSuppressed, S::TestSkipped],
+                (true, false) => &[S::CheckSuppressed],
+                (false, true) => &[S::TestSkipped],
+                (false, false) => &[],
+            };
             for opener in ["#[cfg_attr(", "# [ cfg_attr (", "#![cfg_attr("] {
                 let line = format!("+{opener}{arguments}");
                 assert_eq!(signals(&[&line]), expected, "{line}");
@@ -2535,7 +3693,8 @@ mod tests {
                 line: 2,
                 signal: S::PanicPathAdded,
                 basis: Basis::Hunk,
-                test_likely: false
+                test_likely: false,
+                forms: BY_CALL
             }]
         );
         assert_eq!(
@@ -2544,7 +3703,8 @@ mod tests {
                 line: 1,
                 signal: S::TestRemoved,
                 basis: Basis::Lexical,
-                test_likely: false
+                test_likely: false,
+                forms: 0
             }]
         );
         // a side with no line of the change is not read: nothing is evidence on it anyway

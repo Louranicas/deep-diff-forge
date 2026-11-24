@@ -301,7 +301,17 @@ fn an_epoch_timestamp_creates_or_deletes_as_git_apply_reads_it() {
             .output()
             .unwrap();
         assert!(!out.status.success(), "{patch:?}");
-        String::from_utf8_lossy(&out.stderr).contains("already exists")
+        // DDF's status is Git's summary word (S3.4): `@@ -0,0` with no epoch leaves Git's
+        // `is_new` open, which `--summary` prints as a creation.
+        let summary = Command::new("git")
+            .current_dir(&root)
+            .args(["apply", "--summary", "probe.patch"])
+            .output()
+            .unwrap();
+        (
+            String::from_utf8_lossy(&out.stderr).contains("already exists"),
+            String::from_utf8_lossy(&summary.stdout).starts_with(" create "),
+        )
     };
     for (patch, created) in [
         (format!("--- a/x\t{epoch}\n+++ b/x\t{later}\n{new}"), true),
@@ -323,9 +333,10 @@ fn an_epoch_timestamp_creates_or_deletes_as_git_apply_reads_it() {
             false,
         ),
     ] {
-        assert_eq!(creates(&patch), created, "git: {patch:?}");
+        let (exists, summary) = creates(&patch);
+        assert_eq!(exists, created, "git: {patch:?}");
         let status = parse(&patch).unwrap()[0].status;
-        assert_eq!(status == FileStatus::Added, created, "ddf: {patch:?}");
+        assert_eq!(status == FileStatus::Added, summary, "ddf: {patch:?}");
     }
     // The epoch on the new side deletes the file the `+++` names.
     fs::write(root.join("y"), "a\n").unwrap();

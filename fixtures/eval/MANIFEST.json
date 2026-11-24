@@ -425,8 +425,14 @@
       "id": "evidence/rust-negatives",
       "kind": "evidence",
       "patch": "evidence/rust-negatives.patch",
-      "origin": "synthetic: negatives (a doc comment, a raw string, an identifier containing unsafe, #[expect]) beside one #[allow]",
+      "origin": "synthetic: negatives (a doc comment, a raw string, an identifier containing unsafe) beside one #[allow]; until 0.11.0 #[expect] was a negative too, and since F2b it switches the lint off as #[allow] does and is expected (line 5)",
       "expect": [
+        {
+          "path": "src/cell.rs",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 5
+        },
         {
           "path": "src/cell.rs",
           "signal": "check_suppressed",
@@ -1032,7 +1038,7 @@
       "id": "evidence/independent-review-20261114",
       "kind": "evidence",
       "patch": "evidence/independent-review-20261114.patch",
-      "origin": "internal: an independent review by a Claude subagent, 2026-11-14 (docs/reviews/claude-independent-review-20261114.md), findings IR-H-1, IR-H-2, IR-M-2, IR-M-3, IR-L-2 and IR-L-3, each reproduced before it was counted. Expected: a production panic path on the line of a proved test function (named as a function, and inside a macro's arguments); a panic path in a new file whose first line the grammar reads as a shebang and the compiler as an attribute and an opened comment, so that the cfg(test) under it is comment text; the trivial assertion and the placeholder written over lines inside another macro's body (declared misses, marked syntax_unchecked, until 2026-11-14: the tokens of a hunk are now read across its lines); a conditional skip whose condition changed from miri to all(); unwrap and expect passed as functions or called by a path; a spaced allow attribute. Negatives: an ignore that belongs to a serde attribute; unwrap_or_default passed as a function. Declared false positives: a method named expect on a hand-written parser and on a mock, and a Python name that begins with unittest.skip; and since 2026-11-14 two that were negatives until then: the panic path in the cfg(test) module of a file created whole, read inside a macro's arguments (the parser never removes evidence any more; it is reported with test_likely), and the conditional skip of which only the reason changed (an attribute that starts on an unchanged line is the same as before only if its whole text is, second independent review IR2-M-1, and the reason is part of the text). Declared misses: cfg(any()) on a test; and respellings in Python, JavaScript and Go, where no parser backs the token rules (a skip raised as an exception, assertions with a message, with parentheses or with inner spaces, chained skip modifiers, a spaced call, an empty error check with the operands reversed). Since 2026-11-15 the first line of src/shebang.rs is read for what it is as well: `#!`, a comment and `[allow(unused)]` are the inner attribute `#![allow(unused)]` to the compiler, and the reader of tokens, which now reads release 0.8.3's `#[allow(` with anything between its tokens, reports the suppressed lint",
+      "origin": "internal: an independent review by a Claude subagent, 2026-11-14 (docs/reviews/claude-independent-review-20261114.md), findings IR-H-1, IR-H-2, IR-M-2, IR-M-3, IR-L-2 and IR-L-3, each reproduced before it was counted. Expected: a production panic path on the line of a proved test function (named as a function, and inside a macro's arguments); a panic path in a new file whose first line the grammar reads as a shebang and the compiler as an attribute and an opened comment, so that the cfg(test) under it is comment text; the trivial assertion and the placeholder written over lines inside another macro's body (declared misses, marked syntax_unchecked, until 2026-11-14: the tokens of a hunk are now read across its lines); a conditional skip whose condition changed from miri to all(); unwrap and expect passed as functions or called by a path; a spaced allow attribute. Negatives: an ignore that belongs to a serde attribute; unwrap_or_default passed as a function. Declared false positives: a method named expect on a hand-written parser and on a mock, and a Python name that begins with unittest.skip; and since 2026-11-14 two that were negatives until then: the panic path in the cfg(test) module of a file created whole, read inside a macro's arguments (the parser never removes evidence any more; it is reported with test_likely), and the conditional skip of which only the reason changed (an attribute that starts on an unchanged line is the same as before only if its whole text is, second independent review IR2-M-1, and the reason is part of the text). Declared misses: cfg(any()) on a test; and respellings in Python, JavaScript and Go, where no parser backs the token rules (a skip raised as an exception, assertions with a message, with parentheses or with inner spaces, chained skip modifiers, a spaced call, an empty error check with the operands reversed). Since 2026-11-15 the first line of src/shebang.rs is read for what it is as well: `#!`, a comment and `[allow(unused)]` are the inner attribute `#![allow(unused)]` to the compiler, and the reader of tokens, which now reads release 0.8.3's `#[allow(` with anything between its tokens, reports the suppressed lint. Since 0.11.0 (F2a.d) a test compiled out by  is read: tests/any.rs line 2 is expected",
       "expect": [
         {
           "path": "src/shared_line.rs",
@@ -1105,15 +1111,15 @@
           "signal": "check_suppressed",
           "side": "new",
           "line": 3
-        }
-      ],
-      "known_miss": [
+        },
         {
           "path": "tests/any.rs",
           "signal": "test_skipped",
           "side": "new",
           "line": 2
-        },
+        }
+      ],
+      "known_miss": [
         {
           "path": "tests/test_respelled.py",
           "signal": "test_skipped",
@@ -1652,7 +1658,7 @@
       "id": "evidence/independent-review-6-20261114",
       "kind": "evidence",
       "patch": "evidence/independent-review-6-20261114.patch",
-      "origin": "internal: a sixth independent review by a Claude subagent (docs/reviews/claude-independent-review-6-20261114.md, IR6-H-1, IR6-H-2, IR6-H-3, IR6-L-1, IR6-L-4), round 13 of Vesper's review (docs/reviews/vesper-v3-round13-report-20261114.md, VD3R13-M-1) and the review of the port of the Rust scanner to the released line (LF-H-1), 2026-11-14, each reproduced before it was counted, with `git apply` 2.56.0 and rustc 1.99.1 where a claim is about them. Expected. The place of a hunk is where Git must put it: a spawn on a line added inside an existing block comment in a hunk whose header says +1 (src/placed.rs: Git applies it at line 9), the same with the comment opened by an earlier hunk (src/second.rs), and a line `#! ...` inside a macro call in a hunk that says +1 (src/macro.rs: no shebang, since the old position is 6). Hunks Git must put together are one text: a call cut in two by the hunks of a created file (src/split.rs) and by a hunk of added lines after one that ends its file (src/end.rs), a spawn after a comment two deep opened in the first hunk of a created file (src/deep.rs), and a spawn below a string opened in the first hunk whose text holds crates/*/*/Cargo.toml (src/glob.rs). A join is a further reading and takes none away: two hunks of added lines only, the first leaving a block comment open, the second a spawn and a call (src/zero.rs: plain `git apply` puts both at the end of the file, where the second is the text of that comment, and the hunks are also read as that one text; `git apply --unidiff-zero` puts each where its numbers say, where the comment is closed between them and rustc compiles the second as code, so each hunk is always read on its own as well; the first build of this round read the second only as a continuation and lost both items, which round 13 reported). A side that carries anything over a line end is also read from inside a string, and from inside a raw string: #[ignore] added between two tests whose expected output is a raw string over lines (tests/snapshots.rs, a `diff -U3`), a test removed between two strings (tests/t.rs), a spawn after the closing line of a string, on a line that holds the string \"/*\" (src/help.rs), a spawn after a raw string whose text ends in a backslash (src/paths.rs), and what release 0.8.3 reported and round 13 lost, a spawn and an unsafe block below a string whose text has more comment openers than closers (src/main.rs, src/script.rs, plain `git diff`s). And the general answer: a hunk that reaches the top of its file is read exactly, so the full-context forms of two declared misses are found (src/full/strcode.rs, src/full/nested.rs). A hunk with old position 1 is the top of its file whatever its new position says, and a line comment there is a line comment (src/top.rs: nothing is reported). Declared misses, each as a bare fragment: a spawn after a string that began above the hunk, on a line whose quotes balance (src/strcode.rs: read from code nothing is carried over a line end, so nothing says the side began in a string); a spawn two comments deep behind `// */ //` (src/nested.rs, src/depth2.rs: a side is read from inside one comment, not two); a call cut in two by two hunks that touch while the second header says they do not (src/apart.rs: Git finds a hunk by its context, wherever its header says it is); and four spellings of a suppressed lint that the one-line rule does not read (src/allow.rs: a comment inside the attribute, the attribute over two lines, `cfg_attr(all(), allow(...))`, `expect(...)`). Declared false positives, the cost of the further readings: a call in the text of a string on a line after a block comment that the hunk does not see the end of (src/notes.rs: the side carries a comment over a line end and is read from inside a string too), and the two items release 0.8.3 reported in the text of a string after a string over lines (src/legacy.rs: the reading of that release, by its own rules, is kept so that nothing it reports is lost; the two items of newer signals that the same text gave until round 13 are not reported). Since 2026-11-15 three of the declared misses above are found and expected: the call cut in two by hunks that touch while the second header says they do not (src/apart.rs: the first half ends on `x.unwrap`, and the edge of a side is read), and two of the four spellings of a suppressed lint (src/allow.rs: the comment inside the attribute and the attribute over two lines are the tokens `#`, `[`, `allow`, `(` to the reader; `cfg_attr(all(), allow(...))` and `expect(...)` stay declared). Corrected 2026-11-15 (seventh independent review, IR7-L-3): Git starts looking for a hunk at its NEW position and takes the nearest place that has its old lines, so the hunk of src/placed.rs goes to line 9 when its lines stand there and not at line 1; where this text says that Git places a hunk by its old position, only positions 0 and 1 are meant, which say the hunk must be at the beginning. The expectations did not change. Since round 16 (2026-11-15) the call of src/apart.rs is a declared miss again: `.unwrap` with nothing after it at the end of a side is no evidence by itself (a field can be named so), and neither number of the second hunk says the two touch Release 0.10.0 (ruling 1 of its integration): the parser refuses a hunk that plain `git apply` places elsewhere than its header says (no context past line 1, or after a hunk with no trailing context). The hunks of src/zero.rs that had no context carry a blank line of context, as Git writes context; their items are unchanged (measured against 0.9.0). The sections of src/deep.rs, src/end.rs, src/glob.rs, src/split.rs are creations in several hunks, hunks that touch, or read what only such hunks give; they moved with their expectations to fixtures/eval-refused-by-parser/.",
+      "origin": "internal: a sixth independent review by a Claude subagent (docs/reviews/claude-independent-review-6-20261114.md, IR6-H-1, IR6-H-2, IR6-H-3, IR6-L-1, IR6-L-4), round 13 of Vesper's review (docs/reviews/vesper-v3-round13-report-20261114.md, VD3R13-M-1) and the review of the port of the Rust scanner to the released line (LF-H-1), 2026-11-14, each reproduced before it was counted, with `git apply` 2.56.0 and rustc 1.99.1 where a claim is about them. Expected. The place of a hunk is where Git must put it: a spawn on a line added inside an existing block comment in a hunk whose header says +1 (src/placed.rs: Git applies it at line 9), the same with the comment opened by an earlier hunk (src/second.rs), and a line `#! ...` inside a macro call in a hunk that says +1 (src/macro.rs: no shebang, since the old position is 6). Hunks Git must put together are one text: a call cut in two by the hunks of a created file (src/split.rs) and by a hunk of added lines after one that ends its file (src/end.rs), a spawn after a comment two deep opened in the first hunk of a created file (src/deep.rs), and a spawn below a string opened in the first hunk whose text holds crates/*/*/Cargo.toml (src/glob.rs). A join is a further reading and takes none away: two hunks of added lines only, the first leaving a block comment open, the second a spawn and a call (src/zero.rs: plain `git apply` puts both at the end of the file, where the second is the text of that comment, and the hunks are also read as that one text; `git apply --unidiff-zero` puts each where its numbers say, where the comment is closed between them and rustc compiles the second as code, so each hunk is always read on its own as well; the first build of this round read the second only as a continuation and lost both items, which round 13 reported). A side that carries anything over a line end is also read from inside a string, and from inside a raw string: #[ignore] added between two tests whose expected output is a raw string over lines (tests/snapshots.rs, a `diff -U3`), a test removed between two strings (tests/t.rs), a spawn after the closing line of a string, on a line that holds the string \"/*\" (src/help.rs), a spawn after a raw string whose text ends in a backslash (src/paths.rs), and what release 0.8.3 reported and round 13 lost, a spawn and an unsafe block below a string whose text has more comment openers than closers (src/main.rs, src/script.rs, plain `git diff`s). And the general answer: a hunk that reaches the top of its file is read exactly, so the full-context forms of two declared misses are found (src/full/strcode.rs, src/full/nested.rs). A hunk with old position 1 is the top of its file whatever its new position says, and a line comment there is a line comment (src/top.rs: nothing is reported). Declared misses, each as a bare fragment: a spawn after a string that began above the hunk, on a line whose quotes balance (src/strcode.rs: read from code nothing is carried over a line end, so nothing says the side began in a string); a spawn two comments deep behind `// */ //` (src/nested.rs, src/depth2.rs: a side is read from inside one comment, not two); a call cut in two by two hunks that touch while the second header says they do not (src/apart.rs: Git finds a hunk by its context, wherever its header says it is); and four spellings of a suppressed lint that the one-line rule does not read (src/allow.rs: a comment inside the attribute, the attribute over two lines, `cfg_attr(all(), allow(...))`, `expect(...)`). Declared false positives, the cost of the further readings: a call in the text of a string on a line after a block comment that the hunk does not see the end of (src/notes.rs: the side carries a comment over a line end and is read from inside a string too), and the two items release 0.8.3 reported in the text of a string after a string over lines (src/legacy.rs: the reading of that release, by its own rules, is kept so that nothing it reports is lost; the two items of newer signals that the same text gave until round 13 are not reported). Since 2026-11-15 three of the declared misses above are found and expected: the call cut in two by hunks that touch while the second header says they do not (src/apart.rs: the first half ends on `x.unwrap`, and the edge of a side is read), and two of the four spellings of a suppressed lint (src/allow.rs: the comment inside the attribute and the attribute over two lines are the tokens `#`, `[`, `allow`, `(` to the reader; `cfg_attr(all(), allow(...))` and `expect(...)` stay declared). Since 0.11.0 (F2b) `#[expect(..)]` switches a lint off as `#[allow(..)]` does and is read by the same rules: line 8 of src/allow.rs is expected; and `cfg_attr(all(), allow(...))` (line 6), whose allowance the reading of a conditional attribute follows as it follows `ignore`. Corrected 2026-11-15 (seventh independent review, IR7-L-3): Git starts looking for a hunk at its NEW position and takes the nearest place that has its old lines, so the hunk of src/placed.rs goes to line 9 when its lines stand there and not at line 1; where this text says that Git places a hunk by its old position, only positions 0 and 1 are meant, which say the hunk must be at the beginning. The expectations did not change. Since round 16 (2026-11-15) the call of src/apart.rs is a declared miss again: `.unwrap` with nothing after it at the end of a side is no evidence by itself (a field can be named so), and neither number of the second hunk says the two touch Release 0.10.0 (ruling 1 of its integration): the parser refuses a hunk that plain `git apply` places elsewhere than its header says (no context past line 1, or after a hunk with no trailing context). The hunks of src/zero.rs that had no context carry a blank line of context, as Git writes context; their items are unchanged (measured against 0.9.0). The sections of src/deep.rs, src/end.rs, src/glob.rs, src/split.rs are creations in several hunks, hunks that touch, or read what only such hunks give; they moved with their expectations to fixtures/eval-refused-by-parser/.",
       "expect": [
         {
           "path": "src/placed.rs",
@@ -1743,6 +1749,18 @@
           "signal": "check_suppressed",
           "side": "new",
           "line": 3
+        },
+        {
+          "path": "src/allow.rs",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 6
+        },
+        {
+          "path": "src/allow.rs",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 8
         }
       ],
       "known_miss": [
@@ -1763,18 +1781,6 @@
           "signal": "process_spawn",
           "side": "new",
           "line": 12
-        },
-        {
-          "path": "src/allow.rs",
-          "signal": "check_suppressed",
-          "side": "new",
-          "line": 6
-        },
-        {
-          "path": "src/allow.rs",
-          "signal": "check_suppressed",
-          "side": "new",
-          "line": 8
         },
         {
           "path": "src/apart.rs",
@@ -2434,6 +2440,722 @@
         }
       ],
       "sha256": "b1ef43ad77bbacd861209936b056c029b2cd319ab9d7269f2cf7369a25e4c27d"
+    },
+    {
+      "id": "evidence/cargo-lints-suppressed",
+      "kind": "evidence",
+      "patch": "evidence/cargo-lints-suppressed.patch",
+      "origin": "synthetic: F2b, 0.11.0: Cargo's files switch lints off: a [lints] key whose value is the string allow, in a basic and in a literal string and as an inline table's level, and -A in rustflags; a build script declared in the manifest is a build hook. Negatives: a lint at warn, an allowance in a comment. Declared miss: --cap-lints and allow as two strings of an array over lines (a line is read alone).",
+      "expect": [
+        {
+          "path": "Cargo.toml",
+          "signal": "build_hook",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "Cargo.toml",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 7
+        },
+        {
+          "path": "Cargo.toml",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 12
+        },
+        {
+          "path": ".cargo/config.toml",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "known_miss": [
+        {
+          "path": ".cargo/config.toml",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 6
+        }
+      ],
+      "sha256": "4c8b15722a7eb9a333a3b2dc53bc7f32dfc51bfd6bb200306b77c9e9b17e31c6"
+    },
+    {
+      "id": "evidence/rust-allow-in-comment-and-string",
+      "kind": "evidence",
+      "patch": "evidence/rust-allow-in-comment-and-string.patch",
+      "origin": "synthetic: F2b.g, owner decision OD-E, 0.11.0: #[allow( in a line comment, a string and a raw string switches nothing off and is no evidence (released 0.8.3 to 0.10.0 reported all three, a listed floor exception); the attribute in code is. r#unsafe is an identifier, not the keyword; an unsafe block is unsafe code.",
+      "expect": [
+        {
+          "path": "src/notes.rs",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 6
+        },
+        {
+          "path": "src/notes.rs",
+          "signal": "unsafe_added",
+          "side": "new",
+          "line": 8
+        }
+      ],
+      "sha256": "612e71f0a6765c3b3dd5950ec499bca36abb7089dd907511b56a499d23310d1e"
+    },
+    {
+      "id": "evidence/rust-assertion-class",
+      "kind": "evidence",
+      "patch": "evidence/rust-assertion-class.patch",
+      "origin": "synthetic: F2a.a (0.11.0), assertions that cannot fail read as a class, each beside a near miss that can fail or fails on every run: a condition true by its tokens (`!false`; literals compared under `&&`), the same field on both sides of assert_eq, two unequal literals in assert_ne and debug_assert_ne, the same operand on both sides of `==` under `||`. Near misses that are no item: `f64::NAN` on both sides (fails), the same call on both sides (a determinism check: it can fail). Declared miss: two equal strings (the code view blanks a string's text, so two strings are never compared)",
+      "expect": [
+        {
+          "path": "tests/class.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "tests/class.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "tests/class.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 7
+        },
+        {
+          "path": "tests/class.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 9
+        },
+        {
+          "path": "tests/class.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 11
+        },
+        {
+          "path": "tests/class.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 13
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "tests/class.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 16
+        }
+      ],
+      "sha256": "74a4f99853ac5eddfee476366ebba023268a68f73d356cee5f7931f6c2b1fa0b"
+    },
+    {
+      "id": "evidence/rust-dropped-result",
+      "kind": "evidence",
+      "patch": "evidence/rust-dropped-result.patch",
+      "origin": "synthetic: F2a.b (0.11.0): a `Result` of the standard library dropped with `let _ =` or `_ =` (remove_dir_all, kill, send) where the error was passed up before, each beside a near miss the reader cannot tell from it and does not read: a `String` written with `writeln!` (no error exists) and a function of the patch's own. Declared misses: a name that only begins with `_` (`let _unused =`) and `.ok();`",
+      "expect": [
+        {
+          "path": "src/cleanup.rs",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/cleanup.rs",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/cleanup.rs",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 7
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "src/cleanup.rs",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "src/cleanup.rs",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 8
+        }
+      ],
+      "sha256": "3b7964096b77328e0a24dec2bb367b8a0eaa4af64c2455976c481fe8558efdfc"
+    },
+    {
+      "id": "evidence/rust-panic-macros",
+      "kind": "evidence",
+      "patch": "evidence/rust-panic-macros.patch",
+      "origin": "synthetic: F2a.c (0.11.0): `panic!` and `unreachable!` added in a match where a conversion was, each a panic path; near miss: `panic!` in a comment. Declared miss: `assert!(false, …)`, which panics on every run it is reached and is read by no rule as a panic path",
+      "expect": [
+        {
+          "path": "src/parse.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/parse.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 7
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "src/parse.rs",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 5
+        }
+      ],
+      "sha256": "97f5d939791a9d7ce99903f798b0c9d679d8d83722a658f05fe700aceaf7c09b"
+    },
+    {
+      "id": "evidence/rust-tests-module-compiled-out",
+      "kind": "evidence",
+      "patch": "evidence/rust-tests-module-compiled-out.patch",
+      "origin": "synthetic: F2a.d as a class (0.11.0, coordinator's ruling 2): `#[cfg(test)]` replaced by `#[cfg(any())]` on a module of tests, and `#![cfg(feature = \"never\")]` at the top of a file of tests, each a skipped test; near misses: the same `cfg` on a module of another name (production code) and `#![cfg(any())]` at the top of a file that is not a test file by its path",
+      "expect": [
+        {
+          "path": "src/lib.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/it.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 1
+        }
+      ],
+      "sha256": "477bb91c771bde291b238f582e139f40513926215791e49a80c81176132f0e86"
+    },
+    {
+      "id": "evidence/rust-test-compiled-out",
+      "kind": "evidence",
+      "patch": "evidence/rust-test-compiled-out.patch",
+      "origin": "synthetic: F2a.d (0.11.0): a test compiled out by `#[cfg(…)]` whose predicate holds in no build of the tests (`any()`, `not(test)`), before or after its `#[test]` (the item is on the first changed line of the two attributes); near miss: `#[cfg(unix)]`, a platform's predicate. Declared miss: a `cfg` that compiles out a module whose name does not say it holds tests (`#[cfg(any())] mod more`)",
+      "expect": [
+        {
+          "path": "tests/slow.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "tests/slow.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 9
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "tests/slow.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 12
+        }
+      ],
+      "sha256": "9f53c25e353aeed24e30ec2b4eda126e381b9fda97df6672e1f7497478de61ad"
+    },
+    {
+      "id": "evidence/lang-go",
+      "kind": "evidence",
+      "patch": "evidence/lang-go.patch",
+      "origin": "synthetic: S3.35.d (0.11.0), the integrity labels in Go: every form the readers read today, one positive and one near miss each, and the forms a reviewer would expect that are not read, declared; measured on w11G2-2",
+      "expect": [
+        {
+          "path": "a_read_0.go",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "a_test_read_3.go",
+          "signal": "test_removed",
+          "side": "old",
+          "line": 2
+        },
+        {
+          "path": "a_test_read_7.go",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "a_read_12.go",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "a_read_13.go",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "a_miss_2.go",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "a_test_miss_5.go",
+          "signal": "test_removed",
+          "side": "old",
+          "line": 2
+        },
+        {
+          "path": "a_test_miss_6.go",
+          "signal": "test_removed",
+          "side": "old",
+          "line": 2
+        },
+        {
+          "path": "a_test_miss_9.go",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "a_test_miss_10.go",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "a_miss_11.go",
+          "signal": "stub_added",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "a_miss_15.go",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "a_miss_16.go",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "a_miss_17.go",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "a_miss_18.go",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "sha256": "0d144e640011908a1bc78514db559ccfc8accda9e444ead9206ae923d7bc73e6"
+    },
+    {
+      "id": "evidence/lang-javascript",
+      "kind": "evidence",
+      "patch": "evidence/lang-javascript.patch",
+      "origin": "synthetic: S3.35.d (0.11.0), the integrity labels in JavaScript and TypeScript: every form the readers read today, one positive and one near miss each, and the forms a reviewer would expect that are not read, declared; measured on w11G2-2",
+      "expect": [
+        {
+          "path": "src/a_read_0.js",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/a_read_1.ts",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/a_read_2.ts",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "test/a.test_read_6.js",
+          "signal": "test_removed",
+          "side": "old",
+          "line": 2
+        },
+        {
+          "path": "test/a.test_read_9.js",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "test/a.test_read_13.js",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/a_read_18.js",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/a_read_19.js",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "src/a_miss_4.js",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/a_miss_5.js",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "test/a.test_miss_8.js",
+          "signal": "test_removed",
+          "side": "old",
+          "line": 2
+        },
+        {
+          "path": "test/a.test_miss_11.js",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "test/a.test_miss_12.js",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "test/a.test_miss_15.js",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "test/a.test_miss_16.js",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/a_miss_17.js",
+          "signal": "stub_added",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/a_miss_21.js",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/a_miss_22.js",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "sha256": "1ce8ca13f6014502f4abc3b55b597a3104c80e5879c6c0d07ecab5b43a182967"
+    },
+    {
+      "id": "evidence/lang-python",
+      "kind": "evidence",
+      "patch": "evidence/lang-python.patch",
+      "origin": "synthetic: S3.35.d (0.11.0), the integrity labels in Python: every form the readers read today, one positive and one near miss each, and the forms a reviewer would expect that are not read, declared; measured on w11G2-2",
+      "expect": [
+        {
+          "path": "src/a_read_0.py",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/a_read_1.py",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/test_a_read_6.py",
+          "signal": "test_removed",
+          "side": "old",
+          "line": 2
+        },
+        {
+          "path": "tests/test_a_read_9.py",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/test_a_read_10.py",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/test_a_read_14.py",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/test_a_read_15.py",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/a_read_19.py",
+          "signal": "stub_added",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/a_read_22.py",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 4
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "src/a_miss_3.py",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/a_miss_4.py",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/a_miss_5.py",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/test_a_miss_8.py",
+          "signal": "test_removed",
+          "side": "old",
+          "line": 2
+        },
+        {
+          "path": "tests/test_a_miss_12.py",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/test_a_miss_13.py",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/test_a_miss_17.py",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/test_a_miss_18.py",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/a_miss_21.py",
+          "signal": "stub_added",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "src/a_miss_24.py",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "src/a_miss_25.py",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 4
+        },
+        {
+          "path": "src/a_miss_26.py",
+          "signal": "panic_path_added",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "sha256": "8948f10edca2ef305b2ddf29bb83a3866d7b8597563563f986d7609112811a49"
+    },
+    {
+      "id": "evidence/lang-shell",
+      "kind": "evidence",
+      "patch": "evidence/lang-shell.patch",
+      "origin": "synthetic: S3.35.d (0.11.0), the integrity labels in shell: every form the readers read today, one positive and one near miss each, and the forms a reviewer would expect that are not read, declared; measured on w11G2-2",
+      "expect": [],
+      "known_miss": [
+        {
+          "path": "scripts/a_miss_0.sh",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "test/a_miss_1.bats",
+          "signal": "test_removed",
+          "side": "old",
+          "line": 2
+        },
+        {
+          "path": "test/a_miss_2.bats",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "test/a_miss_3.bats",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "scripts/a_miss_4.sh",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "sha256": "414cdefaf7a1bb7d7ff8ae5e3cd57cf8319646c39ee355667847745a0491e537"
+    },
+    {
+      "id": "evidence/lang-yaml",
+      "kind": "evidence",
+      "patch": "evidence/lang-yaml.patch",
+      "origin": "synthetic: S3.35.d (0.11.0), the integrity labels in YAML: every form the readers read today, one positive and one near miss each, and the forms a reviewer would expect that are not read, declared; measured on w11G2-2",
+      "expect": [],
+      "known_miss": [
+        {
+          "path": ".yamllint_miss_0.yml",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": ".github/workflows/ci_miss_1.yml",
+          "signal": "test_removed",
+          "side": "old",
+          "line": 2
+        },
+        {
+          "path": ".github/workflows/ci_miss_2.yml",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": ".github/workflows/ci_miss_3.yml",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "sha256": "a7ac6500b6a3fadd937290de1188f5b1438016a23d75deca56268f05922744a9"
+    },
+    {
+      "id": "evidence/lang-dockerfile",
+      "kind": "evidence",
+      "patch": "evidence/lang-dockerfile.patch",
+      "origin": "synthetic: S3.35.d (0.11.0), the integrity labels in Dockerfile: every form the readers read today, one positive and one near miss each, and the forms a reviewer would expect that are not read, declared; measured on w11G2-2",
+      "expect": [],
+      "known_miss": [
+        {
+          "path": "d0/Dockerfile",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "d1/Dockerfile",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "sha256": "5c2d8660fe89ead1464a895cc23f4773c7d056584cdfbdfdb5480d03ac5e9df8"
+    },
+    {
+      "id": "evidence/lang-makefile",
+      "kind": "evidence",
+      "patch": "evidence/lang-makefile.patch",
+      "origin": "synthetic: S3.35.d (0.11.0), the integrity labels in Makefile: every form the readers read today, one positive and one near miss each, and the forms a reviewer would expect that are not read, declared; measured on w11G2-2",
+      "expect": [],
+      "known_miss": [
+        {
+          "path": "d0/Makefile",
+          "signal": "check_suppressed",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "d1/Makefile",
+          "signal": "test_removed",
+          "side": "old",
+          "line": 2
+        },
+        {
+          "path": "d2/Makefile",
+          "signal": "error_swallowed",
+          "side": "new",
+          "line": 2
+        }
+      ],
+      "sha256": "d589eb21c8c26f45019be805bb9c3bc364a32c5da6f21d14af5828508147f1a6"
     }
   ]
 }

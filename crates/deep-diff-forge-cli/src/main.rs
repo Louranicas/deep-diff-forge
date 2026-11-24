@@ -17,10 +17,13 @@ mod analysis;
 mod args;
 mod bench;
 mod contract;
+mod diagnostics_text;
 mod eval;
+mod fail_on;
 mod file_pair;
 mod git_input;
 mod mcp;
+mod refusal;
 mod regular;
 mod rpc;
 mod textfile;
@@ -28,9 +31,10 @@ use deep_diff_forge_core::exit;
 use deep_diff_forge_core::{InputSeal, ReviewDocument, display_safe, display_safe_bounded};
 
 /// Write `s` to stdout, treating a reader that closed the pipe (`… | head`) as
-/// a clean exit. Rust ignores SIGPIPE, so a bare `print!`/`println!` panics with
-/// `BrokenPipe` (exit 101) the moment the downstream consumer goes away; routing
-/// bulk output through here keeps `deep-diff-forge … | head` a normal success.
+/// a clean exit unless a verdict refusal is pending ([`refusal::stdout_failed`]). Rust ignores
+/// SIGPIPE, so a bare `print!`/`println!` panics with `BrokenPipe` (exit 101) the moment the
+/// downstream consumer goes away; routing bulk output through here keeps `deep-diff-forge … |
+/// head` a normal success.
 /// std-only, no `unsafe`.
 ///
 /// Stdout is line-buffered, so the flush is what writes a tail after the last newline: before,
@@ -43,31 +47,8 @@ fn emit(s: &str) {
     // (`trusted`, `session_id`) as cleartext logging on PR #83. Output is single-threaded.
     let mut stdout = std::io::stdout();
     if let Err(err) = stdout.write_all(s.as_bytes()).and_then(|()| stdout.flush()) {
-        // A refusal decided before the output wins over any write error: a gone reader or a
-        // full disk (F3 of the 0.10.0 tree review).
-        if let Some(reason) = PENDING_REFUSAL.get() {
-            refuse_now(reason);
-        }
-        if err.kind() == std::io::ErrorKind::BrokenPipe {
-            std::process::exit(exit::SUCCESS);
-        }
-        eprintln!("error: write failed: {err}");
-        std::process::exit(exit::IO);
+        refusal::stdout_failed(&err);
     }
-}
-
-/// A refusal decided before its command writes its output, with its stderr line (empty for
-/// none). A reader that closes stdout then still gets exit 7, not the clean exit of a broken pipe:
-/// `findings verify --require-findings` exited 0 with an empty stderr when its reader had gone
-/// (S3.17a.g2, DDF-2026-010).
-static PENDING_REFUSAL: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
-
-/// Exit 7 with `reason` on stderr (nothing when it is empty).
-fn refuse_now(reason: &str) -> ! {
-    if !reason.is_empty() {
-        eprintln!("{reason}");
-    }
-    std::process::exit(EXIT_REFUSED);
 }
 
 /// `println!`-shaped wrapper over [`emit`] for broken-pipe-tolerant line output.
@@ -86,9 +67,11 @@ fn emit_pretty_json(document: &serde_json::Value) {
 
 // Declared after `emitln!`, which it uses (a `macro_rules!` is visible only below it).
 mod agent;
+mod agent_check;
 mod doctor;
 mod hook;
 mod hook_run;
+mod ledger;
 mod verdict_v2;
 
 /// Read all of `reader` into a `String`, but never buffer more than the patch
@@ -249,41 +232,45 @@ fn refuse_arguments_to_bare_commands(command: Option<&str>, extra: Option<&Strin
     }
 }
 
-/// `schema [result|exit-codes|signals]`: print a machine contract.
+/// `schema [result|exit-codes|signals|diagnostics]`: print a machine contract.
 fn schema_cmd(opts: &[String]) {
     args::admit_or_exit(
         opts,
         &SCHEMA,
-        "deep-diff-forge schema [result|exit-codes|signals]",
+        "deep-diff-forge schema [result|exit-codes|signals|diagnostics]",
     );
     contract_output(contract::schema(opts));
 }
 
 /// The output and guard options shared by `--stdin-patch` and the structured Git selections.
-const REVIEW_FLAGS: [&str; 8] = [
+const REVIEW_FLAGS: [&str; 9] = [
     "--json",
     "--jsonl",
     "--rank",
+    "--diagnostics",
     "--cluster",
     "--outline",
     "--hunks",
     "--require-files",
     "--require-hunks",
 ];
-/// The valued options shared by `--stdin-patch` and the structured Git selections.
-const REVIEW_VALUED: [&str; 6] = [
+/// The valued options of `--stdin-patch` and `<old> <new>` (the structured Git selections list
+/// theirs in `git_input`, `--repo` and these).
+const REVIEW_VALUED: [&str; 7] = [
     "--layout",
     "--parallel",
     "--address",
     "--path",
     "--max-bytes",
     "--cursor",
+    "--fail-on",
 ];
 /// `--stdin-patch`'s flags: the shared ones and Git's `--allow-empty`, admitted nowhere else.
-const STDIN_PATCH_FLAGS: [&str; 9] = [
+const STDIN_PATCH_FLAGS: [&str; 10] = [
     "--json",
     "--jsonl",
     "--rank",
+    "--diagnostics",
     "--cluster",
     "--outline",
     "--hunks",
@@ -296,19 +283,12 @@ const STDIN_PATCH: args::Spec = args::Spec {
     valued: &REVIEW_VALUED,
     positionals: 0,
 };
-const STDIN_PATCH_USAGE: &str = "deep-diff-forge --stdin-patch [--json | --jsonl | --rank | --cluster [--parallel N] | --layout inline|side-by-side | --outline | --hunks [--address A]... [--path P]...] [--max-bytes N] [--cursor C] [--require-files] [--require-hunks] [--allow-empty]";
+const STDIN_PATCH_USAGE: &str = "deep-diff-forge --stdin-patch [--json | --jsonl | --rank [--fail-on LIST] | --diagnostics [--fail-on LIST] | --cluster [--parallel serial|auto|N] | --layout inline|side-by-side | --outline | --hunks [--address A]... [--path P]...] [--max-bytes N] [--cursor C] [--require-files] [--require-hunks] [--allow-empty]";
 const SCHEMA: args::Spec = args::Spec {
     flags: &[],
     valued: &[],
     positionals: 1,
 };
-
-/// Exit code for an input-contract refusal: the caller passed `--require-files`
-/// or `--require-hunks` and the (well-formed) patch has nothing to review.
-/// Distinct from 4 (the input could not be parsed) so a gate can tell "nothing
-/// to review" from "garbage". This is the "contract violation" slot of the
-/// documented exit-code table.
-const EXIT_REFUSED: i32 = exit::INPUT_CONTRACT_REFUSED;
 
 /// The `--require-files` / `--require-hunks` input contracts, parsed from the CLI flags; the
 /// predicate itself is [`deep_diff_forge_patch::InputGuards`], shared with the daemon.
@@ -327,14 +307,13 @@ impl InputGuards {
         self.0.files || self.0.hunks
     }
 
-    /// Exit [`EXIT_REFUSED`] with a one-line stderr reason and an empty stdout on the first
+    /// Exit 7 ([`refusal::refuse_input`]) with a one-line stderr reason and an empty stdout on the first
     /// requested contract the input breaks. A gate that feeds a diff into the engine should pass
     /// both, so neither an empty or mis-piped input nor a header-only or rename-only diff can be
     /// mistaken for a clean, zero-risk review.
     fn enforce(self, files: &[deep_diff_forge_core::ReviewFile]) {
         if let Some(reason) = self.0.refusal(files) {
-            eprintln!("refused: {reason}");
-            std::process::exit(EXIT_REFUSED);
+            refusal::refuse_input(reason);
         }
     }
 }
@@ -446,15 +425,22 @@ pub(crate) fn validate_review_options_or_exit(opts: &[String]) {
     // `--cluster` print JSON with it; `--outline` and `--hunks` always do) are modes too: before,
     // `--jsonl --rank` printed only JSONL and `--json --layout inline` only JSON, each with exit
     // 0, and `--jsonl --hunks --path nothing` skipped the path check (bug hunt 2026-11-01).
-    let json_is_a_format = ["--rank", "--cluster", "--outline", "--hunks"]
-        .iter()
-        .any(|mode| has(mode));
+    let json_is_a_format = [
+        "--rank",
+        "--diagnostics",
+        "--cluster",
+        "--outline",
+        "--hunks",
+    ]
+    .iter()
+    .any(|mode| has(mode));
     let modes: Vec<&str> = [
         "--acquisition-json",
         "--outline",
         "--hunks",
         "--cluster",
         "--rank",
+        "--diagnostics",
         "--jsonl",
         "--json",
         "--layout",
@@ -507,6 +493,13 @@ pub(crate) fn validate_review_options_or_exit(opts: &[String]) {
     if has("--parallel") {
         let _ = parse_parallelism(opts);
     }
+    if let Some(list) = flag_value(opts, "--fail-on") {
+        if !has("--rank") && !has("--diagnostics") {
+            eprintln!("error: --fail-on needs --rank or --diagnostics");
+            std::process::exit(exit::USAGE);
+        }
+        let _ = fail_on::FailOn::parse_or_exit(&list);
+    }
 }
 
 /// The one parse → guard → seal path ([`deep_diff_forge_patch::SealedReview`], anchor C-05), with
@@ -520,10 +513,7 @@ fn sealed_review_or_exit(bytes: &[u8], guards: InputGuards) -> deep_diff_forge_p
             eprintln!("error: patch parse failed: {error}");
             std::process::exit(error.exit_code());
         }
-        Err(refused @ ReviewError::Refused(_)) => {
-            eprintln!("{refused}");
-            std::process::exit(EXIT_REFUSED);
-        }
+        Err(ReviewError::Refused(reason)) => refusal::refuse_input(reason),
     }
 }
 
@@ -550,13 +540,32 @@ fn emit_review(review: &deep_diff_forge_patch::SealedReview, opts: &[String]) {
         });
     } else if opts.iter().any(|a| a == "--cluster") {
         run_cluster(files, opts, seal);
-    } else if opts.iter().any(|a| a == "--rank") {
+    } else if let Some(mode) = ["--rank", "--diagnostics"]
+        .into_iter()
+        .find(|mode| opts.iter().any(|a| a == mode))
+    {
         let ranked = deep_diff_forge_graph::rank(files);
-        if opts.iter().any(|a| a == "--json") {
-            print_rank_json(&ranked, seal);
-        } else {
-            print_rank_human(&ranked);
+        // The gate's verdict is decided before the document, which it does not change (F7.i).
+        if let Some(list) = flag_value(opts, "--fail-on") {
+            fail_on::FailOn::parse_or_exit(&list).decide(&ranked);
         }
+        let json = opts.iter().any(|a| a == "--json");
+        if mode == "--rank" {
+            if json {
+                print_rank_json(&ranked, seal);
+            } else {
+                print_rank_human(&ranked);
+            }
+        } else {
+            // The builder's bytes, or a text form drawn from them (F5a): no second writer.
+            let document = deep_diff_forge_graph::diagnostics(seal, &ranked).to_json();
+            emit(&if json {
+                document
+            } else {
+                diagnostics_text::render(&document)
+            });
+        }
+        refusal::finish();
     } else if opts.iter().any(|a| a == "--json") {
         emit(&review.to_json());
     } else if let Some(name) = flag_value(opts, "--layout") {
@@ -1502,7 +1511,17 @@ fn eval_cmd(opts: &[String]) {
             });
         }
     };
-    let failures = receipt["failures"].as_array().map_or(0, Vec::len);
+    // Decided before the receipt is written (F7.h2): the cases with a failure, by id.
+    let failed: std::collections::BTreeSet<&str> = receipt["failures"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|f| Some(f.as_str()?.split_once(": ").map_or("", |(id, _)| id)))
+        .collect();
+    if !failed.is_empty() {
+        let class = exit::refusal("eval_failed");
+        refusal::pending(&[(class, format!("{} cases failed", failed.len()))]);
+    }
     if opts.iter().any(|a| a == "--json") {
         emit_pretty_json(&receipt);
     } else {
@@ -1521,9 +1540,7 @@ fn eval_cmd(opts: &[String]) {
             emitln!("  FAIL {}", failure.as_str().unwrap_or(""));
         }
     }
-    if failures > 0 {
-        std::process::exit(EXIT_REFUSED);
-    }
+    refusal::finish();
 }
 
 const FINDINGS_USAGE: &str = "deep-diff-forge findings verify --findings FILE [--require-all] [--require-findings] [--require-files] [--require-hunks]";
@@ -1571,21 +1588,23 @@ fn findings_cmd(opts: &[String]) {
     let required = |flag: &str| opts.iter().any(|a| a == flag);
     let all_accepted = verdict.refused.is_empty() && verdict.over_limit == 0;
     // Decided before the verdict is written, so a reader that closes stdout cannot turn the
-    // refusal into a clean exit (S3.17a.g2).
-    let refusal = if required("--require-findings") && verdict.total() == 0 {
-        Some("refused: 0 findings in the findings file (--require-findings)")
-    } else if required("--require-all") && !all_accepted {
-        Some("")
-    } else {
-        None
-    };
-    if let Some(reason) = refusal {
-        let _ = PENDING_REFUSAL.set(reason);
+    // refusal into a clean exit (S3.17a.g2, F7.h2).
+    let mut reasons = Vec::new();
+    if required("--require-findings") && verdict.total() == 0 {
+        let text = "0 findings in the findings file".to_owned();
+        reasons.push((exit::refusal("require_findings"), text));
     }
+    if required("--require-all") && !all_accepted {
+        let refused = verdict.refused.len() + verdict.over_limit;
+        let text = format!(
+            "{refused} of {} findings were refused or over the limit",
+            verdict.total()
+        );
+        reasons.push((exit::refusal("require_all"), text));
+    }
+    refusal::pending(&reasons);
     emit_pretty_json(&doc);
-    if let Some(reason) = refusal {
-        refuse_now(reason);
-    }
+    refusal::finish();
 }
 
 /// A findings file: at most 8 MiB of UTF-8. Exit 3 when it cannot be read or is not UTF-8, 4
@@ -2099,8 +2118,8 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "agent",
-        "deep-diff-forge agent {setup --client claude|codex [--allow-repo PATH]... [--hooks] | doctor [--gate] | hook session-start|post-tool|stop --client claude} [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--json]",
-        "Print the MCP and hook setup for Claude Code or Codex (never written), check that every agent surface agrees, or answer a Claude Code hook: advice after a tool call, a judged stop.",
+        "deep-diff-forge agent {setup --client claude|codex [--allow-repo PATH]... [--hooks [--judge PATH] [--policy NAME] [--ranker-dir DIR]] [--json] | doctor [--gate [--judge PATH] [--policy NAME] [--ranker-dir DIR]] [--json] | check [--session ID | --base REV] [--range A..B] [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--require-pass] [--json] | verify-branch BASE..HEAD [--json] | hook session-start|post-tool|stop --client claude [--judge PATH] [--policy NAME] [--ranker-dir DIR]}",
+        "Print the MCP and hook setup for Claude Code or Codex (never written), check that every agent surface agrees, judge the uncommitted change with a stop's judge and policy (check), verify a branch against the project's ledger of stops (verify-branch), or answer a Claude Code hook: advice after a tool call, a judged stop.",
     ),
     (
         "mcp",
@@ -2119,12 +2138,12 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "schema",
-        "deep-diff-forge schema [result|exit-codes|signals]",
-        "Print the envelope's JSON Schema, the exit-code registry, or the signal vocabulary.",
+        "deep-diff-forge schema [result|exit-codes|signals|diagnostics]",
+        "Print the envelope's JSON Schema, the exit-code registry, the signal vocabulary, or the JSON Schema of deep-diff-forge.diagnostics.v0.",
     ),
     (
         "explain",
-        "deep-diff-forge explain {<code> [--family engine|council] | signal <label>} [--json]",
+        "deep-diff-forge explain {<code> [--family engine|council] | signal <label> [--audience agent|person]} [--json]",
         "Name one exit code and the action it asks for, or say why a signal matters and what answers it.",
     ),
     (
@@ -2204,7 +2223,7 @@ MACHINE CONTRACT:
   vocabulary (every label a ranking can carry, with its class, weight and basis);
   explain names one exit code, or says why a signal matters, what answers it and
   what does not (explain signal <label>). mcp serves read-only MCP tools over stdio (review_outline,
-  review_hunks, review_patch, rank_patch, review_change, verify_findings,
+  review_hunks, diagnose_patch, review_patch, rank_patch, review_change, verify_findings,
   explain_exit_code, exit_code_registry).
   rpc speaks the daemon's JSON-RPC protocol over stdio without a daemon.
 
@@ -2401,6 +2420,17 @@ fn doctor() {
         Ok(location) => emitln!("daemon_socket={}", location.path().display()),
         Err(_) => emitln!("daemon_socket=<unavailable: set XDG_RUNTIME_DIR or pass --socket>"),
     }
+    // What this build reads and writes that no document of it names (F4.c, the release
+    // manifest): the verdict schemas the stop hook reads, the hook-state schemas it reads and
+    // the one it writes, and the version of the project's ledger.
+    emitln!("verdict_schemas_read={}", verdict_v2::READS);
+    emitln!(
+        "hook_state_schemas_read=v{} to v{}; writes {}",
+        hook_run::STATE_FLOOR,
+        hook_run::STATE_OWN,
+        hook_run::STATE_SCHEMA
+    );
+    emitln!("ledger_version={}", ledger::VERSION);
 }
 
 fn claude_code_contract() {

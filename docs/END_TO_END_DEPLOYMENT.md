@@ -27,9 +27,9 @@ The gate sequence below is the design. What runs today:
   (34 cases since 0.6.0, 35 with `evidence/rust-code-view-20261114` since 0.8.4); fuzz seeds live in `fuzz/seeds/`.
 - Gate 8 has no tooling; nothing writes `reports/releases/`.
 - 0.8.4 is tagged `v0.8.4` (2026-11-17), the release before 0.9.0, and 0.8.3 `v0.8.3`
-  (2026-11-11 UTC); 0.9.0 is `v0.9.0` (2026-11-18) and 0.10.0 `v0.10.0`, each published on
-  GitLab, Gitea and Forgejo, with a GitHub release page that mirrors the GitLab release (0.8.4
-  and 0.9.0 since 2026-11-22). Releases built by `release.yml`: `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`, `v0.8.0`, `v0.8.1`, `v0.8.2`, `v0.8.3`. crates.io:
+  (2026-11-11 UTC); 0.9.0 is `v0.9.0` (2026-11-18), 0.10.0 `v0.10.0` (2026-11-23) and 0.11.0
+  `v0.11.0` (2026-11-25), each published on GitLab, Gitea and Forgejo, with a GitHub release
+  page that mirrors the GitLab release (0.8.4 and 0.9.0 since 2026-11-22). Releases built by `release.yml`: `v0.1.0`, `v0.2.0`, `v0.3.0`, `v0.4.0`, `v0.5.0`, `v0.6.0`, `v0.7.0`, `v0.8.0`, `v0.8.1`, `v0.8.2`, `v0.8.3`. crates.io:
   0.9.0's crates were published on 2026-11-23, and from 0.10.0 publishing is a step of the release.
 - The local remote-tracking refs (last fetch, 2026-10-28) show GitLab `main` at
   `2f03f40`, the same commit as GitHub `main`; the 2026-10-26 instruction not to

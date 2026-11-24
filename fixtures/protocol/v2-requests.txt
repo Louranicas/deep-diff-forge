@@ -1,0 +1,170 @@
+{"jsonrpc":"2.0","id":1,"method":"engine.initialize"}
+{"jsonrpc":"2.0","id":2,"method":"engine.initialize","params":{}}
+{"jsonrpc":"2.0","id":3,"method":"engine.initialize","params":{"protocol":0}}
+{"jsonrpc":"2.0","id":4,"method":"engine.initialize","params":{"protocol":1}}
+{"jsonrpc":"2.0","id":5,"method":"engine.initialize","params":{"protocol":2}}
+{"jsonrpc":"2.0","id":6,"method":"engine.initialize","params":{"protocol":2,"client":"t"}}
+{"jsonrpc":"2.0","id":7,"method":"engine.methods"}
+{"jsonrpc":"2.0","id":8,"method":"engine.methods","params":{"verbose":true}}
+{"jsonrpc":"2.0","id":9,"method":"daemon.health"}
+{"jsonrpc":"2.0","id":10,"method":"daemon.health","params":{"x":1}}
+{"jsonrpc":"2.0","id":11,"method":"daemon.status"}
+{"jsonrpc":"2.0","id":12,"method":"daemon.shutdown","params":{"now":true}}
+{"jsonrpc":"2.0","id":13,"method":"diff.plan","params":{"patch":"--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new\n"}}
+{"jsonrpc":"2.0","id":14,"method":"diff.plan","params":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n+fn c() {}\n fn d() {}\ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-x\n+y\n"}}
+{"jsonrpc":"2.0","id":15,"method":"diff.plan","params":{"patch":"diff --git a/old.rs b/new.rs\nsimilarity index 100%\nrename from old.rs\nrename to new.rs\n"}}
+{"jsonrpc":"2.0","id":16,"method":"diff.plan","params":{"patch":"diff --git a/src/run.rs b/src/run.rs\n--- a/src/run.rs\n+++ b/src/run.rs\n@@ -1,2 +1,3 @@ fn main()\n fn main() {\n+    std::process::Command::new(\"curl\").spawn().ok();\n }\n@@ -9,2 +10,1 @@\n-#[test]\n fn t() {}\ndiff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-a = 1\n+a = eval(s)\n"}}
+{"jsonrpc":"2.0","id":17,"method":"diff.plan","params":{"patch":"diff --git a/new.txt b/new.txt\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+hello\ndiff --git a/gone.txt b/gone.txt\ndeleted file mode 100644\nindex 1111111..0000000\n--- a/gone.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-bye\ndiff --git a/run.sh b/run.sh\nold mode 100644\nnew mode 100755\ndiff --git a/logo.png b/logo.png\nindex 1111111..2222222 100644\nBinary files a/logo.png and b/logo.png differ\n"}}
+{"jsonrpc":"2.0","id":18,"method":"diff.plan","params":{"patch":""}}
+{"jsonrpc":"2.0","id":19,"method":"diff.plan","params":{"patch":"This is prose, not a patch.\nA second line.\n"}}
+{"jsonrpc":"2.0","id":20,"method":"diff.plan","params":{"patch":"--- a/x\n+++ b/x\n+stray\n"}}
+{"jsonrpc":"2.0","id":21,"method":"diff.plan","params":{"patch":"diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -a,b +c,d @@\n-x\n+y\n"}}
+{"jsonrpc":"2.0","id":22,"method":"diff.plan","params":{}}
+{"jsonrpc":"2.0","id":23,"method":"diff.plan","params":{"patch":7}}
+{"jsonrpc":"2.0","id":24,"method":"diff.plan","params":{"patch":"--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new\n","require_file":true}}
+{"jsonrpc":"2.0","id":25,"method":"diff.compute","params":{"patch":"--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new\n"}}
+{"jsonrpc":"2.0","id":26,"method":"diff.compute","params":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n+fn c() {}\n fn d() {}\ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-x\n+y\n"}}
+{"jsonrpc":"2.0","id":27,"method":"diff.compute","params":{"patch":"diff --git a/old.rs b/new.rs\nsimilarity index 100%\nrename from old.rs\nrename to new.rs\n"}}
+{"jsonrpc":"2.0","id":28,"method":"diff.compute","params":{"patch":"diff --git a/src/run.rs b/src/run.rs\n--- a/src/run.rs\n+++ b/src/run.rs\n@@ -1,2 +1,3 @@ fn main()\n fn main() {\n+    std::process::Command::new(\"curl\").spawn().ok();\n }\n@@ -9,2 +10,1 @@\n-#[test]\n fn t() {}\ndiff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-a = 1\n+a = eval(s)\n"}}
+{"jsonrpc":"2.0","id":29,"method":"diff.compute","params":{"patch":"diff --git a/new.txt b/new.txt\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+hello\ndiff --git a/gone.txt b/gone.txt\ndeleted file mode 100644\nindex 1111111..0000000\n--- a/gone.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-bye\ndiff --git a/run.sh b/run.sh\nold mode 100644\nnew mode 100755\ndiff --git a/logo.png b/logo.png\nindex 1111111..2222222 100644\nBinary files a/logo.png and b/logo.png differ\n"}}
+{"jsonrpc":"2.0","id":30,"method":"diff.compute","params":{"patch":""}}
+{"jsonrpc":"2.0","id":31,"method":"diff.compute","params":{"patch":"This is prose, not a patch.\nA second line.\n"}}
+{"jsonrpc":"2.0","id":32,"method":"diff.compute","params":{"patch":"--- a/x\n+++ b/x\n+stray\n"}}
+{"jsonrpc":"2.0","id":33,"method":"diff.compute","params":{"patch":"diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -a,b +c,d @@\n-x\n+y\n"}}
+{"jsonrpc":"2.0","id":34,"method":"diff.compute","params":{}}
+{"jsonrpc":"2.0","id":35,"method":"diff.compute","params":{"patch":7}}
+{"jsonrpc":"2.0","id":36,"method":"diff.compute","params":{"patch":"--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new\n","require_file":true}}
+{"jsonrpc":"2.0","id":37,"method":"diff.compute","params":{"patch":"","require_files":true}}
+{"jsonrpc":"2.0","id":38,"method":"diff.compute","params":{"patch":"This is prose, not a patch.\nA second line.\n","require_files":true}}
+{"jsonrpc":"2.0","id":39,"method":"diff.compute","params":{"patch":"diff --git a/old.rs b/new.rs\nsimilarity index 100%\nrename from old.rs\nrename to new.rs\n","require_hunks":true}}
+{"jsonrpc":"2.0","id":40,"method":"diff.compute","params":{"patch":"diff --git a/old.rs b/new.rs\nsimilarity index 100%\nrename from old.rs\nrename to new.rs\n","require_files":true,"require_hunks":true}}
+{"jsonrpc":"2.0","id":41,"method":"diff.compute","params":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n+fn c() {}\n fn d() {}\ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-x\n+y\n","require_files":true,"require_hunks":true}}
+{"jsonrpc":"2.0","id":42,"method":"diff.compute","params":{"patch":"--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new\n","require_files":"yes"}}
+{"jsonrpc":"2.0","id":43,"method":"diff.compute","params":{"patch":"--- a/x\n+++ b/x\n+stray\n","require_files":true}}
+{"jsonrpc":"2.0","id":44,"method":"diff.rank","params":{"patch":"--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new\n"}}
+{"jsonrpc":"2.0","id":45,"method":"diff.rank","params":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n+fn c() {}\n fn d() {}\ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-x\n+y\n"}}
+{"jsonrpc":"2.0","id":46,"method":"diff.rank","params":{"patch":"diff --git a/old.rs b/new.rs\nsimilarity index 100%\nrename from old.rs\nrename to new.rs\n"}}
+{"jsonrpc":"2.0","id":47,"method":"diff.rank","params":{"patch":"diff --git a/src/run.rs b/src/run.rs\n--- a/src/run.rs\n+++ b/src/run.rs\n@@ -1,2 +1,3 @@ fn main()\n fn main() {\n+    std::process::Command::new(\"curl\").spawn().ok();\n }\n@@ -9,2 +10,1 @@\n-#[test]\n fn t() {}\ndiff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-a = 1\n+a = eval(s)\n"}}
+{"jsonrpc":"2.0","id":48,"method":"diff.rank","params":{"patch":"diff --git a/new.txt b/new.txt\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+hello\ndiff --git a/gone.txt b/gone.txt\ndeleted file mode 100644\nindex 1111111..0000000\n--- a/gone.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-bye\ndiff --git a/run.sh b/run.sh\nold mode 100644\nnew mode 100755\ndiff --git a/logo.png b/logo.png\nindex 1111111..2222222 100644\nBinary files a/logo.png and b/logo.png differ\n"}}
+{"jsonrpc":"2.0","id":49,"method":"diff.rank","params":{"patch":""}}
+{"jsonrpc":"2.0","id":50,"method":"diff.rank","params":{"patch":"This is prose, not a patch.\nA second line.\n"}}
+{"jsonrpc":"2.0","id":51,"method":"diff.rank","params":{"patch":"--- a/x\n+++ b/x\n+stray\n"}}
+{"jsonrpc":"2.0","id":52,"method":"diff.rank","params":{"patch":"diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -a,b +c,d @@\n-x\n+y\n"}}
+{"jsonrpc":"2.0","id":53,"method":"diff.rank","params":{}}
+{"jsonrpc":"2.0","id":54,"method":"diff.rank","params":{"patch":7}}
+{"jsonrpc":"2.0","id":55,"method":"diff.rank","params":{"patch":"--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new\n","require_file":true}}
+{"jsonrpc":"2.0","id":56,"method":"diff.rank","params":{"patch":"","require_files":true}}
+{"jsonrpc":"2.0","id":57,"method":"diff.rank","params":{"patch":"This is prose, not a patch.\nA second line.\n","require_files":true}}
+{"jsonrpc":"2.0","id":58,"method":"diff.rank","params":{"patch":"diff --git a/old.rs b/new.rs\nsimilarity index 100%\nrename from old.rs\nrename to new.rs\n","require_hunks":true}}
+{"jsonrpc":"2.0","id":59,"method":"diff.rank","params":{"patch":"diff --git a/old.rs b/new.rs\nsimilarity index 100%\nrename from old.rs\nrename to new.rs\n","require_files":true,"require_hunks":true}}
+{"jsonrpc":"2.0","id":60,"method":"diff.rank","params":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n+fn c() {}\n fn d() {}\ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-x\n+y\n","require_files":true,"require_hunks":true}}
+{"jsonrpc":"2.0","id":61,"method":"diff.rank","params":{"patch":"--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new\n","require_files":"yes"}}
+{"jsonrpc":"2.0","id":62,"method":"diff.rank","params":{"patch":"--- a/x\n+++ b/x\n+stray\n","require_files":true}}
+{"jsonrpc":"2.0","id":63,"method":"review.outline","params":{"patch":"--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new\n"}}
+{"jsonrpc":"2.0","id":64,"method":"review.outline","params":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n+fn c() {}\n fn d() {}\ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-x\n+y\n"}}
+{"jsonrpc":"2.0","id":65,"method":"review.outline","params":{"patch":"diff --git a/old.rs b/new.rs\nsimilarity index 100%\nrename from old.rs\nrename to new.rs\n"}}
+{"jsonrpc":"2.0","id":66,"method":"review.outline","params":{"patch":"diff --git a/src/run.rs b/src/run.rs\n--- a/src/run.rs\n+++ b/src/run.rs\n@@ -1,2 +1,3 @@ fn main()\n fn main() {\n+    std::process::Command::new(\"curl\").spawn().ok();\n }\n@@ -9,2 +10,1 @@\n-#[test]\n fn t() {}\ndiff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-a = 1\n+a = eval(s)\n"}}
+{"jsonrpc":"2.0","id":67,"method":"review.outline","params":{"patch":"diff --git a/new.txt b/new.txt\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+hello\ndiff --git a/gone.txt b/gone.txt\ndeleted file mode 100644\nindex 1111111..0000000\n--- a/gone.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-bye\ndiff --git a/run.sh b/run.sh\nold mode 100644\nnew mode 100755\ndiff --git a/logo.png b/logo.png\nindex 1111111..2222222 100644\nBinary files a/logo.png and b/logo.png differ\n"}}
+{"jsonrpc":"2.0","id":68,"method":"review.outline","params":{"patch":""}}
+{"jsonrpc":"2.0","id":69,"method":"review.outline","params":{"patch":"This is prose, not a patch.\nA second line.\n"}}
+{"jsonrpc":"2.0","id":70,"method":"review.outline","params":{"patch":"--- a/x\n+++ b/x\n+stray\n"}}
+{"jsonrpc":"2.0","id":71,"method":"review.outline","params":{"patch":"diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -a,b +c,d @@\n-x\n+y\n"}}
+{"jsonrpc":"2.0","id":72,"method":"review.outline","params":{}}
+{"jsonrpc":"2.0","id":73,"method":"review.outline","params":{"patch":7}}
+{"jsonrpc":"2.0","id":74,"method":"review.outline","params":{"patch":"--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new\n","require_file":true}}
+{"jsonrpc":"2.0","id":75,"method":"review.outline","params":{"patch":"","require_files":true}}
+{"jsonrpc":"2.0","id":76,"method":"review.outline","params":{"patch":"This is prose, not a patch.\nA second line.\n","require_files":true}}
+{"jsonrpc":"2.0","id":77,"method":"review.outline","params":{"patch":"diff --git a/old.rs b/new.rs\nsimilarity index 100%\nrename from old.rs\nrename to new.rs\n","require_hunks":true}}
+{"jsonrpc":"2.0","id":78,"method":"review.outline","params":{"patch":"diff --git a/old.rs b/new.rs\nsimilarity index 100%\nrename from old.rs\nrename to new.rs\n","require_files":true,"require_hunks":true}}
+{"jsonrpc":"2.0","id":79,"method":"review.outline","params":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n+fn c() {}\n fn d() {}\ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-x\n+y\n","require_files":true,"require_hunks":true}}
+{"jsonrpc":"2.0","id":80,"method":"review.outline","params":{"patch":"--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new\n","require_files":"yes"}}
+{"jsonrpc":"2.0","id":81,"method":"review.outline","params":{"patch":"--- a/x\n+++ b/x\n+stray\n","require_files":true}}
+{"jsonrpc":"2.0","id":82,"method":"review.hunks","params":{"patch":"--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new\n"}}
+{"jsonrpc":"2.0","id":83,"method":"review.hunks","params":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n+fn c() {}\n fn d() {}\ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-x\n+y\n"}}
+{"jsonrpc":"2.0","id":84,"method":"review.hunks","params":{"patch":"diff --git a/old.rs b/new.rs\nsimilarity index 100%\nrename from old.rs\nrename to new.rs\n"}}
+{"jsonrpc":"2.0","id":85,"method":"review.hunks","params":{"patch":"diff --git a/src/run.rs b/src/run.rs\n--- a/src/run.rs\n+++ b/src/run.rs\n@@ -1,2 +1,3 @@ fn main()\n fn main() {\n+    std::process::Command::new(\"curl\").spawn().ok();\n }\n@@ -9,2 +10,1 @@\n-#[test]\n fn t() {}\ndiff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-a = 1\n+a = eval(s)\n"}}
+{"jsonrpc":"2.0","id":86,"method":"review.hunks","params":{"patch":"diff --git a/new.txt b/new.txt\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+hello\ndiff --git a/gone.txt b/gone.txt\ndeleted file mode 100644\nindex 1111111..0000000\n--- a/gone.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-bye\ndiff --git a/run.sh b/run.sh\nold mode 100644\nnew mode 100755\ndiff --git a/logo.png b/logo.png\nindex 1111111..2222222 100644\nBinary files a/logo.png and b/logo.png differ\n"}}
+{"jsonrpc":"2.0","id":87,"method":"review.hunks","params":{"patch":""}}
+{"jsonrpc":"2.0","id":88,"method":"review.hunks","params":{"patch":"This is prose, not a patch.\nA second line.\n"}}
+{"jsonrpc":"2.0","id":89,"method":"review.hunks","params":{"patch":"--- a/x\n+++ b/x\n+stray\n"}}
+{"jsonrpc":"2.0","id":90,"method":"review.hunks","params":{"patch":"diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -a,b +c,d @@\n-x\n+y\n"}}
+{"jsonrpc":"2.0","id":91,"method":"review.hunks","params":{}}
+{"jsonrpc":"2.0","id":92,"method":"review.hunks","params":{"patch":7}}
+{"jsonrpc":"2.0","id":93,"method":"review.hunks","params":{"patch":"--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new\n","require_file":true}}
+{"jsonrpc":"2.0","id":94,"method":"review.hunks","params":{"patch":"","require_files":true}}
+{"jsonrpc":"2.0","id":95,"method":"review.hunks","params":{"patch":"This is prose, not a patch.\nA second line.\n","require_files":true}}
+{"jsonrpc":"2.0","id":96,"method":"review.hunks","params":{"patch":"diff --git a/old.rs b/new.rs\nsimilarity index 100%\nrename from old.rs\nrename to new.rs\n","require_hunks":true}}
+{"jsonrpc":"2.0","id":97,"method":"review.hunks","params":{"patch":"diff --git a/old.rs b/new.rs\nsimilarity index 100%\nrename from old.rs\nrename to new.rs\n","require_files":true,"require_hunks":true}}
+{"jsonrpc":"2.0","id":98,"method":"review.hunks","params":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n+fn c() {}\n fn d() {}\ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-x\n+y\n","require_files":true,"require_hunks":true}}
+{"jsonrpc":"2.0","id":99,"method":"review.hunks","params":{"patch":"--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new\n","require_files":"yes"}}
+{"jsonrpc":"2.0","id":100,"method":"review.hunks","params":{"patch":"--- a/x\n+++ b/x\n+stray\n","require_files":true}}
+{"jsonrpc":"2.0","id":101,"method":"session.open","params":{"patch":"--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new\n"}}
+{"jsonrpc":"2.0","id":102,"method":"session.open","params":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n+fn c() {}\n fn d() {}\ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-x\n+y\n"}}
+{"jsonrpc":"2.0","id":103,"method":"session.open","params":{"patch":"diff --git a/old.rs b/new.rs\nsimilarity index 100%\nrename from old.rs\nrename to new.rs\n"}}
+{"jsonrpc":"2.0","id":104,"method":"session.open","params":{"patch":"diff --git a/src/run.rs b/src/run.rs\n--- a/src/run.rs\n+++ b/src/run.rs\n@@ -1,2 +1,3 @@ fn main()\n fn main() {\n+    std::process::Command::new(\"curl\").spawn().ok();\n }\n@@ -9,2 +10,1 @@\n-#[test]\n fn t() {}\ndiff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-a = 1\n+a = eval(s)\n"}}
+{"jsonrpc":"2.0","id":105,"method":"session.open","params":{"patch":"diff --git a/new.txt b/new.txt\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+hello\ndiff --git a/gone.txt b/gone.txt\ndeleted file mode 100644\nindex 1111111..0000000\n--- a/gone.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-bye\ndiff --git a/run.sh b/run.sh\nold mode 100644\nnew mode 100755\ndiff --git a/logo.png b/logo.png\nindex 1111111..2222222 100644\nBinary files a/logo.png and b/logo.png differ\n"}}
+{"jsonrpc":"2.0","id":106,"method":"session.open","params":{"patch":""}}
+{"jsonrpc":"2.0","id":107,"method":"session.open","params":{"patch":"This is prose, not a patch.\nA second line.\n"}}
+{"jsonrpc":"2.0","id":108,"method":"session.open","params":{"patch":"--- a/x\n+++ b/x\n+stray\n"}}
+{"jsonrpc":"2.0","id":109,"method":"session.open","params":{"patch":"diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -a,b +c,d @@\n-x\n+y\n"}}
+{"jsonrpc":"2.0","id":110,"method":"session.open","params":{}}
+{"jsonrpc":"2.0","id":111,"method":"session.open","params":{"patch":7}}
+{"jsonrpc":"2.0","id":112,"method":"session.open","params":{"patch":"--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new\n","require_file":true}}
+{"jsonrpc":"2.0","id":113,"method":"review.outline","params":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n+fn c() {}\n fn d() {}\ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-x\n+y\n","max_bytes":1024}}
+{"jsonrpc":"2.0","id":114,"method":"review.outline","params":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n+fn c() {}\n fn d() {}\ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-x\n+y\n","max_bytes":1023}}
+{"jsonrpc":"2.0","id":115,"method":"review.outline","params":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n+fn c() {}\n fn d() {}\ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-x\n+y\n","max_bytes":16777217}}
+{"jsonrpc":"2.0","id":116,"method":"review.outline","params":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n+fn c() {}\n fn d() {}\ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-x\n+y\n","max_bytes":"big"}}
+{"jsonrpc":"2.0","id":117,"method":"review.outline","params":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n+fn c() {}\n fn d() {}\ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-x\n+y\n","cursor":"abc"}}
+{"jsonrpc":"2.0","id":118,"method":"review.outline","params":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n+fn c() {}\n fn d() {}\ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-x\n+y\n","cursor":5}}
+{"jsonrpc":"2.0","id":119,"method":"review.outline","params":{"patch":"--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new\n","cursor":"0000000000000000.00000000.0.0"}}
+{"jsonrpc":"2.0","id":120,"method":"review.hunks","params":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n+fn c() {}\n fn d() {}\ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-x\n+y\n","max_bytes":1024}}
+{"jsonrpc":"2.0","id":121,"method":"review.hunks","params":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n+fn c() {}\n fn d() {}\ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-x\n+y\n","max_bytes":1023}}
+{"jsonrpc":"2.0","id":122,"method":"review.hunks","params":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n+fn c() {}\n fn d() {}\ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-x\n+y\n","max_bytes":16777217}}
+{"jsonrpc":"2.0","id":123,"method":"review.hunks","params":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n+fn c() {}\n fn d() {}\ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-x\n+y\n","max_bytes":"big"}}
+{"jsonrpc":"2.0","id":124,"method":"review.hunks","params":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n+fn c() {}\n fn d() {}\ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-x\n+y\n","cursor":"abc"}}
+{"jsonrpc":"2.0","id":125,"method":"review.hunks","params":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n+fn c() {}\n fn d() {}\ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-x\n+y\n","cursor":5}}
+{"jsonrpc":"2.0","id":126,"method":"review.hunks","params":{"patch":"--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new\n","cursor":"0000000000000000.00000000.0.0"}}
+{"jsonrpc":"2.0","id":127,"method":"review.hunks","params":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n+fn c() {}\n fn d() {}\ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-x\n+y\n","paths":["README.md"]}}
+{"jsonrpc":"2.0","id":128,"method":"review.hunks","params":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n+fn c() {}\n fn d() {}\ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-x\n+y\n","paths":["nope.rs"]}}
+{"jsonrpc":"2.0","id":129,"method":"review.hunks","params":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n+fn c() {}\n fn d() {}\ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-x\n+y\n","addresses":["h0000"]}}
+{"jsonrpc":"2.0","id":130,"method":"review.hunks","params":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n+fn c() {}\n fn d() {}\ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-x\n+y\n","addresses":[],"paths":[]}}
+{"jsonrpc":"2.0","id":131,"method":"review.hunks","params":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n+fn c() {}\n fn d() {}\ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-x\n+y\n","paths":"README.md"}}
+{"jsonrpc":"2.0","id":132,"method":"review.change","params":{"repo":"no-such-repo","selection":"staged"}}
+{"jsonrpc":"2.0","id":133,"method":"review.change","params":{"selection":"staged"}}
+{"jsonrpc":"2.0","id":134,"method":"review.change","params":{"repo":"no-such-repo","selection":"everything"}}
+{"jsonrpc":"2.0","id":135,"method":"review.change","params":{"repo":"no-such-repo","selection":"range"}}
+{"jsonrpc":"2.0","id":136,"method":"review.change","params":{"repo":"no-such-repo","selection":"staged","view":"map"}}
+{"jsonrpc":"2.0","id":137,"method":"session.snapshot","params":{"session":"s1"}}
+{"jsonrpc":"2.0","id":138,"method":"session.snapshot","params":{"session":"s999"}}
+{"jsonrpc":"2.0","id":139,"method":"session.snapshot","params":{"session":1}}
+{"jsonrpc":"2.0","id":140,"method":"session.snapshot","params":{}}
+{"jsonrpc":"2.0","id":141,"method":"session.close","params":{"session":"s1"}}
+{"jsonrpc":"2.0","id":142,"method":"session.close","params":{"session":"s1"}}
+{"jsonrpc":"2.0","id":143,"method":"session.close","params":{"session":null}}
+{"jsonrpc":"2.0","id":144,"method":"findings.verify","params":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n+fn c() {}\n fn d() {}\ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-x\n+y\n","findings":[{"agent":"a","severity":"low","title":"t","body":"b","path":"src/lib.rs","line":2},{"agent":"a","severity":"info","title":"t","body":"b","path":"README.md"},{"agent":"a","severity":"low","title":"t","body":"b","path":"src/lib.rs","line":999},{"agent":"a","severity":"low","title":"t","path":"src/lib.rs"},{"x":1},3]}}
+{"jsonrpc":"2.0","id":145,"method":"findings.verify","params":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n+fn c() {}\n fn d() {}\ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-x\n+y\n","findings":[]}}
+{"jsonrpc":"2.0","id":146,"method":"findings.verify","params":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n+fn c() {}\n fn d() {}\ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-x\n+y\n","findings":{"agent":"a"}}}
+{"jsonrpc":"2.0","id":147,"method":"findings.verify","params":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,4 @@\n fn a() {}\n-fn b() {}\n+fn b() -> u8 { 1 }\n+fn c() {}\n fn d() {}\ndiff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-x\n+y\n"}}
+{"jsonrpc":"2.0","id":148,"method":"findings.verify","params":{"patch":"","findings":[],"require_files":true}}
+{"jsonrpc":"2.0","id":149,"method":"findings.verify","params":{"patch":"--- a/x\n+++ b/x\n+stray\n","findings":[]}}
+{"jsonrpc":"2.0","id":150,"method":"no.such"}
+{"jsonrpc":"2.0","id":151,"method":""}
+{"jsonrpc":"2.0","id":152}
+{"jsonrpc":"2.0","id":153,"method":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}
+{"jsonrpc":"1.0","id":154,"method":"daemon.health"}
+{"jsonrpc":"2.0","id":155,"method":"daemon.health","params":7}
+{"jsonrpc":"2.0","id":{"a":1},"method":"daemon.health"}
+{"jsonrpc":"2.0","id":"s","method":"daemon.health"}
+{"method":"daemon.status"}
+not json
+{"jsonrpc":"2.0","id":1,"method":"daemon.health"
+[]
+null
+{"jsonrpc":"2.0","id":156,"method":"daemon.metrics"}
+{"jsonrpc":"2.0","id":157,"method":"daemon.metrics","params":{"reset":true}}
+{"jsonrpc":"2.0","id":158,"method":"engine.initialize","params":{"protocol":3}}
+{"jsonrpc":"2.0","id":159,"method":"engine.initialize","params":{"protocol":99}}
+{"jsonrpc":"2.0","id":160,"method":"engine.initialize","params":{"protocol":"2"}}
+{"jsonrpc":"2.0","id":161,"method":"engine.initialize","params":{"protocol":-1}}
+{"jsonrpc":"2.0","id":162,"method":"diff.diagnostics","params":{"patch":"--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new\n"}}
+{"jsonrpc":"2.0","id":163,"method":"daemon.shutdown"}

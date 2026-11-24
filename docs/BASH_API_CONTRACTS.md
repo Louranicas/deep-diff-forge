@@ -44,7 +44,9 @@ shipped command that does the job today.
 `council` subcommands use their own family (0 completed, 3 recorded incomplete, 4 refused, 7 hold).
 `deep-diff-forge explain <code> [--family engine|council] [--json]` names one
 code. `deep-diff-forge explain signal <label> [--json]` explains one signal of a
-ranking instead (`deep-diff-forge schema signals` lists them).
+ranking instead (`deep-diff-forge schema signals` lists them). With `--audience agent` it
+prints what an agent is shown: the repairs, and only those substitutes that a committed
+witness patch proves this engine raises a label for.
 
 ## Stable Bootstrap Contract
 
@@ -83,7 +85,11 @@ git diff | deep-diff-forge --stdin-patch --rank --json --require-files --require
 
 Rules:
 
-- A refusal exits **7**, writes one line to stderr, and leaves stdout empty.
+- A refusal exits **7** and writes one line `refused: <text> (<tag>)` to stderr. An input
+  refusal (these two guards) leaves stdout empty; a verdict refusal (`findings verify
+  --require-findings`/`--require-all`, `eval`, `agent doctor`) prints its document first, and
+  still exits 7 when the reader of stdout has gone. The classes:
+  [Refusal reasons (exit 7)](reference/output-and-exit-codes.md#refusal-reasons-exit-7).
 - `--require-files` alone passes a header-only or rename-only diff (one file,
   zero hunks); only `--require-hunks` closes that gap.
 - When both guards would fail, the files guard reports first.

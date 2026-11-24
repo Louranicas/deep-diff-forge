@@ -208,13 +208,13 @@ era) no longer holds. How the standard is enforced today:
   `campaign_local.sh` runs every listed target in turn and stops red, naming it, at the
   first that fails (`campaign_runs_every_listed_target_and_fails_on_one_crash`).
 - **Evaluation gate** (`cli/tests/eval.rs`, every PR): the labelled corpus in
-  `fixtures/eval` (59 cases, measured 2026-11-23 on the integrated tree) must score at least its floors,
-  which are the measured values: ranking pairs 12/15, evidence precision 186/211,
-  evidence recall 186/264, findings 33/33 (0.10.0; sections the parser refuses are in
+  `fixtures/eval` (73 cases, measured 2026-11-24 on the 0.11.0 branch) must score at least its floors
+  (the table of `docs/reference/evaluation.md`); it measures ranking pairs 12/15, evidence precision 233/258,
+  evidence recall 233/360, findings 33/33 (sections the parser refuses are in
   `fixtures/eval-refused-by-parser/`, held refused by a test). A test holds these figures, and the table in
   `docs/reference/evaluation.md`, to what the run measures; the receipt also gives precision and
   recall by signal and by language, and lists a case the parser refuses as `refused` without
-  stopping the run. Any undeclared miss fails. The 106
+  stopping the run. Any undeclared miss fails. The 155
   declared misses (`known_miss`, `known_false_positive`) count as wrong in their
   metric rather than being excluded, and each fails once the engine gets it
   right. Planted controls prove a wrong label fails with exit 7, a changed file,
@@ -308,6 +308,60 @@ The test classes a module usually needs, as a checklist rather than a quota:
 
 The numbers are typical, not required. A module adds the tests its risk profile
 and its surviving mutants demand.
+
+### What mutation does not see (S3.34.d, measured 2026-11-24)
+
+An outside review said cargo-mutants skips six routes it cannot see. Checked with
+`cargo mutants --no-config --list` (cargo-mutants 27.1.0) on the graph and CLI
+crates at `319799d1`, the commit of the 0.10.0 mutation run, against every function
+of the 22 files of those crates that 0.10.0 changed:
+
+- Of 759 functions outside test code, 752 have mutants. Three of the seven without
+  are compiled only for tests (`unplaced.rs`, declared `#[cfg(test)] mod unplaced`).
+  Four are production code with no mutant: the tool replaces the body of no
+  function that never returns (`-> !`) and of no function named `new`, and these
+  four have no operator or deletable match arm besides. They are `git_input.rs`
+  `usage` (the usage refusal), `HunkLabels::new` (one call of
+  `HunkLabels::sharing`, which is mutated) and, in `hook_run.rs`, `Scratch::new`
+  and `Bench::new`. Those two are on the stop hook's path (the scratch directory of
+  a judgement; finding the judge, reading the policy and hashing the rankers), so
+  mutation evidence says nothing about them; only their own tests do. The other
+  never-returning functions (`fail`, `refuse_now`, `refuse_withdrawn`) have
+  mutants inside them.
+- The run's `--in-diff` keeps a mutant only when it lies on a changed line, so a
+  function whose change is only its signature has none: `eval.rs` `ranking` and
+  `findings` (2 of the 77 functions outside test code that 0.10.0 changed), which
+  the full list mutates.
+- No `const fn` is skipped (34 are listed), no function sits in a macro body or
+  under a configuration other than tests, and the tree has no `mutants::skip` and
+  no mutants configuration (the run passes `--no-config` in any case).
+
+That is six functions in all, four not seen at all and two not seen by a
+diff-scoped run; the review did not name its six, so whether they are these is not
+known.
+
+What the 0.10.0 run reported needs reading too (S3.34.c, 2026-11-24):
+
+- A timeout is not always a catch. Two of the run's timeouts were missed mutants
+  that the machine's load made slow: `hook.rs` `sh_quote` (`&&` to `||`, which no
+  test could tell apart, the build directory's path being plain) and `risk.rs`
+  `score_path_and_shape` (`+=` to `-=`, which passes every test of the workspace in
+  496 seconds against the baseline's 396 and the run's limit of 900). Both now have
+  tests that fail on them. A timeout is counted as a catch only once the mutant is
+  shown to loop or to be caught by a test.
+- Seven mutants of `lexical.rs` `scalar_reading` are caught only by the run's time
+  limit. Six make its loop never end: `colon + 1 + after` with either `+` made `-`
+  or `*` leaves the index where it was, or sends it back, on `key:` or `key: value`;
+  `colon > i` made `>=` or `==` takes nothing and leaves the index on any byte that is
+  not a blank or a key's colon (planted: the lexical tests hang). The seventh, `<`,
+  gives the same output and is quadratic on a run of blanks. A test with a bound
+  would catch the six in a second, but the function is not exported, so it would sit
+  in the graph crate's `src/` and move the scorer digest; it is not written.
+- One missed mutant is equivalent, answered by argument and by measurement: deleting
+  `released` from the hit `texts_found` keeps. The reading of release 0.8.4 marks the
+  same items, and the union of the readings keeps either mark. The marks of 29,646
+  files of the comparison and eval corpora, and `--rank` and `--diagnostics` on 7,490
+  patches, are the same with the mutant.
 
 ## Module Test Targets
 

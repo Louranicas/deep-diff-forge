@@ -1,0 +1,4 @@
+binary: deep-diff-forge 0.11.0-dev
+sha256: afe94ecd6fb75b1ecd65a005c7a7b327028cc01ee430524f5489ed016dea2aae
+origin: not a published artefact: a release build (cargo build --release --locked) of commit 6672c0ca, which writes v11 (from commit 3cda684c on)
+captured: by scripts/capture_hook_state.sh; session id "fixture"; commits dated 2026-11-20T00:00:00+0000 by ddf <ddf@example.invalid>

@@ -23,12 +23,13 @@ writes nothing:
 
 ```bash
 deep-diff-forge agent setup --client claude --hooks   # the MCP registration, then a `hooks` block for .claude/settings.json
+deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the same, with older rankers offered (0.11.0; also --judge PATH, --policy NAME)
 ```
 
 | Event | Command | What the agent gets |
 | --- | --- | --- |
 | `SessionStart` | `agent hook session-start` | What the hooks do, the commit the session's changes are measured from, and whether a stop can be judged here: the chain is checked the way `agent doctor --gate` checks it, and a link that is missing is named instead of a promise. |
-| `PostToolUse`, after every tool | `agent hook post-tool` | **Advice, never a block.** The evidence that is new in the working tree since the session began (commits pulled or made by others in that time are in that range too): label, path, line, how the line was read (the rung of the ranking that found it: `lexical` for one line, `hunk` for tokens read across the lines of a hunk), and the change that answers the signal. A signal of a file that has no row of evidence (`hazardous_text`, `executable_bit`, `symlink_change`, and a code signal the ranking's 32 rows left out) is said for the file. A finding is said once per session, also when the line moves. When advice cannot be given (a file name that is not UTF-8, a sparse checkout, Git refusing the repository), the user and the model are told once that it is off and why. |
+| `PostToolUse`, after every tool | `agent hook post-tool` | **Advice, never a block.** What is new in the working tree since the session began (commits pulled or made by others in that time are in that range too), as items of the [diagnostics document](diagnostics.md) of that change whose audience is the agent and whose class is `security` or `integrity` (from 0.11.0): a `shape` diagnostic (a new or deleted file, a lockfile, a public API path, a large change) orders a person's review, so it is neither listed nor counted, and a change that raises only such labels gets no advice; advice that said there was nothing to repair after every tool call that added a file taught an agent to skip the advice. Each item is `"path":line: code (class, side, read as …); case: …; repairs: id, id.` for a located diagnostic, `"path": code (class, read as …); …` for one at its file, then each repair id once with its sentence. The items, their cases and repair ids are those `--diagnostics --json` gives for the same tree in those two classes; "read as" is the rung of the ranking that found a row (`lexical` for one line, `hunk` for tokens read across the lines of a hunk), which the document does not carry. Where the engine cannot tell a diagnostic's case the item says so and lists every repair. A reading kept for compatibility with 0.8.3 (`floor_only`, for a person) is not advised. Each file's diagnostics at the file come before its located ones; a file whose located diagnostics were cut at 32 is said to be. At most 20 items and about 5,600 bytes are listed; the items that do not fit (the last in the document's order) are counted and said after the next tool call. A finding is said once per session, also when the line moves. A file whose change this version cannot read (a name that is not UTF-8) is one item naming it as Git quoted it, and the other files are advised; a change not ranked in the hook's time is said once to be "advice cut short". When advice cannot be given (a sparse checkout, Git refusing the repository), the user and the model are told once that it is off and why. An edit of a guard file (the policy file `--policy` names, `warden.toml` by default; a `.gitattributes`; a CI workflow under `.github/workflows/`, `.forgejo/workflows/` or `.gitea/workflows/`, `.gitlab-ci.yml`, `.circleci/config.yml`; lint and tool configuration such as `clippy.toml`, `rustfmt.toml`, `deny.toml`, `.cargo/config.toml`; the client's `.claude/settings.json` and `settings.local.json`), matched on whole path components, is named before the items with what the file decides, as information: "… is a file that decides how this work is judged or checked: … This is information, not a block: the edit is part of the change a stop judges." It is named once for each content of the file, so a later edit is named again; at most 8 in one advice. `agent setup` gives this hook `--policy` when it gives one to the others. |
 | `Stop` | `agent hook stop` | A verdict on your uncommitted and staged changes, and on each commit made since the session began that your branches, tags, stash, `HEAD` or their history name: each commit once, by its own change. **Only a fail holds the stop**: a commit's at the stop that first judges it, an uncommitted change's once while it is there. The message has the rules that failed and what answers them. A hold is reported for a person. With no judge, no policy, or no ranker the policy admits, the result is **UNJUDGED**, said plainly, and never a pass. |
 
 - **One project and one base for a session.** The session's first hook fixes three things:
@@ -67,8 +68,56 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   that holds its untracked files (`git stash -u`), and the older entries of the stash; a
   commit made on a detached `HEAD` that was left; a commit in another working tree; a merge
   commit the session makes, against its first parent, so with what the merge brought in.
+- **The project's frontier** (0.11.0, F13.b). What has been judged belongs to the project, not
+  to one conversation. When a session's first hook finds the project, the project's ledger
+  (below) gets a `baseline` record when it has none: every commit the repository names then
+  (refs, each working tree's `HEAD`, the reflogs), and the commit `HEAD` names. A stop then
+  judges, besides the session's own commits, every commit the same sources lead to that the
+  baseline does not and that no stop record of the ledger gave a verdict (`pass`, `fail`,
+  `fail_stands`, `hold`), whichever session made it: a session that ended before its stop (a
+  crash, a closed terminal, a conversation that went on under a new record), one whose state
+  was removed, one whose stops ran out of time. The session's own work is judged first; these
+  commits get the time that is left, the oldest first, and what does not fit is counted ("N
+  commits left or merged since the project was first recorded: UNJUDGED … they are judged at
+  the next stop") and judged at later stops. In the messages each is marked "(not this
+  session's: left or merged since the project was first recorded)", and a block for one says
+  that it may not be the session's work, that it is not to be rewritten, and to tell a person
+  and make any repair a new commit; the count of commits with no verdict names the two kinds
+  apart. Measured with forge-warden (`db4c580e`, its starter policy) on a desktop: 300 small
+  commits left after the baseline and one commit of the session's own: the first stop took
+  39 seconds and judged the own commit and 297 of the others (about 0.13 seconds a commit);
+  the second took 1 second and judged the last 3. A judge that takes longer a commit drains
+  over more stops, each within the stop's 45 seconds. A session's start that writes the baseline says so: "This start is the first record
+  of this project in its ledger: the project is recorded from commit <id>, and commits that
+  were in the repository before it are not judged by these hooks." (so a ledger removed between
+  sessions is visible at the next start). A commit the session finds in its own
+  range is judged by it even when another session has judged it (a commit found by several
+  sessions holds each once, below). A project whose ledger has no baseline (a ledger of an
+  earlier build, or one that was removed) is judged as before, by the session's own range,
+  and the stop says so ("No record of this project was found in its ledger …") and records
+  the commits that were there when the session began as the baseline. A `SessionStart` whose
+  `source` is `resume`, `compact` or `clear`, for a session with no record of its own, begins
+  from the commit the last session of its working tree began from (the ledger's `start`
+  records), not from `HEAD`: a policy the earlier conversation loosened in a commit does not
+  judge that commit. With `startup` it begins at `HEAD`, as before. A frontier commit is
+  judged under the policy at the base of the session that judges it, and after a `startup`
+  that base can be the commit itself, so the whole of its own edit of the policy applies to
+  it. Where the edit leaves the policy's protection of its own file in place (forge-warden's
+  starter policy has it in `ci-is-owned`), the commit is held, or fails where a rule the edit
+  kept fails it. Where the edit also removes
+  that protection, nothing of the old policy judges the commit: a commit that deletes the
+  rule against secrets and the protection, adds a secret, and is left without a stop passes
+  the next fresh session's stop without a word, is recorded `pass`, and `agent verify-branch`
+  verifies it (measured in the 0.11.0 tree review). `agent doctor --gate` does not see this:
+  under a policy that requires verified claims its link `policy_protects_itself` reads "held
+  or fails" whether the policy protects its file or not, because the probe is held for its
+  claims either way. The judge on the pull request, which reads the policy of the target
+  branch, is the boundary. Judging frontier commits under the policy at the ledger's
+  baseline is not built.
 - **Which commits of others are judged.** A commit that was already in the repository when
-  the session began, named by any ref (remote-tracking refs included) or by a reflog, is
+  the project's ledger first recorded the project (else when the session began), named by any
+  ref (remote-tracking refs included) or by a reflog, or that was made before the session
+  began and has a stop's verdict in that ledger, is
   not the session's, also when the session then pulls it, merges it by fast-forward,
   rebases onto it or resets to it: it was there before, and it is not judged at a stop. So
   whether a pull is judged depends on when its fetch happened: a commit fetched during the
@@ -141,9 +190,11 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   verdict, what the judge held at earlier stops, and the failures that stand (by name while
   there are three or fewer, else "13 earlier failures stand: Commit … (no-secrets), and 10
   more."); each unit these lines name comes with the names of its rules (whole names, and
-  "+2 more" for those that have no room), or with the judge's own first words when it was
-  held or failed for something that is no rule (a note, an expired waiver); both are kept
-  with a commit's answer for the rest of the session. A message is at most 9,000
+  "+2 more" for those that have no room), or, when it was held or failed for something that
+  is no rule (a note, an expired waiver), with the phrase of its reason class ("held: the
+  judge holds for claims it cannot verify, with no rule held"), never the judge's words: since
+  state v12 a commit's answer keeps rule ids and class codes only, for the rest of the
+  session. A message is at most 9,000
   characters. The lines of every stop are never cut: their room is taken first (each is a
   count and at most three names of a bounded length), what is above them is made inside
   what is left, and its own count ("and 42 more commits fail.") is inside that too, so
@@ -157,7 +208,15 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   mode: `forge-warden check --policy P --patch F --ranker R --json`. DDF does not judge.
   `agent setup --hooks` finds it once and writes its absolute path into the commands as
   `--judge PATH`, so the program is chosen by whoever installs the hooks and not at every stop
-  by `PATH`. Without `--judge` it is looked up in the directories of `PATH` that are named by
+  by `PATH`. From 0.11.0 `agent setup --hooks` also takes `--judge PATH`, `--policy NAME` and
+  `--ranker-dir DIR` and writes them into the session-start and stop commands (the judge and
+  the directory by their absolute paths, a judge that is no file and a directory that does
+  not exist refused with exit 2); give `agent doctor --gate` the same values, since it
+  compares them with the registered stop's: the judge by its absolute path, the policy by
+  its name, and the ranker directory by the directory a stop lists (its path with every
+  link resolved, so a relative path, a trailing `/` or a link to that directory is the
+  same; a relative directory written in the stop command is the same only by its text, since
+  the stop takes it from its own directory, and so is one that does not exist). Without `--judge` it is looked up in the directories of `PATH` that are named by
   an absolute path. A judge inside the repository it would judge is not run, however it was
   named: the change could have written it.
 - **A verdict is an exit code and a document that agree.** Exit 0, 7 or 8 counts only with a
@@ -178,25 +237,74 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   why, and that which rules failed is not known; the failure then stands for a person.
 - **What v3 adds is read for what it means.** Claims that forge-warden bound (`verified:
   true`, with `base`, `head` and `merge_base` of one length, 40 or 64 hex digits) are accepted
-  in that form only. The hook gives no `--repo`, so it cannot check them and does not use
-  them: claims never change an outcome, and the verdict is bound to the hook's patch by the
-  seals alone. A rule of kind `builtin` must have a `builtin:` id (and only it may), be a hold
+  in that form only. A verdict of a run without `--repo` is bound to the hook's patch by the
+  seals alone, and its claims change no outcome. A verdict of a bound run (below) is about its
+  commit only when its claims are verified and name the base and head the hook asked about: a
+  pass or a hold that claims another pair, or none verified, is UNJUDGED (`chain.not_a_verdict`,
+  "no verified verdict on this commit: the judge was asked about commit … against its parent …
+  in bound mode, and its verdict claims another pair or none verified (…)"); a fail still holds
+  the stop. A rule of kind `builtin` must have a `builtin:` id (and only it may), be a hold
   and name no waiver; it is shown like any other rule the judge holds for, by that id at
   every later stop of the session too. A later schema (`forge-warden.verdict.v4`) is no
   verdict, and the reason names it.
-- **Under a policy that requires verified claims, a stop can at best hold.** forge-warden
-  holds a change whose claims it cannot verify (`[claims] require_verified`; its `init` writes
-  that from 0.3.0), with the note `claims_unverified`. The hook gives the judge no `--repo`,
-  `--base` or `--head`, so under such a policy every unit of a stop holds and none passes.
-  An uncommitted or staged change can never be verified, whatever a later hook gives: it can
-  at best hold, so commit first. A hold is said at every stop and never blocks; it is for a
-  person. `agent doctor --gate` says it in the link `claims_verified`, read from the notes of
-  the judge's verdict on its probe (not from the policy file), and a session's start names it
-  as a weak link: stops are judged, and they hold.
+- **Under a policy that requires verified claims, only a commit can pass** (0.11.0, S3.25.b).
+  forge-warden holds a change whose claims it cannot verify (`[claims] require_verified`; its
+  `init` writes that from 0.3.0), with the note `claims_unverified`. A commit with one parent is
+  judged in bound mode: the judge is started with `--repo <the repository's Git common
+  directory> --base <the parent> --head <the commit>` beside the hook's patch, makes `git diff
+  merge-base..head` itself from a verified copy of the repository's objects, refuses a patch
+  that is not byte-equal to it, and claims the pair as verified, so such a commit can pass. What
+  bound mode cannot verify keeps the outcome it had: an uncommitted or staged change (no head
+  commit), a root commit (no base), a merge commit (it brings in commits the pair does not
+  name) and a commit in a repository bound mode does not admit as it is (a shallow clone, object
+  alternates, a path with `:` or a control character) can at best hold, so commit first. Which
+  judge takes bound mode is read once a stop from the judge's own usage: `check --help` that
+  names `--repo` (forge-warden from its 0.3.0 line; the released 0.2.1 does not, and is started
+  as before; it also refuses a `forge-warden.policy.v1` policy, so under `require_verified` its
+  stops are UNJUDGED as they were). A judge that refuses bound mode for a commit (exit 3: a
+  repository it does not admit; exit 4: a patch that is not its diff, or a ranker it does not
+  admit) has the commit judged again without `--repo`, as before, and the message says so
+  ("the judge refused bound mode for this commit (exit N: …), so it was judged without --repo, as
+  before"): no unit that had a verdict before has none now. A hold is said at every stop and
+  never blocks; it is for a person. `agent doctor --gate` says which units can pass in the link
+  `claims_verified`, read from the notes of the judge's verdict on its probe (not from the
+  policy file) and from the judge's usage: with a judge that takes bound mode "under this policy
+  only a commit can pass: …", with one that does not "stops here will hold, never pass: …"; a
+  session's start names it as a weak link. `agent check` judges a commit as a stop does, in
+  bound mode where it can.
+- **Bound mode runs in the repository the agent controls, and reads only its objects.**
+  forge-warden's ADR 0012 (D2, item 3): "Never read, never passed to Git: the caller's config,
+  refs, `HEAD`, index, hooks, `info/` (grafts, attributes, excludes), work tree, `.gitmodules`,
+  `.gitattributes`, `.mailmap`"; it refuses alternates, a shallow repository and a `gitdir:`
+  pointer, and makes the diff with "`--attr-source=<E> -c core.attributesFile=/dev/null -c
+  core.quotePath=true -c core.hooksPath=/dev/null -c core.fsmonitor=false diff --no-ext-diff
+  --no-textconv …`", the hook's own options for its patch. ADR 0010: "Clear the child
+  environment. … never inherit GIT_CONFIG_COUNT/PARAMETERS, GIT_DIR/WORK_TREE/INDEX_FILE,
+  object alternates". The hook passes the three arguments and nothing of its environment that
+  widens them. Measured on thirteen commit shapes (a text change, a rename, a mode change, a
+  deletion, a new empty file, a binary file, a file an attribute hides, a submodule pointer, a
+  path with a space, a path that is not UTF-8, a symlink, CRLF, a 3.6 MiB file): the hook's
+  patch is byte-equal to forge-warden's `scripts/make_patch.sh` for each, and forge-warden at
+  `005a1959` and `db4c580e` accepts each in bound mode. Measured cost (forge-warden `005a1959`,
+  a desktop): about 0.25 seconds a commit in bound mode against 0.09 without it; 300 small
+  commits after the project's baseline drain in two stops (38 and 37 seconds) instead of one
+  (26 seconds). A bound run gets the hook's 30 seconds a judge run at most, within the stop's
+  45; forge-warden's own limit for the whole bound run (`GIT_BOUND_TIMEOUT`) is 60 seconds.
 - **The policy is the one at the commit the session began from** (`warden.toml`, or
   `--policy NAME`), read from Git, never from the working tree: a change cannot loosen the
   policy it is judged by, and committing the loosened policy does not make it the policy
-  either, for as long as the session lasts.
+  either, for as long as the session lasts. The exception is a commit of the frontier (one a
+  session left without its stop): it is judged under the policy at the base of the session
+  that judges it, so the whole of its own policy edit can apply, the removal of the policy's
+  protection of its own file included, and such a commit can pass (the project's frontier,
+  above). A
+  conversation that goes on under a new session
+  id with `source` `resume`, `compact` or `clear` keeps the base of the last session of its
+  working tree (the project's frontier, below), so it is judged under the policy at that
+  base, as the same session would have been: a policy a commit of that conversation
+  tightened does not apply to it either. The other half: the base and the ledger that carries
+  it are kept where the agent can write; the pull request's judge, which reads the policy at
+  the base of the pull request, is the boundary.
 - **The patch is the one a judge would be given for the commit.** The working tree, with
   untracked files and without ignored ones, is staged and diffed against the commit its
   `HEAD` names (advice after a tool call: against the commit the session began from) in a
@@ -223,7 +331,8 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   Making the patch writes nothing in the repository: the index and the objects are in a
   scratch directory under the Git directory, removed afterwards. A working tree with paths
   marked skip-worktree (a sparse checkout) is not judged: its absent files would read as
-  deletions, so a stop is UNJUDGED with that reason and advice says so once.
+  deletions, so a stop is UNJUDGED with that reason and advice says so once; from 0.11.0 the
+  marks first hold one stop (see "Causes that hold a stop once" below).
 - **The ranker is this binary first**, then the files in `--ranker-dir DIR` that come first
   by name, eight candidates in all. forge-warden
   admits a ranker only if the policy lists its SHA-256, so a newer DDF than the policy admits
@@ -346,6 +455,35 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   twice running: when the client says that it is continuing because a stop hook has just
   blocked (`stop_hook_active`), and only when the state could not be kept, the stop is
   allowed and says FAIL STANDS with the reason.
+- **A stop whose state cannot be used still judges the tree** (0.11.0, F12.d; owner decision
+  OD-J). When the session's state is damaged, newer or older than this build reads, its
+  directory cannot be used, its key file is no key, its lists are not the ones it names, or
+  another hook of the session holds its lock, the stop no longer says only that it did not
+  run. It reads no file of the state directory and writes none: with an empty memory, it
+  finds the project from its input as a new session does, judges the uncommitted and staged
+  changes of the working trees (their patches against `HEAD`) under the policy at the commit
+  the project's ledger names as its baseline (at `HEAD` when the ledger has none, which the
+  message says: a commit of the session can have loosened that one), and decides as a stop
+  with no memory: a failing tree blocks. At a stop that follows a block (`stop_hook_active`)
+  the failure stands instead (FAIL STANDS), so the session is not trapped; at the next turn's
+  stop it blocks again, since nothing remembers that it blocked: a state that stays unusable
+  blocks once in each turn while the tree fails. When the project's ledger has a baseline it
+  then judges the frontier's commits, this session's own among them (which it cannot tell
+  apart, so none is marked), records each in the ledger and blocks on a failing one under the
+  same rule; the ledger keeps their verdicts, so each is judged once by such stops (a session
+  whose lists come back as the state names them judges its own commits once more at its next
+  stop, since its own list of judged commits does not have those verdicts). When another hook
+  of the session holds its lock, only the tree is judged: that hook, when it is a stop,
+  answers for the commits. Without a baseline no commit is judged (the session's base is
+  unknown): they wait for a stop that has its state.
+  The message begins "deep-diff-forge: this session's state could not be used (<class>): the
+  working tree was judged without it; so were the commits the project's ledger has no verdict
+  for (this session's own among them), each once: the ledger keeps their verdicts. Left as it
+  is, the working tree is judged like this at every stop with no memory of what blocked: a
+  failing tree blocks once in each turn." (without a baseline: "… no commit was judged: the
+  project's ledger has no baseline to find them from, so they are judged at a stop that has
+  its state.") and then gives the refusal, with what removing the state costs. No byte of a
+  key and no text of a damaged state is said.
 - **What the judge names beside its rules is passed on.** forge-warden also fails a change
   for a waiver that has expired and holds one for a note, with every rule passed. The message
   then carries the judge's own words for it (bounded, escaped, marked as the judge's text and
@@ -399,15 +537,196 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   and the user's `~/.claude/settings.json`; settings an administrator manages are not read.
   A link that cannot be checked because an earlier one is missing is reported as not ready,
   never as fine. Exit 0 only when every link is ready, otherwise 7 (the contract asked for is
-  not met). In `--json` the checks are named `git`, `repository`, `policy`, `judge`, `chain`,
+  not met). Stderr then carries `error: the chain is not ready: …` followed by
+  `refused: N checks failed (agent doctor)`, also when the reader of stdout has gone. In `--json` the checks are named `git`, `repository`, `policy`, `judge`, `chain`,
   `policy_protects_itself`, `claims_verified`, `patch`, `commits`, `state_directory`, `hooks_enabled`,
   `hooks_registered`,
   `hook_timeout`, `start_hook_registered` and `advice_hook_registered`,
-  after the checks `agent doctor` always makes. It takes the same `--judge`, `--policy` and
+  after the checks `agent doctor` always makes (`mcp_handshake`, `review_parity`, `rank_parity`,
+  `diagnostics_parity` and `views`). It takes the same `--judge`, `--policy` and
   `--ranker-dir` as the stop hook. The start of a session runs the same checks in the time
   it has and says "stops will be judged" only when every one of them is ready, or when the
   only ones that are not are `policy_protects_itself` and `claims_verified`, which it then
   names as weak.
+- **`agent check` judges, on demand, the units a stop judges, with a stop's judge and
+  policy** (0.11.0). `deep-diff-forge agent check [--session ID | --base REV] [--range A..B]
+  [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--require-pass] [--json]` judges, in the stop's order
+  and each by the patch a stop makes for it: the uncommitted change of the working tree around
+  the current directory against the commit its `HEAD` names; the staged change, when it is
+  another change than the tree's; then each commit by its own patch, from its first parent, in
+  bound mode where a stop's is (above):
+  with `--range A..B` the commits of that range, which must be one line (each the first parent
+  of the next, from `A` to `B`; otherwise nothing is judged and `unjudged` says why), and
+  with `--session` and no range the session's commits as a stop finds them (named now by the
+  project's branches, tags, stash, `HEAD`s or their reflogs, and by nothing named when the
+  session began); with a session a range may hold only those. The judge, the policy and the
+  ranker directory are those of the first `Stop` hook in the form `agent setup --hooks`
+  prints, in the settings the gate reads (each can be replaced with its option); the judge is
+  never looked up on `PATH`. With `--session ID` (the id Claude Code gives the hooks) the
+  policy is read at the base that session recorded, and its state file, its list of the
+  commits there when it began and its list of answered commits are opened for reading only:
+  no lock is taken and nothing in the state directory is made or changed. Without a session
+  the policy is read at `--base REV`, else at `HEAD`, and the answer names that base.
+  `--json` prints `deep-diff-forge.agent-check.v0`: `project`, `session` (`state_file`,
+  `base_recorded_by`: `session_start` or `first_hook`), `base` (`commit`, `from`: `session`,
+  `--base` or `HEAD`), `judge` (`program`, `policy`, `ranker_dir`, `stop_hook`: the settings
+  file), `units` (each with `unit`: `uncommitted`, `staged` or `commit`, its `commit` id,
+  `outcome` `pass`, `hold`, `fail` or `unjudged`, each rule by `id` with `held` and the
+  `signal`, `path` and number of `items` of each violation, the number of things the judge
+  named beside its rules, `judge_notes`, with their codes, `judge_note_codes`, and the
+  `reason` of an UNJUDGED, and `ranker`, `advice_only` and `advice_unread`, below),
+  `unjudged` (why nothing could be judged: no repository, no
+  judge, a session with no state or no base, a base or a range that is refused) and `stop`.
+  Nothing of the judge's own words is repeated: they can quote the patch.
+  **A ranker the policy admits.** The rankers are offered as a stop offers them (this binary
+  first, then the ranker directory), so when the policy admits another one the unit is judged
+  with that one, as at the stop, and its `ranker` names it ("judged with the ranker the policy
+  admits, …, not this binary"). The check then runs that ranker on the unit's patch (`--stdin-patch
+  --rank --json`, under the judge's bounds: the time left, at most 30 seconds, and its output
+  caps) and lists in `advice_only` each label this binary raises that it does not ("advice
+  only, not judged by the pinned ranker: LABEL in PATH"). A ranker that runs out of time,
+  exits other than 0 or prints no rank document leaves `advice_only` null and says why in
+  `advice_unread`: what is advice only is then not known, which is never an empty list.
+  **What it says about a stop.** `stop.same_inputs` is `true` only with a session whose base
+  was read, a registered `Stop` hook that runs this binary by its own path and names a judge,
+  and no option that replaces its judge, policy or ranker directory. `stop.whole_answer` is
+  `true` only when, besides, every unit a stop of the session answers for was judged: the
+  session's commits could be told (its list of the commits there when it began was read), no
+  session commit was left out by `--range`, and the project has no linked working tree (a
+  stop from inside one also judges that tree). Only then does the answer end with "Equal to
+  the stop in its units and inputs: every unit a stop of this session answers for (the
+  uncommitted change, the staged change where it is another, and each commit of the session
+  by its own patch) was judged here with the stop's patch, the policy at the base the session
+  recorded, and the judge and rankers of the registered Stop hook. What the stop then decides
+  can still differ: the lines "The stop may differ" say where." Otherwise it ends with "This
+  is not the stop's whole answer: not every unit a stop of this session answers for was judged
+  here with the stop's inputs (the lines "Not as the stop" say what differs).", each
+  difference is in `stop.differences` and said as "Not as the stop: …", and with the same
+  inputs the text form says "Judged with what a stop of this session judges these units with:
+  …". Equal units and inputs are not an equal decision, and `stop.may_differ` lists, where
+  they apply: a failure blocks a stop once (what has blocked stands and does not block again;
+  the session's memory of it is not read); a commit an earlier stop answered is reported from
+  that answer and not asked again; and a stop's time (45 seconds in all, 30 for one run of
+  the judge, time kept back for what it asks after, its own order). Neither a stop nor a check
+  sees what Git does not list (the six ways in the limits below), and a judge whose verdict
+  changes between two runs on the same inputs can answer otherwise at the stop.
+  **What a check writes.** With no judge it stages nothing and writes nothing (the answer is
+  UNJUDGED with the reason). With a judge it writes one scratch directory,
+  `.git/deep-diff-forge/tmp-r<16 hex digits>` under the repository's Git common directory,
+  holding the scratch indexes and objects of what it stages, the lists of commits Git is
+  given, the policy and the patches it gives the judge, and removes it before it exits; it
+  makes `.git/deep-diff-forge/` when that is missing and removes it again when it made it and
+  it is empty. Making its directory, it removes what killed hooks left there, as every hook
+  does. It changes neither the index nor the working tree (`git status` and the index file are
+  as they were), nor anything in the state directory. A check with `--session` that ran a judge
+  also appends one record to the project's ledger (below), in one bounded append: the
+  session's key, how many units it judged and how many of them did not pass, and nothing else
+  (no line, no path, none of the judge's words); `--json` says in `ledger` whether it was
+  written, or why not. A check without a session writes nothing to the ledger, and a check
+  with one leaves the session's state, its list of the commits there when it began and its
+  list of answered commits byte for byte as they were: the ledger is the one file a check of a
+  session grows. The count a stop records from these is a lower bound: a check without
+  `--session`, a check in a clone, and a run of the ranker or the judge by hand are not
+  counted. Exit 0 with the document, 2 for a usage
+  error. With `--require-pass` it exits 7 after the document when there is no unit (nothing
+  to judge, or nothing could be judged: `refused: there is no unit to judge (--require-pass
+  no_unit)`) or when any unit is not a pass (`refused: N of M units did not pass
+  (--require-pass not_pass)`): a clean CI checkout is no pass. Without a session and without
+  `--range` a check judges no commits, so a CI job names its range (`--range origin/main..HEAD`
+  or the like) to cover them. The refusal is decided before
+  the document is written, so a reader that has gone, or a full disk, still gets exit 7 and the
+  reason.
+- **The project's ledger records what each stop decided** (0.11.0). Every stop that has a
+  project appends one record for each unit it had something to judge to
+  `deep-diff-forge/ledger.jsonl` under the repository's Git common directory (`.git/` of the
+  main tree; a linked tree's stops write to the same file), one JSON object a line: `v` (1),
+  `kind` (`stop`), `session` (16 hex digits of the SHA-256 of the session's id, which its state
+  file's name begins with), `worktree` (`m` for the main tree, else the linked tree's 16 hex
+  digits; null for a commit), `unit` (`commit:<id>`; `tree:<digest>:uncommitted` or
+  `tree:<digest>:staged`, the digest a SHA-256 of the patch's SHA-256 under a salt of 32 random
+  bytes kept in `ledger.salt` beside it, or `unread` when the change could not be read; or
+  `stop` for what names no single commit or tree: a stop that judged nothing, or the session's
+  commits when they could not be listed), `outcome` (`pass`, `fail`, `fail_stands`, `hold` or
+  `unjudged`), `class` (a code of the reason-class registry, never null: `pass`, `fail.new`,
+  `fail.stands`, `fail.unsaved_continuing` (a block the hook let stand because the client
+  continues after a block and the state cannot be kept), `hold.rule`, `hold.version_gap`,
+  `work.unreadable`, `work.skip_worktree` (the causes that hold a stop once, below), and for
+  every other `unjudged` record and every other hold the class of its reason, such as
+  `state.damaged` or `hold.claims_unverified`: Reason classes, below), `blocked_turns` (1
+  for a unit that blocked the stop), `agent_checks` (`runs` and `failed`: the records of
+  `agent check --session` of this session since its last stop record), `ignored_elsewhere` (null: not counted yet, which
+  is never 0) and `seals` (the SHA-256 of the policy and of the ranker the verdict was sealed
+  to; for a commit also of its patch and of the verdict document; null when the judge did not
+  run). A commit that passed is recorded at the stop that judged it; a commit left waiting for
+  the stop's time is recorded as `unjudged` at each stop that leaves it. A stop with nothing
+  to judge records nothing. Nothing of a patch's lines, a path, Git's words or the judge's
+  words is written. The file is made with mode 0600, never through a link, and only appended
+  to (`O_APPEND`, one write a stop, under its `flock`); a stop waits at most 0.2 seconds for that
+  lock, and its append reads at most the last MiB of the file. For the frontier a stop reads
+  the whole ledger, up to 64 MiB; a larger one is judged as before, by the session's own
+  range, with a note ("The project's ledger could not be read (… is larger than 67108864
+  bytes): this stop judged the commits made since this session began, as before."). Nothing
+  is synced to disk: the record is the stop's report, and waiting for a disk inside the
+  stop's time would cost the judging. **Writing it never changes a decision**: a
+  ledger that cannot be written (a link or anything but a regular file at its name, a
+  directory that cannot be written, a lock another process holds, a file that holds a record
+  of a newer build) is said beside the decision ("The hook could not write the project's
+  ledger … what this stop decided stands, and is not recorded there.", in a block's reason
+  like the note that the state could not be kept) and the stop decides as it would have. A
+  ledger with a record of a newer build (`v` above 1) is kept as it is: nothing is written to
+  it. Two more kinds of record (F13.b, still `v` 1: the ledger has not been released): one
+  `{"v":1,"kind":"baseline","head":…,"tips_count":N,"tips_sha256":…,"tips":[…]}` when a
+  session first finds a project whose ledger has none (the commits named then, at most
+  100,000: a project that names more has no baseline and is judged as before), and one
+  `{"v":1,"kind":"start","session":…,"worktree":…,"base":…}` for each session when its first
+  hook finds the project (an advice hook or a session's start included). A stop reads the
+  whole ledger (at most 64 MiB) for the frontier; a line that is not a record of this build
+  is passed over there, which can only judge more. A stop whose state cannot be used records
+  the units it judged and one `stop` record `unjudged` with the state's class (the session's
+  state was not used). **The ledger is not a boundary**: it is a file in
+  the repository's Git directory with the permissions of whoever works there, the agent
+  included, so a record is evidence that a stop decided so, not proof, and a missing or edited
+  ledger proves nothing.
+- **`agent verify-branch BASE..HEAD [--json]` verifies a branch against the ledger** (0.11.0).
+  It lists the commits of the range as a stop lists a session's commits (every commit `HEAD`
+  leads to that `BASE` does not, the oldest first) and reads the ledger, and only the ledger:
+  no judge runs. A commit is verified when a stop record passed it and none failed or held it
+  (a commit a stop left unjudged and a later stop passed is verified), or when a clearance
+  record names it: a line `{"v":1,"kind":"clearance","unit":"commit:<id>"}` that a person
+  appends, which is a convention and not a verdict. Each commit is said with its `outcome`
+  (`pass`, `fail`, `fail_stands`, `hold`, `unjudged` or `no_record`), `cleared`, `verified`, how
+  many stop records name it, and `agent_checks` of the first stop that gave it a verdict (the
+  checks with `--session` before it: a lower bound). `--json` prints
+  `deep-diff-forge.agent-verify-branch.v0` (`range`, `ledger`, `commits`, `verified`,
+  `unverified`: why the range or the ledger could not be read, and `cannot_know`). Exit 0 when
+  every commit is verified (an empty range has none to refuse); exit 7 after the document when
+  one is not, `refused: N of M commits are not verified by the ledger (verify-branch)`, or when
+  the range or the ledger cannot be read, `refused: the range or the ledger could not be read
+  (verify-branch)` (class `branch_unverified`); a reader that has gone still gets exit 7. A
+  ledger with a line that is not a record of this build, a record of a newer build, a last
+  line that is not whole, more than 64 MiB, or anything but a regular file at its name is
+  refused whole. What makes a line a record of this build is checked as follows, and a record
+  that fails a check refuses the ledger instead of being passed over: every member this build
+  writes for the record's kind is there and of its type; a session key, a commit id and a
+  tree's digest have their form; a stop's `unit`, `outcome` and `class` are ones this build
+  writes; the counters are numbers in their range; a member the build does not write is
+  passed over. The digests in a stop's `seals` are checked as strings or nulls only: their
+  form and what they are digests of are not. The ledger has no checksum, so damage that
+  leaves a line whole by these checks is not seen: a record whose commit id is changed to
+  another full id reads as that other commit's record, and the first commit loses it (a fail
+  so damaged no longer speaks against its commit). A stop's members must also agree as a
+  stop writes them: the outcome is the one of
+  its class (`pass` for `pass`, `fail` for `fail.new`, `fail_stands` for the other `fail.*`,
+  `hold` for `hold.*`, else `unjudged`), a blocked turn only for a class that holds a stop and
+  always for `fail`, `worktree` a string only for a tree, and no seals on the unit `stop`, a
+  tree's without the patch's and the verdict's digests; a clearance needs `v`, `kind` and a
+  `unit` that names a full commit id. Nothing is written to the
+  ledger; the list of commits Git is given is written in a scratch directory under
+  `.git/deep-diff-forge/` and removed. **What it cannot know**, said in the document and the
+  text: a commit made outside a session with the hooks, or in a clone, has no record; the ledger
+  is the agent's to write and delete like the rest of `.git`, so its absence proves nothing and
+  a record is evidence that a stop decided so, not proof that the commit passes. Where the
+  agent can write, it is advice; the boundary is the pull request's judge.
 - **A hook never fails its client, and a failure is never silence.** A hook always exits 0;
   exit 2, which Claude Code reads from a stop hook as a block, is never used, also not for a
   command line the hook cannot read (a mistyped option says that the hook did not run, and
@@ -426,9 +745,18 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   is said at every stop while it is true: in full the first time, afterwards in one line
   that counts such things and names the first three. None of them blocks; a stop where
   every unit has a pass and one of them is true is allowed and is not silent. A state
-  file that is there and cannot be read (a link, too large, another version, damaged) is
-  never "no state": the stop is UNJUDGED and nothing is recorded over it. The same holds
-  for the list of commits beside it when it is missing or is not the list the state names.
+  file that is there and cannot be read (a link, too large, another version, damaged), a key
+  file that is no key, or a state directory that is not one of its own is never "no state":
+  nothing is recorded over it, each stop judges the working tree without it (the stateless
+  stop, below), no advice is given (advice says the reason once), and a start says so: "this
+  session's state cannot be used, so no advice will be given and each stop judges the working
+  tree without the session's memory (…)". The same holds for the lists of commits beside the
+  state when one is missing or is not the list the state names, except that advice is still
+  given; a start says "this session's lists of commits cannot be used, so each stop judges the
+  working tree without the session's memory (…)". That sentence is not true in one place: the
+  state's trouble is found before the place is looked at, so in a directory that is no Git
+  repository, or in a repository with no commit, such a session is told that each stop judges
+  the working tree and its stop is UNJUDGED (nothing can be judged there).
   At most five such things are said in full at one stop, and a session remembers 32 as
   said in full; the others are in the line that counts them, at every stop. Everything else is said: Git
   missing or refusing the repository (another owner), a directory inside `.git`, a base that
@@ -439,7 +767,10 @@ deep-diff-forge agent setup --client claude --hooks   # the MCP registration, th
   run of the judge, for every tree and every commit) shares 45 seconds, inside the 60 its client waits;
   advice has 4 of 5 and a start 8 of 10. A step gets the time that is left, never a limit of
   its own on top. The scratch directory a hook that was killed left behind is removed by the
-  next hook of the repository, once its process is gone (where `/proc` says so).
+  next hook of the repository: a hook holds a lock (`flock`) on its scratch directory while it
+  works, and a directory whose lock can be taken has no owner. (Until 0.11.0 the owner was
+  told by a process id read in `/proc`, and a check run in another PID namespace removed a
+  live stop's scratch.)
 
 Limits, sorted by the rule above.
 
@@ -455,7 +786,8 @@ project and not judged at every stop while it is true, as stated above):
   project at a stop, the stop names it as not judged. A submodule with changes that are not
   committed in it is named the same way (the project's patch shows a submodule only as the
   commit it is at). A nested repository in the project's tree (a scratch `git init`, a
-  checkout) is left out of the patch and named. So is a directory there that Git places in
+  checkout) is left out of the patch and named. It never holds a stop: the hook cannot tell
+  whether the session made it (see "Causes that hold a stop once" below). So is a directory there that Git places in
   this repository with a Git directory whose records name another directory (a copy of a
   linked tree made inside the project with `cp -a`): it is no working tree of the project
   by the records, and it is named so. Another working tree of the project that
@@ -465,8 +797,10 @@ project and not judged at every stop while it is true, as stated above):
 - Commits fetched during the session and brought onto a local branch are the session's and
   are judged, each once: a failure in one blocks once and is then left for a person, like
   any other. A pull of many commits takes several stops to judge; each stop says how many
-  wait. Commits that were already in the repository when the session began are not judged,
-  whatever brings them onto the branch: every message that names the range says so.
+  wait. Commits that were already in the repository when the project's ledger first recorded
+  the project (else when the session began), and commits from before the session with a
+  stop's verdict there, are not judged, whatever brings them onto the branch: every message
+  that names the range says so.
 - Another working tree of the project that the session's directory is not in and that has
   uncommitted or staged changes: named, as not judged. The other trees are looked at
   last, after everything the stop judges, in six seconds of their own (each `git status`
@@ -603,11 +937,11 @@ project and not judged at every stop while it is true, as stated above):
   until the directory is gone or it is a tree again"), and a stop made from inside it is
   UNJUDGED. It is forgotten when its directory is gone (the ordinary
   `git worktree remove`), or when it is a tree again and the judge's own reading finds
-  that tree clean. For this the session's state (schema `deep-diff-forge.hook-state.v10`)
-  records the top level of each linked tree it remembers a failure of; a state of the
-  schema before (`v9`) is read with no tree recorded and written back in the new one by
-  the first hook that reads it and keeps its state (a stop, or a session's start), changed
-  or not. A path that is not UTF-8 or is longer than 16 KiB, and the paths past 256 KiB in
+  that tree clean. For this the session's state (schema `deep-diff-forge.hook-state.v13`)
+  records the top level of each linked tree it remembers a failure of (a state of the
+  schema before, `v9`, which no release wrote, was read with no tree recorded until
+  0.10.0; since 0.11.0 it is refused as older than the last release: "The state's schema",
+  at the end). A path that is not UTF-8 or is longer than 16 KiB, and the paths past 256 KiB in
   all, are not recorded: such a tree is forgotten when it is no longer listed, as before.
 - The order of a stop, and its time. One limit: 45 seconds for everything, of which 4 are
   kept for remembering and saying, and 6 more for looking at the submodules and the other
@@ -633,15 +967,66 @@ project and not judged at every stop while it is true, as stated above):
 - More commits than one stop has time for: the rest are counted as UNJUDGED and judged at
   the next stops.
 
+- **Causes that hold a stop once** (0.11.0, task F12, owner decision OD-J). A stop that the
+  judged agent can make unjudgeable at no cost, and a hold the agent cannot answer, each hold
+  the stop once instead of being let through; after that the stop is UNJUDGED, or HOLD, as in
+  0.10.0, and the ledger records each stop with its class. The hook has no history of a
+  path, so it decides by evidence it has: the cause lies in the working tree as it is at the
+  stop, and holding it once whoever made it is what a failure in work the session did not
+  make already costs; the block's reason says "If this session made it so, undo it; if not,
+  tell a person." The causes and the evidence:
+
+  | Class | Evidence the hook uses | The block names |
+  |---|---|---|
+  | `work.unreadable` | staging the working tree failed, and `File::open` (no final link followed, never waiting) refuses a path that the index or the untracked listing names and `symlink_metadata` says is a regular file; looked for only after the failure, at most 1,000,000 paths and within the stop's Git time | the files, escaped (the first 20; the rest counted; a name that is not UTF-8 is counted, never printed) |
+  | `work.skip_worktree` | the index marks a path skip-worktree (`git ls-files -t`) | that the index has such marks (the paths are not named) |
+  | `hold.version_gap` | the judge held with no rule held and every note `unknown_signal` | the label, only when it is one of DDF's own (else "a label DDF does not list"), and the note's path, escaped |
+
+  What stays as in 0.10.0 because the hook cannot tell it is the agent's: a staging failure
+  where no unreadable file is found (a Git that fails or is out of time, a search cut by its
+  bound: the reason then says "not all names are known"), an unreadable directory (Git lists
+  nothing in it: the stop is silent, a stated limit below), a nested repository (left out
+  and named, as above: whether the session made it cannot be told), a hold for any other note
+  (`unknown_status` included), and every cause of the machine, the clock, the judge's chain,
+  the state or the place (a judge or policy that is missing, a time-out, a lock another hook
+  holds, a damaged state). A stop whose state cannot be used judges the tree without it
+  (below) and records what it judged.
+
+  How "once" is kept: each cause is remembered in the session's state by a name (its class
+  and a digest of its paths) and a state (the inode, size, modification and change times and
+  mode of each of its first 4,096 paths, by `symlink_metadata`). It holds a stop when its
+  name is new, and again when its state changed, at most **three** times for one name in a
+  session; after the third, each stop says "it has held 3 stops of this session, the most
+  one cause holds, so it is let through" and is UNJUDGED, recorded. It never holds a stop
+  that follows a block (the client's `stop_hook_active`): a cause first met there, or changed
+  there, holds the first stop of the next turn ("the first stop of the next turn holds for
+  it"), so one cause holds at most one stop a turn and cannot keep a session from stopping,
+  and the stop's time bound is unchanged. A later turn, and a client restarted on the same
+  session, read the same state: a cause that held stays held. While the state cannot be
+  saved nothing is remembered, so a cause, like a failure, holds the first stop of every turn
+  and never the stop that follows it. A hold for an unknown label has no state: it holds once
+  per set of labels and paths; a commit held so holds the stop that judges it, once, as a
+  commit that fails does. The names and states are kept in `blocked` (as `tag/key:count`:
+  under the tag `o` of the tree for a refused cause, under the change's own tag for an
+  unknown label, the count being the stops the cause held), and these lines are why the
+  state's schema was v11 in 0.11.0's tree (since v12 they are keyed with the rest: "The
+  state's schema", at the end). `agent check` says the same
+  sentence for these causes, and `agent doctor --gate` says "a stop here would hold once, then
+  be UNJUDGED". What is not closed: while a file stays unreadable or the marks stay, nothing
+  else of that working tree is judged (staging the rest is not built), so failing work added
+  beside it is not held after the first hold, only recorded `unjudged`; a file inside a
+  directory the hook cannot list is not seen.
+
 Deliberate evasion, made visible where that is cheap:
 
 - A clone put at the project's path, a project that was moved, a state file or a list of
   commits that was damaged or replaced, a state directory inside the working tree:
   UNJUDGED, with the reason. A removed state file: the
   next stop says that the session's start was not recorded.
-- An agent can make a stop UNJUDGED by breaking what the judge needs (a file that cannot be
-  read, a path marked skip-worktree). That is never a pass and always visible to the user,
-  and it is never a block either.
+- An agent can make a stop UNJUDGED by breaking what the judge needs. That is never a pass
+  and always visible to the user. From 0.11.0 the causes the hook finds in the working tree
+  (a file that cannot be read, a path marked skip-worktree) hold the first stop once (below);
+  the others (a Git that fails or is slow, a judge or policy that is missing) never block.
 - Git's own administrative files edited by hand (`gitdir`, `commondir`, `core.worktree`,
   a tree's `.git` file) so that one tree is read as another: where a directory the session remembers a failure
   at still stands, the stop is UNJUDGED and both directories are named; otherwise it is a
@@ -649,6 +1034,11 @@ Deliberate evasion, made visible where that is cheap:
 
 Stated limits, which the judge on the pull request covers:
 
+- A commit that a session left without its stop is judged by the next fresh session under
+  the policy at that session's base, which can be the left commit itself: the whole of its
+  own policy edit applies to it, and where that edit removes the policy's protection of its
+  own file the commit can pass and `agent verify-branch` verifies it; `agent doctor --gate`
+  cannot tell under a policy that requires verified claims ("The project's frontier", above).
 - A commit that only a remote-tracking ref names (fetched and never pulled; or made with
   plumbing and pushed without ever being on `HEAD` or under a local ref) is not judged.
 - A commit that is gone from every ref and from the reflogs (the reflog expired or was
@@ -696,28 +1086,67 @@ Stated limits, which the judge on the pull request covers:
 - Advice after a tool call covers the project's working tree against the session's base
   only: not a linked working tree the session is in, and not commits that are no longer in
   the tree. The stop has both judged.
+- What the advice never notices (F6.c). It reads the change the hooks' patch is made of,
+  which leaves out files Git ignores (`.gitignore`, the user's excludes file, and what
+  `.git/info/exclude` hides) unless they are in the index, and holds nothing of the Git
+  directory: an edit of `.git/info/attributes`, `.git/info/exclude` or `.git/config` gets no
+  item and no guard notice, and neither does an ignored guard file (often
+  `.claude/settings.local.json`). Each of these can change what Git shows or runs; a stop's
+  judge sees no more of them than the advice does.
+- The advice's `--policy` and the stop's are each the one their command in the client's
+  settings names. `agent setup` from 0.11.0 gives both the same; settings printed before
+  0.11.0 give the post-tool command none, and settings edited by hand can give another. The
+  advice then names an edit of `warden.toml` (or of its own `--policy`) as the policy file
+  while the stops judge with another, and an edit of the stops' policy file gets no notice as
+  one. The stops read their policy at the session's base whatever the advice said.
+- Guard notices are said only by an advice that ranks the change. A session whose every tool
+  call is cut short ("advice cut short") or whose change cannot be made (a skip-worktree mark,
+  Git failing) never hears them while that lasts; the first call that ranks names them. A
+  stop judges such a change as any other: the judge is given the guard file's edit with the
+  rest when the change can be made, and when it cannot the stop is UNJUDGED with the reason.
+- When no state can remember a reason the advice hook gave, it marks it under
+  `.git/deep-diff-forge/` with a key of that directory. If that key file is no key (a link,
+  a FIFO, a directory, another length), the advice hook says nothing beside the state and
+  writes no mark, and no byte of the file is said; a stop says the reason every time, as it
+  always does.
 - "No repository here" is read from Git's own English message, with `LC_ALL=C` set for that
   call. A Git that words it otherwise is read as a failure, which is said, not as silence.
-- The scratch directory of a hook that was killed is removed only where `/proc` says its
-  process is gone (Linux).
+- The scratch directory of a hook that was killed is removed only where the file system has
+  locks: on one without locks (some network and FUSE file systems) it is removed by no one and
+  stays, with its copy of the patch, until a person removes it. A directory left by a build
+  before 0.11.0 (`tmp-<pid>`) is removed where `/proc` says its process is gone (Linux). A
+  0.10.0 binary removes no `tmp-r…` directory a killed 0.11.0 hook left: in a repository whose
+  hooks are still 0.10.0 such a directory stays until a 0.11.0 hook or check runs there.
 - **A resumed conversation is a new session of the hooks** when its client gives it a new
-  session id: its base is where `HEAD` is at its first hook, so what the earlier
-  conversation committed is base, and a conversation that ended without a stop (a crash, a
-  usage limit, a restart) leaves its commits unjudged by any stop. Not a boundary: the
-  commits are in the branch, and the judge on the pull request and a person reviewing it see
-  them. Target: F13 (0.11.0), the judged frontier of the project and the working tree.
+  session id. From 0.11.0 the commits an earlier conversation left without a stop's verdict
+  are judged by the next stop of the project (the frontier, above), and a `SessionStart` with
+  `source` `resume`, `compact` or `clear` begins from the commit the last session of its tree
+  began from. The frontier is evidence kept where the agent can write: the ledger and its
+  `baseline` are files of the repository's Git directory, so an agent that removes or edits
+  them is judged as before 0.11.0 (its own range only; the stop says that no record was found),
+  and a conversation that goes on under `startup` begins at `HEAD`, whose policy a commit of
+  the earlier conversation can have loosened. Not a boundary: the judge on the pull request
+  reads the policy at the base and sees every commit.
 - **Linked working trees share branches.** A commit another session makes in another
   working tree of the project is on a branch this session's stops read, made during this
-  session, so it is judged as this session's: its failure can hold this stop (measured: a
-  session in the main tree that changed nothing was held for a failing commit made in a
-  linked tree by another session). Target: F13 (0.11.0).
-- **Some stop outcomes cost the judged agent nothing at its next turn.** A path the hook
-  cannot read makes the stop UNJUDGED, a failure that stands after its one block is said as
-  FAIL STANDS, a hold is for a person and never blocks, a nested repository is left out and
-  named, and advice that is off is said once. Each is said, to the user every time, and none
-  is silent; none holds the agent either. Not a boundary: the user sees each, and the judge
-  on the pull request judges what was committed. Target: F12 (0.11.0), which closes the
-  self-caused ones by rule.
+  session, so it is judged as this session's: its failure holds this stop once, and the
+  author's once (measured: a session in the main tree that changed nothing was held for a
+  failing commit made in a linked tree by another session). Who made a commit cannot be
+  proven from what the agent can write (reflogs expire and can be written; messages and dates
+  are the author's), so from 0.11.0 (F13.a) the block only names, as advice, the other
+  working tree whose `HEAD` reflog records the commit: "(the HEAD reflog of <tree> has this
+  commit; if this session did not make it, tell a person)". Nothing is taken from the hold.
+- **Some stop outcomes cost the judged agent nothing at its next turn.** A failure that
+  stands after its one block is said as FAIL STANDS (and recorded `fail_stands` in the
+  ledger), a hold for a rule is for a person and never blocks, and advice that is off is said
+  once. A nested repository is left out and named, at no cost: the hook cannot tell whether
+  the session made it or it was there before (it has no history of a path, and a directory's
+  times change with any Git command run in it), and holding one that was there before would
+  hold the first stop of every session of a project with a vendored checkout. Each is said,
+  to the user every time, and none is silent; none holds the agent. Not a boundary: the user
+  sees each, and the judge on the pull request judges what was committed. From 0.11.0 a file
+  the hook cannot read, paths marked skip-worktree and a hold for a label the judge does not
+  know cost one blocked turn (below).
 - **A process the judge starts that leaves its process group** (`setsid`, or a double fork
   into a group of its own) is not killed by the hook and runs on after the stop. Claude Code
   2.1.330 ends a timed-out hook's descendants, those in their own group or session too
@@ -725,14 +1154,16 @@ Stated limits, which the judge on the pull request covers:
   program the person who installed the hooks named. A judge that exits while a process it
   detached from its group still holds its output is not read: the stop is UNJUDGED when the
   limit passes, whatever the judge's exit code was; forge-warden starts no such process.
-- **Under a policy that requires verified claims every stop holds** (see the verdict
-  section): the hook gives no `--repo`, `--base` or `--head`, and an uncommitted or staged
-  change can never be verified. Target: S3.25.b (0.11.0) for commits; never for what is not
-  committed.
+- **Under a policy that requires verified claims only a commit with one parent can pass**
+  (S3.25.b, above), and only with a judge that takes bound mode: an uncommitted or staged
+  change, a root commit and a merge commit still hold, and with a judge that does not take
+  bound mode every stop holds. What is not committed can never be verified.
 - **Six ways the judged agent can make a stop say nothing it should, or judge nothing**,
-  each a deliberate act, measured on this release (0.10.0) with a stand-in judge. None is a
+  each a deliberate act, measured on 0.10.0 with a stand-in judge. None is a
   boundary: a person reading the working tree, and the judge on the pull request for what is
-  committed, still see the work. Target: F12 and F13 (0.11.0), through the stop model F7.j.
+  committed, still see the work. Measured again on the 0.11.0 candidate with forge-warden
+  `005a1959`: the first five stay as they are (a stop silent, or UNJUDGED for the sparse
+  file); the sixth, a path the hook cannot read, now holds a stop (F12.a, below).
   - A directory with mode 000 hides from Git what is in it: an untracked directory holding
     failing work, and a tracked file's failing edit once its directory is made unreadable.
     Git lists nothing there, so the advice and the stop are silent, with no run of the judge;
@@ -746,20 +1177,211 @@ Stated limits, which the judge on the pull request covers:
     stop does not see them.
   - A plain directory at a path the base or the index records as a submodule (a gitlink)
     is listed by no Git command when no repository is there: failing work only in it gives a
-    silent pass (measured on this release; 0.11.0 walks such a path like any other).
+    silent pass (measured on 0.10.0, and again on the 0.11.0 branch before F12 and F13, where
+    a Git selection of the working tree still finds no file there; walking such a path like any
+    other is not built).
   - A very large sparse file (`truncate -s 400G`, no disk used) makes Git's staging run out
     of the hook's time: the stop is UNJUDGED ("`git add` did not finish in the time a hook
     has and was stopped", 41 seconds), with no run of the judge, at every stop while the file
     is there, also with further failing work added. It is said to the user and never blocks.
   - A path the hook cannot read makes every stop UNJUDGED while it stays so, with no run of
-    the judge: said to the user, never a block. A failure that has blocked once in a path
-    stands after the path is rewritten: when it is readable again and fails the same rule,
-    the stop is judged and says FAIL STANDS; it does not block again.
+    the judge: said to the user, never a block (0.10.0; from 0.11.0 it holds a stop once and
+    again when it changes, at most three times, below). A failure that has blocked once in a
+    path stands after the path is rewritten: when it is readable again and fails the same
+    rule, the stop is judged and says FAIL STANDS; it does not block again (the memory of a
+    failure is by its rule, signal and path, and the number of items the judge cites).
 - The state of a session is up to three files in the user's state directory
   (`deep-diff-forge/hooks` under `$XDG_STATE_HOME`, else under `~/.local/state`), found by
   the session's id: the state, the list of commits that were there when it began, and the
   list of commits that have their answer. Files of sessions that have
   ended are not removed. Hooks for Codex are not designed.
+- **The state's schema** (from 0.11.0; the hook-state version policy):
+  - Names. The files are `session-<the first 32 hex digits of the SHA-256 of the session's
+    id>` with `.json` (the state), `.tips` (the commits there when the session began, one id
+    a line), `.judged` (the commits that have their answer) and `.lock` (an exclusive
+    `flock`), and one file `key` for all of the user's sessions (since v12). Names and the
+    lock do not change from one schema to the next: two builds of different versions share
+    them.
+  - The schema. The state's member `schema` is exactly `deep-diff-forge.hook-state.v<N>`,
+    `N` in one to six decimal digits with no leading zero, read byte by byte; any other
+    text is a damaged state. Any change to the state's members, to a member's type, grammar
+    or meaning, or to the lines of `.tips` or `.judged` is a new `N`, between releases too.
+    The lines of `.judged` are `ID:p`, `ID:h:<rules>|<class>`, `ID:f:<rules>`,
+    `ID:n<attempts>@<stop>:<class>` and `ID:x:<class>`, where `<rules>` are the rule ids
+    the judge names (those that fail, then after a `;` those it holds for; at most eight of
+    each, 64 characters each, and `+N` for the others) and `<class>` a code of "Reason
+    classes" below; any other letter makes the list damaged. Before v12 a hold kept the
+    first 100 characters of the judge's first note after its `|`, and a commit with no
+    verdict kept the judge's or Git's words: such a line is read for the class its words say
+    and written again in v12's form.
+  - What is read. A build reads every schema from the one the last release wrote (v10,
+    written by 0.9.0 and 0.10.0) to its own (v13 since 0.11.0), and writes its own; one of a
+    schema in that range below its own is written in its own by the first hook that keeps
+    state. A v10 or v11 state keeps its base, its list of commits and its judged commits (a
+    judged commit is not judged again); what it kept as plain digests is emptied (below,
+    "Keyed history"), so a failure that blocked blocks once more. A state
+    of an older schema is refused by its name: "this session's state file … is of schema
+    v9, written by a deep-diff-forge older than the last release; this one reads v10 to
+    v13, and nothing is recorded over it (removing it makes the next hook take the commit
+    HEAD names as this session's base: what this session committed before is judged only
+    where the project's ledger finds it (made after the project was first recorded, with no
+    stop's verdict), and not otherwise; left as it is, the working tree is judged at every
+    stop without the session's memory)". A damaged one (not JSON, a schema that is not one, a
+    member missing or not what the hooks write) says why and the same about removing it. That
+    is what removing it does: the next stop takes the commit `HEAD` names as the session's
+    base, says that the session's start was not recorded, and the commits made before are
+    judged where the ledger finds them (F13.b). While the state stays as it is, each stop is
+    the stateless stop (below).
+    A list beside the state that is not what the state names (`.tips` or `.judged` missing,
+    cut, changed, or with a line that is not one) is refused with the same cost in its own
+    words: "start a new session to have its work judged (a new session begins at the commit
+    HEAD names then: what this session committed before is not judged)".
+  - A newer state is never written over. A state of a schema above this build's own (a
+    newer build of the hooks wrote it) is refused by its name: "this session's state file
+    … is of schema v14, written by a newer deep-diff-forge; this one reads v10 to v13, and
+    nothing was written over it". No hook writes the state, `.tips` or `.judged` then (a
+    stop, an advice hook, a session's start; the lock may be taken), and the message names
+    no removal: the newer build reads its state again. The stop is the stateless stop, as
+    for any state it cannot use: it judges the working tree without the state (and the
+    frontier's commits when the ledger has its baseline), writes nothing of the state
+    directory and leaves the newer file byte for byte. A hook writes a state only after reading
+    what is there: a stop and a session's start hold the session's lock from their read to
+    their write, an advice hook reads again under the lock, and every write reads the file
+    once more before its lists and again just before the state is moved into place, and
+    is abandoned (said as a state that could not be kept) when the file is then newer.
+    **Stated limit:** where file locks do not keep two hooks of a session apart (a file
+    system with none, or a build that takes none), a newer build that writes between those
+    reads and this hook's writes is not seen, and its state or the lists beside it are
+    replaced: the reads narrow that race and do not close it.
+  - Why v11, and what it means for two builds on one session. F12's lines in `blocked` (a
+    cause that holds once, kept by its name with the number of stops it held, under the tree's
+    tag `o` or under the change's own tag) mean nothing to 0.10.0, which read them as v10:
+    measured with the published 0.10.0 on a state this tree wrote, it read such a line of a
+    linked tree as "A failure there has blocked a stop of this session and stands", and it
+    forgot one under a change's tag at its next stop, so a hold for an unknown label came back
+    at every stop of the newer build that followed one of its own (four blocks in eight
+    stops, past the bound of three). So the schema is v11, and since then: the published
+    0.10.0 (and 0.9.0) refuses a session a 0.11.0 hook has written, at every hook, as UNJUDGED
+    ("cannot be read as a state (it is not a state of this version of the hooks) … (remove the
+    file to have the next hook record the session anew)"), which is not a pass, and keeps the
+    file byte for byte; following that released advice costs what is said above (the commits
+    the session made before are not judged). A 0.11.0 hook reads a session 0.10.0 wrote and
+    writes it as v11: a failure that blocked under 0.10.0 says FAIL STANDS and a commit it
+    judged is not judged again. A commit that 0.10.0 judged HOLD for a label the judge does
+    not know keeps that answer: it is not held once after the upgrade (its line in `.judged`
+    is a hold like any other). v13 adds `guards`, the guard-file changes the advice has
+    named: a build that writes v12 refuses a v13 state as newer, at every hook, and keeps it.
+  - Keyed history (v12, rule V8). No file of the state directory holds text from the patch,
+    the judge or Git: every digest the hooks keep (what was said as a finding, what was said
+    once, every line of `blocked`: a rule, a rule with its signal and path, what the judge
+    said beside its rules, the name and the state of a cause that holds once, the mark of many
+    lines) is HMAC-SHA-256 under the user's key, `key` in the state directory: 32 random
+    bytes, mode 0600, made by the first hook that keeps a state (written to a file of its own
+    and linked into place, so of two first hooks the second reads the first's key), read only
+    as a regular file of exactly 32 bytes and never through a final link. The state names the
+    key it was kept under (`key_id`, 16 hex digits of a SHA-256 that gives nothing of the key
+    away), and the file of judged commits keeps rule ids and class codes only. What the key
+    protects, plainly: a copy of a state file, a ledger or a log without the key no longer
+    confirms a guessed line, rule or path; anyone who can read the key file (the same user,
+    the agent included) can still compute the digest of a guess. The key is not a boundary
+    against the judged agent; it bounds what a copied file gives away. A key file that is no
+    key (a link, a FIFO, a directory, another length, unreadable) is a damaged state
+    (`state.damaged`): a stop judges the working tree without the state (the stateless stop),
+    a session's start says that no advice will be given and that each stop judges the working
+    tree without the session's memory, and an advice hook gives none and says the reason once;
+    no byte of a key is ever said. The marks an advice
+    hook leaves under `.git/deep-diff-forge/` when no state can remember a reason it said
+    (`said-` and 64 hex digits) are keyed too, under a key file `key` of that directory,
+    made the same way, since the state's key may be what cannot be read (F6); a mark of the
+    form before (`said-`, 16 hex digits, `-`, 16 more: plain digests of the session and the
+    reason) is removed when an advice hook meets it, and its reason is said once more.
+  - Guard changes (v13, F6.b). `guards` holds the keys of the guard-file changes the advice
+    has named, HMAC-SHA-256 of the path and what Git says of the file's content in the change
+    (its `index` line with both blob ids, its modes), at most 64: a set of their own, so that
+    they never take the places of the 32 reasons an advice hook says once. A change past 64 is
+    named after every tool call rather than never, and says so.
+  - What emptying costs. When a state's digests cannot be used (a state before v12, whose
+    digests were plain; a key that was replaced or lost, which `key_id` shows), `reported`,
+    `noticed`, `guards` and `blocked` are emptied and nothing else: a finding or a guard
+    change already said is said once more, a failure that already blocked blocks once more and then stands, and a cause
+    that holds once holds again with its count begun anew. So the bound of three holds for
+    one cause is per key and per schema, not per session: a session that is upgraded from
+    v11 and whose key is replaced once can be held by one cause 3 × 3 = 9 times at worst,
+    each time at a turn's first stop only. Emptying never lets through a stop that would
+    have held or blocked: it can only make a stop hold or block once more.
+  - The fixtures `crates/deep-diff-forge-cli/tests/fixtures/hook-state/<schema>-<release>/`
+    hold the three files the published 0.9.0 and 0.10.0 binaries wrote, and the same files
+    written by builds of this tree in v11, v12 and v13 (with the key file from v12; each directory's
+    `ORIGIN` names the binary by its SHA-256 and says whether it was published), captured once by
+    `scripts/capture_hook_state.sh` and never edited; the test
+    `every_schema_since_the_last_release_is_read` has the build under test read each.
+
+
+Reason classes (from 0.11.0). Every outcome a stop gives a unit, and every record of the
+project's ledger, carries one code: why the outcome is what it is. A code never decides
+whether a stop holds; the last column says what the stop's own rules decide for it ("once for
+each cause, at most three stops" is the rule of the causes that hold once, above). The rule of
+the codes: a code's meaning never changes; codes are added without a version change; a
+consumer treats an unknown code as not a PASS; removing one is a new ledger version. The codes
+`pass`, `fail.new`, `fail.stands`, `fail.unsaved_continuing`, `hold.rule`, `hold.version_gap`,
+`work.unreadable` and `work.skip_worktree` were written before this table and keep their
+spelling. Where the ledger wrote `"class": null` before (an unjudged unit, a hold with no rule,
+a stop that judged nothing), it writes the code now. The commits a stop says "from before" are
+recorded with the class their kept words say; a reason kept with no words this build wrote is
+`chain.judge_exit`.
+
+| Code | The stop prints | Holds a stop |
+|---|---|---|
+| `pass` | nothing, or a note | never |
+| `fail.new` | block | once for each failing line |
+| `fail.stands` | FAIL STANDS | never |
+| `fail.unsaved_continuing` | FAIL STANDS (the hook cannot keep its own record) | never |
+| `hold.rule` | HOLD | never |
+| `hold.claims_unverified` | HOLD | never |
+| `hold.notes` | HOLD | never |
+| `hold.version_gap` | block once, then HOLD | once for each cause, at most three stops |
+| `work.unreadable` | block once, then UNJUDGED | once for each cause, at most three stops |
+| `work.skip_worktree` | block once, then UNJUDGED | once for each cause, at most three stops |
+| `chain.judge_missing` | UNJUDGED | never |
+| `chain.judge_inside` | UNJUDGED | never |
+| `chain.policy_missing` | UNJUDGED | never |
+| `chain.input_unwritable` | UNJUDGED | never |
+| `chain.no_ranker` | UNJUDGED | never |
+| `chain.rankers_unlisted` | UNJUDGED | never |
+| `chain.ranker_unsealed` | UNJUDGED | never |
+| `chain.judge_refused` | UNJUDGED | never |
+| `chain.judge_environment` | UNJUDGED | never |
+| `chain.judge_exit` | UNJUDGED | never |
+| `chain.not_a_verdict` | UNJUDGED | never |
+| `chain.patch_too_large` | UNJUDGED | never |
+| `time.judge_stopped` | UNJUDGED | never |
+| `time.no_time_left` | UNJUDGED | never |
+| `time.not_asked` | UNJUDGED | never |
+| `time.git` | UNJUDGED | never |
+| `state.damaged` | the tree judged without the state | never |
+| `state.older` | the tree judged without the state | never |
+| `state.newer` | the tree judged without the state | never |
+| `state.no_directory` | the tree judged without the state | never |
+| `state.inside_tree` | UNJUDGED | never |
+| `state.lock_busy` | the tree judged without the state | never |
+| `state.lists_damaged` | the tree judged without the state | never |
+| `state.no_baseline` | UNJUDGED | never |
+| `state.not_apart` | UNJUDGED | never |
+| `place.git_failed` | UNJUDGED | never |
+| `place.unpaired` | UNJUDGED | never |
+| `place.directory_gone` | UNJUDGED | never |
+| `place.client_dir_differs` | UNJUDGED | never |
+| `place.replaced` | UNJUDGED | never |
+| `place.moved` | UNJUDGED | never |
+| `place.orphan` | UNJUDGED | never |
+| `place.before_first_commit` | UNJUDGED | never |
+| `place.no_commit_yet` | a note | never |
+| `place.head_unreadable` | UNJUDGED | never |
+| `place.base_gone` | UNJUDGED | never |
+| `place.unmerged` | UNJUDGED | never |
+| `place.shallow_parent` | UNJUDGED | never |
+| `place.scratch` | UNJUDGED, did not run | never |
+| `input.refused` | UNJUDGED, did not run | never |
 
 ---
 
