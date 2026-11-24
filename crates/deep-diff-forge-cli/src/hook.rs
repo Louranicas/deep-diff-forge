@@ -521,10 +521,11 @@ pub(crate) const CLAIMS_BOUND: &str = "under this policy only a commit can pass:
 /// The hook's own two texts ([`CLAIMS_HOLD`], [`CLAIMS_BOUND`]) fit the bound, which a test
 /// holds: at 300 the second was cut in the middle of its last sentence, "a merge commit can",
 /// and an agent under forge-warden's starter policy never read "commit first" (found by the
-/// first real client session on the 0.11.0 candidate). A detail over the bound says it is cut.
+/// first real client session on the 0.11.0 candidate). A detail over the bound says it is cut,
+/// and names no command: a command is named to an agent by its whole path or not at all.
 const LINKS_SHOWN: usize = 4;
 const LINK_CHARS: usize = 400;
-const LINK_CUT: &str = " [cut here; agent doctor --gate prints it whole]";
+const LINK_CUT: &str = " [cut here]";
 
 /// What a session is told when it starts: what the hooks do, what its changes are measured
 /// from, and whether a stop can be judged here. Plain text: Claude Code adds a `SessionStart`
@@ -576,6 +577,7 @@ pub(crate) fn contract(
                         let safe = display_safe(detail);
                         let mut detail: String = safe.chars().take(LINK_CHARS).collect();
                         if safe.chars().nth(LINK_CHARS).is_some() {
+                            detail.truncate(detail.trim_end().len());
                             detail.push_str(LINK_CUT);
                         }
                         format!("{}: {detail}", display_safe(name))
@@ -4107,8 +4109,7 @@ mod tests {
             .collect();
         let long = contract("/r", fresh, &many, false, None);
         assert!(long.contains("; and 5 more."), "{long}");
-        assert_eq!(long.matches(LINK_CUT).count(), LINKS_SHOWN, "{long}");
-        assert!(long.len() < 3_600, "{}", long.len());
+        assert!(long.len() < 3_400, "{}", long.len());
 
         // a tree that is already changed, and a start that could not be recorded, are said
         let dirty = contract(
