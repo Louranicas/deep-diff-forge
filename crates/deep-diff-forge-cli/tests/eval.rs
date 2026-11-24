@@ -213,6 +213,10 @@ use std::process::Command;
 /// declared): precision 204 of 229, recall 204 of 284, 108 declared.
 /// F2a.c reads `panic!` and `unreachable!`: `evidence/rust-panic-macros` (two, a near miss in a
 /// comment, `assert!(false, …)` declared): precision 206 of 231, recall 206 of 287, 109 declared.
+/// F2a.d reads a test compiled out by `cfg`: line 2 of `tests/any.rs` in
+/// `evidence/independent-review-20261114` leaves the declared misses for the expected items, and
+/// `evidence/rust-test-compiled-out` (two, `cfg(unix)` a near miss, a module compiled out
+/// declared) is added: precision 209 of 234, recall 209 of 290, 109 declared.
 const RANKING_PAIRS_FLOOR: u64 = 800_000;
 const EVIDENCE_PRECISION_FLOOR: u64 = 881_516;
 const EVIDENCE_RECALL_FLOOR: u64 = 704_545;
@@ -374,13 +378,13 @@ fn the_summary_names_each_metric_and_each_failure() {
     let (code, text) = run(&corpus());
     assert_eq!(code, Some(0), "{text}");
     assert!(
-        text.starts_with("deep-diff-forge eval: 64 cases\n"),
+        text.starts_with("deep-diff-forge eval: 65 cases\n"),
         "{text}"
     );
     for line in [
         "  ranking_pairs        12/15",
-        "  evidence_precision   206/231",
-        "  evidence_recall      206/287",
+        "  evidence_precision   209/234",
+        "  evidence_recall      209/290",
         "  declared             109",
         "  KNOWN ranking/auth-check-removed: src/handlers/delete.rs ranks below docs/CHANGES.md",
         "  KNOWN evidence/shell-heredoc: reports (\"scripts/docs.sh\", \"network_fetch\", \"new\", 3)",
@@ -777,7 +781,7 @@ fn a_declared_miss_must_still_be_a_miss() {
     );
     assert_eq!(
         metrics["evidence_recall"],
-        serde_json::json!({"right": 206, "total": 286, "ppm": 720_279})
+        serde_json::json!({"right": 209, "total": 289, "ppm": 723_183})
     );
 
     // A declared false positive the engine does not report.
@@ -795,7 +799,7 @@ fn a_declared_miss_must_still_be_a_miss() {
     );
     assert_eq!(
         metrics["evidence_precision"],
-        serde_json::json!({"right": 206, "total": 231, "ppm": 891_774})
+        serde_json::json!({"right": 209, "total": 234, "ppm": 893_162})
     );
 
     // A declared false positive that is also expected.
@@ -811,7 +815,7 @@ fn a_declared_miss_must_still_be_a_miss() {
             .unwrap()
             .ends_with("is not reported, or is expected: remove it")
     );
-    assert_eq!(metrics["evidence_precision"]["right"], 207);
+    assert_eq!(metrics["evidence_precision"]["right"], 210);
     assert_eq!(known, usize::try_from(DECLARED).unwrap() - 1);
 }
 

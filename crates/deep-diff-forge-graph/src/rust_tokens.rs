@@ -262,6 +262,9 @@ enum Word {
     Ignore,
     CfgAttr,
     Cfg,
+    Any,
+    All,
+    Not,
     Test,
     Rstest,
     Tokio,
@@ -332,7 +335,7 @@ impl Word {
 }
 
 /// The words the reader knows ([`Word::of`]).
-const WORDS: [(&[u8], Word); 46] = [
+const WORDS: [(&[u8], Word); 49] = [
     (b"unwrap", Word::Unwrap),
     (b"expect", Word::Expect),
     (b"assert", Word::Assert),
@@ -348,6 +351,9 @@ const WORDS: [(&[u8], Word); 46] = [
     (b"ignore", Word::Ignore),
     (b"cfg_attr", Word::CfgAttr),
     (b"cfg", Word::Cfg),
+    (b"any", Word::Any),
+    (b"all", Word::All),
+    (b"not", Word::Not),
     (b"test", Word::Test),
     (b"rstest", Word::Rstest),
     (b"tokio", Word::Tokio),
@@ -1248,8 +1254,8 @@ fn ignored<'a, I: Iterator<Item = SideLine<'a>>>(window: &Window<'a, I>) -> Opti
 /// independent review, IR3-L-4: only the bare three were read).
 fn test_attribute<'a, I: Iterator<Item = SideLine<'a>>>(
     window: &Window<'a, I>,
+    at: usize,
 ) -> Option<(usize, usize)> {
-    let at = window.at;
     if !window.marks(at + 1, b'[') {
         return None;
     }
@@ -1259,6 +1265,150 @@ fn test_attribute<'a, I: Iterator<Item = SideLine<'a>>>(
         _ => return None,
     };
     (window.marks(end, b']') || window.marks(end, b'(')).then_some((at, end))
+}
+
+/// What a `cfg` predicate is in a build of the tests: true, false, or true on some platforms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Holds {
+    Yes,
+    No,
+    Depends,
+}
+
+impl Holds {
+    /// `self` and `other` taken together by `any` (`or`) or by `all`.
+    fn join(self, other: Self, or: bool) -> Self {
+        let (wins, loses) = if or {
+            (Self::Yes, Self::No)
+        } else {
+            (Self::No, Self::Yes)
+        };
+        if self == wins || other == wins {
+            wins
+        } else if self == loses && other == loses {
+            loses
+        } else {
+            Self::Depends
+        }
+    }
+}
+
+/// Whether the predicate of `#[cfg(…)]` from `from` to before `to` switches a test off: it is
+/// false in every build of the tests (`any()`, `all(any())`, `not(all())`, `not(test)`), or,
+/// not true in every one, it names a predicate outside the platform's (`FALSE`,
+/// `feature = "…"`, a name of the build's own). The platform's are `unix`, `windows`, every `target_…`, `panic`, `miri` and
+/// `debug_assertions`, and `test`, which holds; `any`, `all` and `not` combine them, read with
+/// one stack. `None` for tokens a predicate does not have.
+fn switched_off<'a, I: Iterator<Item = SideLine<'a>>>(
+    window: &Window<'a, I>,
+    from: usize,
+    to: usize,
+) -> Option<bool> {
+    const PLATFORM: [&str; 5] = ["unix", "windows", "panic", "miri", "debug_assertions"];
+    // the lists open: `any` (or), `all` or `not`, and what their arguments give so far
+    let mut lists: Vec<(Option<Word>, Option<Holds>)> = vec![(None, None)];
+    let (mut at, mut unlisted) = (from, false);
+    while at < to {
+        let token = window.token(at)?;
+        let value = match token.what {
+            What::Mark(b',') => None,
+            What::Mark(b')') => {
+                let (word, held) = lists.pop()?;
+                Some(match (word?, held) {
+                    (Word::Any, held) => held.unwrap_or(Holds::No),
+                    (Word::All, held) => held.unwrap_or(Holds::Yes),
+                    (_, Some(Holds::Yes)) => Holds::No,
+                    (_, Some(Holds::No)) => Holds::Yes,
+                    (_, held) => held?,
+                })
+            }
+            What::Name(word @ (Word::Any | Word::All | Word::Not))
+                if window.marks(at + 1, b'(') =>
+            {
+                lists.push((Some(word), None));
+                at += 1;
+                None
+            }
+            What::Name(_) if window.marks(at + 1, b'(') => {
+                // a predicate with arguments of its own (`version(…)`): not the platform's
+                unlisted = true;
+                at = window.matching(at + 1)?;
+                Some(Holds::Depends)
+            }
+            What::Name(word) => {
+                let name = token.text;
+                // `key = "…"`: the string is blank in the code view, its quotes are two tokens
+                if window.marks(at + 1, b'=') && window.marks(at + 2, b'"') {
+                    at = (at + 3..to).find(|q| window.marks(*q, b'"'))?;
+                }
+                if word == Word::Test {
+                    Some(Holds::Yes)
+                } else {
+                    unlisted |= !(PLATFORM.contains(&name) || name.starts_with("target_"));
+                    Some(Holds::Depends)
+                }
+            }
+            What::Mark(_) => return None,
+        };
+        if let Some(value) = value {
+            let (word, held) = lists.last_mut()?;
+            *held = Some(match (*word, *held) {
+                (_, None) => value,
+                (Some(Word::Any), Some(was)) => was.join(value, true),
+                (Some(Word::All), Some(was)) => was.join(value, false),
+                // a second argument of `not`, or of the predicate itself
+                _ => return None,
+            });
+        }
+        at += 1;
+    }
+    match lists[..] {
+        [(None, Some(held))] => Some(held == Holds::No || (held == Holds::Depends && unlisted)),
+        _ => None,
+    }
+}
+
+/// A test compiled out (since 0.11.0, F2a), when the current token is `#`: among the whole
+/// outer attributes that follow one another from here, within [`AHEAD`] tokens, a test's
+/// attribute ([`test_attribute`]) and `#[cfg(…)]` whose predicate switches it off
+/// ([`switched_off`]), in either order: `#[cfg(any())] #[test]`. The item is on the first
+/// changed line of the two attributes (a test added under such a `cfg` is one too), with the
+/// rung of the two. Not read: a `cfg` on a module of tests (`#[cfg(any())] mod tests`), a
+/// test attribute that `cfg_attr` applies, an inner `#![cfg(…)]` over a file of tests.
+fn compiled_out<'a, I: Iterator<Item = SideLine<'a>>>(window: &Window<'a, I>) -> Option<Item> {
+    let (mut at, mut test, mut off) = (window.at, None, None);
+    while window.marks(at, b'#') && window.marks(at + 1, b'[') && at < window.at + AHEAD {
+        let close = window.matching(at + 1)?;
+        if test_attribute(window, at).is_some() {
+            test = test.or(Some((at, close)));
+        }
+        let whole = window.matching(at + 3) == Some(close - 1);
+        if off.is_none()
+            && window.word(at + 2) == Some(Word::Cfg)
+            && whole
+            && switched_off(window, at + 4, close - 1) == Some(true)
+        {
+            off = Some((at, close));
+        }
+        if let (Some(test), Some(off)) = (test, off) {
+            let (first, rung) = window.extent(test.0, test.1);
+            let (other, basis) = window.extent(off.0, off.1);
+            let line = match (first, other) {
+                (Some(a), Some(b)) => a.min(b),
+                (a, b) => a.or(b)?,
+            };
+            let apart = window.held[test.0].line != window.held[off.0].line;
+            return Some(Item {
+                line,
+                signal: EvidenceSignal::TestSkipped,
+                basis: if apart { Basis::Hunk } else { rung.max(basis) },
+                test_likely: false,
+                forms: 0,
+            });
+        }
+        at = close + 1;
+    }
+    None
 }
 
 /// How many names before the last one are passed over in `<a::b::Name>::function`
@@ -1999,6 +2149,11 @@ pub(crate) fn read_new<'a>(lines: impl Iterator<Item = SideLine<'a>>) -> Vec<Ite
     while let Some(token) = window.here() {
         tests.read(&window);
         skips.read(&window, &mut found);
+        if token.what == What::Mark(b'#')
+            && let Some(item) = compiled_out(&window)
+        {
+            found.note(item);
+        }
         let construct = match token.what {
             What::Name(Word::Unwrap | Word::Expect) => {
                 panic_path(&window).map(|extent| (S::PanicPathAdded, extent))
@@ -2054,7 +2209,7 @@ pub(crate) fn read_old<'a>(lines: impl Iterator<Item = SideLine<'a>>) -> Vec<Ite
     let mut found = Found::default();
     while let Some(token) = window.here() {
         if token.what == What::Mark(b'#')
-            && let Some(extent) = test_attribute(&window)
+            && let Some(extent) = test_attribute(&window, window.at)
         {
             found.construct(&window, EvidenceSignal::TestRemoved, extent, (false, 0));
         }
@@ -2683,6 +2838,48 @@ mod tests {
             ]),
             [(1, true), (2, false)]
         );
+    }
+
+    /// F2a.d: a test compiled out by `#[cfg(…)]` whose predicate is false in every build of the
+    /// tests or names anything but the platform's is a skipped test, whichever of the two
+    /// attributes comes first and whichever line the change made.
+    #[test]
+    fn a_test_compiled_out_by_an_empty_any_is_skipped() {
+        let skipped = |lines: &[&str]| -> Vec<(EvidenceSignal, usize)> {
+            new(lines).iter().map(|item| (item.0, item.2)).collect()
+        };
+        for (lines, line) in [
+            (&["+#[cfg(any())]", "+#[test]", "+fn e() {}"][..], 0),
+            (&["+#[cfg(all(any()))]", "+#[test]"], 0),
+            (&["+#[cfg(not(all()))]", "+#[test]"], 0),
+            (&["+#[cfg(FALSE)]", "+#[test]"], 0),
+            (&["+#[cfg(not(test))]", "+#[test]"], 0),
+            (&["+#[cfg(feature = \"slow\")]", "+#[test]"], 0),
+            (&["+#[cfg(all(unix, any()))]", "+#[test]"], 0),
+            (&["+#[cfg(any(unix, version(\"1.80\")))]", "+#[test]"], 0),
+            (&[" #[test]", "+#[cfg(any())]", " fn e() {}"], 1),
+            (&[" #[cfg(any())]", "+#[tokio::test]"], 1),
+            (&[" #[cfg(any())]", " #[allow(x)]", "+#[test]"], 2),
+            (&["+#[cfg(any())] #[should_panic] #[rstest(a)]"], 0),
+            (&["+#[test]", "+#[cfg", "+(", "+any", "+(", "+)", "+)]"], 0),
+        ] {
+            assert_eq!(skipped(lines), [(S::TestSkipped, line)], "{lines:?}");
+        }
+        for lines in [
+            &["+#[cfg(test)]", "+#[test]"][..],
+            &["+#[cfg(any(unix))]", "+#[test]"],
+            &["+#[cfg(all(target_os = \"linux\", not(miri)))]", "+#[test]"],
+            &["+#[cfg(any(test, FALSE))]", "+#[test]"],
+            &["+#[cfg(any())]", "+fn e() {}"],
+            &["+#[cfg(any())]", "+mod tests {}"],
+            &["+#[cfg(any())]", "+fn e() {}", "+#[test]"],
+            &["+#![cfg(any())]", "+#[test]"],
+            &["+#[cfg(any()]", "+#[test]"],
+            &["+#[cfg(not(unix, windows))]", "+#[test]"],
+            &[" #[cfg(any())]", " #[test]", "+fn e() {}"],
+        ] {
+            assert_eq!(skipped(lines), [], "{lines:?}");
+        }
     }
 
     #[test]

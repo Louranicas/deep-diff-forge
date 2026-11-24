@@ -143,19 +143,21 @@ deep-diff-forge eval                          # score the labelled corpus in fix
   declared misses. On 63 cases (F2a.b: `evidence/rust-dropped-result` added) precision is
   204 / 229 and recall 204 / 284, with 108 declared misses. On 64 cases (F2a.c:
   `evidence/rust-panic-macros` added) precision is 206 / 231 and recall 206 / 287, with 109 declared
-  misses.
+  misses. On 65 cases (F2a.d: `evidence/rust-test-compiled-out` added, and
+  `#[cfg(any())]` on a test in `evidence/independent-review-20261114` moved from declared to
+  expected) precision is 209 / 234 and recall 209 / 290, with 109 declared misses.
 
   | Metric | Right / total | Floor |
   | --- | ---: | ---: |
   | ranking pairs | 12 / 15 | 80.0% |
-  | evidence precision | 206 / 231 | 88.2% |
-  | evidence recall | 206 / 287 | 70.5% |
+  | evidence precision | 209 / 234 | 88.2% |
+  | evidence recall | 209 / 290 | 70.5% |
   | findings verdicts | 33 / 33 | 100% |
 
   The receipt (`--json`) also splits evidence precision and recall by signal (`by_signal`) and by
   the language of the item's file (`by_language`, the engine's own language reading, `none` where
   no language applies); each adds up to the two evidence rows above, and the text summary prints
-  the four metrics only. Measured 2026-11-24 on 64 cases:
+  the four metrics only. Measured 2026-11-24 on 65 cases:
 
   | Signal | Precision | Recall | Cases |
   | --- | ---: | ---: | ---: |
@@ -175,7 +177,7 @@ deep-diff-forge eval                          # score the labelled corpus in fix
   | `secret_like` | 9 / 9 (100.0%) | 9 / 9 (100.0%) | 2 |
   | `stub_added` | 6 / 6 (100.0%) | 6 / 9 (66.7%) | 8 |
   | `test_removed` | 6 / 6 (100.0%) | 6 / 6 (100.0%) | 4 |
-  | `test_skipped` | 15 / 19 (78.9%) | 15 / 30 (50.0%) | 14 |
+  | `test_skipped` | 18 / 22 (81.8%) | 18 / 33 (54.5%) | 15 |
   | `trivial_assert` | 20 / 20 (100.0%) | 20 / 36 (55.6%) | 14 |
   | `unsafe_added` | 8 / 9 (88.9%) | 8 / 8 (100.0%) | 5 |
 
@@ -185,7 +187,7 @@ deep-diff-forge eval                          # score the labelled corpus in fix
   | `javascript` | 13 / 13 (100.0%) | 13 / 23 (56.5%) | 10 |
   | `none` | 17 / 18 (94.4%) | 17 / 21 (81.0%) | 5 |
   | `python` | 12 / 13 (92.3%) | 12 / 29 (41.4%) | 14 |
-  | `rust` | 148 / 170 (87.1%) | 148 / 193 (76.7%) | 26 |
+  | `rust` | 151 / 173 (87.3%) | 151 / 196 (77.0%) | 27 |
   | `shell` | 6 / 7 (85.7%) | 6 / 7 (85.7%) | 6 |
   | `yaml` | 6 / 6 (100.0%) | 6 / 6 (100.0%) | 2 |
 

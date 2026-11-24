@@ -9702,6 +9702,32 @@ mod tests {
             (&["+::core::panic!();"], &[S::PanicPathAdded]),
             (&["+r#panic!(\"x\");"], &[S::PanicPathAdded]),
             (&["+use std::panic as stop;", "+stop!(\"x\");"], &[]),
+            // F2a.d: a test compiled out
+            (&["+// #[cfg(any())]", "+#[test]"], &[]),
+            (&["+/// #[cfg(any())]", "+#[test]"], &[]),
+            (&["+let s = \"#[cfg(any())]\";", "+#[test]"], &[]),
+            (
+                &["+let q = '\"'; #[cfg(any())]", "+#[test]"],
+                &[S::TestSkipped],
+            ),
+            (
+                &["+#[cfg(not(test))] // '", "+#[test] fn f<'a>() {}"],
+                &[S::TestSkipped],
+            ),
+            (
+                &["+macro_rules! m { () => { #[cfg(any())] #[test] fn t() {} } }"],
+                &[S::TestSkipped],
+            ),
+            (
+                &["+#[cfg(", "+    any()", "+)]", "+#[test]"],
+                &[S::TestSkipped],
+            ),
+            (&["+#[cfg(any())]", "+#[::core::prelude::v1::test]"], &[]),
+            (&["+#[r#cfg(r#any())]", "+#[r#test]"], &[S::TestSkipped]),
+            (
+                &["+#[cfg(feature = \"a b\")]", "+#[test]"],
+                &[S::TestSkipped],
+            ),
         ];
         for (lines, signals) in cases {
             assert_eq!(read(lines), *signals, "{lines:?}");
