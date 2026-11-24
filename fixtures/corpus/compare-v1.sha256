@@ -1,8 +1,46 @@
-# The comparison corpus that the "nothing a release found is lost" claims of 0.10.0 cite.
-# The corpus is not in this repository (7,421 patches, 45 planted Git repositories, the frozen
-# release binaries); it is named here by the SHA-256 of its manifest. The local gate's step
-# "comparison corpus manifest" verifies the corpus where it exists.
+# The comparison corpus that the "nothing a release found is lost" claims of 0.10.0 and 0.11.0
+# cite. The corpus is not in this repository (7,715 patches, 72 planted Git repositories, the
+# frozen release binaries); it is named here by the SHA-256 of its manifest, the last line of
+# this file. The local gate's step "comparison corpus manifest" verifies the corpus where it
+# exists.
 #
+# 0.11.0. Added to the corpus on 2026-11-24, which is why its digest moved from the 0.10.0 one
+# (a6e6baff0360a41860ce9c1d24a7bdc3a58b0989c2cd3f6c8f1e57adb0674ec2, the record further down):
+# four sibling batteries for the readings this release widened (assert-class, let-drop,
+# panic-macro, cfg-test: 294 patches), nine planted Git rows for a source file that a stray byte
+# makes binary by content (27 repositories; the 45 earlier ones rebuild unchanged), the
+# published 0.10.0 binary and the binaries below.
+#
+# Whole-tree record for the candidate of the tree review, commit b337eb2c (version 0.11.0-dev;
+# binary sha256 b329a52b8f89cbfde8e8dfd71a31eb72848eb76051fca5093abb08a7620db9b7, the
+# release-profile Cargo build of that commit), run 2026-11-24T10:59Z, record
+# runs/20261124T105927Z-b329a52b8f89 of the corpus:
+#   identity control                               lost 0    gained 0
+#   against the published 0.10.0 (121503a8…)       lost 106  gained 1002  (see note 3)
+#   against v0.9.0 code (5ba0a366…)                lost 160  gained 1244  (note 3: 106; note 2: 54)
+#   against v0.8.4 (0c93b3ed…)                     lost 101  gained 2394  (note 3: 100; note 1: 1)
+#   against v0.8.3 (4cafd0ad…)                     lost 101  gained 2432  (note 3: 100; note 1: 1)
+#   Refusals against the published 0.10.0: 1,410 patches refused by both, none differs.
+#   Git selections against the published 0.10.0, 72 planted repositories and 8 history ranges:
+#   no planted repository loses an item in any mode, and 7 in each mode gain one (the stray-byte
+#   rows: diff_suppressed, and the code label where there is one, where 0.10.0 gave binary_change
+#   alone). In 2 of the 8 history ranges items are lost: 49 check_suppressed, each of note 3, and
+#   30 panic_path_added in four files whose evidence list is cut at its 32 rows in both builds:
+#   this build lists items it gained on earlier lines, every lost row lies after its last listed
+#   row, and each file keeps the label.
+# Note 3, a listed exception to the floor (0.11.0, the contract register's row F2b.g): `#[allow(`
+#   inside a Rust comment or a string is no check_suppressed, and `r#unsafe`, an identifier, is
+#   no unsafe_added. All 106 patches lost against 0.10.0 are that and nothing else: 191 listed
+#   items read line by line (38 in a line comment, 149 in a string, 1 in a block comment, 3
+#   `r#unsafe`) and 11 patches that lose the label on a file whose list 0.10.0 had cut, where
+#   every added line with `allow` is a comment or a string.
+# The same record was first taken on the commit before (5030ae9b, binary 704f66e9…, record
+#   runs/20261124T103801Z-704f66e94b68): every result file is the same but for the binary's name,
+#   and the two binaries give the same stdout, stderr and exit code on all 7,715 patches in
+#   --json, --rank --json and --diagnostics --json.
+#
+# 0.10.0 (corpus digest a6e6baff0360a41860ce9c1d24a7bdc3a58b0989c2cd3f6c8f1e57adb0674ec2: 7,421
+# patches, 45 planted Git repositories).
 # Whole-tree record for the release-prepared commit 2343eef1 (version 0.10.0; binary sha256
 # df8359c42d99a957c5266825b1d8e87c84b7b7d6aaeb30753527454b321c3e6f, the release-profile Cargo
 # build of that commit; the published 0.10.0 binary, its reproducible build, is
@@ -27,4 +65,4 @@
 # Note 2: all 54 are trivial_assert on Python lines where "assert True" is followed by more
 #   (for example "assert True == False"), which 0.9.0 labelled though they can fail: the narrowing
 #   of task S3.16, a recorded exception to the floor.
-a6e6baff0360a41860ce9c1d24a7bdc3a58b0989c2cd3f6c8f1e57adb0674ec2  MANIFEST.sha256
+8a21922ae9ce409528969e6b4339165847498159ba5fff009a0e7e129bb0a1f5  MANIFEST.sha256

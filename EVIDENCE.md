@@ -1567,3 +1567,112 @@ DDF-2026-008 is.
   commit `7fb73f13`). **The published 0.9.0 binary** is
   `83158afed4915dc2539543dd6cbb6108841f0951c668bfeefc1fc8ef717793cd`. Measurements on either
   are of the same source; the advisories now say which binary they ran.
+
+## 0.11.0 finish evidence, before the tree review (2026-11-24)
+
+Dates here are UTC. This section is written before the review of the tree and before the release
+is prepared: it records what was run on the candidate and what was not. The records it names are
+kept with the coordinator's records of the release, outside this repository; each is named here
+by its SHA-256 or by its place in the comparison corpus.
+
+- **Binaries by name.** `704f66e9…` is the release-profile Cargo build of commit `5030ae9b`
+  (the first candidate). `b329a52b…` is the release-profile Cargo build of commit `b337eb2c`,
+  one commit later (the fix this section's first item led to, and a gate step). The two give the
+  same stdout, stderr and exit code on all 7,715 corpus patches in `--json`, `--rank --json` and
+  `--diagnostics --json`. Neither is a release build (`scripts/release_local.sh`); the version
+  they print is `0.11.0-dev`. The published 0.10.0 binary is `121503a8…`. The judge is a build
+  of forge-warden's hub main `005a1959` (`2451dd11…`; it prints `forge-warden 0.2.1`, its
+  version member not yet raised for 0.3.0).
+- **A real client session (condition C3).** Claude Code 2.1.331, headless (`claude -p`, model
+  `claude-sonnet-5-5`, project settings only, no MCP server), in a scratch repository whose
+  `.claude/settings.json` is the hooks object `agent setup --client claude --hooks` prints and
+  whose `warden.toml` is forge-warden's starter policy (`forge-warden init`) admitting this
+  build as ranker. The client started every hook; the driver only gave the prompts. Three
+  sessions, run on `704f66e9…` (10:47Z to 10:51Z) and again on `b329a52b…` (10:56Z to
+  10:57Z), with the same outcome at every stop:
+  - *A, a judge that is found.* A plain change with its test, not committed: no advice; the
+    stop says HOLD with the judge's note `claims_unverified` (an uncommitted change cannot be
+    verified under `require_verified`). Then a silenced lint and a credential-shaped constant:
+    advice after the edit (two findings by label, path and line, each with its repairs), the
+    stop blocks on `no-secrets` and names `no-silent-suppression` as held for a person; the
+    agent, asked by its user for exactly those lines, repairs nothing and says so; the second
+    stop says FAIL STANDS and does not block. Then the commit: judged by itself in bound mode,
+    FAIL, blocks once, then stands.
+  - *B, no judge to be found.* The start says the chain is not ready and names the missing
+    judge. The stop says "UNJUDGED … was not judged: forge-warden was not found … That is not a
+    pass." Nothing passed without a judge.
+  - *C, a commit that passes.* A plain change committed in one commit: the stop is silent and
+    the project's ledger records `pass` for that commit, sealed to the policy, the patch, this
+    build as ranker and the verdict. (This is the 0.11.0 change that a one-parent commit can
+    pass under `require_verified`.) Then an edit of `warden.toml`: the notice that the file
+    decides how the work is judged and that this session's stops read the policy of the commit
+    the session began from; the stop says HOLD on the starter policy's `ci-is-owned`.
+  - *What it found.* On `704f66e9…` every session start under this policy ended "An uncommitted
+    or staged change, a root commit and a merge commit can ." The text of the link that says
+    which units can pass (357 characters, added in this release) was cut at a bound of 300
+    without a word. No test read the end of that text. Commit `b337eb2c` raises the bound to
+    400, holds by a test that both of the hook's own link texts are said to their last word,
+    and makes a longer detail end with a line that says it is cut. On `b329a52b…` the five
+    starts under that policy end "… can never be verified, so they can at best hold: commit
+    first."
+  - *Not exercised by these sessions:* an agent that repairs after a block (it left both
+    failures to a person, as the block's text allows for work its user asked for); a Codex
+    client; an interactive client and its permission prompts; the user's own settings and hooks
+    beside the project's; this program's MCP server inside the client; UNJUDGED for any cause
+    but a missing judge (a judge that refuses, a time limit, a damaged or missing state, a
+    removed ledger); the stateless stop; commits an ended session left and commits merged
+    between sessions; a second working tree; `agent check` and `agent verify-branch`; the guard
+    notice for `.claude/settings.json`; advice at its caps. The contract matrix (71 rows) and
+    the hook tests hold those by stand-in and real judges; no real client was in them.
+  - Records: the three transcripts with every hook answer in full, SHA-256 `d916ed92…`
+    (A and B on `704f66e9…`), `01443a45…` (C on `704f66e9…`) and `f2d6b97d…` (A, B and C on
+    `b329a52b…`), with the clients' event streams, the registered settings, the policies and
+    the three ledgers.
+- **One run of every surface (condition C9),** on `704f66e9…`, two inputs (a one-line Rust edit;
+  three files with ten diagnostics, among them a path holding U+202E and U+200B), every
+  process with a home and state directory of its own: the command line (`--json`,
+  `--rank --json`, `--diagnostics --json` and the text forms), the daemon on a private socket
+  (`diff.compute`, `diff.rank`, `diff.diagnostics` in pages), `rpc` (the same three), the MCP
+  server (`initialize`, `tools/list` with nine tools, `review_patch`, `rank_patch`,
+  `diagnose_patch`), the Python SDK over both of its clients, and the cockpit in a
+  pseudo-terminal (it draws, and `q` ends it with exit 0; for the plain input the screen is the
+  frame `review --probe` prints). **Compared:** on both inputs no surface differs from the
+  command line in any value of the review, the rank or the diagnostics document, and the
+  version members agree. The bytes differ in two ways the references state: the daemon and MCP
+  give the review as an object whose keys are sorted, and MCP's text (and every diagnostics
+  document) writes a hidden character as an escape where the command line's `--json` and the
+  daemon's `diff.compute` and `diff.rank` write it raw, as 0.10.0 does. The rank document's
+  bytes are the command line's on the daemon (`canonical_json`) and in the Python SDK; the
+  diagnostics document's SHA-256 is the command line's on every surface that carries it.
+  **The Rust SDK** was not run on the two inputs (it has no entry that takes a patch without a
+  build): its tests (14, and two that are ignored) run in the gate's test step on the commit. *Not exercised:* the cockpit
+  beyond start and quit; the daemon's sessions, metrics and refusals; MCP's other six tools and
+  its error results; `--jsonl`, `--cluster`, Git inputs and `--fail-on` on these inputs; an
+  input over any byte budget. Record: the summary, SHA-256 `e96cab48…`, with one run file per
+  surface and the scripts.
+- **The diagnostics contract in the gate (condition C4).** From `b337eb2c` the gate has a step
+  of its own, `diagnostics contract` (36 steps): `agent doctor` on the built binary must list
+  `diagnostics_parity` and find it true, and the test in which every doctor check fails its
+  condition and the marker canary run by their exact names, each required to be the one test
+  that ran. Run alone before the gate: it passes; with one test's name changed it fails ("not
+  exactly one passing test"); asked for a check the doctor does not list it fails.
+- **Comparison.** The corpus (`fixtures/corpus/compare-v1.sha256`: 7,715 patches, 72 planted
+  Git repositories, manifest `8a21922a…`) on `b329a52b…`: against itself nothing lost or
+  gained; against the published 0.10.0, 106 patches with a lost item, every one the listed
+  floor exception of this release (`#[allow(` inside a Rust comment or a string is no
+  `check_suppressed`; `r#unsafe` is no `unsafe_added`), read item by item, and 1,002 with a
+  gained item; no refusal differs. Git selections against the published 0.10.0: no planted
+  repository loses an item; in two history ranges 49 `check_suppressed` of the same exception
+  and 30 `panic_path_added` rows that fall behind the 32-row bound of a file's evidence list,
+  each file keeping the label. The file has the figures against 0.9.0, 0.8.4 and 0.8.3.
+- **Mutation.** No mutation run over what 0.11.0 changed has been made; the required CI check
+  `scripts/diff_mutation.sh` runs at a pull request. The run over what 0.10.0 changed (729
+  mutants) had 450 judged caught when this was written (11:05Z) and restarts whenever a gate
+  runs. Of that run's seven missed mutants six have a test in this tree that fails on the
+  mutant and one is shown equivalent; two more that the run had recorded as timeouts under load
+  were missed mutants and have tests; seven are loops that only the time limit ends
+  (`docs/TESTING_GOLD_STANDARD.md`). A function changed only in its signature gets no mutant
+  from the pull-request check, and the tool makes none for a function named `new`.
+- **Not measured here.** No reviewer has read this tree yet. The fuzz campaign has not been run
+  on it. No release build has been made. No independent rescore. The live sessions ran one
+  client, one model and one policy.
