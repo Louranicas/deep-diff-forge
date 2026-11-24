@@ -42,6 +42,20 @@ git_ -C "$d/repo" add warden.toml && git_ -C "$d/repo" commit --quiet -m policy
 if stop s1 false "$fw" && expect allow "HOLD" UNJUDGED "could not be read" "does not read"; then pass "$id"
 else fail "$id" "$why"; fi
 
+# S3.25.b: under forge-warden's starter policy, which requires verified claims, a commit with one
+# parent is judged in bound mode and passes, and the ledger records the pass; the uncommitted change
+# holds (the row above).
+id=fw-a-commit-passes-in-bound-mode
+row "$id" '{}'
+policy "$d/repo/warden.toml" "$(sum "$ddf")"
+git_ -C "$d/repo" checkout --quiet -- a.rs
+git_ -C "$d/repo" add warden.toml && git_ -C "$d/repo" commit --quiet -m policy
+if stop s1 false "$fw" && printf 'fn a() {}\nfn b() {}\nfn c() {}\n' >"$d/repo/a.rs" &&
+  git_ -C "$d/repo" commit --quiet -am c && stop s1 false "$fw" &&
+  expect allow "" HOLD UNJUDGED claims_unverified &&
+  grep -q "\"outcome\":\"pass\",.*\"unit\":\"commit:$(git_ -C "$d/repo" rev-parse HEAD)\"" "$d/repo/.git/deep-diff-forge/ledger.jsonl"
+then pass "$id"; else fail "$id" "$why"; fi
+
 # The labels `schema signals` lists that this forge-warden does not know (its lint of a policy
 # forbidding them all names them) are allowed; the contract is that an unknown label holds: a
 # change that raises one (stub_added, from todo!()) holds with the note unknown_signal under a

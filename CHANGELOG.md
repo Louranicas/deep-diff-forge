@@ -332,6 +332,20 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   `added` with `new_file` (S3.4.b2): Git's summary and `git apply` treat it as a creation; it was
   `modified`. The deletion twin (`@@ -1,N +0,0 @@`) stays `modified`. On the comparison corpus
   one patch changes (`modified` 2 to `added` 4).
+- **Stop hook, changed on purpose (S3.25.b):** a commit can pass under a policy that requires
+  verified claims (forge-warden's `[claims] require_verified`, which its `init` writes from
+  0.3.0); it held before. A commit with one parent is judged with `--repo <the repository's Git
+  common directory> --base <its parent> --head <it>` beside the hook's patch when the judge's
+  `check --help` names `--repo` (read once a stop; the released forge-warden 0.2.1 does not, and
+  is started as before). A pass or a hold whose `seals.claims` are not verified and the asked
+  pair is UNJUDGED (`chain.not_a_verdict`). A judge that refuses bound mode for a commit (exit 3
+  or 4) has it judged again without `--repo`, and the message says so. A root commit, a merge
+  commit, the staged and the uncommitted change, and a repository bound mode does not admit
+  (shallow, object alternates, `:` or a control character in its path) are judged as before and
+  can at best hold. The stateless stop, the frontier's commits and `agent check` judge commits
+  the same way. `agent doctor --gate`'s link `claims_verified` says which units can pass. Cost
+  measured with forge-warden `005a1959`: about 0.25 seconds a commit against 0.09; 300 commits
+  drain in two stops instead of one. No state or ledger schema changes.
 
 ## [0.10.0] - 2026-11-23
 

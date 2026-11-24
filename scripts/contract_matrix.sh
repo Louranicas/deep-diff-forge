@@ -102,7 +102,7 @@ judged() { if stop s1 false && expect "$@"; then pass "$id"; else fail "$id" "$w
 . "$here/contract-matrix/stand_in_rows.sh"
 
 # --- real rows ---
-real=(fw-recorded fw-judges-the-stop fw-unknown-labels-hold fw-reads-the-rank
+real=(fw-recorded fw-judges-the-stop fw-a-commit-passes-in-bound-mode fw-unknown-labels-hold fw-reads-the-rank
   fw-empty-patch-this-ranker fw-empty-patch-ranker-0.9.0)
 # recorded <role> <path>: the schema binaries.tsv records for the binary's SHA-256 in <role>.
 recorded() { awk -F'\t' -v r="$1" -v s="$(sum "$2")" '$1 == r && $2 == s { print $3; exit }' "$here/contract-matrix/binaries.tsv"; }

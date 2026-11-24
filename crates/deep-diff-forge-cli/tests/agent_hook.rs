@@ -161,10 +161,14 @@ fn judge(scratch: &Scratch, verdict: &Value) -> (PathBuf, PathBuf, PathBuf) {
 /// when it runs.
 fn judge_script(log: &Path, exit_file: &Path, verdict: &Value) -> String {
     const SCRIPT: &str = r#"#!/bin/sh
+if [ "$1" = check ] && [ "$2" = --help ]; then cat '@HELP@' 2>/dev/null; exit 0; fi
 printf 'ARGS %s\n' "$*" >> '@LOG@'
-policy=; patch=; ranker=
+policy=; patch=; ranker=; repo=; base=; head=
 while [ $# -gt 0 ]; do
   case "$1" in
+    --repo) repo="$2";;
+    --base) base="$2";;
+    --head) head="$2";;
     --policy) policy="$2"; printf 'POLICY %s' "$(cat "$2")" >> '@LOG@'; printf '\n' >> '@LOG@';;
     --patch) patch="$2"; printf 'PATCH-FILES %s\n' "$(grep -c '^diff --git' "$2")" >> '@LOG@'; printf 'PATCH-ALLOWS %s\n' "$(grep -c '^+#\[allow' "$2")" >> '@LOG@';;
     --ranker) ranker="$2";;
@@ -181,13 +185,21 @@ case "$code" in
 esac
 p="$(sum "$policy")"; f="$(sum "$patch")"; r="$(sum "$ranker")"
 seals="{\"policy_sha256\":\"$p\",\"rank_sha256\":\"$f\",\"patch_sha256\":\"$f\",\"patch_facts_sha256\":null,\"provenance\":\"produced\",\"ranked_by\":{\"version\":\"stand-in\",\"sha256\":\"$r\"},\"git\":{\"path\":\"/usr/bin/git\",\"version\":\"git version 2.56.0\",\"sha256\":\"$p\",\"admission\":\"approved\",\"allowlist_sha256\":\"$f\"}}"
-sed -e "s/\"@VERDICT@\"/\"$said\"/g" -e "s/\"@CODE@\"/$code/" -e "s/\"@NAME@\"/\"$name\"/" \
+# bound mode (S3.25.b): refuse it when told to; else claim the pair, or another when told to
+if [ -n "$repo" ] && [ -f '@HELP@.refuse' ]; then echo '{"exit":4,"name":"invalid_input","message":"the patch is not git diff base...head","next":"change_input"}' >&2; exit 4; fi
+v3='s/^$//'
+if [ -n "$repo" ]; then [ -f '@HELP@.liar' ] && head=0000000000000000000000000000000000000000; seals="${seals%\}},\"claims\":{\"base\":\"$base\",\"head\":\"$head\",\"merge_base\":\"$base\",\"verified\":true}}"; v3='s/"forge-warden.verdict.v2"/"forge-warden.verdict.v3"/'; fi
+sed -e "$v3" -e "s/\"@VERDICT@\"/\"$said\"/g" -e "s/\"@CODE@\"/$code/" -e "s/\"@NAME@\"/\"$name\"/" \
     -e "s/\"@ACTION@\"/\"$action\"/" -e "s|\"@SEALS@\"|$seals|" -e "s/\"@COUNTS@\":0/$counts/" <<'VERDICT'
 @VERDICT_DOCUMENT@
 VERDICT
 exit "$code"
 "#;
     SCRIPT
+        .replace(
+            "@HELP@",
+            &log.with_file_name("judge.help").display().to_string(),
+        )
         .replace("@LOG@", &log.display().to_string())
         .replace("@EXIT@", &exit_file.display().to_string())
         .replace("@VERDICT_DOCUMENT@", &verdict.to_string())
@@ -5567,7 +5579,7 @@ fn a_commit_with_no_verdict_never_stops_the_judging_of_later_commits() {
     write_program(
         &broken,
         &format!(
-            "#!/bin/sh\necho x >> '{}'\necho '{{\"exit\":3,\"name\":\"io\",\"message\":\"no Git allowlist enrolled\",\"next\":\"check_environment\"}}' >&2\nexit 3\n",
+            "#!/bin/sh\n[ \"$2\" = --help ] && exit 0\necho x >> '{}'\necho '{{\"exit\":3,\"name\":\"io\",\"message\":\"no Git allowlist enrolled\",\"next\":\"check_environment\"}}' >&2\nexit 3\n",
             calls.display()
         ),
     );
@@ -13327,6 +13339,201 @@ fn a_start_that_records_the_project_says_so() {
     let head = short(&root, "HEAD");
     let said = start(&root, "c");
     assert!(said.contains(&format!("{FIRST}{}", &head[..7])), "{said}");
+}
+
+/// Makes the stand-in judge whose log is `log` take bound mode: its `check --help` names
+/// `--repo`, as forge-warden's does from its 0.3.0 line (the released 0.2.1 does not).
+fn takes_bound(log: &Path) {
+    std::fs::write(
+        log.with_file_name("judge.help"),
+        "      --repo <DIR>     Bound mode (ADR 0012, authority mode only)\n",
+    )
+    .unwrap();
+}
+
+/// The argument lines of the stand-in judge's runs, in order.
+fn args_of(log: &Path) -> Vec<String> {
+    std::fs::read_to_string(log)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| line.strip_prefix("ARGS "))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The bound-mode arguments a run for the commit `id` with its parent `parent` carries.
+fn bound_args(root: &Path, parent: &str, id: &str) -> String {
+    let common = std::fs::canonicalize(root.join(".git")).unwrap();
+    format!("--repo {} --base {parent} --head {id}", common.display())
+}
+
+/// S3.25.b, the acceptance: a commit with one parent is judged in bound mode (`--repo` with
+/// the repository's Git directory, `--base` its parent, `--head` the commit), so that a policy
+/// that requires verified claims can pass it; the uncommitted change is judged as before. A
+/// verdict whose claims name another pair is no verified verdict on the commit (UNJUDGED); a
+/// judge that refuses bound mode for a commit has it judged as before, and that is said.
+#[test]
+fn a_commit_is_judged_in_bound_mode_and_its_claims_name_it() {
+    let scratch = Scratch::new("hook-bound-mode");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    takes_bound(&log);
+    start(&root, "s");
+    std::fs::write(root.join("b.rs"), "fn b() {}\n").unwrap();
+    commit_all(&root, "b");
+    let (parent, id) = (
+        git(&root, &["rev-parse", "HEAD~1"]).trim().to_owned(),
+        git(&root, &["rev-parse", "HEAD"]).trim().to_owned(),
+    );
+    std::fs::write(root.join("u.rs"), "fn u() {}\n").unwrap();
+    assert_eq!(stop_from(&root, "s", &script), Value::Null);
+    let args = args_of(&log);
+    assert_eq!(args.len(), 2, "{args:?}");
+    assert!(
+        !args[0].contains("--repo"),
+        "the uncommitted change in bound mode: {args:?}"
+    );
+    assert!(
+        args[1].contains(&bound_args(&root, &parent, &id)),
+        "the commit is not judged in bound mode: {args:?}"
+    );
+    // a verdict that claims another pair is no verified verdict on this commit
+    std::fs::write(log.with_file_name("judge.help.liar"), "").unwrap();
+    std::fs::write(root.join("c.rs"), "fn c() {}\n").unwrap();
+    let liar = commit_all(&root, "c");
+    let said = allowed(&stop_from(&root, "s", &script)).to_owned();
+    assert!(
+        said.contains(&format!(
+            "{liar} (no verified verdict on this commit: the judge was asked about commit {liar} \
+             against its parent"
+        )),
+        "{said}"
+    );
+    // a judge that refuses bound mode for a commit: judged without --repo, and that is said
+    std::fs::remove_file(log.with_file_name("judge.help.liar")).unwrap();
+    std::fs::write(log.with_file_name("judge.help.refuse"), "").unwrap();
+    secret(&root, "k.rs");
+    let key = commit_all(&root, "a key");
+    let reason = blocked(&stop_from(&root, "s", &script)).to_owned();
+    assert!(
+        reason.contains(&format!("Commit {key}: FAIL\n"))
+            && reason.contains("the judge refused bound mode for this commit (exit 4"),
+        "{reason}"
+    );
+    let args = args_of(&log);
+    let last = &args[args.len() - 2..];
+    assert!(
+        last[0].contains("--repo") && !last[1].contains("--repo"),
+        "{last:?}"
+    );
+}
+
+/// S3.25.b, ruling 1: a judge whose usage (`check --help`) names no `--repo`, as the released
+/// forge-warden 0.2.1's, is started as before: no bound argument for a commit either.
+#[test]
+fn a_judge_whose_usage_names_no_repo_is_started_as_before() {
+    let scratch = Scratch::new("hook-bound-unknown");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    std::fs::write(
+        log.with_file_name("judge.help"),
+        "      --base <REV>     the claimed base (unverified)\n      --head <REV>     the claimed head (unverified)\n",
+    )
+    .unwrap();
+    start(&root, "s");
+    std::fs::write(root.join("b.rs"), "fn b() {}\n").unwrap();
+    commit_all(&root, "b");
+    assert_eq!(stop_from(&root, "s", &script), Value::Null);
+    let args = args_of(&log);
+    assert_eq!(args.len(), 1, "{args:?}");
+    assert!(
+        !args[0].contains("--repo") && !args[0].contains("--base"),
+        "{args:?}"
+    );
+}
+
+/// S3.25.b, ruling 3: what bound mode cannot verify is judged as before: a root commit (no
+/// parent) and a merge commit (it brings in commits the pair does not name), without `--repo`;
+/// the commit the merge brings in has one parent and is bound.
+#[test]
+fn a_root_commit_and_a_merge_are_judged_as_before() {
+    let scratch = Scratch::new("hook-bound-root-merge");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    takes_bound(&log);
+    start(&root, "s");
+    git(&root, &["checkout", "--quiet", "-b", "side"]);
+    std::fs::write(root.join("side.rs"), "fn side() {}\n").unwrap();
+    let side = commit_all(&root, "side");
+    git(&root, &["checkout", "--quiet", "-"]);
+    std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
+    commit_all(&root, "main");
+    git(&root, &["merge", "--quiet", "--no-ff", "--no-edit", "side"]);
+    let merge = short(&root, "HEAD");
+    git(&root, &["checkout", "--quiet", "--orphan", "fresh"]);
+    std::fs::write(root.join("only.rs"), "fn only() {}\n").unwrap();
+    let orphan = commit_all(&root, "a root commit");
+    assert_eq!(stop_from(&root, "s", &script), Value::Null);
+    let args = args_of(&log);
+    let run_of = |id: &str| -> Vec<&String> {
+        args.iter()
+            .filter(|a| a.contains(&format!("--head {id}")))
+            .collect()
+    };
+    let full = |id: &str| git(&root, &["rev-parse", id]).trim().to_owned();
+    assert_eq!(
+        run_of(&full(&side)).len(),
+        1,
+        "the side commit is not bound: {args:?}"
+    );
+    assert!(
+        run_of(&full(&merge)).is_empty(),
+        "the merge is bound: {args:?}"
+    );
+    assert!(
+        run_of(&full(&orphan)).is_empty(),
+        "the root commit is bound: {args:?}"
+    );
+    let bound = args.iter().filter(|a| a.contains("--repo")).count();
+    assert_eq!(bound, 2, "{args:?}");
+}
+
+/// S3.25.b, ruling 3: a commit the project's frontier gives a stop, and one a stateless stop
+/// judges, go the same way as a session's own: in bound mode.
+#[test]
+fn frontier_and_stateless_commits_are_judged_in_bound_mode() {
+    let scratch = Scratch::new("hook-bound-frontier");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    takes_bound(&log);
+    start(&root, "a");
+    std::fs::write(root.join("left.rs"), "fn left() {}\n").unwrap();
+    let left = commit_all(&root, "left by a session that ended");
+    start(&root, "b");
+    assert_eq!(stop_from(&root, "b", &script), Value::Null);
+    let full = |id: &str| git(&root, &["rev-parse", id]).trim().to_owned();
+    assert!(
+        args_of(&log)
+            .iter()
+            .any(|a| a.contains(&format!("--head {}", full(&left))) && a.contains("--repo")),
+        "{:?}",
+        args_of(&log)
+    );
+    // the stateless stop: a commit, then the state damaged
+    std::fs::write(root.join("mine.rs"), "fn mine() {}\n").unwrap();
+    let mine = commit_all(&root, "the session's own");
+    for state in states_in(&sessions()) {
+        std::fs::write(state, "{}").unwrap();
+    }
+    let said = allowed(&stop_from(&root, "b", &script)).to_owned();
+    assert!(said.contains("could not be used (state.damaged)"), "{said}");
+    assert!(
+        args_of(&log)
+            .iter()
+            .any(|a| a.contains(&format!("--head {}", full(&mine))) && a.contains("--repo")),
+        "{:?}",
+        args_of(&log)
+    );
 }
 
 /// S3.17a.l: when the advice after a tool call is off for a reason told once in the session, the

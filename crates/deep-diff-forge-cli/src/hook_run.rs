@@ -3156,6 +3156,10 @@ fn judge_words(stderr: &[u8]) -> Option<String> {
     Some(words.chars().take(JUDGE_WORDS).collect())
 }
 
+/// What one run of the judge gave: its exit code, its verdict document, what it said on its
+/// error stream, and the SHA-256 of the document.
+type Run = (Option<i32>, Option<Value>, Option<String>, Option<String>);
+
 /// Run the judge once: its exit code, its verdict document and what it said on its error
 /// stream, when it gave any of them. It gets the time the hook has left, at most
 /// [`JUDGE_TIME`]. The judge runs in a process group of its own (`core::process::run_bounded`);
@@ -3170,8 +3174,9 @@ fn run_judge(
     policy: &Path,
     patch: &Path,
     ranker: &Path,
+    bound: Option<&Bound>,
     time: Duration,
-) -> (Option<i32>, Option<Value>, Option<String>, Option<String>) {
+) -> Run {
     let mut command = std::process::Command::new(judge);
     command
         .arg("check")
@@ -3180,8 +3185,18 @@ fn run_judge(
         .arg("--patch")
         .arg(patch)
         .arg("--ranker")
-        .arg(ranker)
-        .arg("--json");
+        .arg(ranker);
+    // bound mode (S3.25.b): forge-warden makes the diff from the repository's objects itself
+    if let Some(bound) = bound {
+        command
+            .arg("--repo")
+            .arg(&bound.repo)
+            .arg("--base")
+            .arg(&bound.base)
+            .arg("--head")
+            .arg(&bound.head);
+    }
+    command.arg("--json");
     let limits = Limits {
         time: time.min(JUDGE_TIME),
         stdout_bytes: JUDGE_STDOUT,
@@ -3208,6 +3223,107 @@ fn run_judge(
     }
 }
 
+/// A commit as the judge's bound mode is given it (S3.25.b): the repository's Git common
+/// directory, the commit's one parent and the commit. forge-warden then makes `git diff
+/// merge-base..head` from a verified copy of those objects, refuses a patch that is not
+/// byte-equal to it (exit 4), and claims the pair as verified in its verdict.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Bound {
+    repo: PathBuf,
+    base: String,
+    head: String,
+}
+
+/// The commit `id` with its parent `parent` as a [`Bound`] unit, when bound mode can verify it:
+/// a commit with one parent (a merge brings in commits the pair does not name, a root commit has
+/// no base), in a repository forge-warden's bound mode admits as it is (its Git directory with
+/// no `shallow` file and no object alternates, its path with no `:` and no control character:
+/// forge-warden refuses each with exit 3). Any other commit is judged as before.
+fn bound_of(
+    place: &Place,
+    (id, parent): &CommitAndParent,
+    list: &Path,
+    deadline: Deadline,
+) -> Option<Bound> {
+    let parent = parent.as_deref()?;
+    let repo = place.common.as_path();
+    let admitted = repo
+        .to_str()
+        .is_some_and(|path| !path.contains(':') && !path.chars().any(char::is_control))
+        && !repo.join("shallow").exists()
+        && !repo.join("objects/info/alternates").exists()
+        && !repo.join("objects/info/http-alternates").exists();
+    // one parent: the commits the commit leads to and its parent does not are it alone
+    let alone = commits_beyond(
+        &place.top,
+        std::slice::from_ref(id),
+        &[parent.to_owned()],
+        list,
+        &deadline.git(),
+    )
+    .is_ok_and(|beyond| beyond.len() == 1 && beyond[0].0 == *id);
+    (admitted && alone).then(|| Bound {
+        repo: repo.to_path_buf(),
+        base: parent.to_owned(),
+        head: id.clone(),
+    })
+}
+
+/// Whether the judge `program` takes bound mode: its usage of `check` names `--repo`
+/// (forge-warden from its 0.3.0 line; the released 0.2.1 does not). Asked once a stop, in a
+/// bounded run; a judge that cannot be asked is judged as before.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the judge door: the stop hook asks forge-warden for its usage, under a deadline and output caps"
+)]
+fn takes_bound_mode(program: &Path, deadline: Deadline) -> bool {
+    let mut command = std::process::Command::new(program);
+    command.arg("check").arg("--help");
+    let limits = Limits {
+        time: deadline.left().min(Duration::from_secs(2)),
+        stdout_bytes: 64 * 1024,
+        stderr_bytes: 64 * 1024,
+    };
+    run_bounded(&mut command, b"", limits).is_ok_and(|done| {
+        done.status.success()
+            && String::from_utf8_lossy(&done.stdout)
+                .split_whitespace()
+                .any(|word| word == "--repo")
+    })
+}
+
+/// A verdict of a bound run is about the pair it was asked about only when its claims name it,
+/// verified: else it is no verified verdict on this commit, whatever it says (S3.25.b). A fail
+/// stands (exit 7 holds the stop, S3.21); a pass or a hold becomes UNJUDGED.
+fn claims_of(judged: Judged, verdict: Option<&Value>, bound: &Bound) -> Judged {
+    if matches!(judged, Judged::Fail { .. } | Judged::Unjudged { .. }) {
+        return judged;
+    }
+    let claims = verdict.map(|v| &v["seals"]["claims"]);
+    let named = claims.is_some_and(|c| {
+        c["verified"] == true
+            && c["base"] == bound.base.as_str()
+            && c["head"] == bound.head.as_str()
+    });
+    if named {
+        return judged;
+    }
+    let said = claims.map_or_else(String::new, |c| {
+        deep_diff_forge_core::display_safe(&c.to_string())
+            .chars()
+            .take(120)
+            .collect()
+    });
+    Judged::Unjudged {
+        reason: format!(
+            "no verified verdict on this commit: the judge was asked about commit {} against its parent {} in bound mode, and its verdict claims another pair or none verified ({said})",
+            &bound.head[..12.min(bound.head.len())],
+            &bound.base[..12.min(bound.base.len())],
+        ),
+        class: ReasonClass::ChainNotAVerdict,
+    }
+}
+
 /// What every working tree of one stop is judged with: the judge, the policy at the base
 /// commit, and the rankers with their digests.
 struct Bench<'a> {
@@ -3224,6 +3340,8 @@ struct Bench<'a> {
     ranked_by: std::cell::RefCell<Option<PathBuf>>,
     /// The seals of the last run of the judge, for the ledger (F11).
     sealed: std::cell::RefCell<Option<crate::ledger::Seals>>,
+    /// Whether the judge takes bound mode ([`takes_bound_mode`]), asked at the first commit.
+    bound_mode: std::cell::OnceCell<bool>,
 }
 
 impl<'a> Bench<'a> {
@@ -3281,13 +3399,21 @@ impl<'a> Bench<'a> {
             deadline,
             ranked_by: std::cell::RefCell::new(None),
             sealed: std::cell::RefCell::new(None),
+            bound_mode: std::cell::OnceCell::new(),
         })
     }
 
     /// Have `patch` judged; `name` is the file it is written to in the scratch directory.
     /// With the answer comes whether the judge was run for it at all: with no time left
     /// ([`run_time`]), no ranker to offer or an input that cannot be written, it was not.
-    fn judge(&self, patch: &[u8], name: &str, after: After) -> (Judged, bool) {
+    fn judge(
+        &self,
+        patch: &[u8],
+        name: &str,
+        after: After,
+        bound: Option<&Bound>,
+    ) -> (Judged, bool) {
+        let bound = self.bound(bound);
         let patch_file = self.scratch.0.join(name);
         if let Err(error) = std::fs::write(&patch_file, patch) {
             return (
@@ -3334,8 +3460,8 @@ impl<'a> Bench<'a> {
                 break;
             };
             ran = true;
-            let (code, verdict, said, digest) =
-                run_judge(&self.program, &self.policy_file, &patch_file, ranker, time);
+            let ((code, verdict, said, digest), refused) =
+                self.run_bound(&patch_file, ranker, bound, time, after);
             *self.sealed.borrow_mut() = Some(crate::ledger::Seals {
                 policy: self.policy_sha256.clone(),
                 patch: patch_sha256.clone(),
@@ -3343,7 +3469,12 @@ impl<'a> Bench<'a> {
                 verdict: digest,
             });
             // (exit 7 holds the stop even when its document is no verdict: S3.21)
-            last = hook::stop_judged(code, verdict.as_ref(), said.as_deref(), sealed);
+            last = bound_answer(
+                hook::stop_judged(code, verdict.as_ref(), said.as_deref(), sealed),
+                verdict.as_ref(),
+                bound,
+                refused,
+            );
             // A run that was stopped says what time it had, and why it was no more: "the
             // judge was stopped" did not name the cause (eighth independent review of the
             // hooks, HR8-L-2). Either the stop had little left, or the run had its part of
@@ -3384,6 +3515,83 @@ impl<'a> Bench<'a> {
             }
         }
         (last, ran)
+    }
+}
+
+impl Bench<'_> {
+    /// `bound` when this judge takes bound mode ([`takes_bound_mode`], asked once), else none.
+    fn bound<'b>(&self, bound: Option<&'b Bound>) -> Option<&'b Bound> {
+        bound.filter(|_| {
+            *self
+                .bound_mode
+                .get_or_init(|| takes_bound_mode(&self.program, self.deadline))
+        })
+    }
+
+    /// One run of the judge on a commit, in bound mode where `bound` names it. When forge-warden
+    /// refuses bound mode for it (exit 3: a repository it does not admit; exit 4: the patch is
+    /// not the diff it made, or the ranker is not admitted), the commit is run again without
+    /// `--repo`, as before, in the time that is left; the words that say so come back with it
+    /// (S3.25.b). A unit that had a verdict before this package has one now.
+    fn run_bound(
+        &self,
+        patch_file: &Path,
+        ranker: &Path,
+        bound: Option<&Bound>,
+        time: Duration,
+        after: After,
+    ) -> (Run, Option<String>) {
+        let first = run_judge(
+            &self.program,
+            &self.policy_file,
+            patch_file,
+            ranker,
+            bound,
+            time,
+        );
+        if bound.is_none() || !matches!(first.0, Some(3 | 4)) {
+            return (first, None);
+        }
+        let Some(time) = run_time(self.deadline.left(), after) else {
+            return (first, None);
+        };
+        let words = format!(
+            "the judge refused bound mode for this commit (exit {}: {}), so it was judged without --repo, as before",
+            first.0.unwrap_or_default(),
+            first.2.as_deref().unwrap_or("it said nothing")
+        );
+        let again = run_judge(
+            &self.program,
+            &self.policy_file,
+            patch_file,
+            ranker,
+            None,
+            time,
+        );
+        (again, Some(words))
+    }
+}
+
+/// The answer of a run on a commit: in bound mode it is about the pair only when its claims
+/// name it ([`claims_of`]); a run that fell back to the run without `--repo` says why.
+fn bound_answer(
+    judged: Judged,
+    verdict: Option<&Value>,
+    bound: Option<&Bound>,
+    refused: Option<String>,
+) -> Judged {
+    match (bound, refused) {
+        (Some(bound), None) => claims_of(judged, verdict, bound),
+        (_, Some(words)) => {
+            let mut judged = judged;
+            match &mut judged {
+                Judged::Hold { said, .. } | Judged::Fail { said, .. } => said.push(words),
+                Judged::Unjudged { reason, .. } => *reason = format!("{reason}; {words}"),
+                _ => {}
+            }
+            judged
+        }
+        (None, None) => judged,
     }
 }
 
@@ -4264,7 +4472,7 @@ fn judged_patch(
         Reading::Nothing => Reading::Nothing,
         Reading::Found(bytes) => {
             tribunal.after = After::Trees(kept);
-            Reading::Found(tribunal.judge(&bytes))
+            Reading::Found(tribunal.judge(&bytes, None))
         }
         Reading::NotRead(reason) => Reading::NotRead(reason),
     }
@@ -4312,8 +4520,16 @@ impl<'a> Judge<'a> {
         })
     }
 
-    fn judge(&mut self, patch: &[u8]) -> Judged {
-        let digest = deep_diff_forge_core::sha256_hex(patch);
+    fn judge(&mut self, patch: &[u8], bound: Option<&Bound>) -> Judged {
+        // (a bound verdict is about its pair: the same patch of another commit is asked again)
+        let bound = match self.bench() {
+            Ok(bench) => bench.bound(bound),
+            Err(_) => None,
+        };
+        let digest = match bound {
+            Some(bound) => format!("{}:{}", deep_diff_forge_core::sha256_hex(patch), bound.head),
+            None => deep_diff_forge_core::sha256_hex(patch),
+        };
         self.last = Some(digest.clone());
         if let Some(known) = self.answers.get(&digest) {
             self.ran = true;
@@ -4322,7 +4538,7 @@ impl<'a> Judge<'a> {
         let after = self.after;
         let ((answer, ran), sealed) = match self.bench() {
             Ok(bench) => (
-                bench.judge(patch, "change.patch", after),
+                bench.judge(patch, "change.patch", after, bound),
                 bench.sealed.borrow_mut().take(),
             ),
             Err(reason) => (
@@ -4369,7 +4585,7 @@ impl<'a> Judge<'a> {
             Ok(bench) => bench.probe.as_ref().is_some_and(|probe| {
                 !matches!(
                     bench
-                        .judge(probe.as_bytes(), "probe.patch", After::Asks(0))
+                        .judge(probe.as_bytes(), "probe.patch", After::Asks(0), None)
                         .0,
                     Judged::Unjudged { .. }
                 )
@@ -4777,8 +4993,11 @@ fn judge_commit(
     stopping: &Stopping<'_>,
     tribunal: &mut Judge<'_>,
     at: usize,
-    (id, parent): &CommitAndParent,
+    commit: &CommitAndParent,
 ) -> Result<(Judged, bool), String> {
+    let (id, parent) = commit;
+    let list = stopping.scratch.0.join(format!("bound-{at}.list"));
+    let bound = bound_of(&stopping.work.place, commit, &list, stopping.deadline);
     let patch = commit_patch(
         &stopping.work.place.top,
         parent.as_deref(),
@@ -4788,7 +5007,7 @@ fn judge_commit(
     );
     Ok(match patch {
         Ok(bytes) if bytes.is_empty() => (Judged::Pass, false),
-        Ok(bytes) => (tribunal.judge(&bytes), false),
+        Ok(bytes) => (tribunal.judge(&bytes, bound.as_ref()), false),
         Err(JudgePatchError::Failed(error)) => (
             Judged::Unjudged {
                 reason: format!(
@@ -8728,14 +8947,14 @@ pub(crate) fn check_units(
         let mut units = Vec::new();
         let mut bench: Option<Result<Bench<'_>, Why>> = None;
         let this = std::env::current_exe().and_then(std::fs::canonicalize).ok();
-        let mut judge = |patch: &[u8]| {
+        let mut judge = |patch: &[u8], bound: Option<&Bound>| {
             let writable = [place.top.as_path(), place.common.as_path()];
             match bench.get_or_insert_with(|| {
                 Bench::new(&place.top, &base, &scratch, args, &writable, deadline)
             }) {
                 Ok(bench) => {
                     let judged = bench
-                        .judge(patch, "change.patch", After::Trees(Duration::ZERO))
+                        .judge(patch, "change.patch", After::Trees(Duration::ZERO), bound)
                         .0;
                     let admitted = bench.ranked_by.borrow_mut().take();
                     let other =
@@ -8781,11 +9000,11 @@ pub(crate) fn check_units(
             Err((reason, None)) => units.push(("uncommitted", None, unjudged(reason))),
             Ok(Change { patch, .. }) => {
                 if let Some(patch) = &patch {
-                    units.push(("uncommitted", None, judge(patch)));
+                    units.push(("uncommitted", None, judge(patch, None)));
                 }
                 match staged_patch(&place.top, &head, &scratch.sub("index")?, &deadline.git()) {
                     Ok(bytes) if bytes.is_empty() || Some(&bytes) == patch.as_ref() => {}
-                    Ok(bytes) => units.push(("staged", None, judge(&bytes))),
+                    Ok(bytes) => units.push(("staged", None, judge(&bytes, None))),
                     Err(e) => units.push((
                         "staged",
                         None,
@@ -8797,12 +9016,20 @@ pub(crate) fn check_units(
                 }
             }
         }
-        for (at, (id, parent)) in commits.iter().enumerate() {
+        for (at, commit) in commits.iter().enumerate() {
+            let (id, parent) = commit;
             let sub = scratch.sub(&format!("commit-{at}"))?;
+            // a commit is judged as the stop judges it: in bound mode where it can be (S3.25.b)
+            let bound = bound_of(
+                &place,
+                commit,
+                &scratch.0.join(format!("bound-{at}.list")),
+                deadline,
+            );
             let judged =
                 match commit_patch(&place.top, parent.as_deref(), id, &sub, &deadline.git()) {
                     Ok(bytes) if bytes.is_empty() => (Judged::Pass, None),
-                    Ok(bytes) => judge(&bytes),
+                    Ok(bytes) => judge(&bytes, bound.as_ref()),
                     Err(e) => unjudged(Why::new(
                         patch_error_class(&e),
                         format!("the commit could not be read from Git: {e}"),
@@ -9029,7 +9256,7 @@ type ProbeVerdict = (PathBuf, i32, String, bool);
 /// requires verified claims (`[claims] require_verified`, which `forge-warden init` writes
 /// from 0.3.0) holds every change this build gives it, and the gate called that chain ready
 /// (S3.25.a).
-fn chain_checks(name: &str, verdict: &Result<ProbeVerdict, String>) -> [GateCheck; 3] {
+fn chain_checks(name: &str, verdict: &Result<ProbeVerdict, String>, bound: bool) -> [GateCheck; 3] {
     [
         check(
             "chain",
@@ -9061,6 +9288,7 @@ fn chain_checks(name: &str, verdict: &Result<ProbeVerdict, String>) -> [GateChec
                 .as_ref()
                 .is_ok_and(|(_, _, _, unverified)| !unverified),
             match verdict {
+                Ok((_, _, _, true)) if bound => hook::CLAIMS_BOUND.to_owned(),
                 Ok((_, _, _, true)) => hook::CLAIMS_HOLD.to_owned(),
                 Ok(_) => {
                     "the judge's verdict on the probe has no note claims_unverified".to_owned()
@@ -9314,7 +9542,10 @@ fn gate_in(
             "it needs the repository, the policy and the judge",
         )),
     };
-    checks.extend(chain_checks(&name, &verdict));
+    let bound = program
+        .as_deref()
+        .is_some_and(|program| takes_bound_mode(program, deadline));
+    checks.extend(chain_checks(&name, &verdict, bound));
     let (patch, dirty) = patch_check(place, scratch.as_ref(), rev, &at, deadline);
     checks.push(patch);
     checks.push(commits_check(place, deadline));
@@ -9413,8 +9644,14 @@ fn probe(
             patch: &patch_sha256,
             ranker: &ranker_sha256,
         };
-        let (code, verdict, said, _) =
-            run_judge(program, &policy_file, &patch_file, &ranker, deadline.left());
+        let (code, verdict, said, _) = run_judge(
+            program,
+            &policy_file,
+            &patch_file,
+            &ranker,
+            None,
+            deadline.left(),
+        );
         match (
             code,
             hook::judged(code, verdict.as_ref(), said.as_deref(), sealed),
