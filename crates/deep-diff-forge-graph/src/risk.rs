@@ -142,8 +142,8 @@ pub fn assess_file_in_patch(file: &ReviewFile, shares: &CarriedShares, index: us
 /// item for item, whether the reading every release up to 0.8.3 had finds the item: what the
 /// bounded list of a ranked file goes by.
 pub(crate) fn assess_file_marked(file: &ReviewFile, share: Share) -> (Assessment, Vec<bool>) {
-    let (path_score, mut signals) = score_path_and_shape(file);
     let (evidence, released) = file_evidence_marked(file, share);
+    let (path_score, mut signals) = score_path_and_shape(file, !evidence.is_empty());
     let test = is_test(&file.path);
     let mut score = path_score;
     for signal in EvidenceSignal::ALL {
@@ -167,14 +167,15 @@ pub(crate) fn assess_file_marked(file: &ReviewFile, share: Share) -> (Assessment
 }
 
 /// The score and signals from everything but code evidence.
-fn score_path_and_shape(file: &ReviewFile) -> (u32, Vec<RiskSignal>) {
+/// `stray_read`: code evidence was read from the file's stray-byte reading (S3.27.h).
+fn score_path_and_shape(file: &ReviewFile, stray_read: bool) -> (u32, Vec<RiskSignal>) {
     let path = &file.path;
     let mut signals = Vec::new();
     let mut score: u32 = 1; // base weight for any reviewable change
     if is_generated_or_vendored(path) {
         signals.push(RiskSignal::GeneratedOrVendored);
         score += status_weight(file, &mut signals);
-        score += suppressed_weight(file, &mut signals);
+        score += suppressed_weight(file, stray_read, &mut signals);
         score += hazard_weight(file, &mut signals);
         score += mode_weight(file, &mut signals);
         return (score, signals);
@@ -200,7 +201,7 @@ fn score_path_and_shape(file: &ReviewFile) -> (u32, Vec<RiskSignal>) {
     }
 
     score += status_weight(file, &mut signals);
-    score += suppressed_weight(file, &mut signals);
+    score += suppressed_weight(file, stray_read, &mut signals);
     score += hazard_weight(file, &mut signals);
     score += mode_weight(file, &mut signals);
 
@@ -378,13 +379,24 @@ fn status_weight(file: &ReviewFile, signals: &mut Vec<RiskSignal>) -> u32 {
 }
 
 /// +5 when Git was told not to show this text file's changes, recording the signal: the act
-/// itself is evidence, whatever the text then shows (S3.20).
-fn suppressed_weight(file: &ReviewFile, signals: &mut Vec<RiskSignal>) -> u32 {
-    if file.patch_twin.diff_suppressed.is_none() {
+/// itself is evidence, whatever the text then shows (S3.20). Since 0.11.0 (S3.27.h; cause
+/// `content`) also for a binary change Git's NUL check made and whose reading is not UTF-8
+/// ([`stray`]), when that reading gave code evidence (`stray_read`) or the path names a language
+/// the readers read: the gate has not seen a source file's text, however many odd bytes it holds.
+/// A file of no such language (an image) is labelled only by evidence.
+fn suppressed_weight(file: &ReviewFile, stray_read: bool, signals: &mut Vec<RiskSignal>) -> u32 {
+    let source = || crate::lexical::Language::of(&file.path, None).is_some();
+    if file.patch_twin.diff_suppressed.is_none() && !(stray(file) && (stray_read || source())) {
         return 0;
     }
     signals.push(RiskSignal::DiffSuppressed);
     RiskSignal::DiffSuppressed.weight()
+}
+
+/// The file is a binary change by Git's NUL check whose second reading is not UTF-8 (S3.27.h):
+/// read for evidence when that reading is text with a few stray bytes.
+pub(crate) fn stray(file: &ReviewFile) -> bool {
+    file.patch_twin.hunks.is_empty() && file.patch_twin.stray_text.is_some()
 }
 
 /// Count added and removed lines across a file's hunks.
@@ -982,7 +994,8 @@ mod tests {
     /// S3.4: a binary creation, deletion or rename has Git's status (`added`, `deleted`,
     /// `renamed`), and keeps every signal and the score 0.9.0 gave it as `binary_changed`
     /// (measured on the frozen 0.8.4 and 0.9.0 binaries, beside each case); the `binary_change`
-    /// signal comes from the marker, not the status.
+    /// signal comes from the marker, not the status. A traditional creation with no `/dev/null`
+    /// (`@@ -0,0`), `modified` before, scores at least what it scored then (N14).
     #[test]
     fn a_binary_status_change_keeps_every_signal_and_score() {
         use RiskSignal::{BinaryChange, DeletedFile, ExecutableBit, NewFile, TestOnly};
@@ -1015,6 +1028,15 @@ mod tests {
             assert_eq!(f.status, status, "{text}");
             assert_eq!(score_file(&f), expected, "{text}");
         }
+        // The traditional creation: `modified` and 2 in 0.8.3 to 0.9.0; 5 for `build.rs`.
+        let created =
+            file("--- a/src/x.rs\n+++ b/src/x.rs\n@@ -0,0 +1,2 @@\n+fn main() {}\n+// x\n");
+        assert_eq!(created.status, FileStatus::Added);
+        let (score, signals) = score_file(&created);
+        assert!(score >= 2 && signals == [NewFile], "{score} {signals:?}");
+        let build = file("--- a/build.rs\n+++ b/build.rs\n@@ -0,0 +1 @@\n+fn main() {}\n");
+        assert_eq!(build.status, FileStatus::Added);
+        assert!(score_file(&build).0 >= 5, "{:?}", score_file(&build));
     }
 
     /// Review of 0.8.4, R84B-L-1 and VR84B-M-1: the names on the binary line are not read, as

@@ -919,7 +919,10 @@ fn read_binary_again(
         // A UTF-16 or UTF-32 file is binary to Git for the NULs of its encoding (S3.27.c): its
         // new side reads so, or its old side does and the change cannot be read as text.
         let text = again.as_ref().and_then(|again| text_of(&change, again));
-        let cause = match again.map(|again| wide_encoding(again.patch_bytes())) {
+        let cause = match again
+            .as_ref()
+            .map(|again| wide_encoding(again.patch_bytes()))
+        {
             Some([old, new])
                 if cause == DiffSuppression::Content && (new || (old && text.is_none())) =>
             {
@@ -931,6 +934,19 @@ fn read_binary_again(
         let fallback = if told { cause } else { DiffSuppression::Unread };
         if told || text.is_some() || utf8 {
             mark(&mut labelled, at, fallback);
+        }
+        // S3.27.h: no attribute, Git's NUL check, a reading that is not UTF-8 and not wide: text
+        // with a few stray bytes is read lossily for evidence, beside the binary block
+        if !told && !utf8 && text.is_none() {
+            let stray = again.as_ref().and_then(|again| stray_text(&change, again));
+            if let Some(hunks) = stray {
+                for diff in [&mut read, &mut labelled] {
+                    let mut change = diff.changes()[at].clone();
+                    change.stray_text = Some(hunks.clone());
+                    let bytes = diff.change_patch(&change).to_vec();
+                    diff.replace_section(at, change, &bytes);
+                }
+            }
         }
         match text {
             Some((text, bytes)) => {
@@ -1025,6 +1041,69 @@ fn text_of(change: &GitChange, again: &StructuredDiff) -> Option<(GitChange, Vec
     } == *change;
     let readable = std::str::from_utf8(again.patch_bytes()).is_ok() && again.capture().is_ok();
     (same && !text.binary && readable).then(|| (text.clone(), again.patch_bytes().to_vec()))
+}
+
+/// The most odd bytes, per KiB of the new side's lines that a second reading shows, for that
+/// reading to be text with a few stray bytes rather than bytes (S3.27.h): an odd byte is one
+/// that lossy UTF-8 decoding replaces, or a C0 control other than tab, carriage return and form
+/// feed. Measured on 2026-11-24 (lane w11G2, `precision/s327h-measure.md`): real binaries (PNG,
+/// JPEG, GIF, PDF, zip, gzip, an ELF object, a shared library, SQLite, wasm, fonts, a Git pack,
+/// gettext, random bytes of 1 KiB to 20 MiB) have 329 to 902; source files with up to 128 stray
+/// bytes 1.7 to 54. One odd byte in eight.
+const STRAY_PER_KIB: usize = 128;
+
+/// For `again`, the second reading of `change` that is not valid UTF-8: `None` when it is another
+/// change or still says binary; no hunks when Git gives it as two changes (a copy and its source,
+/// under `diff.renames=copies`: marked, so a source path is labelled, and not read); else its
+/// hunks decoded lossily when it is text with a few stray bytes ([`STRAY_PER_KIB`]),
+/// and none when it is not or does not parse. Nothing of it enters the patch: only the evidence
+/// readers read it, and the graph labels a source file by its path from the mark alone.
+fn stray_text(
+    change: &GitChange,
+    again: &StructuredDiff,
+) -> Option<Vec<deep_diff_forge_core::PatchHunk>> {
+    // a copy Git answers as two changes (the copy and its source): marked, not read
+    let [text] = again.changes() else {
+        return Some(Vec::new());
+    };
+    let same = GitChange {
+        binary: true,
+        patch_range: change.patch_range.clone(),
+        ..text.clone()
+    } == *change;
+    if !same || text.binary {
+        return None;
+    }
+    let (mut odd, mut shown) = (0usize, 0usize);
+    let mut in_hunk = false;
+    for line in again.patch_bytes().split(|&byte| byte == b'\n') {
+        if line.starts_with(b"@@ ") {
+            in_hunk = true;
+            continue;
+        }
+        let Some((&kind, body)) = line.split_first().filter(|_| in_hunk) else {
+            continue;
+        };
+        if !matches!(kind, b' ' | b'+') {
+            continue;
+        }
+        shown += body.len() + 1;
+        odd += body
+            .iter()
+            .filter(|&&byte| byte < 0x20 && !matches!(byte, b'\t' | b'\r' | 0x0c))
+            .count();
+        if std::str::from_utf8(body).is_err() {
+            odd += String::from_utf8_lossy(body).matches('\u{fffd}').count();
+        }
+    }
+    if shown == 0 || odd * 1024 > STRAY_PER_KIB * shown {
+        return Some(Vec::new());
+    }
+    let captured = crate::CapturedPatch::capture_bytes(again.patch_bytes().to_vec()).ok();
+    Some(match captured.as_ref().map(crate::CapturedPatch::files) {
+        Some([file]) => file.patch_twin.hunks.clone(),
+        _ => Vec::new(),
+    })
 }
 
 /// Whether the old and the new side of `patch`, a second reading as text, read as UTF-16 or

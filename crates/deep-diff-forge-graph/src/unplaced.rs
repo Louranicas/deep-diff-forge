@@ -112,6 +112,18 @@ fn built(patch: &str) -> (Vec<ReviewFile>, Option<&'static str>) {
             }
             file.get_or_insert(alone).patch_twin.hunks.push(hunk);
         }
+        // Each hunk was parsed alone at line 0: a traditional hunk of added lines with no
+        // `/dev/null` alone reads as a creation (S3.4.b2, Git's open `is_new`); at its own numbers
+        // only one hunk, `@@ -0,0 +1,N @@`, is one, as in the parser
+        if let Some(file) = file.as_mut()
+            && file.status == deep_diff_forge_core::FileStatus::Added
+            && !head.contains("/dev/null")
+            && !head.contains("new file mode")
+            && !matches!(file.patch_twin.hunks.as_slice(),
+                [hunk] if hunk.old_start == Some(0) && hunk.new_start == Some(1))
+        {
+            file.status = deep_diff_forge_core::FileStatus::Modified;
+        }
         files.extend(file);
     }
     (files, why)

@@ -157,7 +157,10 @@ keeps its params, its result's members, their types and order, its error codes a
 (`tests/protocol_compat.rs` replays a transcript of the published 0.10.0 binary); values differ
 only in the engine's version, in `tool.scorer_sha256`, in the `protocol` the daemon reports and the
 newest it names when it refuses one, in the methods it lists, in values of the run (a process id,
-an uptime, latencies, an admission wait), and in what a release's register names as changed.
+an uptime, latencies, an admission wait), in values of the build (`daemon.health`'s
+`retained_bytes` and `daemon.metrics`' `engine.peak_retained_bytes` are estimates from the
+build's memory layout: a client must not compare them across builds), and in what a release's
+register names as changed.
 
 ```bash
 deep-diff-forge daemon start --foreground      # terminal 1
