@@ -984,7 +984,7 @@ impl std::fmt::Display for StateRefusal {
 
 /// What removing a state file that is not read costs, as the next hook finds it: with no state
 /// that hook is the session's first.
-const REMOVING_COSTS: &str = "removing it makes the next hook take the commit HEAD names as this session's base: what this session committed before would not be judged";
+const REMOVING_COSTS: &str = "removing it makes the next hook take the commit HEAD names as this session's base: what this session committed before is judged only where the project's ledger finds it (made after the project was first recorded, with no stop's verdict), and not otherwise; left as it is, the working tree is judged at every stop without the session's memory";
 
 impl StateRefusal {
     /// The reason class of the refusal.
@@ -1579,6 +1579,8 @@ fn load_list(
 enum Tips {
     Listed(Vec<String>),
     Unavailable(String),
+    /// The stateless stop (F12.d): no commit is judged, the base being unknown.
+    Stateless,
 }
 
 /// Read a session's tips file ([`load_list`]): all of it is what the state names.
@@ -1613,6 +1615,21 @@ struct Session {
 }
 
 impl Session {
+    /// A session with nothing read and nothing to write (the stateless stop, F12.d): it names
+    /// no file, and nothing calls [`Session::keep`] on it.
+    fn in_memory() -> Self {
+        Self {
+            dir: PathBuf::new(),
+            file: PathBuf::new(),
+            state: State::default(),
+            kept: None,
+            upgrade: false,
+            tips: None,
+            judged: None,
+            new_key: None,
+        }
+    }
+
     /// The state of the session `id`, read from the user's state directory; an empty state
     /// when it has no file there. Nothing is made or written here. `Err` when there is no
     /// directory a state could be kept in, when a link or a file stands where the directory
@@ -6512,6 +6529,10 @@ fn once_again(
 /// With the units comes what must be said beside the verdict, each thing once in a session:
 /// a nested repository that was left out, another repository the session is in, a submodule
 /// with changes that are not committed in it, another working tree with changes.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one stop's units in their order: trees, then commits, then what is only looked at"
+)]
 fn judge_units(
     stopping: &Stopping<'_>,
     tips: &Tips,
@@ -6600,6 +6621,7 @@ fn judge_units(
         // of a reason ([`hook::REASON_CHARS`]): the cause stood first, and every stop of
         // such a session read "… cannot be told from them: they are not." (eleventh
         // independent review of the hooks, HR11-L-3).
+        Tips::Stateless => Ok(Vec::new()),
         Tips::Unavailable(why) => Err(Why::new(
             ReasonClass::StateNoBaseline,
             format!(
@@ -7620,7 +7642,7 @@ fn scratch_failed(text: String) -> Why {
 static LOCK_BUSY: std::sync::LazyLock<Why> = std::sync::LazyLock::new(|| {
     Why::new(
         ReasonClass::StateLockBusy,
-        "another hook of this session is running and has not ended (a stop, or the session's start), so this stop judged nothing: when it was a stop, what that stop says is the answer",
+        "another hook of this session is running and has not ended (a stop, or the session's start), so this stop could not take the session's state: when that hook is a stop, what it says of the session's commits is the answer",
     )
 });
 
@@ -7635,9 +7657,12 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, Why> {
     // one stop of a session at a time, from before its state is read until after it is written
     let turn = session_lock(&input.session, LOCK_WAIT.min(deadline.left()));
     if matches!(turn, Turn::Taken) {
-        return Ok(Some(hook::unjudged_output(&LOCK_BUSY.text)));
+        return stateless_stop(input, args, &LOCK_BUSY, deadline);
     }
-    let mut session = Session::open(&input.session)?;
+    let mut session = match Session::open(&input.session) {
+        Ok(session) => session,
+        Err(why) => return stateless_stop(input, args, &why, deadline),
+    };
     let mut work = match locate(input, &mut session, deadline) {
         Located::Nowhere => return Ok(None),
         Located::Trouble(reason) => return Ok(Some(hook::unjudged_output(&reason.text))),
@@ -7684,10 +7709,10 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, Why> {
                 .and_then(|tips| Ok((tips, session.judged()?)));
             match lists {
                 Err(reason) => {
-                    records.push(nothing_judged(ReasonClass::StateListsDamaged));
-                    StopDecision::Allow {
-                        message: Some(hook::unjudged_message(&reason)),
-                    }
+                    // what is not committed needs no list: judged as by the stateless stop
+                    drop(turn);
+                    let why = Why::new(ReasonClass::StateListsDamaged, reason);
+                    return stateless_stop(input, args, &why, deadline);
                 }
                 Ok((tips, mut known)) => {
                     let (frontier, said) = project_frontier(&work, &tips, &base, deadline);
@@ -7878,6 +7903,131 @@ fn reflog_holder(place: &Place, short: &str) -> Option<PathBuf> {
         .into_iter()
         .find(|(admin, _)| records(admin))
         .map(|(_, top)| top)
+}
+
+/// What heads the message of a stop whose session state could not be used ([`stateless_stop`]).
+fn stateless_head(why: &Why, no_record: bool) -> String {
+    let policy = if no_record {
+        " No record of this project was found in its ledger, so the tree was judged under the policy at HEAD, which a commit of this session can have changed."
+    } else {
+        ""
+    };
+    format!(
+        "deep-diff-forge: this session's state could not be used ({}): the working tree was judged without it; commits made in this session are judged when the project's ledger finds them, at a stop that has its state. Left as it is, the working tree is judged like this at every stop with no memory of what blocked: a failing tree blocks once in each turn.{policy} Why: {}.",
+        why.class.as_str(),
+        deep_diff_forge_core::display_safe(&why.text)
+    )
+}
+
+/// The stateless stop (F12.d, owner decision OD-J): a stop whose session state cannot be used
+/// (`why`: a state that is damaged, newer or older, a key file that is no key, a directory
+/// that is not one, the session's lock held, lists that are not what the state names) judges
+/// what needs no memory. It reads no file of the state directory and writes none: the session
+/// is empty and in memory, the project is found from the hook's input as for a new session,
+/// and the staged and uncommitted changes of the working trees are judged under the policy at
+/// the commit the project's ledger names as its baseline (at `HEAD` when the ledger has none,
+/// which is said). Nothing that blocked before is known, so a failing tree blocks; at a stop
+/// that follows a block (`stop_hook_active`) the failure stands instead, so the session is not
+/// trapped. No commit is judged (the session's base is unknown): they wait for a stop that has
+/// its state, which the project's frontier makes judge them (F13.b). The ledger records it.
+fn stateless_stop(
+    input: &Input,
+    args: &[String],
+    why: &Why,
+    deadline: Deadline,
+) -> Result<Option<String>, Why> {
+    let mut session = Session::in_memory();
+    let work = match locate(input, &mut session, deadline) {
+        Located::Nowhere => return Ok(Some(hook::unjudged_output(&why.text))),
+        Located::Trouble(reason) => {
+            return Ok(Some(hook::unjudged_output(&format!(
+                "{}; and {}",
+                why.text, reason.text
+            ))));
+        }
+        Located::Here(work) => work,
+    };
+    let deadline = deadline.with_project(&work.place);
+    let frontier = crate::ledger::frontier(&work.place.own).unwrap_or_default();
+    let (base, no_record) = match (frontier.baseline.as_ref()).and_then(|b| b.head.clone()) {
+        Some(head) => (head, false),
+        None => match &work.project.base {
+            Base::Commit(id) => (id.clone(), true),
+            Base::NoCommit | Base::Orphan => return Ok(Some(hook::unjudged_output(&why.text))),
+        },
+    };
+    let head = stateless_head(why, no_record);
+    let scratch = Scratch::new(&work.place.own).map_err(scratch_failed)?;
+    let (judging, look) = stop_deadlines(&work.place, deadline);
+    let none = std::collections::BTreeMap::new();
+    let stopping = Stopping {
+        work: &work,
+        cwd: &input.cwd,
+        base: &base,
+        scratch: &scratch,
+        args,
+        deadline: judging,
+        look,
+        number: 1,
+        recorded: &none,
+        active: input.stop_hook_active,
+        frontier: &frontier,
+    };
+    let judging = judge_units(&stopping, &Tips::Stateless, &[], &[]).map_err(scratch_failed)?;
+    let words = "the working tree's changes against the commit HEAD names, judged without this session's state";
+    let mut decision = hook::decide_stop_trees(&judging.units, &[], words);
+    let blocks: Vec<bool> = (judging.units.iter())
+        .map(|unit| hook::blocks_now(unit, &[]))
+        .collect();
+    let mut records = ledger_units(&judging, &blocks);
+    // the session's commits, which this stop could not judge
+    records.push(crate::ledger::Unit {
+        name: crate::ledger::Name::Stop,
+        outcome: "unjudged",
+        class: why.class,
+        seals: None,
+        blocked: false,
+    });
+    if input.stop_hook_active
+        && let StopDecision::Block { reason } = &decision
+    {
+        for unit in records.iter_mut().filter(|unit| unit.outcome == "fail") {
+            (unit.outcome, unit.class) = ("fail_stands", ReasonClass::FailUnsavedContinuing);
+            unit.blocked = false;
+        }
+        decision = StopDecision::Allow {
+            message: Some(format!(
+                "deep-diff-forge: FAIL STANDS. This failure is not blocked because the client says this stop already follows a block and the hook has no state to remember what has blocked; it is left for a person, and it blocks again at the next turn's stop while it stands. The judge's answer:\n{reason}"
+            )),
+        };
+    }
+    let mut notes: Vec<String> = judging.beside.into_iter().map(|note| note.text).collect();
+    let wait = LEDGER_WAIT.min(deadline.left());
+    let own = &work.place.own;
+    let written = own_directory(own)
+        .and_then(|()| crate::ledger::append_stop(own, &input.session, &records, wait));
+    if let Err(failed) = written {
+        notes.push(format!(
+            "The hook could not write the project's ledger {} ({}): what this stop decided stands, and is not recorded there.",
+            shown(&own.join(crate::ledger::FILE)),
+            deep_diff_forge_core::display_safe(&failed)
+        ));
+    }
+    decision = match decision {
+        StopDecision::Block { reason } => StopDecision::Block {
+            reason: format!("{head}\n{reason}"),
+        },
+        StopDecision::Allow {
+            message: Some(message),
+        } => StopDecision::Allow {
+            message: Some(format!("{head}\n{message}")),
+        },
+        StopDecision::Allow { message: None } => StopDecision::Allow {
+            message: Some(head),
+        },
+    };
+    let said = (!notes.is_empty()).then(|| notes.join("\n"));
+    Ok(hook::stop_output_with(&decision, said.as_deref()))
 }
 
 /// The most a stop waits for the lock of the project's ledger (F11).

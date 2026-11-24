@@ -1211,6 +1211,12 @@ says when it closed:
   permissions, the agent's included: a record is evidence of a stop, not proof, and
   `agent verify-branch` run where the agent can write is advice; the pull request's judge is
   the boundary.
+- The hooks' frontier of judged commits (0.11.0) is that ledger's `baseline`, `start` and
+  stop records: evidence kept where the agent can write. An agent that removes or edits the
+  ledger is judged at its stops as before 0.11.0 (its own session's commits only), and a
+  stop whose session state cannot be used then judges the tree under the policy at `HEAD`,
+  which a commit of the session can have loosened. Neither is a boundary; the pull request's
+  judge reads the policy at the base.
 
 ## Hardening provenance
 

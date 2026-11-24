@@ -1696,9 +1696,9 @@ fn a_state_file_that_cannot_be_read_is_never_no_state() {
     for _ in 0..2 {
         let said = stop();
         assert!(
-            said.starts_with(
-                "deep-diff-forge: UNJUDGED. The stop hook did not run: this session's state file "
-            ) && said.contains("cannot be read as a state (it cannot be opened")
+            said.starts_with(&stateless("state.damaged"))
+                && said.contains("Why: this session's state file ")
+                && said.contains("cannot be read as a state (it cannot be opened")
                 && said.contains("nothing is recorded over it"),
             "{said}"
         );
@@ -1974,6 +1974,14 @@ fn stop_from(cwd: &Path, session: &str, judge: &Path) -> Value {
 fn blocked(decision: &Value) -> &str {
     assert_eq!(decision["decision"], "block", "{decision}");
     decision["reason"].as_str().unwrap()
+}
+
+/// What a stop says, whether it blocked (its reason) or let the agent stop (its message).
+fn stop_words(decision: &Value) -> &str {
+    decision["reason"]
+        .as_str()
+        .or_else(|| decision["systemMessage"].as_str())
+        .unwrap_or_else(|| panic!("the stop said nothing: {decision}"))
 }
 
 /// The message of a stop that was allowed with something said; panics on a block or silence.
@@ -3088,8 +3096,10 @@ fn the_state_of_a_session_is_in_the_users_state_directory_or_the_hook_says_it_ha
     assert!(stdout.contains("check_suppressed"), "{stdout}");
     assert_eq!(files(&sessions()), 4);
     assert!(!root.join("relative").exists());
-    // nothing of a session is kept in the repository
-    assert_eq!(files(&root.join(".git/deep-diff-forge")), 0);
+    // nothing of a session's state is kept in the repository: only the project's ledger
+    // (F13.b: its baseline and the start of each session)
+    assert_eq!(files(&root.join(".git/deep-diff-forge")), 1);
+    assert!(root.join(".git/deep-diff-forge/ledger.jsonl").is_file());
 
     // neither: said, for a stop as UNJUDGED, and never a block
     for (word, name, starts) in [
@@ -3098,10 +3108,11 @@ fn the_state_of_a_session_is_in_the_users_state_directory_or_the_hook_says_it_ha
             "PostToolUse",
             "deep-diff-forge: the hook did not run: ",
         ),
+        // (F12.d: a stop judges the tree without the state; here no judge is named)
         (
             "stop",
             "Stop",
-            "deep-diff-forge: UNJUDGED. The stop hook did not run: ",
+            "deep-diff-forge: this session's state could not be used (state.no_directory): ",
         ),
     ] {
         let (code, stdout, _) = hook_in(word, &[], &input(name, &root, "s", false), |command| {
@@ -4166,9 +4177,11 @@ fn a_state_that_cannot_be_kept_is_said_once_by_advice_and_always_by_a_stop() {
     // a stop says it every time
     for _ in 0..2 {
         assert!(
-            system_message(&run("stop", "Stop", "6a", &no_home)).starts_with(
-                "deep-diff-forge: UNJUDGED. The stop hook did not run: there is no state directory"
-            )
+            system_message(&run("stop", "Stop", "6a", &no_home)).starts_with(&format!(
+                "{}{}",
+                stateless("state.no_directory"),
+                "commits made in this session are judged when"
+            ))
         );
     }
     // another session is told once of its own
@@ -4593,7 +4606,7 @@ fn a_list_of_commits_that_is_gone_or_was_changed_is_never_another_list() {
         let decision = stop_from(&root, "s", &script);
         let said = allowed(&decision);
         assert!(
-            said.starts_with("deep-diff-forge: UNJUDGED. ")
+            said.starts_with(&stateless("state.lists_damaged"))
                 && said.contains("list of the commits that were there when it began")
                 && said.contains("start a new session"),
             "{what}: {said}"
@@ -5104,12 +5117,13 @@ fn a_file_where_the_sessions_directory_should_be_is_said_as_what_it_is() {
     let said = system_message(&stdout);
     assert!(said.contains(NOT_ITS_OWN), "{said}");
     let decision = stop_from(&root, "s", &script);
-    let said = allowed(&decision);
+    // F12.d: the tree is judged without the state, and its failure blocks
+    let said = blocked(&decision);
     assert!(
-        said.starts_with("deep-diff-forge: UNJUDGED. ") && said.contains(NOT_ITS_OWN),
+        said.starts_with(&stateless("state.no_directory")) && said.contains(NOT_ITS_OWN),
         "{said}"
     );
-    assert_eq!(runs(&log), 0);
+    assert_eq!(runs(&log), 1);
     assert_eq!(
         std::fs::read_to_string(&sessions).unwrap(),
         "not a directory\n"
@@ -5886,7 +5900,7 @@ fn the_commits_that_have_their_answer_are_a_file_the_state_names() {
         let decision = stop_from(&root, "s", &script);
         let said = allowed(&decision);
         assert!(
-            said.starts_with("deep-diff-forge: UNJUDGED. ")
+            said.starts_with(&stateless("state.lists_damaged"))
                 && said.contains("list of the commits that were judged")
                 && said.contains("start a new session"),
             "{said}"
@@ -6580,9 +6594,10 @@ fn two_stops_of_one_session_do_not_run_at_once() {
         let second = stop_from(&root, "s", &script);
         (slow.join().unwrap(), second)
     });
+    // F12.d: the second stop judges the tree without the state (it is clean: nothing to run)
     let waited = allowed(&second);
     assert!(
-        waited.starts_with("deep-diff-forge: UNJUDGED. ")
+        waited.starts_with(&stateless("state.lock_busy"))
             && waited.contains("another hook of this session is running"),
         "{waited}"
     );
@@ -8811,7 +8826,7 @@ fn a_tree_no_longer_listed_stands_while_its_directory_does() {
 /// The session id the fixtures of `tests/fixtures/hook-state/` were captured under.
 const FIXTURE_SESSION: &str = "fixture";
 /// What removing a state file that is not read costs, as every refusal of one says it.
-const REMOVING_COSTS: &str = "removing it makes the next hook take the commit HEAD names as this session's base: what this session committed before would not be judged";
+const REMOVING_COSTS: &str = "removing it makes the next hook take the commit HEAD names as this session's base: what this session committed before is judged only where the project's ledger finds it (made after the project was first recorded, with no stop's verdict), and not otherwise; left as it is, the working tree is judged at every stop without the session's memory";
 
 /// Git in `root` as `scripts/capture_hook_state.sh` runs it: the same names and dates, so the
 /// same files give the same commit ids.
@@ -9052,11 +9067,11 @@ fn a_state_older_than_the_last_release_is_refused_with_its_name() {
     std::fs::write(&state, v9.to_string()).unwrap();
     let before = three_files(&state);
     let (script, log, _) = failing_judge(&scratch);
-    let said = allowed(&stop_from(&root, FIXTURE_SESSION, &script)).to_owned();
+    // F12.d: the tree is judged without the state (the captured change fails)
+    let said = blocked(&stop_from(&root, FIXTURE_SESSION, &script)).to_owned();
     assert!(
-        said.starts_with(
-            "deep-diff-forge: UNJUDGED. The stop hook did not run: this session's state file "
-        ) && said.contains(
+        said.starts_with(&stateless("state.older")) && said.contains(
+
             "is of schema v9, written by a deep-diff-forge older than the last release; this one reads v10 to v13, and nothing is recorded over it ("
         ) && said.contains(REMOVING_COSTS),
         "{said}"
@@ -9074,7 +9089,7 @@ fn a_state_older_than_the_last_release_is_refused_with_its_name() {
     let started = start(&root, FIXTURE_SESSION);
     assert!(started.contains("is of schema v9"), "{started}");
     assert_eq!(three_files(&state), before);
-    assert_eq!(runs(&log), 0);
+    assert!(runs(&log) >= 1, "the tree was not judged");
 }
 
 /// Rules V5 and V1: a state of a newer schema (here v14 with a member this build does not
@@ -9107,17 +9122,16 @@ fn a_newer_state_is_refused_and_kept_byte_for_byte() {
                 &input("Stop", &root, FIXTURE_SESSION, active),
             );
             assert_eq!(code, 0);
-            let said = system_message(&stdout);
+            // F12.d: the tree is judged without the state; at a stop that follows a block
+            // its failure stands
+            let decision: Value = serde_json::from_str(&stdout).unwrap();
+            let said = stop_words(&decision);
+            assert_eq!(decision.get("decision").is_some(), !active, "{said}");
             assert!(
-                said.starts_with(
-                    "deep-diff-forge: UNJUDGED. The stop hook did not run: this session's state file "
-                ) && said.contains(&refused),
+                said.starts_with(&stateless("state.newer")) && said.contains(&refused),
                 "{said}"
             );
-            assert!(
-                !said.contains("remov") && !said.contains("judged without"),
-                "{said}"
-            );
+            assert!(!said.contains("remov"), "{said}");
             assert_eq!(
                 three_files(&state),
                 before,
@@ -9157,7 +9171,7 @@ fn a_newer_state_is_refused_and_kept_byte_for_byte() {
             "something beside the state was left"
         );
     }
-    assert_eq!(runs(&log), 0);
+    assert!(runs(&log) >= 2, "the tree was not judged");
 }
 
 /// Rule V6: a hook writes a state only after reading what is there, and never over a newer
@@ -9254,28 +9268,30 @@ fn a_damaged_state_says_what_removing_it_costs() {
         "{",
     ] {
         std::fs::write(&state, damage).unwrap();
+        // (F12.d: the tree is clean, so the stateless stop has nothing to judge)
         let said = allowed(&stop_from(&root, "s", &script)).to_owned();
         assert!(
-            said.starts_with(
-                "deep-diff-forge: UNJUDGED. The stop hook did not run: this session's state file "
-            ) && said.contains("cannot be read as a state (")
+            said.starts_with(&stateless("state.damaged"))
+                && said.contains("Why: this session's state file ")
+                && said.contains("cannot be read as a state (")
                 && said.contains(&format!("; nothing is recorded over it ({REMOVING_COSTS})")),
             "{said}"
         );
         assert_eq!(std::fs::read_to_string(&state).unwrap(), damage);
     }
     assert_eq!(runs(&log), 0);
-    // what removing it costs, as the next hook finds it
+    // what removing it costs, as the next hook finds it: F13.b, the project's ledger finds
+    // the commit made before the state was removed, and it is judged
     std::fs::remove_file(&state).unwrap();
-    let said = allowed(&stop_from(&root, "s", &script)).to_owned();
+    let said = blocked(&stop_from(&root, "s", &script)).to_owned();
     assert!(
         said.contains("This session's start was not recorded"),
         "{said}"
     );
     assert_eq!(
         runs(&log),
-        0,
-        "the commit made before the state was removed was judged"
+        1,
+        "the commit made before the state was removed was not judged"
     );
 }
 
@@ -10502,9 +10518,10 @@ fn a_stop_waits_for_the_session_s_lock_and_takes_only_the_one_that_is_there() {
     });
     std::fs::remove_file(&new).unwrap();
     assert!(first.wait().unwrap().success() && third.wait().unwrap().success());
-    let said = allowed(&said).to_owned();
+    // F12.d: it judges the tree without the state, and the credential there blocks
+    let said = blocked(&said).to_owned();
     assert!(
-        said.starts_with("deep-diff-forge: UNJUDGED. ")
+        said.starts_with(&stateless("state.lock_busy"))
             && said.contains("another hook of this session is running"),
         "{said}"
     );
@@ -11669,16 +11686,18 @@ fn two_first_stops_of_a_session_do_not_run_at_once() {
         .iter()
         .filter(|said| said["decision"] == "block")
         .count();
+    // F12.d: the stop that finds the lock held judges the tree without the state, and its
+    // failure blocks too; the state is the other stop's alone
     let waited = both
         .iter()
         .filter(|said| {
-            said["systemMessage"]
+            said["reason"]
                 .as_str()
-                .is_some_and(|text| text.contains("another hook of this session is running"))
+                .is_some_and(|text| text.starts_with(&stateless("state.lock_busy")))
         })
         .count();
-    assert_eq!((blocks, waited), (1, 1), "{both:?}");
-    assert_eq!(runs(&log), 1, "both stops ran the judge");
+    assert_eq!((blocks, waited), (2, 1), "{both:?}");
+    assert_eq!(runs(&log), 2, "a stop did not judge the tree");
 }
 
 /// A lock that outlives its holder would stop a session for good. The lock is a `flock`,
@@ -12957,6 +12976,241 @@ fn another_worktrees_commit_is_named_and_still_holds_once() {
     );
 }
 
+/// The SHA-256 of every file under `dir` with its path, sorted: what a stop that writes nothing
+/// there leaves as it found it.
+fn tree_digest(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut out = Vec::new();
+    let mut walk = vec![dir.to_path_buf()];
+    while let Some(at) = walk.pop() {
+        for entry in std::fs::read_dir(&at).unwrap() {
+            let path = entry.unwrap().path();
+            let kind = std::fs::symlink_metadata(&path).unwrap().file_type();
+            if kind.is_dir() {
+                walk.push(path);
+            } else if kind.is_symlink() {
+                out.push((
+                    path.clone(),
+                    std::fs::read_link(&path)
+                        .unwrap()
+                        .into_os_string()
+                        .into_encoded_bytes(),
+                ));
+            } else {
+                out.push((path.clone(), std::fs::read(&path).unwrap_or_default()));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// The words that head a stop whose session state could not be used, for the class `class`.
+fn stateless(class: &str) -> String {
+    format!(
+        "deep-diff-forge: this session's state could not be used ({class}): the working tree was judged without it; "
+    )
+}
+
+/// F12.d, the stateless stop (owner decision OD-J; design B6, probe c1), and ruling 3's
+/// sequence: a state that cannot be read no longer makes every stop UNJUDGED. The stop judges
+/// the working tree without the state, reads and writes nothing of the state directory, and
+/// blocks on a failing tree; the stop that follows a block lets the failure stand, so the
+/// session is not trapped; the next turn's stop blocks again, since nothing remembers that it
+/// blocked. The state is kept byte for byte, and no text of it is said.
+#[test]
+fn a_damaged_state_still_judges_the_tree_once() {
+    let scratch = Scratch::new("hook-stateless-damaged");
+    let root = repository(&scratch);
+    let (script, log, _) = failing_judge(&scratch);
+    start(&root, "s");
+    silence_a_lint(&root);
+    let state = states_in(&sessions()).remove(0);
+    std::fs::write(&state, "{\"forged\": \"TEXT-OF-THE-DAMAGED-STATE\"}").unwrap();
+    let before = tree_digest(&sessions());
+    let first = blocked(&stop_from(&root, "s", &script)).to_owned();
+    assert!(first.starts_with(&stateless("state.damaged")), "{first}");
+    assert!(first.contains("check_suppressed in \"a.rs\""), "{first}");
+    assert!(
+        first.contains("a failing tree blocks once in each turn"),
+        "{first}"
+    );
+    assert!(!first.contains("TEXT-OF-THE-DAMAGED-STATE"), "{first}");
+    assert_eq!(runs(&log), 1);
+    // the stop that follows the block: the failure stands
+    let (code, stdout, _) = hook(
+        "stop",
+        &["--judge", script.to_str().unwrap()],
+        &input("Stop", &root, "s", true),
+    );
+    assert_eq!(code, 0);
+    let stands = allowed(&serde_json::from_str(&stdout).unwrap()).to_owned();
+    assert!(
+        stands.starts_with(&stateless("state.damaged"))
+            && stands.contains("\ndeep-diff-forge: FAIL STANDS."),
+        "{stands}"
+    );
+    // the next turn: it blocks again
+    let again = blocked(&stop_from(&root, "s", &script)).to_owned();
+    assert!(again.starts_with(&stateless("state.damaged")), "{again}");
+    assert_eq!(
+        tree_digest(&sessions()),
+        before,
+        "the state directory was written"
+    );
+    // the ledger records what was judged, and that the commits were not
+    let ledger = std::fs::read_to_string(root.join(".git/deep-diff-forge/ledger.jsonl")).unwrap();
+    assert!(
+        ledger.contains("\"unit\":\"stop\",\"outcome\":\"unjudged\",\"class\":\"state.damaged\"")
+            || ledger.contains("\"class\":\"state.damaged\""),
+        "{ledger}"
+    );
+}
+
+/// F12.d (design B6, probe c4b): a stop that finds the session's lock held by another hook
+/// judges the working tree without the state, and writes none.
+#[test]
+fn a_held_session_lock_still_judges_the_tree_once() {
+    let scratch = Scratch::new("hook-stateless-lock");
+    let root = repository(&scratch);
+    let (script, log, _) = failing_judge(&scratch);
+    start(&root, "s");
+    silence_a_lint(&root);
+    let state = states_in(&sessions()).remove(0);
+    let lock = state.with_extension("lock");
+    let go = scratch.join("go");
+    let mut holder = hold_lock(&lock, &go);
+    let before = tree_digest(&sessions());
+    let said = blocked(&stop_from(&root, "s", &script)).to_owned();
+    std::fs::remove_file(&go).unwrap();
+    assert!(holder.wait().unwrap().success());
+    assert!(said.starts_with(&stateless("state.lock_busy")), "{said}");
+    assert!(said.contains("check_suppressed in \"a.rs\""), "{said}");
+    assert_eq!(runs(&log), 1);
+    assert_eq!(
+        tree_digest(&sessions()),
+        before,
+        "the state directory was written"
+    );
+}
+
+/// F12.d, one case per class of a state that cannot be used and per failure of the key file
+/// (lane H3): each stop judges the tree, says the class first, writes nothing of the state
+/// directory, and says no byte of the key file or text of the state.
+#[test]
+fn every_state_that_cannot_be_used_still_judges_the_tree() {
+    use std::os::unix::fs::PermissionsExt as _;
+    type Spoil = Box<dyn Fn(&Path, &Path)>;
+    let key_bytes: Vec<u8> = (0..32_u8).map(|n| b'Q' + n % 9).collect();
+    let key_text = String::from_utf8_lossy(&key_bytes).into_owned();
+    let cases: Vec<(&str, &str, Spoil)> = vec![
+        (
+            "damaged",
+            "state.damaged",
+            Box::new(|state: &Path, _: &Path| std::fs::write(state, "not json").unwrap()),
+        ),
+        (
+            "newer",
+            "state.newer",
+            Box::new(|state: &Path, _: &Path| {
+                let mut value: Value =
+                    serde_json::from_str(&std::fs::read_to_string(state).unwrap()).unwrap();
+                value["schema"] = json!("deep-diff-forge.hook-state.v999999");
+                std::fs::write(state, value.to_string()).unwrap();
+            }),
+        ),
+        (
+            "older",
+            "state.older",
+            Box::new(|state: &Path, _: &Path| {
+                let mut value: Value =
+                    serde_json::from_str(&std::fs::read_to_string(state).unwrap()).unwrap();
+                value["schema"] = json!("deep-diff-forge.hook-state.v9");
+                std::fs::write(state, value.to_string()).unwrap();
+            }),
+        ),
+        (
+            "unreadable",
+            "state.damaged",
+            Box::new(|state: &Path, _: &Path| {
+                std::fs::set_permissions(state, std::fs::Permissions::from_mode(0o000)).unwrap();
+            }),
+        ),
+        (
+            "lists",
+            "state.lists_damaged",
+            Box::new(|state: &Path, _: &Path| {
+                std::fs::write(state.with_extension("tips"), "not a list\n").unwrap();
+            }),
+        ),
+        ("key a link", "state.damaged", {
+            let bytes = key_bytes.clone();
+            Box::new(move |_: &Path, dir: &Path| {
+                let target = dir.parent().unwrap().join("a-key");
+                std::fs::write(&target, &bytes).unwrap();
+                std::fs::remove_file(dir.join("key")).unwrap();
+                std::os::unix::fs::symlink(&target, dir.join("key")).unwrap();
+            })
+        }),
+        ("key too short", "state.damaged", {
+            let bytes = key_bytes.clone();
+            Box::new(move |_: &Path, dir: &Path| {
+                std::fs::write(dir.join("key"), &bytes[..5]).unwrap();
+            })
+        }),
+    ];
+    for (case, class, spoil) in cases {
+        let scratch = Scratch::new("hook-stateless-class");
+        let root = repository(&scratch);
+        let (script, log, _) = failing_judge(&scratch);
+        start(&root, "s");
+        // (a commit gives the session a list of judged commits to spoil)
+        silence_a_lint(&root);
+        let state = states_in(&sessions()).remove(0);
+        spoil(&state, &sessions());
+        if case == "unreadable" && std::fs::read(&state).is_ok() {
+            continue; // (run as root: nothing is unreadable)
+        }
+        let before = tree_digest_lenient(&sessions());
+        let said = blocked(&stop_from(&root, "s", &script)).to_owned();
+        assert!(said.starts_with(&stateless(class)), "{case}: {said}");
+        assert!(
+            said.contains("check_suppressed in \"a.rs\""),
+            "{case}: {said}"
+        );
+        assert!(
+            !said.contains(&key_text) && !said.contains(&key_text[..5]),
+            "{case}: {said}"
+        );
+        assert!(runs(&log) >= 1, "{case}");
+        assert_eq!(
+            tree_digest_lenient(&sessions()),
+            before,
+            "{case}: the state directory was written"
+        );
+        let _ = std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o600));
+    }
+}
+
+/// [`tree_digest`] where a file may be unreadable: its bytes count as none.
+fn tree_digest_lenient(dir: &Path) -> Vec<(PathBuf, Vec<u8>, u64)> {
+    let mut out = Vec::new();
+    let mut walk = vec![dir.to_path_buf()];
+    while let Some(at) = walk.pop() {
+        for entry in std::fs::read_dir(&at).unwrap() {
+            let path = entry.unwrap().path();
+            let found = std::fs::symlink_metadata(&path).unwrap();
+            if found.is_dir() {
+                walk.push(path);
+            } else {
+                let bytes = std::fs::read(&path).unwrap_or_default();
+                out.push((path, bytes, found.len()));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 /// S3.17a.l: when the advice after a tool call is off for a reason told once in the session, the
 /// model is told as well as the user: it was told nothing, and advice that stops without a word
 /// reads as a change with nothing to say.
@@ -13834,8 +14088,9 @@ fn classes_of(root: &Path, session: &str) -> Vec<String> {
 /// base with no policy; a hold for claims, for notes or for an unknown label; a file that cannot
 /// be read and skip-worktree marks; unmerged paths; a repository with no commit, an orphan
 /// branch, a session begun before the first commit; a list of commits beside the state that
-/// was cut. (Classes that need the stop's clock, a Git that fails or is slow, or a state that
-/// is not read, which ends a stop before the ledger, are listed in the lane's hand-back.)
+/// was cut. (Classes that need the stop's clock or a Git that fails or is slow are listed in
+/// the lane's hand-back; a state that is not read is recorded since F12.d, by the tests of the
+/// stateless stop.)
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -14015,7 +14270,8 @@ fn every_reachable_class_is_in_the_ledger() {
     silence_a_lint(&root);
     let _ = stop_as(&root, "s", &script, false);
     let classes = classes_of(&root, "s");
-    assert_eq!(classes, ["state.lists_damaged"]);
+    // F12.d: the tree is judged without the state, and the commits are recorded as not judged
+    assert_eq!(classes, ["fail.new", "state.lists_damaged"]);
     reached.extend(classes);
     // the ledger writes no class it does not know, and no null
     reached.sort();
@@ -14243,11 +14499,12 @@ fn a_key_file_that_is_no_key_judges_nothing_and_says_no_key() {
     silence_a_lint(&root);
     let state = states_in(&sessions()).remove(0);
     let before = std::fs::read(&state).unwrap();
-    let said = allowed(&stop_as(&root, "s", &script, false)).to_owned();
+    // F12.d: the tree is judged without the state, and its failure blocks
+    let said = blocked(&stop_as(&root, "s", &script, false)).to_owned();
     assert!(
-        said.starts_with(
-            "deep-diff-forge: UNJUDGED. The stop hook did not run: the hooks' key file "
-        ) && said.contains("cannot be opened"),
+        said.starts_with(&stateless("state.damaged"))
+            && said.contains("Why: the hooks' key file ")
+            && said.contains("cannot be opened"),
         "{said}"
     );
     let hex = real.iter().fold(String::new(), |mut hex, b| {
@@ -14256,6 +14513,6 @@ fn a_key_file_that_is_no_key_judges_nothing_and_says_no_key() {
         hex
     });
     assert!(!said.contains(&hex) && !said.contains(&*String::from_utf8_lossy(&real)));
-    assert_eq!(runs(&log), 0);
+    assert_eq!(runs(&log), 1);
     assert_eq!(std::fs::read(&state).unwrap(), before);
 }

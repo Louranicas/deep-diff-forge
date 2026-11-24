@@ -378,6 +378,26 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   twice running: when the client says that it is continuing because a stop hook has just
   blocked (`stop_hook_active`), and only when the state could not be kept, the stop is
   allowed and says FAIL STANDS with the reason.
+- **A stop whose state cannot be used still judges the tree** (0.11.0, F12.d; owner decision
+  OD-J). When the session's state is damaged, newer or older than this build reads, its
+  directory cannot be used, its key file is no key, its lists are not the ones it names, or
+  another hook of the session holds its lock, the stop no longer says only that it did not
+  run. It reads no file of the state directory and writes none: with an empty memory, it
+  finds the project from its input as a new session does, judges the uncommitted and staged
+  changes of the working trees (their patches against `HEAD`) under the policy at the commit
+  the project's ledger names as its baseline (at `HEAD` when the ledger has none, which the
+  message says: a commit of the session can have loosened that one), and decides as a stop
+  with no memory: a failing tree blocks. At a stop that follows a block (`stop_hook_active`)
+  the failure stands instead (FAIL STANDS), so the session is not trapped; at the next turn's
+  stop it blocks again, since nothing remembers that it blocked: a state that stays unusable
+  blocks once in each turn while the tree fails. No commit is judged (the session's base is
+  unknown): they wait for a stop that has its state, which the frontier makes judge them. The
+  message begins "deep-diff-forge: this session's state could not be used (<class>): the
+  working tree was judged without it; commits made in this session are judged when the
+  project's ledger finds them, at a stop that has its state. Left as it is, the working tree
+  is judged like this at every stop with no memory of what blocked: a failing tree blocks once
+  in each turn." and then gives the refusal, with what removing the state costs. No byte of
+  a key and no text of a damaged state is said.
 - **What the judge names beside its rules is passed on.** forge-warden also fails a change
   for a waiver that has expired and holds one for a note, with every rule passed. The message
   then carries the judge's own words for it (bounded, escaped, marked as the judge's text and
@@ -571,7 +591,9 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   `{"v":1,"kind":"start","session":…,"worktree":…,"base":…}` for each session when its first
   hook finds the project (an advice hook or a session's start included). A stop reads the
   whole ledger (at most 64 MiB) for the frontier; a line that is not a record of this build
-  is passed over there, which can only judge more. **The ledger is not a boundary**: it is a file in
+  is passed over there, which can only judge more. A stop whose state cannot be used records
+  the units it judged and one `stop` record `unjudged` with the state's class for the commits
+  it did not judge. **The ledger is not a boundary**: it is a file in
   the repository's Git directory with the permissions of whoever works there, the agent
   included, so a record is evidence that a stop decided so, not proof, and a missing or edited
   ledger proves nothing.
@@ -853,7 +875,8 @@ project and not judged at every stop while it is true, as stated above):
   and named, as above: whether the session made it cannot be told), a hold for any other note
   (`unknown_status` included), and every cause of the machine, the clock, the judge's chain,
   the state or the place (a judge or policy that is missing, a time-out, a lock another hook
-  holds, a damaged state). A stop that ends on its own state still records nothing.
+  holds, a damaged state). A stop whose state cannot be used judges the tree without it
+  (below) and records what it judged.
 
   How "once" is kept: each cause is remembered in the session's state by a name (its class
   and a digest of its paths) and a state (the inode, size, modification and change times and
@@ -1209,13 +1232,13 @@ recorded with the class their kept words say; a reason kept with no words this b
 | `time.no_time_left` | UNJUDGED | never |
 | `time.not_asked` | UNJUDGED | never |
 | `time.git` | UNJUDGED | never |
-| `state.damaged` | UNJUDGED, did not run | never |
-| `state.older` | UNJUDGED, did not run | never |
-| `state.newer` | UNJUDGED, did not run | never |
-| `state.no_directory` | UNJUDGED, did not run | never |
+| `state.damaged` | the tree judged without the state | never |
+| `state.older` | the tree judged without the state | never |
+| `state.newer` | the tree judged without the state | never |
+| `state.no_directory` | the tree judged without the state | never |
 | `state.inside_tree` | UNJUDGED | never |
-| `state.lock_busy` | UNJUDGED | never |
-| `state.lists_damaged` | UNJUDGED | never |
+| `state.lock_busy` | the tree judged without the state | never |
+| `state.lists_damaged` | the tree judged without the state | never |
 | `state.no_baseline` | UNJUDGED | never |
 | `state.not_apart` | UNJUDGED | never |
 | `place.git_failed` | UNJUDGED | never |
