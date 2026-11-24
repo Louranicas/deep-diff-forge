@@ -1104,38 +1104,70 @@ fn cannot_fail<'a, I: Iterator<Item = SideLine<'a>>>(
 
 /// The calls of the standard library (and `killpg`) that answer with a `Result` whose error is
 /// a failure, and that code drops with `let _ =`: the last call of a dropped statement must be
-/// one of these for the drop to be read ([`dropped`]).
-const FALLIBLE: [&str; 29] = [
-    "remove_file",
-    "remove_dir",
-    "remove_dir_all",
-    "create_dir",
-    "create_dir_all",
-    "rename",
-    "copy",
-    "hard_link",
-    "set_permissions",
-    "write_all",
-    "flush",
-    "sync_all",
-    "sync_data",
-    "set_len",
-    "read_to_end",
-    "read_to_string",
-    "read_exact",
-    "send",
-    "try_send",
-    "recv",
-    "join",
-    "kill",
-    "killpg",
-    "wait",
-    "try_wait",
-    "shutdown",
-    "set_nonblocking",
-    "set_read_timeout",
-    "set_write_timeout",
+/// one of these for the drop to be read ([`dropped`]), with the number of arguments where a
+/// standard homonym that answers with no such `Result` takes another number: `join()` of a
+/// thread (`Path::join(p)` and a slice's `join(sep)` take one), `wait()` of a child
+/// (`Condvar::wait(guard)`, whose `Result` holds the lock's guard, takes one), `copy(a, b)` of
+/// `fs` and `io` (`ptr::copy` takes three). Homonyms with no token-level difference are stated
+/// limits: `Barrier::wait()`, `Vec::set_len(n)` (in `unsafe` code), and any type's own method
+/// of one of these names (`precision/b-homonyms.md` of lane w11G lists each).
+const FALLIBLE: [(&str, Option<usize>); 29] = [
+    ("remove_file", None),
+    ("remove_dir", None),
+    ("remove_dir_all", None),
+    ("create_dir", None),
+    ("create_dir_all", None),
+    ("rename", None),
+    ("copy", Some(2)),
+    ("hard_link", None),
+    ("set_permissions", None),
+    ("write_all", None),
+    ("flush", None),
+    ("sync_all", None),
+    ("sync_data", None),
+    ("set_len", None),
+    ("read_to_end", None),
+    ("read_to_string", None),
+    ("read_exact", None),
+    ("send", None),
+    ("try_send", None),
+    ("recv", None),
+    ("join", Some(0)),
+    ("kill", None),
+    ("killpg", None),
+    ("wait", Some(0)),
+    ("try_wait", None),
+    ("shutdown", None),
+    ("set_nonblocking", None),
+    ("set_read_timeout", None),
+    ("set_write_timeout", None),
 ];
+
+/// How many arguments the call whose parentheses are at `open` and `close` has: commas outside
+/// its brackets and outside generic arguments written with `::<`, a comma before `)` not counted.
+fn arguments<'a, I: Iterator<Item = SideLine<'a>>>(
+    window: &Window<'a, I>,
+    open: usize,
+    close: usize,
+) -> Option<usize> {
+    if close == open + 1 {
+        return Some(0);
+    }
+    let (mut count, mut depth, mut at) = (1, 0usize, open + 1);
+    while at < close {
+        match window.token(at)?.what {
+            What::Mark(b'(' | b'[' | b'{') => depth += 1,
+            What::Mark(b')' | b']' | b'}') => depth = depth.checked_sub(1)?,
+            What::Mark(b',') if depth == 0 && at + 1 < close => count += 1,
+            What::Mark(b':') if window.path(at) && window.marks(at + 2, b'<') => {
+                at = window.closes(at + 2)?;
+            }
+            _ => {}
+        }
+        at += 1;
+    }
+    Some(count)
+}
 
 /// A result dropped by a statement (since 0.11.0, F2a), when the current token is `let` or
 /// `_`: `let _ =` (or `let _: Type =`), or `_ =` where a statement begins (after `;`, a brace or
@@ -1190,11 +1222,17 @@ fn dropped<'a, I: Iterator<Item = SideLine<'a>>>(window: &Window<'a, I>) -> Opti
             What::Mark(b')' | b']' | b'}') => depth = depth.checked_sub(1)?,
             What::Mark(b';') if depth == 0 => {
                 // the `(` that the last `)` closes follows the name of what is called
-                let called = open
-                    .and_then(|open| window.token(open.checked_sub(1)?))
-                    .is_some_and(|name| {
-                        matches!(name.what, What::Name(_)) && FALLIBLE.contains(&name.text)
-                    });
+                let called = open.is_some_and(|open| {
+                    let Some(name) = open.checked_sub(1).and_then(|n| window.token(n)) else {
+                        return false;
+                    };
+                    let known = FALLIBLE.iter().find(|(known, _)| *known == name.text);
+                    matches!(name.what, What::Name(_))
+                        && known.is_some_and(|(_, count)| {
+                            count
+                                .is_none_or(|count| arguments(window, open, end - 1) == Some(count))
+                        })
+                });
                 return (called && window.marks(end - 1, b')')).then_some((at, end));
             }
             _ => {}
@@ -2763,6 +2801,9 @@ mod tests {
             &["+    let _ = tx.send(1);"],
             &["+let _ : Result<(), Box<dyn Iterator<Item = u8>>> = rx.recv();"],
             &["+let _ = handle.join();"],
+            &["+let _ = std::fs::copy(a, b);"],
+            &["+let _ = std::io::copy(&mut HashMap::<u8, u8>::new(), &mut out);"],
+            &["+let _ = child.wait();"],
             &["+let _ = std::io::copy(&mut pipe, &mut std::io::sink());"],
             &["+{ _ = child.kill(); }"],
             &["+_ = child.wait();"],
@@ -2784,6 +2825,12 @@ mod tests {
             "+let _ = std::fs::remove_file(p).is_ok();",
             "+let _ = std::fs::remove_file;",
             "+let _ = remove_file!(p);",
+            "+let _ = p.join(\"x\");",
+            "+let _ = v.join(\",\");",
+            "+let _ = std::thread::JoinHandle::join(h);",
+            "+let _ = cvar.wait(guard);",
+            "+let _ = std::ptr::copy(a, b, n);",
+            "+let _ = s.parse::<u32>();",
             "+let _e = child.kill();",
             "+let _x = child.kill();",
             "+let (_, _) = child.kill();",

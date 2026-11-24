@@ -192,7 +192,8 @@ pub struct Diagnostic {
     pub reading: String,
     /// `agent` or `person`.
     pub audience: String,
-    /// Only on `hazardous_text` and `diff_suppressed`: the case the engine found.
+    /// On `hazardous_text`, `diff_suppressed` and `panic_path_added` at a line: the case the
+    /// engine found.
     pub cases: Option<Vec<String>>,
     /// Ids of the changes that answer the label.
     pub repairs: Vec<String>,

@@ -228,7 +228,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   `assert_eq!(x, x)`, `assert_ne!(1, 2)`); the same call on both sides is not read (it checks that
   code is deterministic) (F2a.a). `error_swallowed`: `let _ = …;` and `_ = …;` whose last call is
   one of 29 standard calls that return a `Result` (`remove_file`, `write_all`, `send`, `join`,
-  `kill`, `wait`, …); `write!` into a `String` and the patch's own functions are not read (F2a.b).
+  `kill`, `wait`, …; `join` and `wait` with no argument, `copy` with two, so that `Path::join`,
+  `Condvar::wait` and `ptr::copy` are not read); `write!` into a `String` and the patch's own
+  functions are not read (F2a.b).
   `panic_path_added`: `panic!(…)` and `unreachable!(…)` (F2a.c). `test_skipped`: a test compiled
   out by `#[cfg(…)]` whose predicate holds in no build of the tests or names anything but a
   platform's predicate (`any()`, `not(test)`, `FALSE`, `feature = "…"`) (F2a.d). On the
@@ -238,6 +240,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - `diagnostics.v0`: a `panic_path_added@line` diagnostic carries `cases` (`call`, `panic_macro` or
   both) and lists only the repairs of its case; the new repair `panic_path_added:a3` fits
   `panic!`/`unreachable!`. On call rows the member `"cases": ["call"]` is new (F2a.c).
+- Library: `deep_diff_forge_graph::Evidence` gains the public member `panic_forms` (a new enum
+  `evidence::PanicForms`); code that builds an `Evidence` with a struct literal no longer
+  compiles until it names the member (F2a.c).
 - The vocabulary gains people-facing substitutes that a label now catches (`test_removed:n3`,
   `stub_added:n2`, `panic_path_added:n2`) and one it does not (`error_swallowed:n2`); the
   evaluation corpus has 65 cases: precision 209 of 234, recall 209 of 290, 109 declared (F2a.e).
