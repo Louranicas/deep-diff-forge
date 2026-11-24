@@ -232,8 +232,10 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   `Condvar::wait` and `ptr::copy` are not read); `write!` into a `String` and the patch's own
   functions are not read (F2a.b).
   `panic_path_added`: `panic!(…)` and `unreachable!(…)` (F2a.c). `test_skipped`: a test compiled
-  out by `#[cfg(…)]` whose predicate holds in no build of the tests or names anything but a
-  platform's predicate (`any()`, `not(test)`, `FALSE`, `feature = "…"`) (F2a.d). On the
+  out by `#[cfg(…)]` whose predicate is false in every default build of the tests (`any()`,
+  `not(test)`, `FALSE`, `feature = "…"`; `not(<a cfg of the build's own>)` holds), and by the same
+  predicate a module of tests (`mod tests`, `#[cfg(any())]` before it or `#![cfg(any())]` as its
+  first item) or a file of tests by its path (`#![cfg(…)]`) (F2a.d). On the
   comparison corpus (7,421 patches) against the tree before: +90 `trivial_assert`, +669
   `error_swallowed`, +778 `panic_path_added`, +47 `test_skipped` rows; no label is lost; in files
   whose evidence list is cut at 32 rows some earlier rows give their place to new ones.

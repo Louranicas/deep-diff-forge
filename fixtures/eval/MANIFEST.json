@@ -2627,10 +2627,31 @@
       "sha256": "97f5d939791a9d7ce99903f798b0c9d679d8d83722a658f05fe700aceaf7c09b"
     },
     {
+      "id": "evidence/rust-tests-module-compiled-out",
+      "kind": "evidence",
+      "patch": "evidence/rust-tests-module-compiled-out.patch",
+      "origin": "synthetic: F2a.d as a class (0.11.0, coordinator's ruling 2): `#[cfg(test)]` replaced by `#[cfg(any())]` on a module of tests, and `#![cfg(feature = \"never\")]` at the top of a file of tests, each a skipped test; near misses: the same `cfg` on a module of another name (production code) and `#![cfg(any())]` at the top of a file that is not a test file by its path",
+      "expect": [
+        {
+          "path": "src/lib.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 2
+        },
+        {
+          "path": "tests/it.rs",
+          "signal": "test_skipped",
+          "side": "new",
+          "line": 1
+        }
+      ],
+      "sha256": "477bb91c771bde291b238f582e139f40513926215791e49a80c81176132f0e86"
+    },
+    {
       "id": "evidence/rust-test-compiled-out",
       "kind": "evidence",
       "patch": "evidence/rust-test-compiled-out.patch",
-      "origin": "synthetic: F2a.d (0.11.0): a test compiled out by `#[cfg(…)]` whose predicate holds in no build of the tests (`any()`, `not(test)`), before or after its `#[test]` (the item is on the first changed line of the two attributes); near miss: `#[cfg(unix)]`, a platform's predicate. Declared miss: a `cfg` that compiles out a module of tests (`#[cfg(any())] mod more`)",
+      "origin": "synthetic: F2a.d (0.11.0): a test compiled out by `#[cfg(…)]` whose predicate holds in no build of the tests (`any()`, `not(test)`), before or after its `#[test]` (the item is on the first changed line of the two attributes); near miss: `#[cfg(unix)]`, a platform's predicate. Declared miss: a `cfg` that compiles out a module whose name does not say it holds tests (`#[cfg(any())] mod more`)",
       "expect": [
         {
           "path": "tests/slow.rs",

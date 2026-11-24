@@ -2010,6 +2010,18 @@ fn hinted_joins(
 /// ([`FileKind::readings`]): for each hunk, in line order and then the order of
 /// [`EvidenceSignal::ALL`], an item once however many kinds, texts and readings find it.
 fn file_found(file: &ReviewFile, joined: &[Text], only: Option<usize>) -> Vec<Vec<Hit>> {
+    let mut found = file_found_of_kinds(file, joined, only);
+    // an inner `#![cfg(…)]` taken to be its file's skips tests only in a file of tests (F2a)
+    if !crate::risk::is_test(&file.path) {
+        for hits in &mut found {
+            hits.retain(|hit| hit.signal != S::TestSkipped || hit.forms != rust_tokens::IN_A_FILE);
+        }
+    }
+    found
+}
+
+/// [`file_found`] before a file's own path is applied.
+fn file_found_of_kinds(file: &ReviewFile, joined: &[Text], only: Option<usize>) -> Vec<Vec<Hit>> {
     let mut found: Vec<Vec<Hit>> = Vec::new();
     for (place, kind) in FileKind::readings(file).iter().enumerate() {
         let rules: Vec<&Rule> = RULES.iter().filter(|r| kind.admits(r.scope)).collect();
@@ -9792,6 +9804,52 @@ mod tests {
                 &[S::TestSkipped],
             ),
         ]);
+    }
+
+    /// Ruling 2 on F2a.d: an inner `#![cfg(…)]` that compiles out its file is a skipped test in a
+    /// file of tests by its path and nowhere else; a module of tests compiled out is one wherever
+    /// it stands; in a comment or a string neither is code.
+    #[test]
+    fn a_module_or_a_file_of_tests_compiled_out_is_read_where_a_lexer_could_be_misled() {
+        let read = |path: &str, lines: &[&str]| -> Vec<EvidenceSignal> {
+            found(&hunk_of(path, lines))
+                .iter()
+                .map(|item| item.0)
+                .collect()
+        };
+        let skip: &[EvidenceSignal] = &[S::TestSkipped];
+        let cases: &[(&str, &[&str], &[EvidenceSignal])] = &[
+            ("tests/it.rs", &["+#![cfg(any())]"], skip),
+            (
+                "crates/x/tests/it.rs",
+                &["+#![cfg(feature = \"never\")]"],
+                skip,
+            ),
+            ("src/lib.rs", &["+#![cfg(any())]"], &[]),
+            (
+                "src/lib.rs",
+                &["-#[cfg(test)]", "+#[cfg(any())]", " mod tests {"],
+                skip,
+            ),
+            ("src/lib.rs", &["+#[cfg(any())]", " mod parser {"], &[]),
+            ("src/lib.rs", &[" mod tests {", "+    #![cfg(any())]"], skip),
+            ("tests/it.rs", &["+// #![cfg(any())]"], &[]),
+            ("tests/it.rs", &["+let s = \"#![cfg(any())]\";"], &[]),
+            (
+                "src/lib.rs",
+                &["+let q = '\"'; #[cfg(any())]", " mod tests {"],
+                skip,
+            ),
+            (
+                "src/lib.rs",
+                &["+#[cfg(", "+    any()", "+)]", " mod tests {"],
+                skip,
+            ),
+            ("tests/it.rs", &["+#![r#cfg(r#any())]"], skip),
+        ];
+        for (path, lines, signals) in cases {
+            assert_eq!(read(path, lines), *signals, "{path} {lines:?}");
+        }
     }
 
     /// Review V3 round 8, VD3R8-M-1: `r#unwrap` is the identifier `unwrap` to the compiler

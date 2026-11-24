@@ -187,6 +187,10 @@ pub(crate) struct Item {
 pub(crate) const BY_CALL: u8 = 1;
 /// [`Item::forms`]: a macro that panics where it is reached.
 pub(crate) const BY_MACRO: u8 = 2;
+/// [`Item::forms`] of a skipped test: an inner `#![cfg(…)]` that is not the first item of a module
+/// of tests, taken to be its file's; it skips tests only in a file that is test code by its path,
+/// and the reading of the file keeps it only there (`evidence::file_found`).
+pub(crate) const IN_A_FILE: u8 = 4;
 
 /// What the reader found on the two sides of a hunk, each sorted by line and then by signal,
 /// one item for each pair of them.
@@ -1333,11 +1337,13 @@ impl Holds {
 }
 
 /// Whether the predicate of `#[cfg(…)]` from `from` to before `to` switches a test off: it is
-/// false in every build of the tests (`any()`, `all(any())`, `not(all())`, `not(test)`), or,
-/// not true in every one, it names a predicate outside the platform's (`FALSE`,
-/// `feature = "…"`, a name of the build's own). The platform's are `unix`, `windows`, every `target_…`, `panic`, `miri` and
-/// `debug_assertions`, and `test`, which holds; `any`, `all` and `not` combine them, read with
-/// one stack. `None` for tokens a predicate does not have.
+/// false in every default build of the tests (`cargo test` on any platform, no feature and no
+/// cfg of the build's own set): `any()`, `all(any())`, `not(all())`, `not(test)`, `FALSE`,
+/// `feature = "…"`, `fw_fixture`. `test` holds; the platform's predicates (`unix`, `windows`,
+/// every `target_…`, `panic`, `miri`, `debug_assertions`) and one with arguments of its own
+/// (`version(…)`) may hold; every other name is unset, so `not(fw_fixture)` holds (the tests run
+/// by default, and a special build leaves them out: no skip). `any`, `all` and `not` combine
+/// them, read with one stack. `None` for tokens a predicate does not have.
 fn switched_off<'a, I: Iterator<Item = SideLine<'a>>>(
     window: &Window<'a, I>,
     from: usize,
@@ -1346,7 +1352,7 @@ fn switched_off<'a, I: Iterator<Item = SideLine<'a>>>(
     const PLATFORM: [&str; 5] = ["unix", "windows", "panic", "miri", "debug_assertions"];
     // the lists open: `any` (or), `all` or `not`, and what their arguments give so far
     let mut lists: Vec<(Option<Word>, Option<Holds>)> = vec![(None, None)];
-    let (mut at, mut unlisted) = (from, false);
+    let mut at = from;
     while at < to {
         let token = window.token(at)?;
         let value = match token.what {
@@ -1369,8 +1375,7 @@ fn switched_off<'a, I: Iterator<Item = SideLine<'a>>>(
                 None
             }
             What::Name(_) if window.marks(at + 1, b'(') => {
-                // a predicate with arguments of its own (`version(…)`): not the platform's
-                unlisted = true;
+                // a predicate with arguments of its own (`version(…)`): it may hold
                 at = window.matching(at + 1)?;
                 Some(Holds::Depends)
             }
@@ -1380,12 +1385,13 @@ fn switched_off<'a, I: Iterator<Item = SideLine<'a>>>(
                 if window.marks(at + 1, b'=') && window.marks(at + 2, b'"') {
                     at = (at + 3..to).find(|q| window.marks(*q, b'"'))?;
                 }
-                if word == Word::Test {
-                    Some(Holds::Yes)
+                Some(if word == Word::Test {
+                    Holds::Yes
+                } else if PLATFORM.contains(&name) || name.starts_with("target_") {
+                    Holds::Depends
                 } else {
-                    unlisted |= !(PLATFORM.contains(&name) || name.starts_with("target_"));
-                    Some(Holds::Depends)
-                }
+                    Holds::No
+                })
             }
             What::Mark(_) => return None,
         };
@@ -1402,9 +1408,92 @@ fn switched_off<'a, I: Iterator<Item = SideLine<'a>>>(
         at += 1;
     }
     match lists[..] {
-        [(None, Some(held))] => Some(held == Holds::No || (held == Holds::Depends && unlisted)),
+        [(None, Some(held))] => Some(held == Holds::No),
         _ => None,
     }
+}
+
+/// Whether `name` names a module of tests: `test`, `tests`, or a name that ends in `_test` or
+/// `_tests`.
+fn tests_module(name: &str) -> bool {
+    matches!(name, "test" | "tests") || name.ends_with("_test") || name.ends_with("_tests")
+}
+
+/// The place of the name of a module of tests declared from `at`: `mod tests`, `pub mod tests`,
+/// `pub(crate) mod tests`.
+fn module_of_tests<'a, I: Iterator<Item = SideLine<'a>>>(
+    window: &Window<'a, I>,
+    mut at: usize,
+) -> Option<usize> {
+    if window.token(at)?.text == "pub" {
+        at += 1;
+        if window.marks(at, b'(') {
+            at = window.matching(at)? + 1;
+        }
+    }
+    (window.token(at)?.text == "mod" && tests_module(window.token(at + 1)?.text)).then_some(at + 1)
+}
+
+/// The skipped test of the constructs from `one.0` to `one.1` and from `other.0` to `other.1`:
+/// on the first changed line of the two, on [`Basis::Hunk`] when they begin on two lines.
+fn skipped<'a, I: Iterator<Item = SideLine<'a>>>(
+    window: &Window<'a, I>,
+    one: (usize, usize),
+    other: (usize, usize),
+) -> Option<Item> {
+    let (first, rung) = window.extent(one.0, one.1);
+    let (second, basis) = window.extent(other.0, other.1);
+    let line = match (first, second) {
+        (Some(a), Some(b)) => a.min(b),
+        (a, b) => a.or(b)?,
+    };
+    let apart = window.held[one.0].line != window.held[other.0].line;
+    Some(Item {
+        line,
+        signal: EvidenceSignal::TestSkipped,
+        basis: if apart { Basis::Hunk } else { rung.max(basis) },
+        test_likely: false,
+        forms: 0,
+    })
+}
+
+/// A module or a file of tests compiled out by an inner attribute (since 0.11.0, F2a), when the
+/// current token is `#`: `#![cfg(…)]` whole, whose predicate switches it off ([`switched_off`]).
+/// Right after the `{` of a module of tests ([`tests_module`]) it is that module's; anywhere
+/// else it is taken to be its file's ([`IN_A_FILE`]): the reader does not know the path, and an
+/// inner attribute inside another module or a function is read the same way.
+fn compiled_out_inner<'a, I: Iterator<Item = SideLine<'a>>>(
+    window: &Window<'a, I>,
+) -> Option<Item> {
+    let at = window.at;
+    let inner = window.marks(at + 1, b'!')
+        && window.marks(at + 2, b'[')
+        && window.word(at + 3) == Some(Word::Cfg)
+        && window.marks(at + 4, b'(');
+    if !inner {
+        return None;
+    }
+    let close = window.matching(at + 2)?;
+    if window.matching(at + 4) != Some(close - 1)
+        || switched_off(window, at + 5, close - 1) != Some(true)
+    {
+        return None;
+    }
+    let module = at.checked_sub(3).filter(|module| {
+        window.marks(at - 1, b'{')
+            && window.token(*module).is_some_and(|m| m.text == "mod")
+            && window
+                .token(module + 1)
+                .is_some_and(|name| tests_module(name.text))
+    });
+    let (line, basis) = window.extent(module.unwrap_or(at), close);
+    Some(Item {
+        line: line?,
+        signal: EvidenceSignal::TestSkipped,
+        basis,
+        test_likely: false,
+        forms: if module.is_some() { 0 } else { IN_A_FILE },
+    })
 }
 
 /// A test compiled out (since 0.11.0, F2a), when the current token is `#`: among the whole
@@ -1412,8 +1501,10 @@ fn switched_off<'a, I: Iterator<Item = SideLine<'a>>>(
 /// attribute ([`test_attribute`]) and `#[cfg(…)]` whose predicate switches it off
 /// ([`switched_off`]), in either order: `#[cfg(any())] #[test]`. The item is on the first
 /// changed line of the two attributes (a test added under such a `cfg` is one too), with the
-/// rung of the two. Not read: a `cfg` on a module of tests (`#[cfg(any())] mod tests`), a
-/// test attribute that `cfg_attr` applies, an inner `#![cfg(…)]` over a file of tests.
+/// rung of the two. The same holds for a module of tests ([`module_of_tests`]) declared right
+/// after the attributes (`#[cfg(any())] #[cfg(test)] mod tests`): a module of another name is
+/// production code, and compiling it out skips no test. Not read: a test attribute that
+/// `cfg_attr` applies; a module whose `mod` line the side does not show.
 fn compiled_out<'a, I: Iterator<Item = SideLine<'a>>>(window: &Window<'a, I>) -> Option<Item> {
     let (mut at, mut test, mut off) = (window.at, None, None);
     while window.marks(at, b'#') && window.marks(at + 1, b'[') && at < window.at + AHEAD {
@@ -1430,24 +1521,13 @@ fn compiled_out<'a, I: Iterator<Item = SideLine<'a>>>(window: &Window<'a, I>) ->
             off = Some((at, close));
         }
         if let (Some(test), Some(off)) = (test, off) {
-            let (first, rung) = window.extent(test.0, test.1);
-            let (other, basis) = window.extent(off.0, off.1);
-            let line = match (first, other) {
-                (Some(a), Some(b)) => a.min(b),
-                (a, b) => a.or(b)?,
-            };
-            let apart = window.held[test.0].line != window.held[off.0].line;
-            return Some(Item {
-                line,
-                signal: EvidenceSignal::TestSkipped,
-                basis: if apart { Basis::Hunk } else { rung.max(basis) },
-                test_likely: false,
-                forms: 0,
-            });
+            return skipped(window, test, off);
         }
         at = close + 1;
     }
-    None
+    let off = off.filter(|_| test.is_none())?;
+    let name = module_of_tests(window, at)?;
+    skipped(window, off, (at, name))
 }
 
 /// How many names before the last one are passed over in `<a::b::Name>::function`
@@ -2189,7 +2269,7 @@ pub(crate) fn read_new<'a>(lines: impl Iterator<Item = SideLine<'a>>) -> Vec<Ite
         tests.read(&window);
         skips.read(&window, &mut found);
         if token.what == What::Mark(b'#')
-            && let Some(item) = compiled_out(&window)
+            && let Some(item) = compiled_out(&window).or_else(|| compiled_out_inner(&window))
         {
             found.note(item);
         }
@@ -2904,7 +2984,6 @@ mod tests {
             (&["+#[cfg(not(test))]", "+#[test]"], 0),
             (&["+#[cfg(feature = \"slow\")]", "+#[test]"], 0),
             (&["+#[cfg(all(unix, any()))]", "+#[test]"], 0),
-            (&["+#[cfg(any(unix, version(\"1.80\")))]", "+#[test]"], 0),
             (&[" #[test]", "+#[cfg(any())]", " fn e() {}"], 1),
             (&[" #[cfg(any())]", "+#[tokio::test]"], 1),
             (&[" #[cfg(any())]", " #[allow(x)]", "+#[test]"], 2),
@@ -2918,15 +2997,73 @@ mod tests {
             &["+#[cfg(any(unix))]", "+#[test]"],
             &["+#[cfg(all(target_os = \"linux\", not(miri)))]", "+#[test]"],
             &["+#[cfg(any(test, FALSE))]", "+#[test]"],
+            &["+#[cfg(not(fw_fixture))]", "+#[test]"],
+            &["+#[cfg(not(feature = \"slow\"))]", "+#[test]"],
+            &["+#[cfg(any(unix, version(\"1.80\")))]", "+#[test]"],
             &["+#[cfg(any())]", "+fn e() {}"],
-            &["+#[cfg(any())]", "+mod tests {}"],
             &["+#[cfg(any())]", "+fn e() {}", "+#[test]"],
-            &["+#![cfg(any())]", "+#[test]"],
             &["+#[cfg(any()]", "+#[test]"],
             &["+#[cfg(not(unix, windows))]", "+#[test]"],
             &[" #[cfg(any())]", " #[test]", "+fn e() {}"],
         ] {
             assert_eq!(skipped(lines), [], "{lines:?}");
+        }
+    }
+
+    /// Ruling 2 on F2a.d: a module of tests compiled out, by `#[cfg(…)]` before its `mod` or by
+    /// `#![cfg(…)]` as its first item, and a file compiled out by `#![cfg(…)]` (kept by the
+    /// reading of the file only where the path is test code: [`IN_A_FILE`]).
+    #[test]
+    fn a_module_or_a_file_of_tests_compiled_out_is_skipped() {
+        let read = |lines: &[&str]| -> Vec<(EvidenceSignal, usize, u8)> {
+            read_new(lines_of(&side(lines)))
+                .iter()
+                .map(|item| (item.signal, item.line, item.forms))
+                .collect()
+        };
+        for (lines, line, forms) in [
+            (&["+#[cfg(any())]", " mod tests {"][..], 0, 0),
+            (&["+#[cfg(any())]", "+mod tests {}"], 0, 0),
+            (&["+#[cfg(any())]", " #[cfg(test)]", " mod tests {"], 0, 0),
+            (
+                &[
+                    " #[cfg(test)]",
+                    "+#[allow(x)] #[cfg(not(test))]",
+                    " pub(crate) mod parse_tests {",
+                ],
+                1,
+                0,
+            ),
+            (&["+#[cfg(FALSE)] mod it_test {}"], 0, 0),
+            (&[" mod tests {", "+    #![cfg(any())]"], 1, 0),
+            (&["+#![cfg(any())]"], 0, IN_A_FILE),
+            (&["+#![cfg(feature = \"never\")]"], 0, IN_A_FILE),
+        ] {
+            let read: Vec<_> = read(lines)
+                .into_iter()
+                .filter(|item| item.0 == S::TestSkipped)
+                .collect();
+            assert_eq!(read, [(S::TestSkipped, line, forms)], "{lines:?}");
+        }
+        for lines in [
+            &["+#[cfg(test)]", " mod tests {"][..],
+            &["+#[cfg(all(test, unix))]", " mod tests {"],
+            &[
+                "+#[cfg(test)]",
+                "+#[cfg(not(fw_fixture_cli))]",
+                " mod tests {",
+            ],
+            &["+#[cfg(unix)]", " mod tests {"],
+            &["+#[cfg(any())]", " mod parser {"],
+            &["+#[cfg(any())]", " mod testsuite {"],
+            &["+#[cfg(any())]", " fn tests() {}"],
+            &[" #[cfg(any())]", " mod tests {", "+    fn t() {}"],
+            &["+#![cfg(test)]"],
+            &["+#![cfg(unix)]"],
+            &["+#![cfg(any()]"],
+            &["+#[cfg(any())]"],
+        ] {
+            assert_eq!(read(lines), [], "{lines:?}");
         }
     }
 
