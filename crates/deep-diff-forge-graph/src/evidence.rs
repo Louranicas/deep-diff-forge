@@ -9574,6 +9574,55 @@ mod tests {
         }
     }
 
+    /// F2a, ruling 5 (N89): each widened form of the reader of tokens, in the places that mislead
+    /// a lexer. In a comment, a doc comment's code block, a string or a raw string over lines it
+    /// is no code and no item (a doc test's assertion is a stated limit); after a quote
+    /// character literal or a lifetime, inside a macro's body, split over lines, behind a path
+    /// or written as a raw identifier it is read. A name bound by `use … as` is not the word.
+    #[test]
+    fn the_widened_forms_are_read_where_a_lexer_could_be_misled() {
+        let read = |lines: &[&str]| -> Vec<EvidenceSignal> {
+            found(&hunk_of("src/w.rs", lines))
+                .iter()
+                .map(|item| item.0)
+                .collect()
+        };
+        type Case<'a> = (&'a [&'a str], &'a [EvidenceSignal]);
+        let cases: &[Case] = &[
+            // F2a.a: an assertion that cannot fail
+            (&["+// assert_eq!(x, x);"], &[]),
+            (&["+/// assert_eq!(x, x);"], &[]),
+            (&["+/** assert_eq!(x, x); */"], &[]),
+            (&["+/* /* */ assert_eq!(x, x); */"], &[]),
+            (&["+let s = \"assert_eq!(x, x);\";"], &[]),
+            (&["+let s = r#\"", "+assert_eq!(x, x);", "+\"#;"], &[]),
+            (&["+let s = \"\\\"assert_eq!(x, x);\";"], &[]),
+            (&["+/* */ assert_eq!(x, x);"], &[S::TrivialAssert]),
+            (&["+let q = '\"'; assert_eq!(x, x);"], &[S::TrivialAssert]),
+            (&["+let q = '\\''; assert_ne!(1, 2);"], &[S::TrivialAssert]),
+            (
+                &["+fn f<'a>(x: &'a u8) { assert_eq!(x, x); }"],
+                &[S::TrivialAssert],
+            ),
+            (
+                &["+macro_rules! m { () => { assert!(!false) } }"],
+                &[S::TrivialAssert],
+            ),
+            (
+                &["+assert_eq!(", "+    x,", "+    x", "+);"],
+                &[S::TrivialAssert],
+            ),
+            (&["+std::assert_eq!(x, x);"], &[S::TrivialAssert]),
+            (&["+core::assert_ne!(1, 2);"], &[S::TrivialAssert]),
+            (&["+::std::debug_assert!(1 == 1);"], &[S::TrivialAssert]),
+            (&["+r#assert_eq!(x, x);"], &[S::TrivialAssert]),
+            (&["+use std::assert_eq as same;", "+same!(x, x);"], &[]),
+        ];
+        for (lines, signals) in cases {
+            assert_eq!(read(lines), *signals, "{lines:?}");
+        }
+    }
+
     /// Review V3 round 8, VD3R8-M-1: `r#unwrap` is the identifier `unwrap` to the compiler
     /// (checked there with rustc), and `x.r#unwrap()` and `X::r#unwrap(x)` left neither an item
     /// nor a mark. A raw identifier is read as the identifier it is: the code view the tokens

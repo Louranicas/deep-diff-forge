@@ -138,19 +138,21 @@ deep-diff-forge eval                          # score the labelled corpus in fix
   The case `evidence/rust-code-view-20261114`, added in 0.8.4 with seven expected items, is in this corpus with fourteen (the same patch, read by the integrity signals as well); the 0.8.4 measurement on 35 cases was precision 28 / 29 and recall 28 / 35, and before it, on 34 cases (2026-10-31), 21 / 22 and 21 / 28.
   On 61 cases (0.11.0, 2026-11-23: `evidence/cargo-lints-suppressed` and
   `evidence/rust-allow-in-comment-and-string` added for the readings of F2b) precision is
-  195 / 220 and recall 195 / 272, with 105 declared misses; the floors stay.
+  195 / 220 and recall 195 / 272, with 105 declared misses; the floors stay. On 62 cases (F2a.a:
+  `evidence/rust-assertion-class` added) precision is 201 / 226 and recall 201 / 279, with 106
+  declared misses.
 
   | Metric | Right / total | Floor |
   | --- | ---: | ---: |
   | ranking pairs | 12 / 15 | 80.0% |
-  | evidence precision | 195 / 220 | 88.2% |
-  | evidence recall | 195 / 272 | 70.5% |
+  | evidence precision | 201 / 226 | 88.2% |
+  | evidence recall | 201 / 279 | 70.5% |
   | findings verdicts | 33 / 33 | 100% |
 
   The receipt (`--json`) also splits evidence precision and recall by signal (`by_signal`) and by
   the language of the item's file (`by_language`, the engine's own language reading, `none` where
   no language applies); each adds up to the two evidence rows above, and the text summary prints
-  the four metrics only. Measured 2026-11-23 on 61 cases:
+  the four metrics only. Measured 2026-11-24 on 62 cases:
 
   | Signal | Precision | Recall | Cases |
   | --- | ---: | ---: | ---: |
@@ -171,7 +173,7 @@ deep-diff-forge eval                          # score the labelled corpus in fix
   | `stub_added` | 6 / 6 (100.0%) | 6 / 9 (66.7%) | 8 |
   | `test_removed` | 6 / 6 (100.0%) | 6 / 6 (100.0%) | 4 |
   | `test_skipped` | 15 / 19 (78.9%) | 15 / 30 (50.0%) | 14 |
-  | `trivial_assert` | 14 / 14 (100.0%) | 14 / 29 (48.3%) | 13 |
+  | `trivial_assert` | 20 / 20 (100.0%) | 20 / 36 (55.6%) | 14 |
   | `unsafe_added` | 8 / 9 (88.9%) | 8 / 8 (100.0%) | 5 |
 
   | Language | Precision | Recall | Cases |
@@ -180,7 +182,7 @@ deep-diff-forge eval                          # score the labelled corpus in fix
   | `javascript` | 13 / 13 (100.0%) | 13 / 23 (56.5%) | 10 |
   | `none` | 17 / 18 (94.4%) | 17 / 21 (81.0%) | 5 |
   | `python` | 12 / 13 (92.3%) | 12 / 29 (41.4%) | 14 |
-  | `rust` | 137 / 159 (86.2%) | 137 / 178 (77.0%) | 23 |
+  | `rust` | 143 / 165 (86.7%) | 143 / 185 (77.3%) | 24 |
   | `shell` | 6 / 7 (85.7%) | 6 / 7 (85.7%) | 6 |
   | `yaml` | 6 / 6 (100.0%) | 6 / 6 (100.0%) | 2 |
 

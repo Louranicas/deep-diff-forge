@@ -205,14 +205,17 @@ use std::process::Command;
 /// as two strings over lines a declared miss) and `evidence/rust-allow-in-comment-and-string`
 /// (OD-E: `#[allow(` in a comment or string is no evidence, `r#unsafe` no `unsafe_added`):
 /// precision 195 of 220, recall 195 of 272, 105 declared. The floors stay.
+/// F2a.a (0.11.0) reads an assertion that cannot fail as a class: `evidence/rust-assertion-class`
+/// (six forms, each beside a near miss; the same call on both sides is a near miss, two equal
+/// strings a declared miss) is added: precision 201 of 226, recall 201 of 279, 106 declared.
 const RANKING_PAIRS_FLOOR: u64 = 800_000;
 const EVIDENCE_PRECISION_FLOOR: u64 = 881_516;
 const EVIDENCE_RECALL_FLOOR: u64 = 704_545;
 const FINDINGS_FLOOR: u64 = 1_000_000;
 /// Declared misses (plan N4): each counts as wrong in its metric above. The receipt's
 /// `known_misses` keeps its first meaning, the evidence `known_miss` items; `declared` lists all.
-const DECLARED: u64 = 105;
-const EVIDENCE_KNOWN_MISSES: u64 = 77;
+const DECLARED: u64 = 106;
+const EVIDENCE_KNOWN_MISSES: u64 = 78;
 /// The smallest corpus the gate accepts, and the fewest cases of each kind.
 const MIN_CASES: usize = 30;
 const MIN_CASES_PER_KIND: usize = 3;
@@ -289,7 +292,8 @@ fn the_corpus_meets_its_floors() {
 
 /// S3.35.b: the receipt splits evidence precision and recall by signal (`by_signal`) and by
 /// the language of the item's file (`by_language`), and each split adds up to the aggregate the
-/// floors hold. The `trivial_assert` pair (precision and recall; S3.16 narrowed it) and
+/// floors hold. The `trivial_assert` pair (precision and recall; S3.16 narrowed it, F2a.a widened
+/// it to the class: 14 of 14 and 14 of 29 before) and
 /// the Python case count are held exactly, so a change to them shows here by name.
 #[test]
 fn eval_receipt_carries_per_signal_tallies() {
@@ -298,9 +302,9 @@ fn eval_receipt_carries_per_signal_tallies() {
     assert_eq!(
         receipt["by_signal"]["trivial_assert"],
         serde_json::json!({
-            "precision": {"right": 14, "total": 14, "ppm": 1_000_000},
-            "recall": {"right": 14, "total": 29, "ppm": 482_758},
-            "cases": 13
+            "precision": {"right": 20, "total": 20, "ppm": 1_000_000},
+            "recall": {"right": 20, "total": 36, "ppm": 555_555},
+            "cases": 14
         }),
         "the trivial_assert pair in {receipt:#}"
     );
@@ -365,14 +369,14 @@ fn the_summary_names_each_metric_and_each_failure() {
     let (code, text) = run(&corpus());
     assert_eq!(code, Some(0), "{text}");
     assert!(
-        text.starts_with("deep-diff-forge eval: 61 cases\n"),
+        text.starts_with("deep-diff-forge eval: 62 cases\n"),
         "{text}"
     );
     for line in [
         "  ranking_pairs        12/15",
-        "  evidence_precision   195/220",
-        "  evidence_recall      195/272",
-        "  declared             105",
+        "  evidence_precision   201/226",
+        "  evidence_recall      201/279",
+        "  declared             106",
         "  KNOWN ranking/auth-check-removed: src/handlers/delete.rs ranks below docs/CHANGES.md",
         "  KNOWN evidence/shell-heredoc: reports (\"scripts/docs.sh\", \"network_fetch\", \"new\", 3)",
     ] {
@@ -768,7 +772,7 @@ fn a_declared_miss_must_still_be_a_miss() {
     );
     assert_eq!(
         metrics["evidence_recall"],
-        serde_json::json!({"right": 195, "total": 271, "ppm": 719_557})
+        serde_json::json!({"right": 201, "total": 278, "ppm": 723_021})
     );
 
     // A declared false positive the engine does not report.
@@ -786,7 +790,7 @@ fn a_declared_miss_must_still_be_a_miss() {
     );
     assert_eq!(
         metrics["evidence_precision"],
-        serde_json::json!({"right": 195, "total": 220, "ppm": 886_363})
+        serde_json::json!({"right": 201, "total": 226, "ppm": 889_380})
     );
 
     // A declared false positive that is also expected.
@@ -802,7 +806,7 @@ fn a_declared_miss_must_still_be_a_miss() {
             .unwrap()
             .ends_with("is not reported, or is expected: remove it")
     );
-    assert_eq!(metrics["evidence_precision"]["right"], 196);
+    assert_eq!(metrics["evidence_precision"]["right"], 202);
     assert_eq!(known, usize::try_from(DECLARED).unwrap() - 1);
 }
 

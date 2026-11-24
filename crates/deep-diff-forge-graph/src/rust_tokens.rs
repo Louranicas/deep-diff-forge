@@ -244,6 +244,8 @@ enum Word {
     DebugAssert,
     AssertEq,
     DebugAssertEq,
+    AssertNe,
+    DebugAssertNe,
     Todo,
     Unimplemented,
     Ignore,
@@ -253,6 +255,8 @@ enum Word {
     Rstest,
     Tokio,
     True,
+    False,
+    Nan,
     Result,
     Option,
     Command,
@@ -315,13 +319,15 @@ impl Word {
 }
 
 /// The words the reader knows ([`Word::of`]).
-const WORDS: [(&[u8], Word); 38] = [
+const WORDS: [(&[u8], Word); 42] = [
     (b"unwrap", Word::Unwrap),
     (b"expect", Word::Expect),
     (b"assert", Word::Assert),
     (b"debug_assert", Word::DebugAssert),
     (b"assert_eq", Word::AssertEq),
     (b"debug_assert_eq", Word::DebugAssertEq),
+    (b"assert_ne", Word::AssertNe),
+    (b"debug_assert_ne", Word::DebugAssertNe),
     (b"todo", Word::Todo),
     (b"unimplemented", Word::Unimplemented),
     (b"ignore", Word::Ignore),
@@ -331,6 +337,8 @@ const WORDS: [(&[u8], Word); 38] = [
     (b"rstest", Word::Rstest),
     (b"tokio", Word::Tokio),
     (b"true", Word::True),
+    (b"false", Word::False),
+    (b"NAN", Word::Nan),
     (b"Result", Word::Result),
     (b"Option", Word::Option),
     (b"Command", Word::Command),
@@ -373,8 +381,11 @@ enum What {
 
 /// One token and where it stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Token {
+struct Token<'a> {
     what: What,
+    /// Its bytes in the code view: an assertion's operands are compared by them (since 0.11.0,
+    /// F2a).
+    text: &'a str,
     /// The index of its line in `hunk.lines`.
     line: usize,
     /// The byte column it starts at.
@@ -403,9 +414,9 @@ struct Tokens<'a, I> {
 }
 
 impl<'a, I: Iterator<Item = SideLine<'a>>> Iterator for Tokens<'a, I> {
-    type Item = Token;
+    type Item = Token<'a>;
 
-    fn next(&mut self) -> Option<Token> {
+    fn next(&mut self) -> Option<Token<'a>> {
         loop {
             let Some(line) = self.line else {
                 self.line = Some(self.lines.next()?);
@@ -438,6 +449,7 @@ impl<'a, I: Iterator<Item = SideLine<'a>>> Iterator for Tokens<'a, I> {
             };
             return Some(Token {
                 what,
+                text: line.code.get(column..self.at).unwrap_or_default(),
                 line: line.index,
                 column,
                 changed: line.changed,
@@ -451,7 +463,7 @@ impl<'a, I: Iterator<Item = SideLine<'a>>> Iterator for Tokens<'a, I> {
 /// never held whole (a side of 60 MiB of `}` is as many tokens).
 struct Window<'a, I> {
     source: Tokens<'a, I>,
-    held: Vec<Token>,
+    held: Vec<Token<'a>>,
     /// The current token's place in `held`.
     at: usize,
 }
@@ -491,11 +503,11 @@ impl<'a, I: Iterator<Item = SideLine<'a>>> Window<'a, I> {
     }
 
     /// The token at place `at` of the window, if it holds one there.
-    fn token(&self, at: usize) -> Option<Token> {
+    fn token(&self, at: usize) -> Option<Token<'a>> {
         self.held.get(at).copied()
     }
 
-    fn here(&self) -> Option<Token> {
+    fn here(&self) -> Option<Token<'a>> {
         self.token(self.at)
     }
 
@@ -610,6 +622,26 @@ impl<'a, I: Iterator<Item = SideLine<'a>>> Window<'a, I> {
         None
     }
 
+    /// Whether the tokens from `a.0` to `a.1` are those from `b.0` to `b.1`, one by one, and
+    /// none is a quote (the code view blanks the text of a string or a character, so `"a"` and
+    /// `"b"` would be the same), the name `NAN` (`f64::NAN == f64::NAN` is false), or a `(`, `{`
+    /// or `!`: a call, a block or a macro can answer otherwise each time, and the same call on
+    /// both sides is how a test checks that code is deterministic (`assert_eq!(rank(&files),
+    /// rank(&files))`: seven such lines in this project's history, none of which cannot fail).
+    fn same(&self, a: (usize, usize), b: (usize, usize)) -> bool {
+        a.1 - a.0 == b.1 - b.0
+            && (0..=a.1 - a.0).all(|k| match (self.token(a.0 + k), self.token(b.0 + k)) {
+                (Some(x), Some(y)) => {
+                    x.text == y.text
+                        && !matches!(
+                            x.what,
+                            What::Mark(b'"' | b'\'' | b'(' | b'{' | b'!') | What::Name(Word::Nan)
+                        )
+                }
+                _ => false,
+            })
+    }
+
     /// The first changed line among the tokens from `first` to `last`, and the rung a construct
     /// made of them stands on: `lexical` on one line, `hunk` over several.
     fn extent(&self, first: usize, last: usize) -> (Option<usize>, Basis) {
@@ -720,6 +752,330 @@ fn trivial_assert<'a, I: Iterator<Item = SideLine<'a>>>(
         next += 1;
     }
     (window.marks(next, b',') || window.marks(next, close)).then_some((at, next))
+}
+
+/// What an assertion asks of its operands: `assert!` and `debug_assert!` that the one is true,
+/// the `_eq` forms that the two are equal, the `_ne` forms that they differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Asks {
+    True,
+    Equal,
+    Unequal,
+}
+
+/// An operand's value as far as its tokens alone give it ([`operand`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Value {
+    Bool(bool),
+    /// An integer literal.
+    Int(i128),
+    /// Anything else; for one run of tokens with none of the reading's operators in it, the
+    /// places of its first and last token, which [`Window::same`] compares.
+    Unknown(Option<(usize, usize)>),
+}
+
+/// The comparisons, which hold or not by how two values are ordered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Compare {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+impl Compare {
+    fn holds(self, order: std::cmp::Ordering) -> bool {
+        use std::cmp::Ordering::{Equal, Greater, Less};
+        match self {
+            Self::Eq => order == Equal,
+            Self::Ne => order != Equal,
+            Self::Lt => order == Less,
+            Self::Le => order != Greater,
+            Self::Gt => order == Greater,
+            Self::Ge => order != Less,
+        }
+    }
+}
+
+/// The operators [`operand`] knows, and an open parenthesis on its stack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Operator {
+    Open,
+    Or,
+    And,
+    Compare(Compare),
+    Not,
+}
+
+impl Operator {
+    /// How tightly it binds, as in Rust: `!`, then the comparisons, `&&`, `||`.
+    const fn binds(self) -> u8 {
+        match self {
+            Self::Open => 0,
+            Self::Or => 1,
+            Self::And => 2,
+            Self::Compare(_) => 3,
+            Self::Not => 4,
+        }
+    }
+
+    /// `left self right` ([`Self::Not`] takes `left` alone): `||` is true where either side is
+    /// (`x || true` too: whatever `x` is, the condition is not false), `&&` false where either
+    /// is; a comparison of two literals, or of two runs of the same tokens (`x == x`).
+    fn apply<'a, I: Iterator<Item = SideLine<'a>>>(
+        self,
+        window: &Window<'a, I>,
+        left: Value,
+        right: Value,
+    ) -> Value {
+        use Value::{Bool, Int, Unknown};
+        match (self, left, right) {
+            (Self::Not, Bool(value), _) => Bool(!value),
+            (Self::Or, Bool(true), _) | (Self::Or, _, Bool(true)) => Bool(true),
+            (Self::Or, Bool(false), Bool(false)) | (Self::And, Bool(true), Bool(true)) => {
+                Bool(self == Self::And)
+            }
+            (Self::And, Bool(false), _) | (Self::And, _, Bool(false)) => Bool(false),
+            (Self::Compare(compare), Bool(a), Bool(b)) => Bool(compare.holds(a.cmp(&b))),
+            (Self::Compare(compare), Int(a), Int(b)) => Bool(compare.holds(a.cmp(&b))),
+            (Self::Compare(compare), Unknown(Some(a)), Unknown(Some(b))) if window.same(a, b) => {
+                Bool(compare.holds(std::cmp::Ordering::Equal))
+            }
+            _ => Unknown(None),
+        }
+    }
+}
+
+/// The operator at `at` and how many tokens it is: `&&`, `||` and the comparisons.
+fn operator<'a, I: Iterator<Item = SideLine<'a>>>(
+    window: &Window<'a, I>,
+    at: usize,
+) -> Option<(Operator, usize)> {
+    use Compare as C;
+    let pairs = [
+        (b'&', b'&', Operator::And),
+        (b'|', b'|', Operator::Or),
+        (b'=', b'=', Operator::Compare(C::Eq)),
+        (b'!', b'=', Operator::Compare(C::Ne)),
+        (b'<', b'=', Operator::Compare(C::Le)),
+        (b'>', b'=', Operator::Compare(C::Ge)),
+    ];
+    if let Some((_, _, operator)) = pairs.iter().find(|(a, b, _)| window.pair(at, *a, *b)) {
+        return Some((*operator, 2));
+    }
+    if window.marks(at, b'<') {
+        return Some((Operator::Compare(C::Lt), 1));
+    }
+    (window.marks(at, b'>') && !window.arrow(at)).then_some((Operator::Compare(C::Gt), 1))
+}
+
+/// The integer literal at `at`, a `-` before one too, and the place after it: decimal, `0x`,
+/// `0o` or `0b`, with `_` and an integer type's suffix or none.
+fn literal<'a, I: Iterator<Item = SideLine<'a>>>(
+    window: &Window<'a, I>,
+    at: usize,
+) -> Option<(i128, usize)> {
+    const SUFFIXES: [&str; 12] = [
+        "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize",
+    ];
+    let (negative, at) = if window.marks(at, b'-') {
+        (true, at + 1)
+    } else {
+        (false, at)
+    };
+    let text = window.token(at)?.text;
+    if !text.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    let text = SUFFIXES
+        .iter()
+        .find_map(|suffix| text.strip_suffix(suffix))
+        .unwrap_or(text)
+        .replace('_', "");
+    let (digits, radix) = match text.get(..2) {
+        Some("0x") => (&text[2..], 16),
+        Some("0o") => (&text[2..], 8),
+        Some("0b") => (&text[2..], 2),
+        _ => (text.as_str(), 10),
+    };
+    let value = i128::from_str_radix(digits, radix).ok()?;
+    Some((if negative { -value } else { value }, at + 1))
+}
+
+/// The end of a run of tokens from `at`: up to an operator of [`operator`] or a `)` outside
+/// its own brackets, or `to`. Generic arguments after `::` are passed over whole. `None` for a
+/// `]` or `}` that closes nothing of it, or a lone `=`.
+fn run<'a, I: Iterator<Item = SideLine<'a>>>(
+    window: &Window<'a, I>,
+    mut at: usize,
+    to: usize,
+) -> Option<usize> {
+    let mut depth = 0usize;
+    while at < to {
+        if depth == 0 && (operator(window, at).is_some() || window.marks(at, b')')) {
+            break;
+        }
+        match window.token(at)?.what {
+            What::Mark(b'(' | b'[' | b'{') => depth += 1,
+            What::Mark(b')' | b']' | b'}') => depth = depth.checked_sub(1)?,
+            What::Mark(b'=') if depth == 0 => return None,
+            What::Mark(b':') if window.path(at) && window.marks(at + 2, b'<') => {
+                at = window.closes(at + 2)?;
+            }
+            _ => {}
+        }
+        at += 1;
+    }
+    (depth == 0).then_some(at)
+}
+
+/// The value of the operand whose tokens are from `from` to before `to`, read once from the
+/// left with two stacks (nothing recurses): `!`, parentheses, `&&`, `||`, the six
+/// comparisons, `true`, `false`, integer literals and runs of other tokens ([`run`]). `None`
+/// for a shape it does not read.
+fn operand<'a, I: Iterator<Item = SideLine<'a>>>(
+    window: &Window<'a, I>,
+    from: usize,
+    to: usize,
+) -> Option<Value> {
+    let (mut values, mut operators) = (Vec::<Value>::new(), Vec::<Operator>::new());
+    let reduce = |values: &mut Vec<Value>, operator: Operator| {
+        let right = values.pop()?;
+        let left = values.pop()?;
+        values.push(operator.apply(window, left, right));
+        Some(())
+    };
+    // a value is whole: the prefixes before it apply
+    let push = |values: &mut Vec<Value>, operators: &mut Vec<Operator>, mut value: Value| {
+        while operators.last() == Some(&Operator::Not) {
+            operators.pop();
+            value = Operator::Not.apply(window, value, value);
+        }
+        values.push(value);
+    };
+    let (mut at, mut value_next) = (from, true);
+    while at < to {
+        if value_next {
+            let ends =
+                |at: usize| at >= to || window.marks(at, b')') || operator(window, at).is_some();
+            let (value, end) = match window.token(at)?.what {
+                What::Mark(b'!' | b'(') => {
+                    let open = window.marks(at, b'(');
+                    operators.push(if open { Operator::Open } else { Operator::Not });
+                    at += 1;
+                    continue;
+                }
+                What::Name(word @ (Word::True | Word::False)) if ends(at + 1) => {
+                    (Value::Bool(word == Word::True), at + 1)
+                }
+                _ => match literal(window, at).filter(|(_, end)| ends(*end)) {
+                    Some((value, end)) => (Value::Int(value), end),
+                    None => {
+                        let end = run(window, at, to).filter(|end| *end > at)?;
+                        (Value::Unknown(Some((at, end - 1))), end)
+                    }
+                },
+            };
+            push(&mut values, &mut operators, value);
+            (at, value_next) = (end, false);
+        } else if window.marks(at, b')') {
+            loop {
+                match operators.pop()? {
+                    Operator::Open => break,
+                    operator => reduce(&mut values, operator)?,
+                }
+            }
+            let value = values.pop()?;
+            push(&mut values, &mut operators, value);
+            at += 1;
+        } else {
+            let (operator, length) = operator(window, at)?;
+            while let Some(&top) = operators.last()
+                && top != Operator::Open
+                && top.binds() >= operator.binds()
+            {
+                operators.pop();
+                reduce(&mut values, top)?;
+            }
+            operators.push(operator);
+            (at, value_next) = (at + length, true);
+        }
+    }
+    if value_next {
+        return None;
+    }
+    while let Some(operator) = operators.pop() {
+        if operator == Operator::Open {
+            return None;
+        }
+        reduce(&mut values, operator)?;
+    }
+    (values.len() == 1).then(|| values[0])
+}
+
+/// An assertion that cannot fail, read as a class (since 0.11.0, F2a), when the current token
+/// is an assertion's word: `!`, an opening bracket, then its operands up to the first comma
+/// outside brackets each (one, or two for the `_eq` and `_ne` forms), within [`AHEAD`] tokens.
+/// `assert!` whose operand is true by its tokens alone (`!false`, `(true)`, `1 == 1`,
+/// `true || x`, `x == x`); `assert_eq!` whose operands are equal literals or the same tokens
+/// (`x, x`; `v.0, v.0`); `assert_ne!` whose operands are unequal literals (`1, 2`). Not read
+/// ([`Window::same`]): the same call, block or macro on both sides (`f(2), f(2)`, which can
+/// answer otherwise each time), `NAN`, and two strings or characters, which the code view
+/// blanks; nor what holds only by the type (`v.is_ok() || v.is_err()`, `matches!(v, _)`). The construct is from the word to the comma or bracket after the last
+/// operand, so a change of the message alone is none.
+fn cannot_fail<'a, I: Iterator<Item = SideLine<'a>>>(
+    window: &Window<'a, I>,
+    asks: Asks,
+) -> Option<(usize, usize)> {
+    let at = window.at;
+    if !window.marks(at + 1, b'!') {
+        return None;
+    }
+    let What::Mark(open) = window.token(at + 2)?.what else {
+        return None;
+    };
+    let close = closer(open)?;
+    let wanted = if asks == Asks::True { 1 } else { 2 };
+    let (mut spans, mut found) = ([(0, 0); 2], 0);
+    let (mut start, mut next, mut depth) = (at + 3, at + 3, 0usize);
+    while found < wanted {
+        if next > at + AHEAD {
+            return None;
+        }
+        match window.token(next)?.what {
+            What::Mark(b'(' | b'[' | b'{') => depth += 1,
+            What::Mark(mark @ (b')' | b']' | b'}')) if depth == 0 => {
+                if mark != close || found + 1 != wanted {
+                    return None;
+                }
+                (spans[found], found) = ((start, next), found + 1);
+            }
+            What::Mark(b')' | b']' | b'}') => depth -= 1,
+            What::Mark(b',') if depth == 0 => {
+                (spans[found], found, start) = ((start, next), found + 1, next + 1);
+            }
+            What::Mark(b':') if window.path(next) && window.marks(next + 2, b'<') => {
+                next = window.closes(next + 2)?;
+            }
+            _ => {}
+        }
+        next += 1;
+    }
+    let value = |(from, to): (usize, usize)| operand(window, from, to);
+    let holds = match asks {
+        Asks::True => value(spans[0])?,
+        Asks::Equal | Asks::Unequal => {
+            let compare = if asks == Asks::Equal {
+                Compare::Eq
+            } else {
+                Compare::Ne
+            };
+            Operator::Compare(compare).apply(window, value(spans[0])?, value(spans[1])?)
+        }
+    };
+    (holds == Value::Bool(true)).then_some((at, spans[wanted - 1].1))
 }
 
 /// A placeholder, when the current token is `todo` or `unimplemented`: `!` and an opening
@@ -1242,7 +1598,7 @@ impl Skips {
     }
 
     /// One token of the innermost open list.
-    fn follow(list: &mut List, token: Token) {
+    fn follow(list: &mut List, token: Token<'_>) {
         if let Some((changed, line)) = list.candidate.take()
             && matches!(token.what, What::Mark(b',' | b')' | b'=' | b'('))
             && let Some((first, basis)) = Self::skip(list, changed, line)
@@ -1359,7 +1715,7 @@ impl Attribute {
     }
 
     /// One token of the attribute, after its `#`. `false` when the token closes it.
-    fn read(&mut self, token: Token) -> bool {
+    fn read(&mut self, token: Token<'_>) -> bool {
         let top = self.depth == 1;
         match token.what {
             // the attribute's own `[`
@@ -1520,11 +1876,16 @@ pub(crate) fn read_new<'a>(lines: impl Iterator<Item = SideLine<'a>>) -> Vec<Ite
             What::Name(Word::Unwrap | Word::Expect) => {
                 panic_path(&window).map(|extent| (S::PanicPathAdded, extent))
             }
-            What::Name(Word::Assert | Word::DebugAssert) => {
-                trivial_assert(&window, 1).map(|extent| (S::TrivialAssert, extent))
-            }
-            What::Name(Word::AssertEq | Word::DebugAssertEq) => {
-                trivial_assert(&window, 2).map(|extent| (S::TrivialAssert, extent))
+            // the reading of release 0.9.0 stays one reading (`trivial_assert`), and the class
+            // is another (`cannot_fail`, since 0.11.0)
+            What::Name(Word::Assert | Word::DebugAssert) => trivial_assert(&window, 1)
+                .or_else(|| cannot_fail(&window, Asks::True))
+                .map(|extent| (S::TrivialAssert, extent)),
+            What::Name(Word::AssertEq | Word::DebugAssertEq) => trivial_assert(&window, 2)
+                .or_else(|| cannot_fail(&window, Asks::Equal))
+                .map(|extent| (S::TrivialAssert, extent)),
+            What::Name(Word::AssertNe | Word::DebugAssertNe) => {
+                cannot_fail(&window, Asks::Unequal).map(|extent| (S::TrivialAssert, extent))
             }
             What::Name(Word::Todo | Word::Unimplemented) => {
                 stub(&window).map(|extent| (S::StubAdded, extent))
@@ -1683,10 +2044,17 @@ mod tests {
             .collect()
     }
 
-    fn tokens(lines: &[&str]) -> Vec<Token> {
-        let side = side(lines);
+    fn tokens<'a>(lines: &[&'a str]) -> Vec<Token<'a>> {
+        let side: Vec<SideLine<'a>> = side(lines)
+            .into_iter()
+            .map(|(index, code, changed)| SideLine {
+                index,
+                code,
+                changed,
+            })
+            .collect();
         Tokens {
-            lines: lines_of(&side),
+            lines: side.into_iter(),
             line: None,
             at: 0,
         }
@@ -1765,6 +2133,10 @@ mod tests {
                 Word::Result,
                 Word::Option
             ]
+        );
+        assert_eq!(
+            words("+assert_ne debug_assert_ne false NAN"),
+            [Word::AssertNe, Word::DebugAssertNe, Word::False, Word::Nan]
         );
         assert_eq!(
             words("+unwrap_or unwrapé éunwrap 1unwrap ignored Test result _todo todo_ assert_nee"),
@@ -2016,6 +2388,74 @@ mod tests {
         ] {
             assert_eq!(signals(&[line]), [], "{line}");
         }
+    }
+
+    /// F2a.a: an assertion that cannot fail is read as a class, beside the reading of 0.9.0
+    /// (`assert!(true)`, `assert_eq!(true, true)`): a condition true by its tokens alone, two
+    /// equal literals or the same tokens for the `_eq` forms, two unequal literals for the
+    /// `_ne` forms. One that fails on every run (`assert_eq!(1, 2)`, `assert_ne!(x, x)`,
+    /// `assert!(false)`) or can pass and fail is none.
+    #[test]
+    fn an_assertion_of_equal_operands_cannot_fail() {
+        for lines in [
+            &["+assert!(!false);"][..],
+            &["+assert!((true));"],
+            &["+assert!(1 == 1);"],
+            &["+assert!(true || x);"],
+            &["+assert!(x || true);"],
+            &["+debug_assert!(!(1 > 2) && 0x10 >= 16, \"\");"],
+            &["+assert!(x == x);"],
+            &["+assert!(a.len <= a.len);"],
+            &["+assert_eq!(x, x);"],
+            &["+assert_eq!(v.0[1], v.0[1]);"],
+            &["+assert_eq!(1, 1_u8);"],
+            &["+assert_eq!(-1, -0b1, \"\");"],
+            &["+debug_assert_eq!(Map::<u8, u8>::MAX, Map::<u8, u8>::MAX);"],
+            &["+assert_eq!(x.0, x.0,);"],
+            &["+assert_ne!(1, 2);"],
+            &["+debug_assert_ne!(true, false, \"\");"],
+            &["+assert_ne!{0, 1}"],
+            &["+assert_eq!(", "+    value,", "+    value", "+);"],
+        ] {
+            assert_eq!(signals(lines), [S::TrivialAssert], "{lines:?}");
+        }
+        for line in [
+            "+assert_eq!(1, 2);",
+            "+assert_eq!(x, y);",
+            "+assert_eq!(x, x.0);",
+            "+assert_ne!(x, x);",
+            "+assert_ne!(1, 0x1);",
+            "+assert_ne!(1, x);",
+            "+assert!(false);",
+            "+assert!(1 == 2);",
+            "+assert!(x || false);",
+            "+assert!(x == y);",
+            "+assert!(x != x);",
+            "+assert!(true && x);",
+            "+assert!(!x);",
+            "+assert!(1 << 2 == 4);",
+            "+assert!(x = x);",
+            "+assert_eq!(\"a\", \"b\");",
+            "+assert_eq!('a', 'b');",
+            "+assert_eq!(f64::NAN, f64::NAN);",
+            "+assert_eq!(f(2), f(2));",
+            "+assert_eq!(rank(&files), rank(&files));",
+            "+assert!(a.len() <= a.len());",
+            "+assert_eq!(vec![x], vec![x]);",
+            "+assert_eq!({ x }, { x });",
+            "+assert!(f64::NAN == f64::NAN);",
+            "+assert_eq!(x, x",
+            "+assert_eq!(x, x];",
+            "+assert_eq!(x);",
+            "+assert_ne(1, 2);",
+        ] {
+            assert_eq!(signals(&[line]), [], "{line}");
+        }
+        // a change of the message alone is none: the construct ends at the comma
+        assert_eq!(signals(&[" assert_eq!(x, x,", "+    \"now\");"]), []);
+        // operands longer than the window are not read
+        let long = format!("+assert_eq!({0}, {0});", ["x"; 40].join(" + "));
+        assert_eq!(signals(&[&long]), []);
     }
 
     #[test]

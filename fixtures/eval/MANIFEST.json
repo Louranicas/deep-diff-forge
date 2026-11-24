@@ -2502,6 +2502,59 @@
         }
       ],
       "sha256": "612e71f0a6765c3b3dd5950ec499bca36abb7089dd907511b56a499d23310d1e"
+    },
+    {
+      "id": "evidence/rust-assertion-class",
+      "kind": "evidence",
+      "patch": "evidence/rust-assertion-class.patch",
+      "origin": "synthetic: F2a.a (0.11.0), assertions that cannot fail read as a class, each beside a near miss that can fail or fails on every run: a condition true by its tokens (`!false`; literals compared under `&&`), the same field on both sides of assert_eq, two unequal literals in assert_ne and debug_assert_ne, the same operand on both sides of `==` under `||`. Near misses that are no item: `f64::NAN` on both sides (fails), the same call on both sides (a determinism check: it can fail). Declared miss: two equal strings (the code view blanks a string's text, so two strings are never compared)",
+      "expect": [
+        {
+          "path": "tests/class.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 3
+        },
+        {
+          "path": "tests/class.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 5
+        },
+        {
+          "path": "tests/class.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 7
+        },
+        {
+          "path": "tests/class.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 9
+        },
+        {
+          "path": "tests/class.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 11
+        },
+        {
+          "path": "tests/class.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 13
+        }
+      ],
+      "known_miss": [
+        {
+          "path": "tests/class.rs",
+          "signal": "trivial_assert",
+          "side": "new",
+          "line": 16
+        }
+      ],
+      "sha256": "74a4f99853ac5eddfee476366ebba023268a68f73d356cee5f7931f6c2b1fa0b"
     }
   ]
 }
