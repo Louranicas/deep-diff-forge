@@ -6,6 +6,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-25
+
 - Exit 7 has one meaning, with a registry of reason classes. Every exit 7 names its class in one
   stderr line `refused: <text> (<tag>)`. `schema exit-codes`, `explain 7 [--json]` and the MCP
   tools `explain_exit_code`/`exit_code_registry` list them as `refusals` (F7.h1).
@@ -21,7 +23,6 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   [DDF-2026-011](docs/advisories/DDF-2026-011.md)).
 - `docs/reference/diagnostics.md`: the contract of `deep-diff-forge.diagnostics.v0` (printed by
   `--diagnostics`, F5a), with 42 pinned codes (F7.h1).
-- The tree's version is 0.11.0-dev (F7.h1).
 - `--rank --fail-on LIST` (on `--stdin-patch`, `--git-*` and `<old> <new>`) is a gate on the
   ranking. LIST holds classes (`security`, `integrity`, `shape`) and labels from
   `schema signals`. The ranking is printed as without the flag. The command then exits 7 when any file's
@@ -439,6 +440,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   commit can pass and `agent verify-branch` verifies it; `agent doctor --gate`'s link
   `policy_protects_itself` cannot tell under a policy that requires verified claims. Not
   changed in this release: the judge on the pull request is the boundary.
+
+Full notes: [docs/release-notes/0.11.0.md](docs/release-notes/0.11.0.md)
 
 ## [0.10.0] - 2026-11-23
 

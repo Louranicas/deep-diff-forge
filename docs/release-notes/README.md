@@ -11,6 +11,7 @@ Security advisories are in [`docs/advisories/`](../advisories/).
 
 | Version | Date | In one line | Notes |
 | --- | --- | --- | --- |
+| 0.11.0 | 2026-11-25 | The agent-loop release: the document `deep-diff-forge.diagnostics.v0`, engine protocol 3, a stop that judges the project's frontier and one-parent commits in the judge's bound mode, one meaning for exit 7; a fix for released versions ([DDF-2026-011](../advisories/DDF-2026-011.md)); hook state v13 and the cutover in the notes. | [0.11.0](0.11.0.md) |
 | 0.10.0 | 2026-11-23 | Git's header shapes as a list, six fixes for released versions ([DDF-2026-004](../advisories/DDF-2026-004.md) to [DDF-2026-010](../advisories/DDF-2026-010.md)), the label `diff_suppressed` and verdict v3 in the stop hook; contract changes and the forge-warden cutover in the notes. | [0.10.0](0.10.0.md) |
 | 0.9.0 | 2026-11-18 | Five integrity signals, the signal vocabulary as data and the agent hooks; fixes for released versions ([DDF-2026-003](../advisories/DDF-2026-003.md)). | [0.9.0](0.9.0.md) |
 | 0.8.4 | 2026-11-16 | Security release: reviews that differed from `git apply` (rescore of v0.8.3, G1 and G2) and Rust code hidden from every rule that reads Rust code. | [0.8.4](0.8.4.md) |
