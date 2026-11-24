@@ -363,9 +363,11 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 - Tests and evaluation only, no change to what the program does (S3.35.d, S3.34.c, S3.34.d): the
   eval corpus has paired cases (a form read, a near miss not read) for every integrity form the
-  Python, JavaScript and Go readers read (69 cases; precision 233/258, recall 233/314, both up),
-  and `docs/reference/evaluation.md` lists, per language, the forms a reviewer would expect that
-  no reader reads. Every missed mutant of the 0.10.0 mutation run has a test that fails on it but
+  Python, JavaScript and Go readers read, and the 46 forms a reviewer would expect that no reader
+  reads are cases too, each a declared miss (73 cases; precision 233/258, recall 233/360 from
+  233/314, the denominator grown by the declared misses alone). The recall and precision floors
+  are what is measured, and a new floor holds the count of expected items found (233), so that a
+  larger denominator cannot hide a lost item. Every missed mutant of the 0.10.0 mutation run has a test that fails on it but
   one, shown equivalent on the comparison corpus; `docs/TESTING_GOLD_STANDARD.md` says which
   functions `cargo mutants` does not mutate.
 
