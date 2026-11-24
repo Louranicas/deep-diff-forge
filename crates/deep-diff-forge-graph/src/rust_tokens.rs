@@ -993,13 +993,14 @@ fn operand<'a, I: Iterator<Item = SideLine<'a>>>(
                 What::Name(word @ (Word::True | Word::False)) if ends(at + 1) => {
                     (Value::Bool(word == Word::True), at + 1)
                 }
-                _ => match literal(window, at).filter(|(_, end)| ends(*end)) {
-                    Some((value, end)) => (Value::Int(value), end),
-                    None => {
+                _ => {
+                    if let Some((value, end)) = literal(window, at).filter(|(_, end)| ends(*end)) {
+                        (Value::Int(value), end)
+                    } else {
                         let end = run(window, at, to).filter(|end| *end > at)?;
                         (Value::Unknown(Some((at, end - 1))), end)
                     }
-                },
+                }
             };
             push(&mut values, &mut operators, value);
             (at, value_next) = (end, false);

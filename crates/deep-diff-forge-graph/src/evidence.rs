@@ -268,13 +268,50 @@ pub struct Evidence {
     /// kept for the floor does (0.8.3's of a Rust hunk, the frozen 0.8.4 one). By reader, not
     /// by `released`: a diagnostic's `reading` (`floor_only` when false). Not printed.
     pub read_now: bool,
-    /// On [`EvidenceSignal::PanicPathAdded`] only: a call that panics on failure (`unwrap`,
-    /// `expect`) is on this line. Since 0.11.0 (F2a): with [`Self::by_macro`] it is the case of
-    /// the line's diagnostic, whose repairs differ. Not printed.
-    pub by_call: bool,
-    /// On [`EvidenceSignal::PanicPathAdded`] only: `panic!` or `unreachable!` is on this line.
-    /// Not printed.
-    pub by_macro: bool,
+    /// On [`EvidenceSignal::PanicPathAdded`] only, since 0.11.0 (F2a): the forms of the panic
+    /// paths on this line, the case of its diagnostic, whose repairs differ. Not printed.
+    pub panic_forms: PanicForms,
+}
+
+/// The forms of the panic paths on one line ([`Evidence::panic_forms`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PanicForms {
+    /// Not a panic path, or one no reading says the form of.
+    #[default]
+    None,
+    /// A call that panics on failure: `unwrap`, `expect`.
+    Call,
+    /// A macro that panics where it is reached: `panic!`, `unreachable!`.
+    Macro,
+    /// Both on one line.
+    Both,
+}
+
+impl PanicForms {
+    /// The forms the bits of the reader of tokens name (`BY_CALL`, `BY_MACRO`).
+    const fn of(bits: u8) -> Self {
+        match (
+            bits & rust_tokens::BY_CALL != 0,
+            bits & rust_tokens::BY_MACRO != 0,
+        ) {
+            (true, true) => Self::Both,
+            (true, false) => Self::Call,
+            (false, true) => Self::Macro,
+            (false, false) => Self::None,
+        }
+    }
+
+    /// A call is among them.
+    #[must_use]
+    pub const fn call(self) -> bool {
+        matches!(self, Self::Call | Self::Both)
+    }
+
+    /// A macro is among them.
+    #[must_use]
+    pub const fn by_macro(self) -> bool {
+        matches!(self, Self::Macro | Self::Both)
+    }
 }
 
 /// One finding of a hunk's scan: the side, the signal, the line, and whether the reading every
@@ -1321,8 +1358,11 @@ pub(crate) fn file_evidence_marked(file: &ReviewFile, share: Share) -> (Vec<Evid
                 test_likely: hit.signal == S::PanicPathAdded && hit.side == Side::New && hit.likely,
                 released: hit.released,
                 read_now: hit.read_now,
-                by_call: hit.signal == S::PanicPathAdded && hit.forms & rust_tokens::BY_CALL != 0,
-                by_macro: hit.signal == S::PanicPathAdded && hit.forms & rust_tokens::BY_MACRO != 0,
+                panic_forms: if hit.signal == S::PanicPathAdded {
+                    PanicForms::of(hit.forms)
+                } else {
+                    PanicForms::None
+                },
             });
         }
     }
@@ -2739,11 +2779,7 @@ fn view_matches(
                 .map(|r| r.matches.basis())
                 .max();
             let mut likely = false;
-            let mut forms = if basis.is_some() {
-                rust_tokens::BY_CALL
-            } else {
-                0
-            };
+            let mut forms = u8::from(basis.is_some()) * rust_tokens::BY_CALL;
             // The reader's items are in the order this loop goes in: by line, then by signal.
             while read
                 .get(*read_to)
@@ -4250,8 +4286,7 @@ mod tests {
                     // release 0.8.3 reported both
                     released: true,
                     read_now: true,
-                    by_call: false,
-                    by_macro: false,
+                    panic_forms: PanicForms::None,
                 },
                 Evidence {
                     signal: S::ProcessSpawn,
@@ -4264,8 +4299,7 @@ mod tests {
                     // release 0.8.3 reported both
                     released: true,
                     read_now: true,
-                    by_call: false,
-                    by_macro: false,
+                    panic_forms: PanicForms::None,
                 },
             ]
         );
@@ -5873,8 +5907,11 @@ mod tests {
                     test_likely: false,
                     released,
                     read_now: false,
-                    by_call: signal == S::PanicPathAdded,
-                    by_macro: false,
+                    panic_forms: if signal == S::PanicPathAdded {
+                        PanicForms::Call
+                    } else {
+                        PanicForms::None
+                    },
                 });
             }
         }
@@ -9602,22 +9639,27 @@ mod tests {
         }
     }
 
+    /// One widened form of the reader of tokens (F2a) in places that mislead a lexer (ruling 5,
+    /// N89): each `(lines, signals)` read from a hunk of `src/w.rs`.
+    fn misled(cases: &[(&[&str], &[EvidenceSignal])]) {
+        for (lines, signals) in cases {
+            let read: Vec<EvidenceSignal> = found(&hunk_of("src/w.rs", lines))
+                .iter()
+                .map(|item| item.0)
+                .collect();
+            assert_eq!(read, *signals, "{lines:?}");
+        }
+    }
+
     /// F2a, ruling 5 (N89): each widened form of the reader of tokens, in the places that mislead
     /// a lexer. In a comment, a doc comment's code block, a string or a raw string over lines it
     /// is no code and no item (a doc test's assertion is a stated limit); after a quote
     /// character literal or a lifetime, inside a macro's body, split over lines, behind a path
     /// or written as a raw identifier it is read. A name bound by `use … as` is not the word.
+
     #[test]
-    fn the_widened_forms_are_read_where_a_lexer_could_be_misled() {
-        let read = |lines: &[&str]| -> Vec<EvidenceSignal> {
-            found(&hunk_of("src/w.rs", lines))
-                .iter()
-                .map(|item| item.0)
-                .collect()
-        };
-        type Case<'a> = (&'a [&'a str], &'a [EvidenceSignal]);
-        let cases: &[Case] = &[
-            // F2a.a: an assertion that cannot fail
+    fn an_assertion_that_cannot_fail_is_read_where_a_lexer_could_be_misled() {
+        misled(&[
             (&["+// assert_eq!(x, x);"], &[]),
             (&["+/// assert_eq!(x, x);"], &[]),
             (&["+/** assert_eq!(x, x); */"], &[]),
@@ -9645,7 +9687,14 @@ mod tests {
             (&["+::std::debug_assert!(1 == 1);"], &[S::TrivialAssert]),
             (&["+r#assert_eq!(x, x);"], &[S::TrivialAssert]),
             (&["+use std::assert_eq as same;", "+same!(x, x);"], &[]),
-            // F2a.b: a dropped result
+        ]);
+    }
+
+    /// F2a.b: as `an_assertion_that_cannot_fail_is_read_where_a_lexer_could_be_misled`.
+
+    #[test]
+    fn a_dropped_result_is_read_where_a_lexer_could_be_misled() {
+        misled(&[
             (&["+// let _ = std::fs::remove_file(p);"], &[]),
             (&["+/// let _ = std::fs::remove_file(p);"], &[]),
             (&["+let s = \"let _ = std::fs::remove_file(p);\";"], &[]),
@@ -9682,7 +9731,14 @@ mod tests {
                 &["+let _ = std::fs::r#remove_file(p);"],
                 &[S::ErrorSwallowed],
             ),
-            // F2a.c: panic! and unreachable!
+        ]);
+    }
+
+    /// F2a.c: as `an_assertion_that_cannot_fail_is_read_where_a_lexer_could_be_misled`.
+
+    #[test]
+    fn a_panic_macro_is_read_where_a_lexer_could_be_misled() {
+        misled(&[
             (&["+// panic!(\"x\");"], &[]),
             (&["+/// unreachable!();"], &[]),
             (&["+let s = \"panic!(\\\"x\\\")\";"], &[]),
@@ -9702,7 +9758,14 @@ mod tests {
             (&["+::core::panic!();"], &[S::PanicPathAdded]),
             (&["+r#panic!(\"x\");"], &[S::PanicPathAdded]),
             (&["+use std::panic as stop;", "+stop!(\"x\");"], &[]),
-            // F2a.d: a test compiled out
+        ]);
+    }
+
+    /// F2a.d: as `an_assertion_that_cannot_fail_is_read_where_a_lexer_could_be_misled`.
+
+    #[test]
+    fn a_test_compiled_out_is_read_where_a_lexer_could_be_misled() {
+        misled(&[
             (&["+// #[cfg(any())]", "+#[test]"], &[]),
             (&["+/// #[cfg(any())]", "+#[test]"], &[]),
             (&["+let s = \"#[cfg(any())]\";", "+#[test]"], &[]),
@@ -9728,10 +9791,7 @@ mod tests {
                 &["+#[cfg(feature = \"a b\")]", "+#[test]"],
                 &[S::TestSkipped],
             ),
-        ];
-        for (lines, signals) in cases {
-            assert_eq!(read(lines), *signals, "{lines:?}");
-        }
+        ]);
     }
 
     /// Review V3 round 8, VD3R8-M-1: `r#unwrap` is the identifier `unwrap` to the compiler

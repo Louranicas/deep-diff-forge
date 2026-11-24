@@ -138,7 +138,11 @@ pub fn diagnostics(seal: &InputSeal, ranked: &[RankedFile]) -> Diagnostics {
 /// `unwrap` or `expect` is on its line, `panic_macro` where a `panic!` or `unreachable!` is;
 /// `None` for any other row.
 fn panic_case(e: &crate::Evidence) -> Option<Vec<&'static str>> {
-    let kinds = [(e.by_call, PANIC_CASES[0]), (e.by_macro, PANIC_CASES[1])];
+    let forms = e.panic_forms;
+    let kinds = [
+        (forms.call(), PANIC_CASES[0]),
+        (forms.by_macro(), PANIC_CASES[1]),
+    ];
     let kinds: Vec<&'static str> = kinds.iter().filter(|k| k.0).map(|k| k.1).collect();
     case_of(RiskSignal::Code(e.signal), &kinds)
 }
@@ -340,9 +344,9 @@ mod tests {
     /// of tokens does not see (the 0.8.3 reading's `.unwrap()`) is a call.
     #[test]
     fn a_panic_path_names_its_form_and_the_repairs_of_it() {
+        type Row<'a> = (Option<(Side, u32)>, Option<Vec<&'a str>>);
         let patch = "--- a/src/p.rs\n+++ b/src/p.rs\n@@ -1,1 +1,4 @@\n ctx\n+let a = x.unwrap();\n+unreachable!();\n+let b = y.expect(\"y\"); panic!();\n";
         let (_, doc) = document(patch);
-        type Row<'a> = (Option<(Side, u32)>, Option<Vec<&'a str>>);
         let cases: Vec<Row> = doc
             .diagnostics
             .iter()
