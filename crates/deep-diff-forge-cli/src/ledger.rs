@@ -913,7 +913,10 @@ mod tests {
         ];
         let line = text.lines().count() + 1;
         let refused = |what: &str, record: &Value| {
-            let why = read_with(&own, &text, record).map(|_| ()).unwrap_err();
+            let why = match read_with(&own, &text, record) {
+                Ok(_) => panic!("{what}: the ledger was read, not refused: {record}"),
+                Err(why) => why,
+            };
             assert!(
                 why.contains(&format!("line {line} of the ledger"))
                     && why.contains("is not a record of this build"),
@@ -1008,7 +1011,7 @@ mod tests {
         damaged["unit"] = json!(format!("commit:{OTHER}"));
         damaged.as_object_mut().unwrap().remove("outcome");
         assert!(read_with(&own, &text, &damaged).is_err());
-        let found = frontier(&own).unwrap();
+        let found = frontier(&own).unwrap_or_else(|e| panic!("the frontier was refused: {e}"));
         assert!(!found.judged.contains(OTHER), "{found:?}");
         assert!(found.judged.contains(ID), "{found:?}");
         assert!(found.baseline.is_some(), "{found:?}");
