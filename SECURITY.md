@@ -801,9 +801,14 @@ bounded form.** What it holds to:
   open: a process that moves the state directory away and puts another at its name while a
   hook holds the lock gets nothing written into the other, and the hook says that its state
   could not be saved. Where the lock cannot be taken in the state directory (its lock file
-  cannot be opened), no state is written and a stop says that cause first. A file system on
-  which `flock` fails for another cause than another holder is the stated exception: there the
-  state is written without a lock, as before 0.11.1. When the state cannot be kept, a stop
+  cannot be opened), no state is written and a stop says that cause first. The lock may be taken
+  through a symbolic link at the state directory's name, as in 0.11.0; the state is never
+  written through one. A process of the same user that unlinks or replaces a held session-lock
+  file can start a second writer for that session; the lock excludes hooks that behave, not a
+  hostile same-user process; nothing it does passes a commit. This is as in 0.11.0 (measured:
+  the same probe gives the same result on the published binary). A flock refusal other than
+  another holder's (a file system without locks, any other errno) lets the hook write without
+  the lock, as in 0.11.0. When the state cannot be kept, a stop
   says so every time and the advice hook once, marked by an empty file beside the scratch
   directory.
 - **Each directory of the hooks is a directory of its own.** `deep-diff-forge/` under the Git

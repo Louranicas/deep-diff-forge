@@ -27,8 +27,14 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   replaced while a hook holds the lock gets nothing written into the replacement, and the hook
   says its state could not be saved (0.11.0 wrote by the directory's name, so the state went
   into the replacement while the lock stayed in the directory moved away; a process of the
-  same user, the agent's included, could do it). A state directory inside the session's
-  project is refused as before; the hooks may now leave empty directories there, which Git does not record.
+  same user, the agent's included, could do it). The lock may be taken through a symbolic link
+  at the state directory's name, as in 0.11.0; the state is never written through one. Stated,
+  as in 0.11.0 (measured: the same probe gives the same result on the published binary): a
+  process of the same user that unlinks or replaces a held session-lock file can start a
+  second writer for that session; the lock excludes hooks that behave, not a hostile same-user
+  process; nothing it does passes a commit. A flock refusal other than another holder's (a file
+  system without locks, any other errno) lets the hook write without the lock, as in 0.11.0. A
+  state directory inside the session's project is refused as before; the hooks may now leave empty directories there, which Git does not record.
   The five hook tests that `crates/deep-diff-forge-cli/tests/LOAD_SENSITIVE` named for this cause
   are off it: they pass alone with a `.git` above the temporary directory.
 - `agent doctor --gate` and a session's start: the link `policy_protects_itself` is ready only
