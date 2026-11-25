@@ -9745,7 +9745,7 @@ const ADVICE_LOCK_WAIT: Duration = Duration::from_millis(300);
 /// system has none.
 mod lock {
     use super::{
-        At, Deadline, Duration, Path, PathBuf, StateDir, not_own_words, state_dir, state_file,
+        At, Deadline, Duration, Path, PathBuf, StateDir, not_own_words, state_dir_at, state_file,
     };
 
     /// The session's lock, held: a `flock` on the file `session-<hash>.lock` beside its state,
@@ -9880,7 +9880,7 @@ mod lock {
     /// So the lock is taken by every stop for all of its run, the first one too (the file is
     /// named from the session's id, which a hook has before any state exists), by a
     /// session-start hook for its reading and writing, and by an advice hook for its writing
-    /// ([`super::Session::keep_advice`]). It is taken in the state directory [`state_dir`]
+    /// ([`super::Session::keep_advice`]). It is taken in the state directory [`super::state_dir`]
     /// gives, made when it is missing, whatever stands above it: until 0.11.1 a hook that
     /// found no state directory under a `.git` (a home directory that is a Git repository,
     /// or a fresh home under a tree) took no lock and the state was written all the same, and
@@ -9888,93 +9888,132 @@ mod lock {
     /// it is taken there, as before; the state is refused there by its writer and reader. The
     /// directory is held open from before the lock file is opened ([`At`]), and the lock file
     /// is opened, checked and removed through it: the token it gives writes there.
+    pub(super) fn session_lock(session: &str, wait: Duration) -> Turn {
+        lock_in(&super::sessions_dir(), session, wait, || {})
+    }
+
+    /// [`session_lock`] in the state directory `named` names; `between` runs each time the
+    /// directory has been opened and before the lock file is (a test puts there what another
+    /// process may do in that moment).
+    ///
+    /// A directory or a lock file that is not there when it is opened is looked for again, the
+    /// directory decided again, until the wait is over: two first stops of a session make the
+    /// directory and the lock file at once, and on macOS one of them was told "No such file or
+    /// directory" by the open that makes the lock file (the run of 0.11.1's tests on macOS; on
+    /// Linux it is not seen), and a directory moved away and made again between the two opens
+    /// gives the same answer. Only a refusal that lasts, or another refusal, is
+    /// [`Turn::Unlockable`] (0.11.0 took any of them as no lock and wrote all the same).
     #[expect(
         clippy::disallowed_methods,
         reason = "the session-lock door: a hook waits a bounded time, in short sleeps, for another hook of its session"
     )]
-    pub(super) fn session_lock(session: &str, wait: Duration) -> Turn {
+    pub(super) fn lock_in(
+        named: &Result<PathBuf, String>,
+        session: &str,
+        wait: Duration,
+        between: impl Fn(),
+    ) -> Turn {
         use nix::fcntl::{Flock, FlockArg, OFlag};
         use std::os::unix::fs::MetadataExt as _;
-        let (dir, follow) = match state_dir(true) {
-            StateDir::Own(dir) => (dir, false),
-            StateDir::NotOwn {
-                dir,
-                to_directory: true,
-            } => (dir, true),
-            StateDir::NotOwn { dir, .. } => return Turn::NoDirectory(not_own_words(&dir)),
-            StateDir::None(why) => return Turn::NoDirectory(why.kept_words()),
-        };
-        let at = match At::open(&dir, follow) {
-            Ok(at) => at,
-            Err(error) => {
-                return Turn::Unlockable(format!(
-                    "the state directory {} cannot be opened ({error})",
-                    super::shown(&dir)
-                ));
-            }
-        };
-        let state = state_file(&dir, session);
-        let name = |path: &Path| PathBuf::from(path.file_name().unwrap_or_default());
-        let (file, state_name) = (name(&state.with_extension("lock")), name(&state));
-        let open = || {
-            at.file(
-                &file,
-                (
-                    OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_NONBLOCK,
-                    nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
-                ),
-            )
-        };
-        let unopened = |error: std::io::Error| {
-            Turn::Unlockable(format!(
-                "the session's lock file {} cannot be opened ({error})",
-                super::shown(&at.path(&file))
-            ))
-        };
         let until = Deadline::after(wait);
-        let mut opened = match open() {
-            Ok(opened) => opened,
-            Err(error) => return unopened(error),
+        let pause = || std::thread::sleep(Duration::from_millis(25));
+        let gone = |error: &std::io::Error| {
+            error.kind() == std::io::ErrorKind::NotFound && !until.left().is_zero()
         };
-        loop {
-            match Flock::lock(opened, FlockArg::LockExclusiveNonblock) {
-                Ok(lock) => {
-                    // The file that was locked must be the one at its name: a hook that left
-                    // the session with no state has taken its lock file away, and another may
-                    // have made a new one since.
-                    // (looked at, not opened: a lock file this user cannot read is still the
-                    // one at its name, review of P5c round 2, L1)
-                    let same = match (lock.metadata(), at.identity_of(&file)) {
-                        (Ok(held), Ok(there)) => {
-                            (i128::from(held.dev()), i128::from(held.ino())) == there
+        'whole: loop {
+            let (dir, follow) = match state_dir_at(named.clone(), true) {
+                StateDir::Own(dir) => (dir, false),
+                StateDir::NotOwn {
+                    dir,
+                    to_directory: true,
+                } => (dir, true),
+                StateDir::NotOwn { dir, .. } => return Turn::NoDirectory(not_own_words(&dir)),
+                StateDir::None(why) => return Turn::NoDirectory(why.kept_words()),
+            };
+            let at = match At::open(&dir, follow) {
+                Ok(at) => at,
+                Err(error) if gone(&error) => {
+                    pause();
+                    continue;
+                }
+                Err(error) => {
+                    return Turn::Unlockable(format!(
+                        "the state directory {} cannot be opened ({error})",
+                        super::shown(&dir)
+                    ));
+                }
+            };
+            between();
+            let state = state_file(&dir, session);
+            let name = |path: &Path| PathBuf::from(path.file_name().unwrap_or_default());
+            let (file, state_name) = (name(&state.with_extension("lock")), name(&state));
+            let open = || {
+                at.file(
+                    &file,
+                    (
+                        OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_NONBLOCK,
+                        nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+                    ),
+                )
+            };
+            let unopened = |error: std::io::Error| {
+                Turn::Unlockable(format!(
+                    "the session's lock file {} cannot be opened ({error})",
+                    super::shown(&at.path(&file))
+                ))
+            };
+            let mut opened = match open() {
+                Ok(opened) => opened,
+                Err(error) if gone(&error) => {
+                    pause();
+                    continue;
+                }
+                Err(error) => return unopened(error),
+            };
+            loop {
+                match Flock::lock(opened, FlockArg::LockExclusiveNonblock) {
+                    Ok(lock) => {
+                        // The file that was locked must be the one at its name: a hook that
+                        // left the session with no state has taken its lock file away, and
+                        // another may have made a new one since.
+                        // (looked at, not opened: a lock file this user cannot read is still
+                        // the one at its name, review of P5c round 2, L1)
+                        let same = match (lock.metadata(), at.identity_of(&file)) {
+                            (Ok(held), Ok(there)) => {
+                                (i128::from(held.dev()), i128::from(held.ino())) == there
+                            }
+                            _ => false,
+                        };
+                        if same {
+                            return Turn::Mine(Held {
+                                lock,
+                                at,
+                                file,
+                                state,
+                                state_name,
+                            });
                         }
-                        _ => false,
-                    };
-                    if same {
-                        return Turn::Mine(Held {
-                            lock,
-                            at,
-                            file,
-                            state,
-                            state_name,
-                        });
+                        drop(lock);
+                        if until.left().is_zero() {
+                            return Turn::Taken;
+                        }
+                        opened = match open() {
+                            Ok(again) => again,
+                            Err(error) if gone(&error) => {
+                                pause();
+                                continue 'whole;
+                            }
+                            Err(error) => return unopened(error),
+                        };
                     }
-                    drop(lock);
-                    if until.left().is_zero() {
-                        return Turn::Taken;
+                    Err((back, nix::errno::Errno::EWOULDBLOCK)) if !until.left().is_zero() => {
+                        opened = back;
+                        pause();
                     }
-                    opened = match open() {
-                        Ok(again) => again,
-                        Err(error) => return unopened(error),
-                    };
+                    Err((_, nix::errno::Errno::EWOULDBLOCK)) => return Turn::Taken,
+                    // a file system with no locks: as before
+                    Err(_) => return Turn::NoLocks(NoFlock { at, state }),
                 }
-                Err((back, nix::errno::Errno::EWOULDBLOCK)) if !until.left().is_zero() => {
-                    opened = back;
-                    std::thread::sleep(Duration::from_millis(25));
-                }
-                Err((_, nix::errno::Errno::EWOULDBLOCK)) => return Turn::Taken,
-                // a file system with no locks: as before
-                Err(_) => return Turn::NoLocks(NoFlock { at, state }),
             }
         }
     }
@@ -17694,6 +17733,50 @@ mod tests {
         std::fs::rename(&held, &dir).unwrap();
         session.keep(&Writable::for_test(&at, &file)).unwrap();
         assert_eq!(load(&file), Ok(Some(session.state.clone())));
+    }
+
+    /// The run of 0.11.1's tests on macOS (P5c round 3): two first stops of a session make the
+    /// lock file at once, and one was told "No such file or directory" by the open that makes it,
+    /// and gave up the lock as `Unlockable`. A lock file (or a directory) that is not there when
+    /// it is opened is looked for again while the wait lasts. Here the directory is removed and
+    /// made again between its open and the lock file's, once: the lock is taken, in the directory
+    /// as it is now. Positive control: removed every time, the refusal is said when the wait is
+    /// over.
+    #[test]
+    fn a_lock_file_that_is_not_there_for_a_moment_is_looked_for_again() {
+        let said = |turn: &Turn| match turn {
+            Turn::Mine(_) => "Mine".to_owned(),
+            Turn::NoLocks(_) => "NoLocks".to_owned(),
+            Turn::Taken => "Taken".to_owned(),
+            Turn::NoDirectory(why) => format!("NoDirectory({why})"),
+            Turn::Unlockable(why) => format!("Unlockable({why})"),
+        };
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-lock-again");
+        let dir = scratch.join("hooks");
+        std::fs::create_dir(&dir).unwrap();
+        let lock_file = state_file(&dir, "s").with_extension("lock");
+        let once = std::cell::Cell::new(true);
+        let turn = lock::lock_in(&Ok(dir.clone()), "s", Duration::from_secs(2), || {
+            if once.replace(false) {
+                std::fs::remove_dir(&dir).unwrap();
+                std::fs::create_dir(&dir).unwrap();
+            }
+        });
+        assert!(
+            matches!(turn, Turn::Mine(_)) && lock_file.is_file(),
+            "a lock file that was not there for a moment was not looked for again: {}",
+            said(&turn)
+        );
+        drop(turn);
+        // (positive control) gone every time: refused when the wait is over
+        let turn = lock::lock_in(&Ok(dir.clone()), "s", Duration::from_millis(300), || {
+            let _ = std::fs::remove_dir(&dir);
+        });
+        assert!(
+            matches!(&turn, Turn::Unlockable(why) if why.contains("cannot be opened")),
+            "{}",
+            said(&turn)
+        );
     }
 
     /// Review of P5c round 2, M1: the session's lock may be taken through a symbolic link to a
