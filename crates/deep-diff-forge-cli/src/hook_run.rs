@@ -1555,6 +1555,19 @@ impl At {
         )?)
     }
 
+    /// Whether it was opened through a symbolic link at its name.
+    fn through_link(&self) -> bool {
+        self.follow
+    }
+
+    /// The device and inode of what stands at `file` in it, a link not followed (as
+    /// `symlink_metadata` gives them, whatever its mode lets this user do with it).
+    fn identity_of(&self, file: &Path) -> std::io::Result<(i128, i128)> {
+        let found =
+            nix::sys::stat::fstatat(&self.dir, file, nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW)?;
+        Ok((i128::from(found.st_dev), i128::from(found.st_ino)))
+    }
+
     /// Whether anything stands at `file` in it (a name that cannot be looked at counts as
     /// standing).
     fn has(&self, file: &Path) -> bool {
@@ -1973,6 +1986,13 @@ impl Session {
             )));
         }
         let at = writable.at();
+        // The lock may be taken through a symbolic link to a directory, as in 0.11.0; the state
+        // is never written through one (review of P5c round 2, M1: an advice hook read its state
+        // in the directory, a link was put at its name before it took the lock, and the state
+        // went into the link's target).
+        if at.through_link() {
+            return Err(not_own_words(&self.dir));
+        }
         let moved = || {
             format!(
                 "the state directory {} is no longer the directory the session's lock was taken in (another process moved it away or put another in its place while this hook ran)",
@@ -9887,10 +9907,11 @@ mod lock {
                     // The file that was locked must be the one at its name: a hook that left
                     // the session with no state has taken its lock file away, and another may
                     // have made a new one since.
-                    let there = at.file(&file, At::READ).and_then(|there| there.metadata());
-                    let same = match (lock.metadata(), there) {
+                    // (looked at, not opened: a lock file this user cannot read is still the
+                    // one at its name, review of P5c round 2, L1)
+                    let same = match (lock.metadata(), at.identity_of(&file)) {
                         (Ok(held), Ok(there)) => {
-                            held.ino() == there.ino() && held.dev() == there.dev()
+                            (i128::from(held.dev()), i128::from(held.ino())) == there
                         }
                         _ => false,
                     };
@@ -10219,11 +10240,11 @@ fn unlockable_words(cause: &str, never: bool) -> String {
     let cause = deep_diff_forge_core::display_safe(cause);
     if never {
         format!(
-            "deep-diff-forge: this session's lock cannot be taken where its state is kept ({cause}), so no hook of this session has kept its state, its start included. Read what follows with that: \"when this session's hooks first ran\" means this stop; a commit marked \"not this session's\" may be this session's own work; and the session-start hook may be installed and have run. Until the cause is repaired, the same failure can block again and a commit can be judged again."
+            "deep-diff-forge: this session's lock cannot be taken where its state is kept ({cause}), so no hook of this session has kept its state, its start included. Read what follows with that: \"when this session's hooks first ran\" means this stop; a commit marked \"not this session's\" may be this session's own work; the session-start hook may be installed and have run; and until the cause is repaired a failure that has blocked can block again (what follows says it does not: that needs the state this hook cannot keep), and a commit can be judged again."
         )
     } else {
         format!(
-            "deep-diff-forge: this session's lock cannot be taken where its state is kept ({cause}), so this stop keeps no state: until the cause is repaired, the same failure can block again and a commit can be judged again."
+            "deep-diff-forge: this session's lock cannot be taken where its state is kept ({cause}), so this stop keeps no state: until the cause is repaired a failure that has blocked can block again (what follows says it does not: that needs the state this hook cannot keep), and a commit can be judged again."
         )
     }
 }
@@ -17463,6 +17484,47 @@ mod tests {
         std::fs::rename(&held, &dir).unwrap();
         session.keep(&Writable::for_test(&at, &file)).unwrap();
         assert_eq!(load(&file), Ok(Some(session.state.clone())));
+    }
+
+    /// Review of P5c round 2, M1: the session's lock may be taken through a symbolic link to a
+    /// directory at the state directory's name (as in 0.11.0); the state is never written through
+    /// one. With a token of the directory itself the state is written (the positive control);
+    /// with a token of the link's target, opened through the link as the lock opens it, nothing
+    /// is written there, and the words are 0.11.0's.
+    #[test]
+    fn a_state_is_never_written_through_a_link_at_the_state_directory() {
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-state-through-link");
+        let (dir, target) = (scratch.join("hooks"), scratch.join("elsewhere"));
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::create_dir(&target).unwrap();
+        let file = state_file(&dir, "s");
+        let session = || Session {
+            dir: dir.clone(),
+            file: file.clone(),
+            state: State {
+                stops: 1,
+                ..State::default()
+            },
+            kept: None,
+            upgrade: false,
+            new_key: None,
+            tips: None,
+            judged: None,
+        };
+        let at = At::open(&dir, false).unwrap();
+        session().keep(&Writable::for_test(&at, &file)).unwrap();
+        assert!(file.is_file(), "(control) the state was not written");
+        std::fs::rename(&dir, scratch.join("hooks-away")).unwrap();
+        std::os::unix::fs::symlink(&target, &dir).unwrap();
+        let through = At::open(&dir, true).unwrap();
+        let said = session().keep(&Writable::for_test(&through, &file));
+        assert!(
+            said.as_ref().is_err_and(|said| said.contains(
+                "is not a directory of its own (a symbolic link or a file stands there)"
+            )),
+            "a state was kept through a link at the state directory: {said:?}"
+        );
+        assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0);
     }
 
     /// Independent review of the hooks, HR-L-2: a reason an advice hook has for not running is

@@ -15801,8 +15801,22 @@ fn a_session_start_under_a_held_lock_records_nothing_and_says_so() {
 /// its name.
 #[test]
 fn a_state_directory_replaced_while_a_stop_holds_the_lock_gets_nothing_written() {
+    stop_with_its_state_directory_replaced("hook-state-dir-replaced", false);
+}
+
+/// Review of P5c round 2, M1: as the test above, with a symbolic link to another directory put
+/// at the state directory's name in place of a fresh directory: nothing is written into the
+/// link's target.
+#[test]
+fn a_state_directory_replaced_by_a_link_while_a_stop_holds_the_lock_gets_nothing_written() {
+    stop_with_its_state_directory_replaced("hook-state-dir-linked", true);
+}
+
+/// The two tests above: a fresh directory (or, with `link`, a link to the directory
+/// `elsewhere`) put at the state directory's name while a stop judges.
+fn stop_with_its_state_directory_replaced(name: &str, link: bool) {
     use std::os::unix::fs::PermissionsExt as _;
-    let scratch = Scratch::new("hook-state-dir-replaced");
+    let scratch = Scratch::new(name);
     let root = repository(&scratch);
     let (script, log) = reading_judge(&scratch);
     start(&root, "s");
@@ -15820,6 +15834,9 @@ fn a_state_directory_replaced_while_a_stop_holds_the_lock_gets_nothing_written()
     commit_all(&root, "a commit of this session");
     std::fs::write(scratch.join("judge.sleep"), "2\n").unwrap();
     let (dir, held) = (sessions(), sessions().with_file_name("hooks-held"));
+    let elsewhere = scratch.join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    std::fs::set_permissions(&elsewhere, std::fs::Permissions::from_mode(0o700)).unwrap();
     let judged = runs(&log);
     let stop_home = home();
     let said = std::thread::scope(|scope| {
@@ -15829,21 +15846,125 @@ fn a_state_directory_replaced_while_a_stop_holds_the_lock_gets_nothing_written()
         });
         wait_until("the stop's judging", || runs(&log) > judged);
         std::fs::rename(&dir, &held).unwrap();
-        std::fs::create_dir(&dir).unwrap();
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        if link {
+            std::os::unix::fs::symlink(&elsewhere, &dir).unwrap();
+        } else {
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
         stop.join().unwrap()
     });
     std::fs::remove_file(scratch.join("judge.sleep")).unwrap();
     assert_eq!(
-        names_in(&dir),
-        Vec::<String>::new(),
-        "the stop wrote into the directory put at the state directory's name while it held the lock in the one moved away: {said}"
+        (names_in(&dir), files_left_under(&elsewhere)),
+        (Vec::<String>::new(), Vec::<PathBuf>::new()),
+        "the stop wrote into what was put at the state directory's name while it held the lock in the one moved away: {said}"
     );
     assert!(
         stop_words(&said).contains("is no longer the directory the session's lock was taken in (another process moved it away or put another in its place while this hook ran)"),
         "{said}"
     );
     assert!(names_in(&held).contains(&format!("{}.lock", stem("s"))));
+}
+
+/// Review of P5c round 2, M1: an advice hook reads the session's state in its directory, and
+/// takes the session's lock only to write. Between the two (here: while its first Git call
+/// waits) the directory is moved away and a symbolic link to another directory is put at its
+/// name. The lock may follow the link, as in 0.11.0; the state is not written through it: the
+/// link's target stays empty, and the hook says the state directory is not a directory of its
+/// own, as 0.11.0 said. First, the positive control: an advice hook alone writes the state.
+#[test]
+fn an_advice_hook_writes_no_state_through_a_link_put_at_the_state_directory() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let scratch = Scratch::new("hook-advice-link");
+    let root = repository(&scratch);
+    start(&root, "s");
+    let state = sessions().join(format!("{}.json", stem("s")));
+    let before = std::fs::read(&state).unwrap();
+    silence_a_lint(&root);
+    let (code, _, stderr) = hook("post-tool", &[], &input("PostToolUse", &root, "s", false));
+    assert_eq!((code, stderr.as_str()), (0, ""));
+    assert_ne!(
+        std::fs::read(&state).unwrap(),
+        before,
+        "(control) an advice hook alone wrote no state"
+    );
+    // (another finding, so that the next advice hook has something to write)
+    std::fs::write(
+        root.join("b.rs"),
+        "fn c() {}\n#[allow(unused)]\nfn d() {}\n",
+    )
+    .unwrap();
+    let (armed, waiting) = (scratch.join("armed"), scratch.join("waiting"));
+    let first = git_with(
+        &scratch,
+        "git-waits",
+        &format!(
+            "if [ -e '{armed}' ] && [ ! -e '{waiting}' ]; then : > '{waiting}'; while [ -e '{armed}' ]; do sleep 0.05; done; fi",
+            armed = armed.display(),
+            waiting = waiting.display()
+        ),
+    );
+    std::fs::write(&armed, "").unwrap();
+    let (dir, elsewhere) = (sessions(), scratch.join("elsewhere"));
+    std::fs::create_dir(&elsewhere).unwrap();
+    std::fs::set_permissions(&elsewhere, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let advice_home = home();
+    let said = std::thread::scope(|scope| {
+        let advice = scope.spawn(|| {
+            home_is(&advice_home);
+            let mut dirs = vec![first.clone()];
+            dirs.extend(std::env::split_paths(
+                &std::env::var_os("PATH").unwrap_or_default(),
+            ));
+            hook_in(
+                "post-tool",
+                &[],
+                &input("PostToolUse", &root, "s", false),
+                |command| {
+                    command.env("PATH", std::env::join_paths(dirs).unwrap());
+                },
+            )
+        });
+        wait_until("the advice hook's first Git call", || waiting.exists());
+        std::fs::rename(&dir, dir.with_file_name("hooks-held")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &dir).unwrap();
+        std::fs::remove_file(&armed).unwrap();
+        advice.join().unwrap()
+    });
+    assert_eq!(
+        files_left_under(&elsewhere),
+        Vec::<PathBuf>::new(),
+        "the advice hook wrote through a link put at the state directory's name: {said:?}"
+    );
+    assert!(
+        said.1
+            .contains("is not a directory of its own (a symbolic link or a file stands there)"),
+        "{said:?}"
+    );
+}
+
+/// Review of P5c round 2, L1: a session's lock file this user may write and not read (mode
+/// 0200) is still the lock: the hook looks at it to check it is the one at its name, and does
+/// not open it again to read. A stop takes the lock and blocks for a failure, as in 0.11.0;
+/// the re-check that opened the file to read gave every stop `state.lock_busy` (UNJUDGED in the
+/// session's memory, no block).
+#[test]
+fn a_lock_file_that_cannot_be_read_is_still_the_lock() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let scratch = Scratch::new("hook-lock-0200");
+    let root = repository(&scratch);
+    let (script, _log) = reading_judge(&scratch);
+    start(&root, "s");
+    let lock = sessions().join(format!("{}.lock", stem("s")));
+    std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o200)).unwrap();
+    secret(&root, "k.rs");
+    let said = stop_from(&root, "s", &script);
+    let reason = blocked(&said);
+    assert!(
+        !reason.starts_with(&stateless("state.lock_busy")),
+        "a lock file that cannot be read was taken for another hook's: {reason}"
+    );
 }
 
 /// Review of P5c, L1 and L2: where the session's lock file cannot be opened (a directory stands
