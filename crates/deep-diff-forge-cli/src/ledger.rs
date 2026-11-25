@@ -654,12 +654,28 @@ pub(crate) fn verify_branch(args: &[String]) {
         }
         Ok((records, commits, seals)) => {
             let set = seals.as_ref().map(|(set, _)| set);
+            // the records of each unit, once (a range of many commits read every record once a
+            // commit: 100,000 commits took longer than a client waits)
+            let mut by_unit: std::collections::BTreeMap<&str, Vec<&Value>> =
+                std::collections::BTreeMap::new();
+            for record in &records {
+                if let Some(unit) = record["unit"].as_str() {
+                    by_unit.entry(unit).or_default().push(record);
+                }
+            }
             doc["accepted_policy"] = seals
                 .as_ref()
                 .map_or(Value::Null, |(_, words)| json!(words));
             let verdicts: Vec<Value> = commits
                 .iter()
-                .map(|id| verdict(&records, id, set))
+                .map(|id| {
+                    let unit = format!("commit:{id}");
+                    verdict(
+                        by_unit.get(unit.as_str()).map_or(&[][..], Vec::as_slice),
+                        id,
+                        set,
+                    )
+                })
                 .collect();
             let not = verdicts.iter().filter(|v| v["verified"] != true).count();
             doc["commits"] = json!(verdicts);
@@ -691,12 +707,11 @@ pub(crate) fn verify_branch(args: &[String]) {
 /// commit that changes nothing), as a stop's frontier counts it (R10); the others are counted
 /// (`passes_not_accepted`) and passed over.
 fn verdict(
-    records: &[Value],
+    records: &[&Value],
     id: &str,
     accepted: Option<&std::collections::BTreeSet<String>>,
 ) -> Value {
-    let unit = format!("commit:{id}");
-    let mine = records.iter().filter(|r| r["unit"] == unit.as_str());
+    let mine = records.iter().copied();
     let counts = |r: &&Value| {
         r["outcome"] != "pass"
             || accepted.is_none_or(|set| {
