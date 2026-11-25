@@ -28,7 +28,8 @@ era) no longer holds. How the standard is enforced today:
   (`patch_parser`, `review_json`, `daemon_protocol`, `agent_annotation`,
   `council_report`, `stdio_mcp`, `stdio_rpc`, `structural_soundness`,
   `findings_verify`, `evidence_scan`, `rust_tokens`, `rust_code_view`, `rust_hunk_places`,
-  `hook_input`, `judge_patch`, `verdict_reader`, `journal_recover`, `git_raw_stream`: eighteen;
+  `hook_input`, `judge_patch`, `verdict_reader`, `journal_recover`, `git_raw_stream`,
+  `learning_receipt`, `council_request`, `council_analysis`: twenty-one;
   `stdio_invariants.rs` is a shared module)
   runs for 10 s per pull request; CI fails if a declared target is not in the
   run list. Crash inputs become fixtures under
@@ -238,7 +239,7 @@ era) no longer holds. How the standard is enforced today:
 - **Local campaign, a release step (0.10.0):** `just fuzz-campaign`
   ([`scripts/campaign_local.sh`](../scripts/campaign_local.sh)) runs every target that
   `scripts/fuzz_target.sh --list` names, one after the other, for 300 s each by default
-  (90 minutes of fuzzing for 18 targets, plus their builds), from the committed seeds, on
+  (105 minutes of fuzzing for 21 targets, plus their builds), from the committed seeds, on
   corpora under `DDF_FUZZ_CORPUS_ROOT` (required: a directory on disk). It stops red at the
   first target that fails, whose input cargo fuzz keeps under `fuzz/artifacts/<target>/`,
   and writes a receipt (`RECEIPT` beside each target's log: commit, toolchain, seconds per

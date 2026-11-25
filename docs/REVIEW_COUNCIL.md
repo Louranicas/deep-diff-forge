@@ -1003,6 +1003,21 @@ Bounded untrusted report parsing, validation and accepted-output serialization s
 
 [Exact crate/module](../fuzz/fuzz_targets/council_report.rs)
 
+### fuzz/fuzz_targets/council_request.rs
+
+Bounded request parsing through the production model and admission policy; accepted and refused
+requests retain the same admission result after typed serialization.
+
+[Exact crate/module](../fuzz/fuzz_targets/council_request.rs)
+
+### fuzz/fuzz_targets/council_analysis.rs
+
+Bounded analysis bytes through the complete production `prepare` path, including Git candidate
+inventory, analysis verification and sealing; success leaves a loadable manifest and refusal no
+partial run.
+
+[Exact crate/module](../fuzz/fuzz_targets/council_analysis.rs)
+
 <a id="reference-provenance"></a>
 
 ### review-policy/provenance.json

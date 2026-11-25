@@ -7,7 +7,7 @@
 #
 #   scripts/campaign_local.sh [<seconds> [<target>...]]   default 300 s each, every listed target
 #
-# The release default, 300 s, is 90 minutes of fuzzing for 18 targets, plus each target's build.
+# The release default, 300 s, is 105 minutes of fuzzing for 21 targets, plus each target's build.
 # Receipt: <root>/campaign-<UTC time>.<random>/RECEIPT, its path printed last, with the commit, the
 # toolchain, the seconds, one line per target run and the result; each target's output is beside it
 # in <target>.log. Exit status: 0 when every target ran clean, the failing target's status (non-zero)
