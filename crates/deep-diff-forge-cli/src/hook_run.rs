@@ -9854,12 +9854,24 @@ mod lock {
     /// directory is held open from before the lock file is opened ([`At`]), and the lock file
     /// is opened, checked and removed through it: the token it gives writes there.
     pub(super) fn session_lock(session: &str, wait: Duration) -> Turn {
-        lock_in(&super::sessions_dir(), session, wait, || {})
+        lock_in(&super::sessions_dir(), session, wait, |_| {})
     }
 
-    /// [`session_lock`] in the state directory `named` names; `between` runs each time the
-    /// directory has been opened and before the lock file is (a test puts there what another
-    /// process may do in that moment).
+    /// Where [`lock_in`] stands when it calls its `between`: a seam where a test puts what
+    /// another process may do in that moment.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(super) enum Phase {
+        /// The state directory decided, before it is opened.
+        Directory,
+        /// The directory opened, before the lock file is.
+        LockFile,
+        /// Before each `flock` of the lock file.
+        Lock,
+        /// The lock file found not to be the one at its name, before it is opened again.
+        Reopen,
+    }
+
+    /// [`session_lock`] in the state directory `named` names; `between` runs at each [`Phase`].
     ///
     /// A directory or a lock file that is not there when it is opened is looked for again, the
     /// directory decided again, until the wait is over: two first stops of a session make the
@@ -9867,7 +9879,11 @@ mod lock {
     /// directory" by the open that makes the lock file (the run of 0.11.1's tests on macOS; on
     /// Linux it is not seen), and a directory moved away and made again between the two opens
     /// gives the same answer. Only a refusal that lasts, or another refusal, is
-    /// [`Turn::Unlockable`] (0.11.0 took any of them as no lock and wrote all the same).
+    /// [`Turn::Unlockable`] (0.11.0 took any of them as no lock and wrote all the same). Where
+    /// the wait ends while the lock file taken is no longer at its name and none stands there
+    /// (removed each time), that is said as the cause, not as another hook's lock (review of
+    /// P5c round 3, L1); only a lock file another holds, or another file at its name, is
+    /// [`Turn::Taken`].
     #[expect(
         clippy::disallowed_methods,
         reason = "the session-lock door: a hook waits a bounded time, in short sleeps, for another hook of its session"
@@ -9876,10 +9892,9 @@ mod lock {
         named: &Result<PathBuf, String>,
         session: &str,
         wait: Duration,
-        between: impl Fn(),
+        between: impl Fn(Phase),
     ) -> Turn {
         use nix::fcntl::{Flock, FlockArg, OFlag};
-        use std::os::unix::fs::MetadataExt as _;
         let until = Deadline::after(wait);
         let pause = || std::thread::sleep(Duration::from_millis(25));
         let gone = |error: &std::io::Error| {
@@ -9895,6 +9910,7 @@ mod lock {
                 StateDir::NotOwn { dir, .. } => return Turn::NoDirectory(not_own_words(&dir)),
                 StateDir::None(why) => return Turn::NoDirectory(why.kept_words()),
             };
+            between(Phase::Directory);
             let at = match At::open(&dir, follow) {
                 Ok(at) => at,
                 Err(error) if gone(&error) => {
@@ -9908,7 +9924,7 @@ mod lock {
                     ));
                 }
             };
-            between();
+            between(Phase::LockFile);
             let state = state_file(&dir, session);
             let name = |path: &Path| PathBuf::from(path.file_name().unwrap_or_default());
             let (file, state_name) = (name(&state.with_extension("lock")), name(&state));
@@ -9936,19 +9952,10 @@ mod lock {
                 Err(error) => return unopened(error),
             };
             loop {
+                between(Phase::Lock);
                 match Flock::lock(opened, FlockArg::LockExclusiveNonblock) {
                     Ok(lock) => {
-                        // The file that was locked must be the one at its name: a hook that
-                        // left the session with no state has taken its lock file away, and
-                        // another may have made a new one since.
-                        // (looked at, not opened: a lock file this user cannot read is still
-                        // the one at its name, review of P5c round 2, L1)
-                        let same = match (lock.metadata(), at.identity_of(&file)) {
-                            (Ok(held), Ok(there)) => {
-                                (i128::from(held.dev()), i128::from(held.ino())) == there
-                            }
-                            _ => false,
-                        };
+                        let (same, vanished) = at_its_name(&lock, &at, &file);
                         if same {
                             return Turn::Mine(Held {
                                 lock,
@@ -9960,8 +9967,9 @@ mod lock {
                         }
                         drop(lock);
                         if until.left().is_zero() {
-                            return Turn::Taken;
+                            return vanished.map_or(Turn::Taken, Turn::Unlockable);
                         }
+                        between(Phase::Reopen);
                         opened = match open() {
                             Ok(again) => again,
                             Err(error) if gone(&error) => {
@@ -9980,6 +9988,33 @@ mod lock {
                     Err(_) => return Turn::NoLocks(NoFlock { at, state }),
                 }
             }
+        }
+    }
+
+    /// Whether the file `lock` holds is the one at the name `file` in `at`: a hook that left the
+    /// session with no state has taken its lock file away, and another may have made a new one
+    /// since. It is looked at, not opened: a lock file this user cannot read is still the one at
+    /// its name (review of P5c round 2, L1). With it, when nothing stands at that name, the cause
+    /// a wait that ends there says (review of P5c round 3, L1).
+    fn at_its_name(
+        lock: &nix::fcntl::Flock<std::fs::File>,
+        at: &At,
+        file: &Path,
+    ) -> (bool, Option<String>) {
+        use std::os::unix::fs::MetadataExt as _;
+        match (lock.metadata(), at.identity_of(file)) {
+            (Ok(held), Ok(there)) => (
+                (i128::from(held.dev()), i128::from(held.ino())) == there,
+                None,
+            ),
+            (_, Err(error)) if error.kind() == std::io::ErrorKind::NotFound => (
+                false,
+                Some(format!(
+                    "the session's lock file {} was gone from its name each time it was taken ({error})",
+                    super::shown(&at.path(file))
+                )),
+            ),
+            _ => (false, None),
         }
     }
 }
@@ -17527,46 +17562,107 @@ mod tests {
 
     /// The run of 0.11.1's tests on macOS (P5c round 3): two first stops of a session make the
     /// lock file at once, and one was told "No such file or directory" by the open that makes it,
-    /// and gave up the lock as `Unlockable`. A lock file (or a directory) that is not there when
-    /// it is opened is looked for again while the wait lasts. Here the directory is removed and
-    /// made again between its open and the lock file's, once: the lock is taken, in the directory
-    /// as it is now. Positive control: removed every time, the refusal is said when the wait is
-    /// over.
+    /// and gave up the lock as `Unlockable`. A directory or a lock file that is not there when it
+    /// is opened is looked for again while the wait lasts, at each of the three opens (review of
+    /// P5c round 3, L2): the directory removed before its open; removed and made again between
+    /// its open and the lock file's; the lock file taken from its name and the directory removed
+    /// and made again before it is opened again. Each time the lock is taken, in the directory as
+    /// it is now.
     #[test]
     fn a_lock_file_that_is_not_there_for_a_moment_is_looked_for_again() {
-        let said = |turn: &Turn| match turn {
+        use lock::Phase;
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-lock-again");
+        let dir = scratch.join("hooks");
+        let lock_file = state_file(&dir, "s").with_extension("lock");
+        for (phase, what) in [
+            (Phase::Directory, "the directory's open"),
+            (Phase::LockFile, "the lock file's open"),
+            (Phase::Reopen, "the open again after the name check"),
+        ] {
+            let (once, taken_away) = (std::cell::Cell::new(true), std::cell::Cell::new(false));
+            let turn = lock::lock_in(&Ok(dir.clone()), "s", Duration::from_secs(2), |at| {
+                if phase == Phase::Reopen && at == Phase::Lock && !taken_away.replace(true) {
+                    std::fs::remove_file(&lock_file).unwrap();
+                }
+                if at == phase && once.replace(false) {
+                    std::fs::remove_dir(&dir).unwrap();
+                    if phase != Phase::Directory {
+                        std::fs::create_dir(&dir).unwrap();
+                    }
+                }
+            });
+            assert!(!once.get(), "{what}: the moment was never reached");
+            assert!(
+                matches!(turn, Turn::Mine(_)) && lock_file.is_file(),
+                "{what}: a lock file or directory that was not there for a moment was not looked for again: {}",
+                turn_words(&turn)
+            );
+        }
+    }
+
+    /// What a [`Turn`] is, for a test's message.
+    fn turn_words(turn: &Turn) -> String {
+        match turn {
             Turn::Mine(_) => "Mine".to_owned(),
             Turn::NoLocks(_) => "NoLocks".to_owned(),
             Turn::Taken => "Taken".to_owned(),
             Turn::NoDirectory(why) => format!("NoDirectory({why})"),
             Turn::Unlockable(why) => format!("Unlockable({why})"),
-        };
-        let scratch = deep_diff_forge_testkit::Scratch::new("hook-lock-again");
+        }
+    }
+
+    /// Review of P5c round 3, L1 and L2: what is not there each time it is looked for ends the
+    /// wait as a lock that cannot be taken, with its cause: the directory removed before its open,
+    /// or the lock file taken from its name each time it is locked (that is no other hook's lock:
+    /// it was said as `state.lock_busy`). The wait ends on time (at most 100 ms past it; the
+    /// seam fails the test past a second, so a wait that never ends is a red assertion and not a
+    /// hang) and, where a directory is missing, pauses between looks (at most one look every
+    /// 25 ms or so).
+    #[test]
+    fn what_is_gone_each_time_ends_the_wait_with_its_cause() {
+        use lock::Phase;
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-lock-gone");
         let dir = scratch.join("hooks");
-        std::fs::create_dir(&dir).unwrap();
         let lock_file = state_file(&dir, "s").with_extension("lock");
-        let once = std::cell::Cell::new(true);
-        let turn = lock::lock_in(&Ok(dir.clone()), "s", Duration::from_secs(2), || {
-            if once.replace(false) {
-                std::fs::remove_dir(&dir).unwrap();
-                std::fs::create_dir(&dir).unwrap();
-            }
-        });
-        assert!(
-            matches!(turn, Turn::Mine(_)) && lock_file.is_file(),
-            "a lock file that was not there for a moment was not looked for again: {}",
-            said(&turn)
-        );
-        drop(turn);
-        // (positive control) gone every time: refused when the wait is over
-        let turn = lock::lock_in(&Ok(dir.clone()), "s", Duration::from_millis(300), || {
-            let _ = std::fs::remove_dir(&dir);
-        });
-        assert!(
-            matches!(&turn, Turn::Unlockable(why) if why.contains("cannot be opened")),
-            "{}",
-            said(&turn)
-        );
+        let wait = Duration::from_millis(300);
+        for (phase, cause) in [
+            (Phase::Directory, "the state directory"),
+            (Phase::Lock, "was gone from its name each time it was taken"),
+        ] {
+            let clock = Deadline::after(Duration::from_secs(60));
+            let looks = std::cell::Cell::new(0_u32);
+            let turn = lock::lock_in(&Ok(dir.clone()), "s", wait, |at| {
+                let spent = Duration::from_secs(60).saturating_sub(clock.left());
+                assert!(
+                    spent <= wait + Duration::from_secs(1),
+                    "{phase:?}: the looks did not end with the wait ({spent:?})"
+                );
+                if at == phase {
+                    looks.set(looks.get() + 1);
+                    match phase {
+                        Phase::Directory => std::fs::remove_dir(&dir).unwrap(),
+                        _ => std::fs::remove_file(&lock_file).unwrap(),
+                    }
+                }
+            });
+            let spent = Duration::from_secs(60).saturating_sub(clock.left());
+            assert!(
+                matches!(&turn, Turn::Unlockable(why) if why.contains(cause)),
+                "{phase:?}: {}",
+                turn_words(&turn)
+            );
+            assert!(
+                spent <= wait + Duration::from_millis(100),
+                "{phase:?}: the wait was {wait:?} and it took {spent:?}"
+            );
+            // (the look again after the name check does not pause: a busy loop as in 0.11.0,
+            // left for the follow-up P5e by the orchestrator's ruling of round 4)
+            assert!(
+                phase != Phase::Directory || looks.get() <= 30,
+                "{phase:?}: {} looks in {wait:?}: the looks do not pause",
+                looks.get()
+            );
+        }
     }
 
     /// Review of P5c round 2, M1: the session's lock may be taken through a symbolic link to a
