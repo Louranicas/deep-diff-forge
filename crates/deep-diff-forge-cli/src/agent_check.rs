@@ -113,7 +113,7 @@ fn check(session: Option<&str>, base: Option<&str>, args: &[String]) -> Value {
         })
     } else {
         differs.push(
-            "no session: the policy is read at the base named here, not at the base a session recorded"
+            "no session: the policy is read at the base named here, not at the base a session recorded, and not at the project's accepted policy"
                 .to_owned(),
         );
         std::env::current_dir()

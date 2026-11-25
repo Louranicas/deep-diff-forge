@@ -16,6 +16,48 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   weak. A protected policy reads `ok … is held or fails under a rule` (the words "under a rule"
   are new). The gate reads the policy at `HEAD`, a session's start the policy at the session's
   base; what a stop judges by is unchanged in this entry.
+- The stop hook judges every unit under two policies where their files differ: the policy at
+  the session's base, as before, and the project's accepted policy, the policy file at the
+  commit the project's ledger first recorded; the stricter answer stands, and a unit that one
+  of the two could not judge is never a pass (UNJUDGED unless the other fails or holds it). After
+  this, where the project's ledger first recorded a commit that has the policy file, a policy edit
+  that is merely committed does not judge anything, in the session that makes it or after it: in 0.11.0 a
+  commit that a session left without its stop, deleting the rule against secrets and the
+  policy's protection of its own file, judged itself and the next fresh session's own work, and
+  a key passed and verified. A `pass` record takes a commit out of the frontier only when it is
+  sealed to the accepted policy, so commits 0.11.0 passed through that hole are judged again,
+  and so is every earlier pass of a project whose policy changed since its ledger first recorded
+  it (a branch that verified can stop verifying). Where the ledger names no accepted policy
+  the stop is 0.11.0's; where it names one that cannot be read (its commit gone, a shallow clone
+  without the history) a unit the policy at the session's base does not fail or hold is
+  UNJUDGED. The limit that remains: a deliberate act by a process of the same user (a rewritten
+  or removed ledger, a changed settings file together with a removed ledger) can still change
+  what the hooks judge by; the pull request's judge is the boundary.
+- `agent policy-accept --commit C [--policy NAME] [--judge PATH] [--yes-from-pipe]`: the one way
+  a project's accepted policy changes (with the two policies above, a project that updates its
+  ranker's pin would otherwise be held for ever). To change a policy now: commit the new policy,
+  then a person runs the command, reads the old and the new digest, the whole diff and the change
+  of the producer pins, and types the new digest at a terminal; one acceptance record is appended
+  to the project's new policy record, `.git/deep-diff-forge/policy.jsonl` beside the ledger, and
+  the hooks apply it as a compare-and-swap (its `from` is the accepted digest then, its commit an
+  ancestor of `HEAD`, its `to` the bytes there). The same file binds, on first use, the policy name
+  the hooks are given: hooks given another name pass nothing. What the convention is not: it is
+  not authentication; any process running as this user can run the command or write the file, and
+  a record written by hand that applies takes effect. The pull request's judge under the target
+  branch's policy is the authority. A stop reads the ledger and the policy record under one
+  project lock and compares them again before its append: a stop whose accepted policy changed
+  while it judged records no `pass`. The ledger's form and version are unchanged, and 0.11.0
+  ignores the new file. `agent verify-branch` now counts a pass as a stop's frontier does: after
+  an upgrade, commits that passed under a policy that was never the accepted one stop verifying
+  until a stop judges them again or the policy is accepted (the published 0.11.0 counts every
+  pass). `agent doctor --gate` has a new link, `policy_accepted`. The meaning of
+  `chain.policy_missing` is widened to an unbound policy name, a policy record or a ledger that
+  cannot be read whole, and an accepted policy that changed while the stop judged. A ledger that
+  exists and cannot be read whole (a session's own commits and stops can grow it past the 64 MiB
+  its readers read) now leaves the accepted policy unknown: no change passes until a person deals
+  with the file (0.11.0 judged under the policy at the session's base alone there); a commit
+  already recorded as waiting for its turn is no longer recorded again at every stop. Acceptances
+  of two branches that meet in a merge pass nothing until the owner accepts again.
 - Tests only: no scanner changed. The tests that hold the line scanners to linear time bounded
   one size in absolute seconds of a debug build, so they failed on a slower runner while the
   scan was linear (`the_import_rule_is_linear_on_long_lines` on GitHub's Linux runner for
@@ -58,23 +100,6 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   `DDF_GATE_RECEIPT` names another). The contract matrix prints `real rows: N run, M skipped`,
   which the step's line carries, and one line `skipped: …` that counts the rows it skipped by
   what was not given.
-- The stop hook judges every unit under two policies where their files differ: the policy at
-  the session's base, as before, and the project's accepted policy, the policy file at the
-  commit the project's ledger first recorded; the stricter answer stands, and a unit that one
-  of the two could not judge is never a pass (UNJUDGED unless the other fails or holds it). After
-  this, where the project's ledger first recorded a commit that has the policy file, a policy edit
-  that is merely committed does not judge anything, in the session that makes it or after it: in 0.11.0 a
-  commit that a session left without its stop, deleting the rule against secrets and the
-  policy's protection of its own file, judged itself and the next fresh session's own work, and
-  a key passed and verified. A `pass` record takes a commit out of the frontier only when it is
-  sealed to the accepted policy, so commits 0.11.0 passed through that hole are judged again,
-  and so is every earlier pass of a project whose policy changed since its ledger first recorded
-  it (a branch that verified can stop verifying). Where the ledger names no accepted policy
-  the stop is 0.11.0's; where it names one that cannot be read (its commit gone, a shallow clone
-  without the history) a unit the policy at the session's base does not fail or hold is
-  UNJUDGED. The limit that remains: a deliberate act by a process of the same user (a rewritten
-  or removed ledger, a changed settings file together with a removed ledger) can still change
-  what the hooks judge by; the pull request's judge is the boundary.
 
 ## [0.11.0] - 2026-11-25
 

@@ -616,7 +616,7 @@ fn no_accepted_policy_judges_under_the_session_base_alone_and_says_so() {
     let said = p.start("k1", "startup");
     let said = said.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
-        said.contains("- This project's ledger names no accepted policy (the commit of its first record has no file \"warden.toml\"): changes are judged under the policy at commit"),
+        said.contains("- This project's ledger and policy record name no accepted policy (the commit of the ledger's first record has no file \"warden.toml\"): changes are judged under the policy at commit"),
         "{said}"
     );
     assert!(
@@ -664,14 +664,15 @@ fn no_accepted_policy_judges_under_the_session_base_alone_and_says_so() {
     let said = said.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
         said.contains(
-            "- This project's ledger names no accepted policy (its first record names no commit)"
+            "- This project's ledger and policy record name no accepted policy (the ledger's first record names no commit)"
         ),
         "{said}"
     );
     std::fs::write(p.root.join("k.md"), KEY).unwrap();
     assert!(blocks(&p.stop("k1")));
 
-    // a ledger that cannot be read
+    // a ledger that cannot be read: since ruling 10 (F1) the accepted policy cannot be had there
+    // (never "no accepted policy"): the policy at the session's base still fails what it fails
     let p = project("unreadable", Some(STRICT));
     p.start("k0", "startup");
     let file = p.root.join(".git/deep-diff-forge/ledger.jsonl");
@@ -680,7 +681,7 @@ fn no_accepted_policy_judges_under_the_session_base_alone_and_says_so() {
     let said = p.start("k1", "startup");
     assert!(
         said.split_whitespace().collect::<Vec<_>>().join(" ").contains(
-            "- This project's ledger names no accepted policy (it could not be read): changes are judged under the policy at commit"
+            "- This project's accepted policy cannot be read (this project's ledger cannot be read whole"
         ),
         "{said}"
     );
@@ -688,7 +689,7 @@ fn no_accepted_policy_judges_under_the_session_base_alone_and_says_so() {
     let decision = p.stop("k1");
     assert!(blocks(&decision), "{decision}");
     assert!(
-        words(&decision).contains("No accepted policy could be read from it, so they were judged under the policy at the commit this session began from alone."),
+        words(&decision).contains("the project's accepted policy cannot be had while the ledger cannot be read, so a change that policy does not fail or hold is UNJUDGED"),
         "{decision}"
     );
 }
@@ -835,10 +836,13 @@ fn passes_sealed_to_a_policy_never_accepted_are_judged_again() {
         text.push('\n');
     }
     std::fs::write(&file, text).unwrap();
+    // the published 0.11.0 verifies this ledger (exit 0); from L1c (ruling 6, F5) this build's
+    // verify-branch counts a pass as the frontier does, so M's pass under L's own policy does not
+    // verify it even before a stop judges it again
     assert_eq!(
         p.verify(&format!("{base}..HEAD")).0,
-        0,
-        "the hole, as 0.11.0 left it"
+        7,
+        "the hole, as 0.11.0 left it, read by this build"
     );
     p.start("k1", "resume");
     let decision = p.stop("k1");
@@ -957,7 +961,8 @@ fn the_stateless_stop_judges_under_both_policies() {
         "{:?}",
         p.records_of(&left)
     );
-    // it has no session base: its words name 0.11.0's policy first, then the one at HEAD (T8)
+    // it has no session base: its words name the accepted policy first (ruling 9; here the one
+    // the ledger first recorded), then the one at HEAD (T8)
     assert!(
         said.contains("This unit was judged under two policies: the accepted one (commit")
             && said.contains(") and the one at HEAD (commit")

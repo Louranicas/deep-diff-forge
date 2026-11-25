@@ -2453,7 +2453,15 @@ fn a_linked_working_tree_the_session_entered_is_judged_too() {
             .unwrap()
             .filter(|entry| {
                 let name = entry.as_ref().unwrap().file_name();
-                name != "ledger.jsonl" && name != "ledger.salt"
+                // (and the policy record and the project lock: release 0.11.1, L1c)
+                ![
+                    "ledger.jsonl",
+                    "ledger.salt",
+                    "policy.jsonl",
+                    "project.lock",
+                ]
+                .iter()
+                .any(|kept| name == *kept)
             })
             .count(),
         0
@@ -2971,10 +2979,14 @@ fn a_scratch_directory_a_killed_hook_left_is_removed_by_the_next_hook() {
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
-    // (and the project's ledger, which the first hook of a session writes: F13.b)
+    // (and the project's ledger, which the first hook of a session writes: F13.b; the policy
+    // record and the project lock, where the first hook binds the policy name: release 0.11.1)
     let mut names = names;
     names.sort();
-    assert_eq!(names, ["ledger.jsonl", "tmp-1"]);
+    assert_eq!(
+        names,
+        ["ledger.jsonl", "policy.jsonl", "project.lock", "tmp-1"]
+    );
 }
 
 /// Independent review of the hooks, HR-L-4. "FAIL STANDS" was decided by rule, signal and path:
@@ -3185,13 +3197,15 @@ fn a_session_that_starts_on_a_changed_tree_is_told_that_it_is_judged_with_it() {
         dirty.contains("- The working tree already differs from that commit: what was uncommitted when this session began is judged together with your changes.\n"),
         "{dirty}"
     );
-    // the start changed nothing and left nothing behind but the project's ledger (F13.b)
+    // the start changed nothing and left nothing behind but the project's ledger (F13.b), and
+    // the policy record with the project lock, where it bound the policy name (release 0.11.1)
     assert_eq!(git(&root, &["status", "--porcelain=v1"]), " M a.rs\n");
-    let left: Vec<String> = std::fs::read_dir(root.join(".git/deep-diff-forge"))
+    let mut left: Vec<String> = std::fs::read_dir(root.join(".git/deep-diff-forge"))
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
-    assert_eq!(left, ["ledger.jsonl"]);
+    left.sort();
+    assert_eq!(left, ["ledger.jsonl", "policy.jsonl", "project.lock"]);
 }
 
 /// Independent review of the hooks, HR-L-2, the input cap. A `PostToolUse` input carries the
@@ -3325,9 +3339,11 @@ fn the_state_of_a_session_is_in_the_users_state_directory_or_the_hook_says_it_ha
     assert_eq!(files(&sessions()), 4);
     assert!(!root.join("relative").exists());
     // nothing of a session's state is kept in the repository: only the project's ledger
-    // (F13.b: its baseline and the start of each session)
-    assert_eq!(files(&root.join(".git/deep-diff-forge")), 1);
+    // (F13.b: its baseline and the start of each session), and the policy record with the
+    // project lock, where the advice hook bound the policy name on first use (release 0.11.1)
+    assert_eq!(files(&root.join(".git/deep-diff-forge")), 3);
     assert!(root.join(".git/deep-diff-forge/ledger.jsonl").is_file());
+    assert!(root.join(".git/deep-diff-forge/policy.jsonl").is_file());
 
     // neither: said, for a stop as UNJUDGED, and never a block
     for (word, name, starts) in [
@@ -12974,7 +12990,7 @@ fn each_guard_file_is_named_once_and_again_when_its_content_changes() {
     let files = [
         (
             "warden.toml",
-            "the policy file the stops judge with; this session's stops read the policy as it was at the commit the session began from",
+            "the policy file the stops judge with; where this project's ledger first recorded a commit that has the policy file, committing an edit of it can make this session's stops stricter, never looser, and committing it does not make it the project's accepted policy",
         ),
         (".gitattributes", "a Git attributes file"),
         (".github/workflows/x.yml", "a CI workflow"),
@@ -14110,6 +14126,18 @@ fn a_ledger_that_cannot_be_written_changes_no_decision() {
     let file = |own: &Path| own.join("ledger.jsonl");
     let same_block = |(control, spoiled): (Value, Value), why: &str| {
         let (control, spoiled) = (blocked(&control), blocked(&spoiled));
+        // (release 0.11.1, L1c: a ledger replaced while the project's policy record stands
+        // makes the accepted policy unreadable, which the failing unit's words then say; the
+        // decision, the block, is the same)
+        let spoiled = spoiled
+            .lines()
+            .filter(|line| {
+                !line.starts_with("This unit was judged under one of its two policies: this project's policy record and its ledger disagree")
+                    && !line.starts_with("This unit was judged under one of its two policies: this project's ledger cannot be read whole")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let spoiled = spoiled.as_str();
         assert!(spoiled.starts_with(control), "{control}\n---\n{spoiled}");
         let rest = &spoiled[control.len()..];
         assert!(

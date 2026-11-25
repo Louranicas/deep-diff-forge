@@ -338,7 +338,7 @@ pub(crate) fn guard_notice(guard: &Guard, remembered: bool, cap: usize) -> Strin
     use std::fmt::Write as _;
     let what = match guard.kind {
         GuardFile::Policy => {
-            "the policy file the stops judge with; this session's stops read the policy as it was at the commit the session began from, so this edit does not change how they judge, and committing it does not make it the project's accepted policy"
+            "the policy file the stops judge with; where this project's ledger first recorded a commit that has the policy file, committing an edit of it can make this session's stops stricter, never looser, and committing it does not make it the project's accepted policy"
         }
         GuardFile::GitAttributes => {
             "a Git attributes file, which decides how Git shows, compares and merges the files it names; the hooks read the change without the repository's attributes, so it hides nothing from them, but tools that honour it can show those files differently"
@@ -529,7 +529,7 @@ const LINK_CUT: &str = " [cut here]";
 
 /// What the start's first rule adds from release 0.11.1 (text T1): each change is judged under
 /// the project's accepted policy too, where its file differs from the one at the session's base.
-const ACCEPTED_TOO: &str = " and, where the project's ledger names an accepted policy whose file differs from it, against that one too, the stricter answer standing; a change that could not be judged under both is never a pass: it is UNJUDGED unless the policy it was judged under fails or holds it";
+const ACCEPTED_TOO: &str = " and, where the project's ledger and policy record name an accepted policy whose file differs from it, against that one too, the stricter answer standing; a change that could not be judged under both is never a pass: it is UNJUDGED unless the policy it was judged under fails or holds it";
 
 /// What a session is told when it starts: what the hooks do, what its changes are measured
 /// from, and whether a stop can be judged here. Plain text: Claude Code adds a `SessionStart`
@@ -4133,7 +4133,7 @@ mod tests {
         assert!(ready.contains("It is advice and never blocks."));
         // HR2-H-1: exactly what is judged, not "everything, committed or not"
         assert!(ready.contains(
-            "your uncommitted and staged changes, and each commit made since this session began (commit 0123456) that your branches, tags, stash, HEAD or their history name, with each commit those name that came after the project's ledger first recorded the project and has no stop's verdict there (a session that ended before its stop left it), are judged by forge-warden against the policy at that commit and, where the project's ledger names an accepted policy whose file differs from it, against that one too, the stricter answer standing; a change that could not be judged under both is never a pass: it is UNJUDGED unless the policy it was judged under fails or holds it: each commit once, by its own change, so a later commit does not undo an earlier one. A fail holds the stop once. A hold is for a person. UNJUDGED means no verdict was made; it is not a pass. One stop has as many commits judged as fit in its time, and the rest at the next stop."
+            "your uncommitted and staged changes, and each commit made since this session began (commit 0123456) that your branches, tags, stash, HEAD or their history name, with each commit those name that came after the project's ledger first recorded the project and has no stop's verdict there (a session that ended before its stop left it), are judged by forge-warden against the policy at that commit and, where the project's ledger and policy record name an accepted policy whose file differs from it, against that one too, the stricter answer standing; a change that could not be judged under both is never a pass: it is UNJUDGED unless the policy it was judged under fails or holds it: each commit once, by its own change, so a later commit does not undo an earlier one. A fail holds the stop once. A hold is for a person. UNJUDGED means no verdict was made; it is not a pass. One stop has as many commits judged as fit in its time, and the rest at the next stop."
         ), "{ready}");
         assert!(!ready.contains("committed or not"), "{ready}");
         assert!(ready.contains("UNJUDGED means no verdict was made; it is not a pass."));

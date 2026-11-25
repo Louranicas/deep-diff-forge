@@ -1251,6 +1251,23 @@ says when it closed:
   policy edit that is committed cannot make a stop judge less, and a required run of the judge
   that is missing is UNJUDGED. U3 is **not met**: `agent verify-branch` reads evidence the same
   user can write. The pull request's judge, under the target branch's policy, is the boundary.
+- From 0.11.1 the accepted policy changes only by an acceptance record of the project's policy
+  record (`deep-diff-forge/policy.jsonl` beside the ledger), which `agent policy-accept` appends
+  after a person typed the new digest, and which the hooks apply as a compare-and-swap; the same
+  file binds the policy name the hooks are given on first use. It is a local convention, not
+  authentication: any process running as this user can run the command or write the file. The
+  file joins the list of deliberate same-user acts: writing it (an acceptance record written by
+  hand that applies takes effect as one the command appended), removing it (the policy of
+  the ledger's first record is accepted again, which is never below 0.11.0, since the policy at
+  the session's base is still judged by), or truncating it inside a record (the cut line is
+  passed over and the doctor names it; the accepted policy goes back to the one before that
+  record, and an acceptance chained on it no longer applies). A ledger grown past the 64 MiB its
+  readers read (a session's own commits and stops can do it) leaves the accepted policy unknown:
+  no change passes in the project until a person deals with the file, a way to deny the hooks'
+  service but never a way to pass. A record that cannot be read whole, a binding the
+  ledger disagrees with, and a hook given another policy name than the bound one pass nothing;
+  a stop whose accepted policy changed while it judged records no `pass`. The pull request's
+  judge, under the target branch's policy, is the authority.
 
 ## Hardening provenance
 
