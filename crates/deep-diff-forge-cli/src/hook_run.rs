@@ -4245,8 +4245,13 @@ struct Stopping<'a> {
     work: &'a Work,
     cwd: &'a str,
     /// The commit the session began from: the policy of half 1 of every unit is read from it
-    /// (release 0.11.1, R1).
+    /// (release 0.11.1, R1), unless `first` gives half 1 otherwise.
     base: &'a str,
+    /// Half 1 of every unit where it is not the policy file at `base`: in the stop whose session
+    /// state could not be used, the project's accepted policy, or why it cannot be had (ruling 9
+    /// of release 0.11.1: the accepted policy is one required policy of every stop). `None`: the
+    /// file at `base`.
+    first: Option<&'a SecondHalf>,
     /// Half 2 of every unit: the project's accepted policy where its file differs from the one
     /// at `base`, or why it cannot be had; `None` when the stop judges under one policy (the same
     /// bytes, or no accepted policy: R6 a and b).
@@ -4793,7 +4798,7 @@ impl<'a> Judge<'a> {
             bench: None,
             chain: None,
         };
-        let mut halves = vec![half(None)];
+        let mut halves = vec![half(stop.first)];
         halves.extend(stop.second.map(|second| half(Some(second))));
         Self {
             stop,
@@ -4812,6 +4817,7 @@ impl<'a> Judge<'a> {
     /// and differs from the one at the session's base. (One that cannot be read takes no run.)
     fn two_runs(&self) -> bool {
         matches!(self.stop.second, Some(SecondHalf::Policy { .. }))
+            && !matches!(self.stop.first, Some(SecondHalf::Unreadable(_)))
     }
 
     /// Forget what was said of the patch last asked about.
@@ -4854,7 +4860,10 @@ impl<'a> Judge<'a> {
         let short = |id: &str| id.chars().take(7).collect::<String>();
         Halves {
             names: self.stop.names,
-            base: short(self.stop.base),
+            base: match self.stop.first {
+                Some(SecondHalf::Policy { commit, .. }) => short(commit),
+                _ => short(self.stop.base),
+            },
             accepted: match self.stop.second {
                 Some(SecondHalf::Policy { commit, .. }) => Some(short(commit)),
                 _ => None,
@@ -5034,8 +5043,17 @@ const STOP_NAMES: Names = Names {
     second_short: "the accepted one",
 };
 
-/// The stateless stop's names: 0.11.0's policy (the one at the commit the ledger first
-/// recorded, the accepted policy), and the policy at `HEAD`.
+/// The stateless stop's names where the project has an accepted policy, or one it cannot read
+/// (ruling 9): that policy, and the policy at `HEAD`.
+const STATELESS_ACCEPTED_NAMES: Names = Names {
+    first: "the accepted policy",
+    first_short: "the accepted one",
+    second: "the policy at HEAD",
+    second_short: "the one at HEAD",
+};
+
+/// The stateless stop's names where the project has no accepted policy: 0.11.0's policy (the
+/// one at the commit the ledger first recorded), and the policy at `HEAD`.
 const STATELESS_NAMES: Names = Names {
     first: "the policy at the commit this project's ledger first recorded",
     first_short: "the one first recorded",
@@ -6022,16 +6040,19 @@ const PROJECT_LOCK_WAIT: Duration = Duration::from_secs(3);
 
 /// What one hook read of the project's ledger and policy record and derived from them (release
 /// 0.11.1, L1c): the accepted policy, what the doctor names, the binding this hook wrote (`T4`),
-/// the digest of the snapshot its stop records carry, and the digest of what it read (the
-/// ledger's first whole baseline and the policy record's bytes), which a stop compares again
-/// under the project lock before its records are made ([`snapshot_again`]).
+/// the digest of the snapshot its stop records carry, and what a stop compares again under the
+/// project lock before its records are made ([`snapshot_again`]): the ledger's first whole
+/// baseline as it stood after this read (`ledger`; a stop can write it at its first read), and
+/// the snapshot derived from that and the policy record (`reference`, the same as `snapshot`
+/// unless this read wrote the baseline).
 struct Projected {
     accepted: Accepted,
     derived: Derivation,
     record: Result<Option<crate::policy_record::Record>, String>,
     bound_now: Option<String>,
     snapshot: String,
-    inputs: String,
+    ledger: Result<Option<crate::ledger::Baseline>, String>,
+    reference: String,
 }
 
 impl Projected {
@@ -6055,33 +6076,34 @@ impl Projected {
             derived: Derivation::default(),
             record: Err(why.to_owned()),
             bound_now: None,
-            inputs: String::new(),
+            ledger: Err(why.to_owned()),
+            reference: String::new(),
         }
     }
 }
 
-/// The digest of what a hook read of the project's two files: the ledger's first whole baseline
-/// record ([`crate::ledger::first_baseline`]) and the policy record's bytes.
-fn inputs_digest(
-    own: &Path,
+/// The snapshot digest of the accepted policy derived from the ledger's first whole baseline
+/// `baseline` and the policy record `record` for a hook at `place` given `name`, as a stop's
+/// records carry it ([`crate::ledger::snapshot_sha256_of`]), with what was derived.
+fn snapshot_from(
+    place: &Place,
+    baseline: Option<crate::ledger::Baseline>,
     record: &Result<Option<crate::policy_record::Record>, String>,
-) -> String {
-    let baseline = match crate::ledger::first_baseline(own) {
-        Ok(None) => "none".to_owned(),
-        Ok(Some(b)) => format!(
-            "{} {}",
-            b.head.as_deref().unwrap_or("null"),
-            crate::ledger::tips_sha256(&b.tips)
-        ),
-        Err(why) => format!("unreadable {why}"),
+    name: &str,
+    deadline: Deadline,
+) -> (String, Accepted) {
+    let frontier = crate::ledger::Frontier {
+        baseline,
+        ..crate::ledger::Frontier::default()
     };
-    deep_diff_forge_core::sha256_hex(
-        format!(
-            "ledger {baseline}\nrecord {}\n",
-            crate::policy_record::inputs_word(record)
-        )
-        .as_bytes(),
-    )
+    let (accepted, derived) = accepted_policy(place, Some(&frontier), record, name, deadline);
+    let snapshot = crate::ledger::snapshot_sha256_of(
+        frontier.baseline.as_ref(),
+        derived.bound.as_deref(),
+        &derived.applied,
+        accepted.sha256(),
+    );
+    (snapshot, accepted)
 }
 
 /// Bind the policy name `name` to the project on first use (release 0.11.1, R3, ruling 2 Q4):
@@ -6150,14 +6172,23 @@ fn project_policy(
         &derived.applied,
         accepted.sha256(),
     );
-    let inputs = inputs_digest(&place.own, &record);
+    // what the append compares against: the same derivation, unless this read wrote the
+    // ledger's baseline (a first record), when it is derived again from what stands now
+    let ledger = crate::ledger::first_baseline(&place.own);
+    let reference = match &ledger {
+        Ok(now) if now.as_ref() != frontier.and_then(|f| f.baseline.as_ref()) => {
+            snapshot_from(place, now.clone(), &record, name, deadline).0
+        }
+        _ => snapshot.clone(),
+    };
     Projected {
         accepted,
         derived,
         record,
         bound_now,
         snapshot,
-        inputs,
+        ledger,
+        reference,
     }
 }
 
@@ -6193,9 +6224,9 @@ fn accepted_named(accepted: &Accepted) -> String {
 }
 
 /// Before a stop's records are made (release 0.11.1, ruling 4, the snapshot at the append): take
-/// the project lock again, read the ledger's first record and the policy record again, and compare
-/// them with what the stop judged by (`first`); where they changed, derive the snapshot again
-/// under the lock and compare it. Returns the lock, which the stop holds through its ledger
+/// the project lock again, read the ledger's first record and the policy record again, derive the
+/// snapshot again under the lock (with HEAD as it is now) and compare it with what the stop judged
+/// by (`first`). Returns the lock, which the stop holds through its ledger
 /// append, and `Some(words)` when the accepted policy the stop judged by is no longer the
 /// project's, or that cannot be told in time: then no `pass` of this stop may be recorded
 /// ([`unpass`]). Its cost comes out of [`STOP_RESERVE`], after the judging.
@@ -6218,16 +6249,15 @@ fn snapshot_again(
             );
         }
     };
+    // Always derived again (no fast path on the two files' bytes: which acceptances apply also
+    // depends on HEAD, the shallow marker and the objects Git has; an early read of binary 1
+    // moved HEAD while the judge ran and a stale pass was appended).
     let record = crate::policy_record::read(&place.own);
-    if inputs_digest(&place.own, &record) == first.inputs {
-        return (Some(held), None);
-    }
-    let frontier = match crate::ledger::first_baseline(&place.own) {
-        Ok(baseline) => crate::ledger::Frontier {
-            baseline,
-            ..crate::ledger::Frontier::default()
-        },
-        Err(why) => {
+    let baseline = match (crate::ledger::first_baseline(&place.own), &first.ledger) {
+        (Ok(baseline), Ok(_)) => baseline,
+        // unreadable at both reads: no accepted policy at either (R6 a)
+        (Err(_), Err(_)) => return (Some(held), None),
+        (Err(why), Ok(_)) => {
             return (
                 Some(held),
                 Some(format!(
@@ -6236,15 +6266,18 @@ fn snapshot_again(
                 )),
             );
         }
+        (Ok(_), Err(_)) => {
+            return (
+                Some(held),
+                Some(
+                    "this project's ledger, which could not be read when this stop began, can be read now: what it judged by is not known to be the accepted policy"
+                        .to_owned(),
+                ),
+            );
+        }
     };
-    let (accepted, derived) = accepted_policy(place, Some(&frontier), &record, name, deadline);
-    let snapshot = crate::ledger::snapshot_sha256_of(
-        frontier.baseline.as_ref(),
-        derived.bound.as_deref(),
-        &derived.applied,
-        accepted.sha256(),
-    );
-    if snapshot == first.snapshot {
+    let (snapshot, accepted) = snapshot_from(place, baseline, &record, name, deadline);
+    if snapshot == first.reference {
         return (Some(held), None);
     }
     (
@@ -9484,6 +9517,7 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, Why> {
                         work: &work,
                         cwd: &input.cwd,
                         base: &base,
+                        first: None,
                         second: second.as_ref(),
                         names: STOP_NAMES,
                         scratch: &scratch,
@@ -9713,6 +9747,25 @@ fn head_half(
     })
 }
 
+/// The stateless stop's half 2 beside the accepted policy (ruling 9): the policy file `name` at
+/// `HEAD` (the commit `head`) where it is there and is not the bytes `against` (with none to
+/// compare, wherever it is there).
+fn head_differs(
+    place: &Place,
+    head: &str,
+    name: &str,
+    against: Option<&[u8]>,
+    deadline: Deadline,
+) -> Option<SecondHalf> {
+    let at_head = file_at_commit(&place.top, head, name, &deadline.git())
+        .ok()
+        .flatten()?;
+    (against != Some(at_head.as_slice())).then(|| SecondHalf::Policy {
+        commit: head.to_owned(),
+        bytes: at_head,
+    })
+}
+
 /// What heads the message of a stop whose session state could not be used ([`stateless_stop`]).
 /// `accepted` is the project's accepted policy and `two` whether the tree was judged under it
 /// beside the policy at `HEAD` (release 0.11.1, T11; `name` is the policy file's).
@@ -9832,10 +9885,31 @@ fn stateless_stop(
     if let Some(sealed_to) = accepted.sealed_to() {
         frontier.passes_sealed_to(&sealed_to);
     }
-    // Half 2 is the policy at HEAD where it has the file and its bytes differ from half 1's: a
-    // commit of the session can only add to what is judged, never take from it.
-    let second = match &work.project.base {
-        Base::Commit(id) if *id != base => head_half(&work.place, &base, id, &name, deadline),
+    // Ruling 9: the accepted policy is one required policy of every stop. Where the project has
+    // one, it is half 1 (in place of the file at the first record's commit, which an acceptance
+    // replaced); where it cannot be had (gone, a shallow cut, another name than the bound one, a
+    // policy record not whole, a binding the ledger disagrees with), half 1 gives no verdict and
+    // a unit is UNJUDGED unless the policy at HEAD fails or holds it; where there is none, half 1
+    // is 0.11.0's choice, as above. Half 2 is the policy at HEAD where it has the file and its
+    // bytes differ from half 1's: a commit of the session can only add to what is judged.
+    let first = match accepted {
+        Accepted::Policy { commit, bytes, .. } => Some(SecondHalf::Policy {
+            commit: commit.clone(),
+            bytes: bytes.clone(),
+        }),
+        Accepted::Unreadable(why) => Some(SecondHalf::Unreadable(why.clone())),
+        Accepted::None(_) => None,
+    };
+    let second = match (&work.project.base, &first) {
+        (Base::Commit(id), Some(SecondHalf::Policy { bytes, .. })) => {
+            head_differs(&work.place, id, &name, Some(bytes), deadline)
+        }
+        (Base::Commit(id), Some(SecondHalf::Unreadable(_))) => {
+            head_differs(&work.place, id, &name, None, deadline)
+        }
+        (Base::Commit(id), None) if *id != base => {
+            head_half(&work.place, &base, id, &name, deadline)
+        }
         _ => None,
     };
     // With the session's lock held by another hook, that hook answers for the commits (when it
@@ -9851,8 +9925,13 @@ fn stateless_stop(
         work: &work,
         cwd: &input.cwd,
         base: &base,
+        first: first.as_ref(),
         second: second.as_ref(),
-        names: STATELESS_NAMES,
+        names: if first.is_some() {
+            STATELESS_ACCEPTED_NAMES
+        } else {
+            STATELESS_NAMES
+        },
         scratch: &scratch,
         args,
         deadline: judging,

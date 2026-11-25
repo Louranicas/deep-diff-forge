@@ -960,9 +960,10 @@ fn the_stateless_stop_judges_under_both_policies() {
         "{:?}",
         p.records_of(&left)
     );
-    // it has no session base: its words name 0.11.0's policy first, then the one at HEAD (T8)
+    // it has no session base: its words name the accepted policy first (ruling 9; here the one
+    // the ledger first recorded), then the one at HEAD (T8)
     assert!(
-        said.contains("This unit was judged under two policies: the one first recorded (commit")
+        said.contains("This unit was judged under two policies: the accepted one (commit")
             && said.contains(") and the one at HEAD (commit")
             && !said.contains("at the session base"),
         "{said}"

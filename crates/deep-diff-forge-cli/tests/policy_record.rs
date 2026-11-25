@@ -1242,3 +1242,130 @@ fn the_stateless_stop_and_the_guard_notice_say_what_is_true() {
         p.records_of(&benign)
     );
 }
+
+/// Damage the session's state (its key files), so that the next stop is the stateless one.
+fn damage(p: &Project) {
+    let mut keys = 0;
+    let mut dirs = vec![p.home.join(".local/state/deep-diff-forge")];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.file_name().is_some_and(|name| name == "key") {
+                std::fs::write(&path, "x").unwrap();
+                keys += 1;
+            }
+        }
+    }
+    assert!(keys > 0, "no key file to damage");
+}
+
+/// Vesper's early read of binary 1 (L1C-EARLY-ADVERSARY): which acceptances apply depends on
+/// HEAD, so HEAD moved while the judge ran changes the accepted policy with neither file changed.
+/// A looser policy accepted at C, a session at C commits D with a key; the judge pauses; HEAD is
+/// reset to before C; the judge resumes: D is recorded UNJUDGED naming the change, never `pass`.
+/// The control: HEAD not moved, the pass is kept.
+#[test]
+fn head_moved_while_the_judge_ran_appends_no_stale_pass() {
+    for moved in [true, false] {
+        let p = project(if moved { "head-moved" } else { "head-kept" }, STRICT);
+        let first = p.head();
+        p.start("k0");
+        let loose = p.commit(&[("warden.toml", LOOSE)], "C: loose");
+        let (code, out, err) = p.accept(&loose, &[], &format!("{}\n", sha(LOOSE)));
+        assert_eq!(code, 0, "{out}{err}");
+        p.start("k1");
+        let key = p.commit(&[("k.md", KEY)], "D: a key");
+        let decision = paused_stop(&p, "k1", || {
+            if moved {
+                git(&p.root, &["reset", "--quiet", "--hard", &first]);
+            }
+        });
+        let records = p.records_of(&key);
+        assert!(!records.is_empty(), "{:?}", p.ledger());
+        if moved {
+            assert!(
+                records.iter().all(|r| r.0 != "pass"),
+                "a stale pass was recorded after HEAD moved: {records:?}"
+            );
+            assert!(
+                words(&decision).contains(
+                    "UNJUDGED: this project's accepted policy changed while this stop judged"
+                ),
+                "{decision}"
+            );
+        } else {
+            assert!(
+                records
+                    .iter()
+                    .any(|r| r.0 == "pass" && r.2.as_deref() == Some(sha(LOOSE).as_str())),
+                "the control lost its pass: {records:?}"
+            );
+        }
+    }
+}
+
+/// Ruling 9: the accepted policy is one required policy of every stop. Where an acceptance
+/// applies, the stop whose session state cannot be used judges every unit under the same
+/// accepted policy as the stop with its state (the same case run both ways, compared by the
+/// policy digests each unit was sealed to); and a hook given another name than the bound one
+/// passes nothing in either.
+#[test]
+fn the_stateless_stop_judges_under_the_accepted_policy_too() {
+    for damaged in [false, true] {
+        let (p, tight, _) = tightenable(if damaged { "r9-damaged" } else { "r9-intact" });
+        let (code, out, err) = p.accept(&tight, &[], &format!("{}\n", sha(TIGHT)));
+        assert_eq!(code, 0, "{out}{err}");
+        p.start("k1");
+        let m = p.commit(&[("m.md", "TIGHT only the accepted policy fails\n")], "M");
+        if damaged {
+            damage(&p);
+        }
+        let decision = p.stop("k1");
+        let records = p.records_of(&m);
+        assert!(!records.is_empty(), "{damaged}: {:?}", p.ledger());
+        assert!(
+            records
+                .iter()
+                .any(|r| r.2.as_deref() == Some(sha(TIGHT).as_str())),
+            "{damaged}: not judged under the accepted policy: {records:?}"
+        );
+        assert!(
+            blocks(&decision) && records.iter().all(|r| r.0 == "fail"),
+            "{damaged}: {decision} {records:?}"
+        );
+    }
+    for damaged in [false, true] {
+        let p = project(
+            if damaged {
+                "r9-name-damaged"
+            } else {
+                "r9-name-intact"
+            },
+            STRICT,
+        );
+        std::fs::write(p.root.join("loose.toml"), LOOSE).unwrap();
+        git(&p.root, &["add", "--all"]);
+        git(
+            &p.root,
+            &["commit", "--quiet", "-m", "a lenient file beside it"],
+        );
+        p.start("k0");
+        p.start_with("k1", Some("loose.toml"));
+        let key = p.commit(&[("k.md", KEY)], "a key");
+        if damaged {
+            damage(&p);
+        }
+        let decision = p.stop_with("k1", Some("loose.toml"));
+        let records = p.records_of(&key);
+        assert!(
+            !records.is_empty() && records.iter().all(|r| r.0 != "pass"),
+            "{damaged}: a key passed under another name than the bound one: {records:?}"
+        );
+        assert!(
+            words(&decision).contains("these hooks are given the policy name \"loose.toml\"; this project's policy record binds \"warden.toml\""),
+            "{damaged}: {decision}"
+        );
+    }
+}

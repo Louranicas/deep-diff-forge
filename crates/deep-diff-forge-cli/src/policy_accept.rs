@@ -20,6 +20,9 @@ pub(crate) const USAGE: &str = "deep-diff-forge agent policy-accept --commit C [
 /// What the command says before it asks (T14).
 pub(crate) const CONVENTION: &str = "A policy acceptance record is a local convention, not authentication: any process running as this user can run this command or write the record it appends. The judge on the pull request, under the target branch's policy, is the authority.";
 
+/// What the command's refusals of usage say of it: what every text that names it says.
+const SCOPE: &str = "agent policy-accept records an acceptance of a policy: a local convention that any process running as this user can invoke, not authentication; the pull request's judge, under the target branch's policy, is the authority.";
+
 /// The longest line read for the typed digest.
 const TYPED_BYTES: u64 = 1024;
 
@@ -56,6 +59,7 @@ pub(crate) fn run(args: &[String]) {
     let Some(commit) = crate::flag_value(args, "--commit") else {
         eprintln!("error: --commit C is missing");
         eprintln!("usage: {USAGE}");
+        eprintln!("{SCOPE}");
         std::process::exit(exit::USAGE);
     };
     let dir = std::env::current_dir().unwrap_or_else(|e| {

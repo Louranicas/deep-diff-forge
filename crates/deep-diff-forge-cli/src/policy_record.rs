@@ -263,16 +263,6 @@ pub(crate) fn read(own: &Path) -> Result<Option<Record>, String> {
     Ok(Some(record))
 }
 
-/// The bytes of the policy record in `own` as one digest for a comparison, read as
-/// [`read`] reads them: `none` when there is no file, the reason when it cannot be read.
-pub(crate) fn inputs_word(read: &Result<Option<Record>, String>) -> String {
-    match read {
-        Ok(None) => "none".to_owned(),
-        Ok(Some(record)) => record.sha256.clone(),
-        Err(why) => format!("unreadable {why}"),
-    }
-}
-
 /// The project lock ([`lock`]): held while the value lives.
 pub(crate) struct ProjectLock {
     _held: nix::fcntl::Flock<std::fs::File>,
