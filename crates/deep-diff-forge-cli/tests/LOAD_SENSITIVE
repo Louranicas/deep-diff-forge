@@ -16,26 +16,7 @@
 # `the_load_sensitive_list_names_tests_that_exist` (in agent_hook.rs) fails when a name here is
 # no test function of this directory, or is here twice.
 #
-# The first five: the first three failed in 19, 16 and 16 kept logs of the mutation campaign over
-# 0.10.0's changes, the first turned two gates of 0.11.1 red, and all five failed in one run of
-# them alone (2026-11-25 07:53 AEDT). Cause, measured the same day (lane P5b, M7 of 0.11.1): a
-# `.git` above the hooks' state directory while a session's first hook runs. That hook takes no
-# lock (`session_lock` makes no state directory inside a Git working tree) and writes the state
-# all the same: no lock file, one file short, two first stops at once, "the state directory was
-# written". On the machine of those gates an empty `.git` in the home directory stood for 1 to
-# 32 s at a time while another agent's sandboxed commands ran. With a `.git` above TMPDIR all five
-# fail alone, on one thread, on an idle host; without it all seven pass. Load did not reproduce
-# it: under 10 to 24 busy loops on 16 CPUs or a second build, one failure in 8 runs of the whole
-# binary (the second name, before that `.git` was watched for), none in 608 runs of the seven
-# names, eight at once, under 16 loops. A failure of one of them says what its hooks met under its
-# panic ("note (not of the code under test): …"). The behaviour is the product's (package P5c of
-# 0.11.1; it is the state of every user whose home directory is a Git repository): they stay here
-# until it is changed, and a measurement then takes them off.
-a_stop_waits_for_the_session_s_lock_and_takes_only_the_one_that_is_there
-two_first_stops_of_a_session_do_not_run_at_once
-the_state_of_a_session_is_in_the_users_state_directory_or_the_hook_says_it_has_none
-a_damaged_state_after_a_failing_commit_still_judges_the_commit
-a_damaged_state_still_judges_the_tree_once
+# Five names (a `.git` above the hooks' state directory, lane P5b's M7) came off with package P5c of 0.11.1 by its measurement M-LS: 5 of 5 pass alone, one thread, with an empty `.git`, a repository, a linked tree's `.git` file above TMPDIR and at the default; 0 of 5 with P5c undone (lane logs ~/.cache/ddf-t/w111P5c/logs/mls-*.log, 2026-11-25).
 
 # Cause not measured. These two failed by a session start's time limit (8 s) on a host far busier
 # than a gate's, as read from their failures in 12 and 1 kept logs of that mutation campaign

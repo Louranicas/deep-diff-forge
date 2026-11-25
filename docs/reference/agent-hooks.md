@@ -1367,7 +1367,14 @@ Stated limits, which the judge on the pull request covers:
   (`deep-diff-forge/hooks` under `$XDG_STATE_HOME`, else under `~/.local/state`), found by
   the session's id: the state, the list of commits that were there when it began, and the
   list of commits that have their answer. Files of sessions that have
-  ended are not removed. Hooks for Codex are not designed.
+  ended are not removed. The state directory may be anywhere, also inside another Git
+  repository (a home directory that is a dotfiles repository): the hooks keep their state and
+  take the session's lock there as anywhere else, and write the state through the directory
+  they took the lock in (one moved away or replaced while a hook holds the lock gets nothing
+  written into its replacement). That repository's `git clean -x` removes the
+  sessions' state, and its `git status` lists the files unless they are ignored. Only a state
+  directory inside the working tree of the session's project is refused: no stop of that
+  session is judged, and the hooks say so. Hooks for Codex are not designed.
 - **The state's schema** (from 0.11.0; the hook-state version policy):
   - Names. The files are `session-<the first 32 hex digits of the SHA-256 of the session's
     id>` with `.json` (the state), `.tips` (the commits there when the session began, one id

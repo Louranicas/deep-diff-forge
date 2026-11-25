@@ -797,7 +797,21 @@ bounded form.** What it holds to:
   length is never read as another list: the stop is UNJUDGED with the reason and nothing is
   recorded over either. Before, a block with thousands of violations wrote a state the next
   hook would not read, and the session forgot its base. A state directory inside the
-  project's working tree is refused the same way. When the state cannot be kept, a stop
+  project's working tree is refused the same way. Every hook that writes a session's state
+  holds that session's lock, the first hook of an account too, whatever repository stands
+  above the state directory (before 0.11.1 a hook that found no state directory under a `.git`
+  took no lock while it made one). It writes through the directory it took the lock in, held
+  open: a process that moves the state directory away and puts another at its name while a
+  hook holds the lock gets nothing written into the other, and the hook says that its state
+  could not be saved. Where the lock cannot be taken in the state directory (its lock file
+  cannot be opened), no state is written and a stop says that cause first. The lock may be taken
+  through a symbolic link at the state directory's name, as in 0.11.0; the state is never
+  written through one. A process of the same user that unlinks or replaces a held session-lock
+  file can start a second writer for that session; the lock excludes hooks that behave, not a
+  hostile same-user process; nothing it does passes a commit. This is as in 0.11.0 (measured:
+  the same probe gives the same result on the published binary). A flock refusal other than
+  another holder's (a file system without locks, any other errno) lets the hook write without
+  the lock, as in 0.11.0. When the state cannot be kept, a stop
   says so every time and the advice hook once, marked by an empty file beside the scratch
   directory.
 - **Each directory of the hooks is a directory of its own.** `deep-diff-forge/` under the Git

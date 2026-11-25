@@ -288,7 +288,20 @@ mod tests {
     fn a_socket_nothing_answers_on_is_stale() {
         let dir = private_dir("stale");
         let path = dir.join("d.sock");
-        drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
+        // A socket bound and never listened on: a connection to it is refused whoever holds its
+        // descriptor. A listener that was dropped was not: a process another test thread forked
+        // held it open until its exec, the connection was queued and then reset, and the test
+        // read "Connection reset by peer (os error 104)" (lane P5b's run A2 of 0.11.1;
+        // reproduced on 0.11.0 with a child that holds the listener and exits unaccepted).
+        let socket = rustix::net::socket_with(
+            rustix::net::AddressFamily::UNIX,
+            rustix::net::SocketType::STREAM,
+            rustix::net::SocketFlags::empty(),
+            None,
+        )
+        .unwrap();
+        rustix::net::bind(&socket, &rustix::net::SocketAddrUnix::new(&path).unwrap()).unwrap();
+        drop(socket);
         assert_eq!(socket_state(&SocketLocation::at(&path)), SocketState::Stale);
     }
 
