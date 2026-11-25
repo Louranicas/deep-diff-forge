@@ -5933,9 +5933,9 @@ fn project_policy(
 ) -> Projected {
     let mut record = crate::policy_record::read(&place.own);
     let mut bound_now = None;
-    if let (Some(held), Some(baseline), Ok(found)) =
+    // (whether a binding exists is decided inside the lock, by [`bind`] alone)
+    if let (Some(held), Some(baseline), Ok(_)) =
         (held, frontier.and_then(|f| f.baseline.as_ref()), &record)
-        && found.as_ref().is_none_or(|r| r.binding.is_none())
         && bind(place, baseline, name, deadline, held) == Ok(true)
     {
         bound_now = Some(name.to_owned());
@@ -6058,20 +6058,24 @@ fn snapshot_again(
 /// What a stop whose snapshot no longer holds ([`snapshot_again`]) records (ruling 4: a stale
 /// `pass` is never appended): every `pass` of it as `unjudged` with the class
 /// `chain.policy_missing`, and none of its commits remembered as passed by the session, so each is
-/// judged again at the next stop under the accepted policy as it is then.
-fn unpass(records: &mut [crate::ledger::Unit], commits: &mut Vec<(String, String)>) {
+/// judged again at the next stop under the accepted policy as it is then. Whether a `pass` was
+/// there to change: what the stop then says ([`unpassed_words`]) is said only of one.
+fn unpass(records: &mut [crate::ledger::Unit], commits: &mut Vec<(String, String)>) -> bool {
+    let mut any = false;
     for unit in records.iter_mut().filter(|unit| unit.outcome == "pass") {
         (unit.outcome, unit.class) = ("unjudged", ReasonClass::ChainPolicyMissing);
         unit.seals = None;
         unit.blocked = false;
+        any = true;
     }
     commits.retain(|(_, said)| said != "p");
+    any
 }
 
 /// What a stop says when its snapshot no longer held (`change`, [`snapshot_again`]).
 fn unpassed_words(change: &str) -> String {
     format!(
-        "UNJUDGED: {change}, so what passed at this stop is recorded as UNJUDGED, not as a pass, and is judged again at the next stop (`chain.policy_missing`)."
+        "UNJUDGED: {change}. What passed at this stop was judged under a policy that is no longer the accepted one, so it is recorded as UNJUDGED, not as a pass: stop again to have it judged under the policy accepted now (`chain.policy_missing`)."
     )
 }
 
@@ -9305,8 +9309,9 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, Why> {
                     // remembered by the session.
                     let (held, change) = snapshot_again(&work.place, &name, &projected, deadline);
                     project_lock = held;
-                    if let Some(change) = change {
-                        unpass(&mut records, &mut judging.commits);
+                    if let Some(change) = change
+                        && unpass(&mut records, &mut judging.commits)
+                    {
                         stale = Some(change);
                     }
                     // The stops are counted for the commits that are asked about and get no
@@ -9661,8 +9666,9 @@ fn stateless_stop(
     let mut notes: Vec<String> = judging.beside.into_iter().map(|note| note.text).collect();
     // one snapshot at the append (ruling 4): the project lock again, held through the append
     let (project_lock, change) = snapshot_again(&work.place, &name, &projected, deadline);
-    if let Some(change) = change {
-        unpass(&mut records, &mut Vec::new());
+    if let Some(change) = change
+        && unpass(&mut records, &mut Vec::new())
+    {
         notes.push(unpassed_words(&change));
     }
     let wait = LEDGER_WAIT.min(deadline.left());
@@ -11113,27 +11119,27 @@ fn accepted_check(place: &Place, args: &[String], deadline: Deadline) -> GateChe
             acceptance.line
         ));
     }
-    match &projected.record {
-        Ok(None) => facts.push(format!("{path} does not exist")),
+    let holds = match &projected.record {
+        Ok(None) => "it does not exist".to_owned(),
         Ok(Some(record)) => {
             for (line, why) in &record.passed_over {
                 ok = false;
-                facts.push(format!("line {line} of {path} is passed over: {why}"));
+                facts.push(format!("its line {line} is passed over: {why}"));
             }
-            facts.push(format!(
-                "{path} holds {} and {} acceptance records",
-                if record.binding.is_some() {
-                    "a binding"
-                } else {
-                    "no binding"
-                },
-                record.acceptances.len()
-            ));
+            let acceptances = match record.acceptances.len() {
+                1 => "1 acceptance record".to_owned(),
+                n => format!("{n} acceptance records"),
+            };
+            if record.binding.is_some() {
+                format!("it holds a binding and {acceptances}")
+            } else {
+                format!("it holds no binding and {acceptances}")
+            }
         }
-        Err(_) => {}
-    }
+        Err(_) => "it cannot be read whole".to_owned(),
+    };
     facts.push(format!(
-        "the binding and the acceptance history are in {path}, a file any process running as this user can write: a local convention, not authentication"
+        "the binding and the acceptance history are in {path} ({holds}), a file any process running as this user can write: a local convention, not authentication"
     ));
     check("policy_accepted", ok, facts.join("; "))
 }

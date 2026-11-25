@@ -154,7 +154,14 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   digest at that point of the file (`null` where there was none), its commit is in the repository
   and an ancestor of `HEAD` of the working tree the hook works in, and the file it names at that
   commit has its `to_sha256`; one that does not apply is ignored by every reader, and `agent doctor
-  --gate` names it with why. A record that is JSON and not a whole record of this form, and a file
+  --gate` names it with why. Which `HEAD`: the one of the working tree the hook works in (the
+  session's); the other working trees a stop looks at are judged under that same accepted policy,
+  and the doctor and `agent verify-branch` use the tree they run in. Where the ledger's first record
+  names no commit, or that commit has no policy file of the bound name, there is no accepted policy
+  (the stop is 0.11.0's, which in those two cases passes what the policy at the session's base
+  passes): an acceptance with `from_sha256` `null` supplies the first one, and from then the stops
+  judge under it too. A hand-made setup whose hooks are given different policy names binds the
+  first name a hook is given, and every stop given the other then names both. A record that is JSON and not a whole record of this form, and a file
   that is not a regular file or is over 4 MiB, cannot be read whole: then no unit passes (the
   policy at the session's base still fails and holds), never "no accepted policy". A line that is
   not JSON at all (a write that did not finish) is passed over and named, and the next writer

@@ -88,7 +88,9 @@ pub(crate) fn run(args: &[String]) {
             "Accepted policy now: sha256 {digest} (the file at commit {})",
             &at[..12]
         ),
-        None => emitln!("Accepted policy now: none"),
+        None => emitln!(
+            "Accepted policy now: none (this project has no accepted policy yet: accepting this one supplies the first, and the diff below is the whole file)"
+        ),
     }
     emitln!(
         "Policy to accept:    sha256 {} ({} at commit {})",

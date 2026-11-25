@@ -736,12 +736,6 @@ fn a_stop_that_judged_under_a_replaced_policy_appends_no_pass() {
         std::fs::write(p.dir.join("go"), "").unwrap();
         stop.join().unwrap()
     });
-    let said = words(&decision);
-    assert!(
-        said.contains("UNJUDGED: this project's accepted policy changed while this stop judged: it was the one at commit")
-            && said.contains(&format!("and it is now the one at commit {}", &tight[..7])),
-        "{decision}"
-    );
     let records = p.records_of(&m);
     assert!(!records.is_empty(), "{:?}", p.ledger());
     assert!(
@@ -753,6 +747,12 @@ fn a_stop_that_judged_under_a_replaced_policy_appends_no_pass() {
             .iter()
             .any(|r| r.0 == "unjudged" && r.1 == "chain.policy_missing"),
         "{records:?}"
+    );
+    let said = words(&decision);
+    assert!(
+        said.contains("UNJUDGED: this project's accepted policy changed while this stop judged: it was the one at commit")
+            && said.contains(&format!("and it is now the one at commit {}. What passed at this stop was judged under a policy that is no longer the accepted one, so it is recorded as UNJUDGED, not as a pass: stop again to have it judged under the policy accepted now", &tight[..7])),
+        "{decision}"
     );
     // judged again at the next stop, under the policy accepted now: it fails
     std::fs::remove_file(p.dir.join("go")).unwrap();
@@ -985,8 +985,8 @@ fn the_record_under_acts_of_the_same_user() {
     std::fs::write(p.own().join("policy.jsonl"), cut).unwrap();
     let (ok, detail) = p.accepted_link();
     assert!(
-        !ok && detail.contains("line 2 of")
-            && detail.contains("is passed over: it is not whole (a write that did not finish)")
+        !ok && detail
+            .contains("its line 2 is passed over: it is not whole (a write that did not finish)")
             && detail.contains(&format!("the one at commit {}", &strict[..7])),
         "{detail}"
     );
@@ -1119,5 +1119,58 @@ fn a_pin_update_is_accepted_and_the_project_is_judged_again() {
     assert!(
         trees.last().is_some_and(|r| r["outcome"] == "pass"),
         "{trees:?}"
+    );
+}
+
+/// Ruling 7 (decision 1): a torn last line of the policy record (a write that a crash cut) never
+/// makes a stop UNJUDGED and never applies half a record: the cut acceptance is passed over, the
+/// accepted policy stays the one before it, and the doctor names the line.
+#[test]
+fn a_torn_last_line_neither_blocks_judging_nor_applies() {
+    let (p, tight, strict) = tightenable("torn");
+    let loose = p.commit(&[("warden.toml", LOOSE)], "loose");
+    let whole = p.record_text();
+    let cut = json!({"v": 1, "kind": "acceptance", "policy": "warden.toml",
+        "from_sha256": sha(STRICT), "to_sha256": sha(LOOSE), "commit": loose})
+    .to_string();
+    // every cut of the record short of its closing brace, the last line of the file
+    for at in [cut.len() - 1, cut.len() / 2, 5] {
+        std::fs::write(
+            p.own().join("policy.jsonl"),
+            format!("{whole}{}", &cut[..at]),
+        )
+        .unwrap();
+        let (ok, detail) = p.accepted_link();
+        assert!(
+            !ok && detail.contains(
+                "its line 2 is passed over: it is not whole (a write that did not finish)"
+            ) && detail.contains(&format!(
+                "the accepted policy is the one at commit {}",
+                &strict[..7]
+            )),
+            "{at}: {detail}"
+        );
+    }
+    // a stop judges, under the policy before the cut record: the key still fails, nothing is UNJUDGED
+    p.start("k1");
+    let key = p.commit(&[("k.md", KEY)], "a key");
+    let decision = p.stop("k1");
+    assert!(blocks(&decision), "{decision}");
+    assert!(!words(&decision).contains("UNJUDGED"), "{decision}");
+    assert!(
+        p.records_of(&key).iter().any(|r| r.0 == "fail"),
+        "{:?}",
+        p.records_of(&key)
+    );
+    // the next writer begins on a line of its own, and the cut line stays passed over
+    let (code, out, err) = p.accept(&tight, &[], &format!("{}\n", sha(TIGHT)));
+    assert_eq!(code, 0, "{out}{err}");
+    let (ok, detail) = p.accepted_link();
+    assert!(
+        !ok && detail.contains(&format!(
+            "the accepted policy is the one at commit {}",
+            &tight[..7]
+        )),
+        "{detail}"
     );
 }

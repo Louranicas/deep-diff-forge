@@ -1252,9 +1252,11 @@ says when it closed:
   file binds the policy name the hooks are given on first use. It is a local convention, not
   authentication: any process running as this user can run the command or write the file. The
   file joins the list of deliberate same-user acts: writing it (an acceptance record written by
-  hand that applies takes effect as one the command appended), or removing it (the policy of
+  hand that applies takes effect as one the command appended), removing it (the policy of
   the ledger's first record is accepted again, which is never below 0.11.0, since the policy at
-  the session's base is still judged by). A record that cannot be read whole, a binding the
+  the session's base is still judged by), or truncating it inside a record (the cut line is
+  passed over and the doctor names it; the accepted policy goes back to the one before that
+  record, and an acceptance chained on it no longer applies). A record that cannot be read whole, a binding the
   ledger disagrees with, and a hook given another policy name than the bound one pass nothing;
   a stop whose accepted policy changed while it judged records no `pass`. The pull request's
   judge, under the target branch's policy, is the authority.
