@@ -29,7 +29,19 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   `within_deadline` (six copies) now fails with the work's own panic message instead of
   "Disconnected". `crates/deep-diff-forge-cli/tests/LOAD_SENSITIVE` names hook tests that fail
   on a loaded host (five measured, two observed once and marked so), and a test fails when a
-  name on it is no test; nothing reads the list yet.
+  name on it is no test.
+- Tests and the gate only: no product change. The gate's step `test` (`scripts/ci_local.sh` and
+  CI's `gate` job) is `scripts/test_step.sh`: `cargo test --workspace --locked --no-fail-fast`, so
+  that one failing test binary no longer hides the binaries after it, with the tests
+  `LOAD_SENSITIVE` names skipped, then those alone on one thread; the step fails unless each
+  listed test ran once. Five of the seven names were measured to fail not under load but when a
+  `.git` stands above the hooks' state directory while a session's first hook runs: that hook
+  then takes no lock (`session_lock` makes no state directory inside a Git working tree) and
+  writes the state without one. On the machine of the gates an empty `.git` in the home directory
+  stood for 1 to 32 s at a time while another agent's sandboxed commands ran. A failing hook test
+  now says so under its panic (`note (not of the code under test): …`), and the test helper that
+  starts a session fails at a start that recorded nothing, with its words and seconds, instead of
+  later on a state that was never written.
 - Tests: the suite no longer assumes Linux or a short temp directory. A test that needs another
   process to hold a lock takes it with `python3`'s `fcntl.flock` (one holder, in the testkit),
   not `flock(1)`, which macOS lacks; the stand-in judge of `agent check`'s tests falls back to

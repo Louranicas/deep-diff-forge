@@ -71,7 +71,7 @@ step "lint" cargo clippy --workspace --all-targets --locked -- -D warnings
 step "pedantic" cargo clippy --workspace --all-targets --locked -- -D warnings -W clippy::pedantic
 step "pedantic (feature and fuzz coverage) :: patch" cargo clippy -p deep-diff-forge-patch --no-default-features --all-targets --locked -- -D warnings -W clippy::pedantic
 step "pedantic (feature and fuzz coverage) :: fuzz" cargo clippy --manifest-path fuzz/Cargo.toml --all-targets --locked -- -D warnings -W clippy::pedantic
-step "test" cargo test --workspace --locked
+step "test" scripts/test_step.sh
 step "docs" env RUSTDOCFLAGS="-D warnings -D rustdoc::broken_intra_doc_links" cargo doc --workspace --no-deps --locked
 for c in --self-test doctor claude-code-contract chain-contract cluster-contract loom-contract; do
   step "contracts :: $c" cargo run -q --locked -p deep-diff-forge-cli -- "$c"

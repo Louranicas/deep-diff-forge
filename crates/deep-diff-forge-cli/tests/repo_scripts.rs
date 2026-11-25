@@ -1,6 +1,6 @@
 //! The repository's gate scripts fail closed: the pre-push secret hook, the diff-scoped mutation
-//! gate (anchor B-01), the fuzz runner and the release-tag signer; the local gate's step runner
-//! and the macOS-like temp directory are run as well. Each is run for real against a scratch repository,
+//! gate (anchor B-01), the fuzz runner and the release-tag signer; the local gate's step runner,
+//! the gate's test step and the macOS-like temp directory are run as well. Each is run for real against a scratch repository,
 //! with a recording stand-in for the expensive tool it hands off to (gitleaks, cargo mutants,
 //! cargo fuzz), so what is checked is the script's own decision.
 #![cfg(unix)]
@@ -1137,4 +1137,161 @@ fn package_release_refuses_without_an_epoch() {
         .env_remove("SOURCE_DATE_EPOCH"));
     assert!(!out.status.success(), "{out:?}");
     assert!(!s.0.join("x.tar.gz").exists());
+}
+
+// --- scripts/test_step.sh (the gate's test step) -----------------------------------------
+
+/// The names `LOAD_SENSITIVE` lists, read as `the_load_sensitive_list_names_tests_that_exist`
+/// (in `agent_hook.rs`) reads them: one a line, `#` starts a comment, blank lines are skipped.
+fn listed(list: &str) -> Vec<String> {
+    list.lines()
+        .filter_map(|line| line.split('#').next().map(str::trim))
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// A stand-in `cargo` that writes each call's arguments as a line of `$CALLS`, answers a call
+/// with `--test-threads=1` with a passing line for each name after `--` (all but `$DROP`), and
+/// exits with `$PASS1` on any other call.
+const CARGO: &str = r#"printf '%s\n' "$*" >>"$CALLS"
+case " $* " in
+*" --test-threads=1 "*)
+  after=
+  for a in "$@"; do
+    if [ -n "$after" ]; then
+      case $a in --*) ;; "$DROP") ;; *) echo "test $a ... ok" ;; esac
+    fi
+    [ "$a" = -- ] && after=1
+  done
+  exit 0 ;;
+esac
+exit "${PASS1:-0}"
+"#;
+
+/// Runs `scripts/test_step.sh` in `checkout` with the stand-in `cargo`: (its output, the
+/// calls, each split into words).
+fn test_step(s: &Scratch, checkout: &Path, pass1: u8, drop: &str) -> (Output, Vec<Vec<String>>) {
+    let bin = s.0.join("bin");
+    tool(&bin.join("cargo"), CARGO);
+    let calls = s.0.join("calls");
+    let _ = std::fs::remove_file(&calls);
+    let out = run(Command::new("bash")
+        .arg(format!("{ROOT}/scripts/test_step.sh"))
+        .current_dir(checkout)
+        .env("PATH", path_with(&bin))
+        .env("CALLS", &calls)
+        .env("PASS1", pass1.to_string())
+        .env("DROP", drop));
+    let calls = std::fs::read_to_string(&calls)
+        .unwrap_or_default()
+        .lines()
+        .map(|line| line.split_whitespace().map(str::to_owned).collect())
+        .collect();
+    (out, calls)
+}
+
+/// P5b: the gate's test step runs the workspace's tests less the load-sensitive ones, then
+/// those alone on one thread: every name it skips it runs, both passes go on past a failing
+/// test binary (`--no-fail-fast`), and the second pass runs even when the first failed. The
+/// list is read from `tests/LOAD_SENSITIVE` and nowhere else.
+#[test]
+fn the_test_step_runs_every_load_sensitive_test_alone_after_the_others() {
+    let s = scratch("test-step");
+    let names = listed(
+        &std::fs::read_to_string(format!(
+            "{ROOT}/crates/deep-diff-forge-cli/tests/LOAD_SENSITIVE"
+        ))
+        .unwrap(),
+    );
+    assert!(!names.is_empty(), "LOAD_SENSITIVE names no test");
+    let (out, calls) = test_step(&s, Path::new(ROOT), 0, "");
+    let said = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    let (first, second) = (&calls[0], &calls[1]);
+    let after = |call: &[String]| -> Vec<String> {
+        call.iter()
+            .skip_while(|word| *word != "--")
+            .skip(1)
+            .cloned()
+            .collect()
+    };
+    let before = |call: &[String]| -> Vec<String> {
+        call.iter()
+            .take_while(|word| *word != "--")
+            .cloned()
+            .collect()
+    };
+    assert_eq!(
+        before(first),
+        ["test", "--workspace", "--locked", "--no-fail-fast"],
+        "{first:?}"
+    );
+    let rest = after(first);
+    assert_eq!(rest[0], "--exact", "{first:?}");
+    assert!(
+        rest[1..]
+            .chunks(2)
+            .all(|pair| pair.len() == 2 && pair[0] == "--skip"),
+        "{first:?}"
+    );
+    let skipped: Vec<String> = rest[1..].chunks(2).map(|pair| pair[1].clone()).collect();
+    assert_eq!(skipped, names, "pass 1 must skip exactly the listed names");
+    assert_eq!(
+        before(second),
+        [
+            "test",
+            "--workspace",
+            "--locked",
+            "--no-fail-fast",
+            "--tests"
+        ],
+        "{second:?}"
+    );
+    let alone = after(second);
+    assert_eq!(alone[..2], ["--exact", "--test-threads=1"], "{second:?}");
+    assert_eq!(
+        alone[2..],
+        names[..],
+        "every listed name that pass 1 skips must run alone in pass 2"
+    );
+    assert!(said.contains("pass 1 rc=0, pass 2 rc=0"), "{said}");
+
+    // a failing first pass: the second still runs, and the step fails
+    let (out, calls) = test_step(&s, Path::new(ROOT), 101, "");
+    assert!(
+        !out.status.success() && calls.len() == 2,
+        "{out:?} {calls:?}"
+    );
+    // a listed test the second pass did not run: named, and the step fails
+    let (out, _) = test_step(&s, Path::new(ROOT), 0, &names[0]);
+    let said = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        !out.status.success()
+            && said.contains(&format!(
+                "pass 2 did not run each listed test once: {} (0 runs)",
+                names[0]
+            )),
+        "{said}"
+    );
+
+    // the list as the test of agent_hook.rs reads it; a name twice is refused before any run
+    let checkout = s.0.join("checkout");
+    let list = checkout.join("crates/deep-diff-forge-cli/tests/LOAD_SENSITIVE");
+    std::fs::create_dir_all(list.parent().unwrap()).unwrap();
+    std::fs::write(&list, "# a comment\n\n  one_test  # why\ntwo_test\n").unwrap();
+    let (out, calls) = test_step(&s, &checkout, 0, "");
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(after(&calls[1])[2..], ["one_test", "two_test"]);
+    std::fs::write(&list, "one_test\ntwo_test\none_test\n").unwrap();
+    let (out, calls) = test_step(&s, &checkout, 0, "");
+    let said = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        !out.status.success() && calls.is_empty() && said.contains("names one_test twice"),
+        "{said}"
+    );
+    std::fs::write(&list, "# none\n").unwrap();
+    let (out, calls) = test_step(&s, &checkout, 0, "");
+    assert!(!out.status.success() && calls.is_empty(), "{out:?}");
 }
