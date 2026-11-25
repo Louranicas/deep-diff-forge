@@ -263,3 +263,106 @@ fn the_toolchain_readers_read_pins() {
     assert_eq!(replica_toolchains(script), (Some("1.2.3"), Some("1.0.0")));
     assert_eq!(replica_toolchains("step \"x\" cargo check\n"), (None, None));
 }
+
+/// The one-line `run:` of the step named `name` in `job` of a workflow (`None` when the step is
+/// not there or its `run:` is a block).
+fn ci_run(workflow: &str, job: &str, name: &str) -> Option<String> {
+    let mut in_job = false;
+    let mut in_step = false;
+    for line in workflow.lines().skip_while(|line| *line != "jobs:") {
+        if let Some(key) = line
+            .strip_prefix("  ")
+            .and_then(|rest| rest.strip_suffix(':'))
+            && !key.starts_with(' ')
+            && !key.contains(' ')
+        {
+            in_job = key == job;
+            in_step = false;
+            continue;
+        }
+        if !in_job {
+            continue;
+        }
+        if let Some(body) = line.strip_prefix("      - ") {
+            in_step = body
+                .strip_prefix("name: ")
+                .map(|step| step.trim().trim_matches('"'))
+                == Some(name);
+        } else if in_step && let Some(run) = line.strip_prefix("        run: ") {
+            let run = run.trim();
+            return (run != "|" && run != ">").then(|| run.to_owned());
+        }
+    }
+    None
+}
+
+/// The command of the replica's `step "<label>" <command>` line.
+fn replica_command<'a>(script: &'a str, label: &str) -> Option<&'a str> {
+    let head = format!("step \"{label}\" ");
+    script
+        .lines()
+        .find_map(|line| line.strip_prefix(head.as_str()))
+        .map(str::trim)
+}
+
+/// P5b: the gate's test step is one script, `scripts/test_step.sh`, which CI's job `gate` and
+/// the replica both run (its behaviour: `repo_scripts.rs`,
+/// `the_test_step_runs_every_load_sensitive_test_alone_after_the_others`). And no run of the
+/// workspace's tests in ci.yml, the replica or that script stops at the first failing test
+/// binary: each has `--no-fail-fast`.
+#[test]
+fn the_test_step_is_one_script_and_never_stops_at_the_first_failing_binary() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    let read = |path: &str| std::fs::read_to_string(format!("{root}/{path}")).unwrap();
+    let (workflow, script, step) = (
+        read(".github/workflows/ci.yml"),
+        read("scripts/ci_local.sh"),
+        read("scripts/test_step.sh"),
+    );
+    assert_eq!(
+        ci_run(&workflow, "gate", "test").as_deref(),
+        Some("scripts/test_step.sh")
+    );
+    assert_eq!(
+        replica_command(&script, "test"),
+        Some("scripts/test_step.sh")
+    );
+    let stops: Vec<(&str, &str)> = [
+        (".github/workflows/ci.yml", workflow.as_str()),
+        ("scripts/ci_local.sh", script.as_str()),
+        ("scripts/test_step.sh", step.as_str()),
+    ]
+    .into_iter()
+    .flat_map(|(file, text)| {
+        text.lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .filter(|line| line.contains("cargo test --workspace"))
+            .filter(|line| !line.contains("--no-fail-fast"))
+            .map(move |line| (file, line))
+    })
+    .collect();
+    assert!(
+        stops.is_empty(),
+        "these runs of the workspace's tests stop at the first failing test binary: {stops:?}"
+    );
+    assert_eq!(
+        step.lines()
+            .filter(|line| line.contains("cargo test --workspace"))
+            .count(),
+        2,
+        "scripts/test_step.sh runs the workspace's tests in two passes"
+    );
+}
+
+#[test]
+fn the_run_reader_reads_one_line_runs() {
+    let workflow = "on:\njobs:\n  a:\n    steps:\n      - name: test\n        run: one\n      - name: block\n        run: |\n          x\n  b:\n    steps:\n      - name: test\n        run: two\n";
+    assert_eq!(ci_run(workflow, "a", "test").as_deref(), Some("one"));
+    assert_eq!(ci_run(workflow, "b", "test").as_deref(), Some("two"));
+    assert_eq!(ci_run(workflow, "a", "block"), None);
+    assert_eq!(ci_run(workflow, "a", "none"), None);
+    assert_eq!(
+        replica_command("step \"test\" scripts/x.sh\nstep \"t\" y\n", "test"),
+        Some("scripts/x.sh")
+    );
+}

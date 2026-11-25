@@ -54,7 +54,88 @@ fn home_in(scratch: &Scratch) -> PathBuf {
     let home = scratch.join("home");
     std::fs::create_dir_all(&home).unwrap();
     HOME.with(|slot| *slot.borrow_mut() = Some(home.clone()));
+    name_what_the_hooks_met();
     home
+}
+
+/// What the hooks of a test met that is not of the code under test and that a later assertion
+/// cannot name (lane P5b, measurement M7 of 0.11.1: `tests/LOAD_SENSITIVE`), by the test's home.
+/// A session's first hook takes no lock when a `.git` stands above the hooks' state directory:
+/// `session_lock` makes no state directory inside a Git working tree, and the state is then
+/// written without the lock. A test of the session's lock or of what is in its directory then
+/// fails far from the hook, on a count: no lock file, one file short, two first stops at once,
+/// "the state directory was written". (Measured: an empty `.git` in the home directory stood
+/// for seconds at a time while another agent's sandboxed commands ran.)
+static MET: std::sync::Mutex<Vec<(PathBuf, String)>> = std::sync::Mutex::new(Vec::new());
+
+/// The first `.git` (a directory, a file or a link) in an ancestor of `dir`, the part of `dir`
+/// that exists taken through its links, as the hooks take it.
+fn git_above(dir: &Path) -> Option<PathBuf> {
+    let existing = dir.ancestors().find(|at| at.exists())?;
+    std::fs::canonicalize(existing)
+        .ok()?
+        .ancestors()
+        .map(|at| at.join(".git"))
+        .find(|git| git.symlink_metadata().is_ok())
+}
+
+/// Note for a failure of this test what a hook met ([`MET`]) that ran with no state directory
+/// `dir` yet: a `.git` above it before or after it ran, and whether it took no lock (it left a
+/// state and no lock file there).
+fn note_what_a_hook_met(event: &str, input: &Value, dir: &Path, above: Option<PathBuf>) {
+    let kinds: Vec<PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .collect();
+    let has = |kind: &str| {
+        kinds
+            .iter()
+            .any(|path| path.extension() == Some(std::ffi::OsStr::new(kind)))
+    };
+    let lockless = has("json") && !has("lock");
+    let hook = format!(
+        "the `{event}` hook of session {}, which made the hook state directory {},",
+        input["session_id"],
+        dir.display()
+    );
+    let note = match (above, lockless) {
+        (None, false) => return,
+        (None, true) => format!("{hook} took no lock: it left a state and no lock file there"),
+        (Some(git), _) => format!(
+            "{hook} {} while a .git stood at {} above that directory (session_lock makes no state directory inside a Git working tree)",
+            if lockless {
+                "took no lock: it left a state and no lock file there"
+            } else {
+                "ran"
+            },
+            git.display()
+        ),
+    };
+    if let Ok(mut met) = MET.lock() {
+        met.push((home(), note));
+    }
+}
+
+/// Once per test binary: the panic of a test whose hooks met what [`MET`] holds says it under
+/// the panic's own message.
+fn name_what_the_hooks_met() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let before = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            before(info);
+            let Some(home) = HOME.with(|slot| slot.borrow().clone()) else {
+                return;
+            };
+            if let Ok(met) = MET.try_lock() {
+                for (_, note) in met.iter().filter(|(at, _)| *at == home) {
+                    eprintln!("note (not of the code under test): {note}");
+                }
+            }
+        }));
+    });
 }
 
 fn home() -> PathBuf {
@@ -94,6 +175,24 @@ fn hook_in(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     shape(&mut command);
+    // Where the hook keeps the state (an absolute XDG_STATE_HOME, else HOME's), when it will
+    // make that directory: what it meets there is noted ([`note_what_a_hook_met`]).
+    let set = |key: &str| {
+        command
+            .get_envs()
+            .find(|(name, _)| *name == key)
+            .and_then(|(_, value)| value.map(PathBuf::from))
+    };
+    let made = match (set("XDG_STATE_HOME"), set("HOME")) {
+        (Some(xdg), _) if xdg.is_absolute() => Some(xdg.join("deep-diff-forge/hooks")),
+        (_, Some(home)) => Some(home.join(".local/state/deep-diff-forge/hooks")),
+        _ => None,
+    }
+    .filter(|dir| !dir.exists())
+    .map(|dir| {
+        let above = git_above(&dir);
+        (dir, above)
+    });
     let mut child = command.spawn().unwrap();
     child
         .stdin
@@ -102,6 +201,10 @@ fn hook_in(
         .write_all(input.to_string().as_bytes())
         .unwrap();
     let out = child.wait_with_output().unwrap();
+    if let Some((dir, above)) = made {
+        let above = above.or_else(|| git_above(&dir));
+        note_what_a_hook_met(event, input, &dir, above);
+    }
     (
         out.status.code().unwrap(),
         String::from_utf8(out.stdout).unwrap(),
@@ -2053,13 +2156,30 @@ fn silence_a_lint(root: &Path) {
 }
 
 /// Start `session` in `root`, as Claude Code does before anything else of a session.
+///
+/// A start that says it recorded nothing fails here, with its words and the seconds it took:
+/// it ran out of its time (8 s), another hook of the session held the session's lock, or its
+/// state could not be saved. Before, it passed this helper, and the test failed later on a
+/// state that was never written, with a message that named nothing (lane P5b, measurement M7
+/// of 0.11.1; `tests/LOAD_SENSITIVE`).
 fn start(root: &Path, session: &str) -> String {
+    let began = std::time::Instant::now();
     let (code, stdout, stderr) = hook(
         "session-start",
         &[],
         &input("SessionStart", root, session, false),
     );
+    let took = began.elapsed().as_secs_f64();
     assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
+    let recorded_nothing = if stdout.starts_with("deep-diff-forge is watching the changes") {
+        stdout.contains("- The start of this session could not be recorded (")
+    } else {
+        stdout.contains("in the time a hook has")
+    };
+    assert!(
+        !recorded_nothing,
+        "the start of session {session:?} recorded nothing (it took {took:.1} s; a start has 8 s): {stdout}"
+    );
     stdout
 }
 

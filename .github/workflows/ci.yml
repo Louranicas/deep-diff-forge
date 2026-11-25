@@ -179,7 +179,10 @@ jobs:
           cargo clippy -p deep-diff-forge-patch --no-default-features --all-targets --locked -- -D warnings -W clippy::pedantic
           cargo clippy --manifest-path fuzz/Cargo.toml --all-targets --locked -- -D warnings -W clippy::pedantic
       - name: test
-        run: cargo test --workspace --locked
+        # The workspace's tests less those crates/deep-diff-forge-cli/tests/LOAD_SENSITIVE names,
+        # then those alone on one thread; both with --no-fail-fast (one run reports every failing
+        # test binary, not just the first). scripts/ci_local.sh runs the same script.
+        run: scripts/test_step.sh
       - name: docs
         # Mirror the docs.rs build so a broken intra-doc link fails CI, not the
         # public docs page after publish.

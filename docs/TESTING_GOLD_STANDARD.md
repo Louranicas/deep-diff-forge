@@ -13,7 +13,10 @@ The sentence "the current implementation has only smoke behavior" (bootstrap
 era) no longer holds. How the standard is enforced today:
 
 - **Every pull request** runs the CI jobs in `.github/workflows/ci.yml`:
-  `cargo test --workspace --locked`, fmt, clippy and pedantic with
+  the workspace's tests (`scripts/test_step.sh`: `cargo test --workspace
+  --locked --no-fail-fast`, with the tests
+  `crates/deep-diff-forge-cli/tests/LOAD_SENSITIVE` names run after the
+  others, alone, on one thread), fmt, clippy and pedantic with
   `-D warnings`, rustdoc `-D warnings`, contract probes, the soak and
   bench-comparison regression tests, a 10 s hostile daemon soak, privacy probes
   and the Python SDK against the built binary (`deploy gate-feature`); the
