@@ -432,7 +432,7 @@ impl ReasonClass {
                 "place.base_gone",
                 "UNJUDGED",
                 "never",
-                "the commit a change is measured from can no longer be read",
+                "the commit a change is measured from, or the one the project's ledger first recorded, can no longer be read",
             ),
             Self::PlaceUnmerged => (
                 "place.unmerged",
@@ -444,7 +444,7 @@ impl ReasonClass {
                 "place.shallow_parent",
                 "UNJUDGED",
                 "never",
-                "a shallow clone does not have a commit's parent",
+                "a shallow clone does not have a commit's parent, or the history back to the project's first record",
             ),
             Self::PlaceScratch => (
                 "place.scratch",

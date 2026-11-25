@@ -46,6 +46,23 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   `DDF_GATE_RECEIPT` names another). The contract matrix prints `real rows: N run, M skipped`,
   which the step's line carries, and one line `skipped: …` that counts the rows it skipped by
   what was not given.
+- The stop hook judges every unit under two policies where their files differ: the policy at
+  the session's base, as before, and the project's accepted policy, the policy file at the
+  commit the project's ledger first recorded; the stricter answer stands, and a unit that one
+  of the two could not judge is never a pass (UNJUDGED unless the other fails or holds it). After
+  this, where the project's ledger first recorded a commit that has the policy file, a policy edit
+  that is merely committed does not judge anything, in the session that makes it or after it: in 0.11.0 a
+  commit that a session left without its stop, deleting the rule against secrets and the
+  policy's protection of its own file, judged itself and the next fresh session's own work, and
+  a key passed and verified. A `pass` record takes a commit out of the frontier only when it is
+  sealed to the accepted policy, so commits 0.11.0 passed through that hole are judged again,
+  and so is every earlier pass of a project whose policy changed since its ledger first recorded
+  it (a branch that verified can stop verifying). Where the ledger names no accepted policy
+  the stop is 0.11.0's; where it names one that cannot be read (its commit gone, a shallow clone
+  without the history) a unit the policy at the session's base does not fail or hold is
+  UNJUDGED. The limit that remains: a deliberate act by a process of the same user (a rewritten
+  or removed ledger, a changed settings file together with a removed ledger) can still change
+  what the hooks judge by; the pull request's judge is the boundary.
 
 ## [0.11.0] - 2026-11-25
 

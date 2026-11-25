@@ -75,12 +75,14 @@ fn session_key(session: &str) -> String {
 
 /// Append one record per unit of a stop of `session` to the ledger in `own` (the hooks' own
 /// directory, which the caller has made). Each carries the runs of `agent check --session` for
-/// this session recorded since its last stop record. `wait` bounds the wait for the ledger's
-/// lock.
+/// this session recorded since its last stop record, and `snapshot`: the digest of what the stop
+/// took the project's accepted policy from ([`snapshot_sha256`], member
+/// `policy_snapshot_sha256`). `wait` bounds the wait for the ledger's lock.
 pub(crate) fn append_stop(
     own: &Path,
     session: &str,
     units: &[Unit],
+    snapshot: &str,
     wait: Duration,
 ) -> Result<(), String> {
     let key = session_key(session);
@@ -123,6 +125,7 @@ pub(crate) fn append_stop(
                     "blocked_turns": u8::from(unit.blocked),
                     "agent_checks": {"runs": checks.0, "failed": checks.1},
                     "ignored_elsewhere": null, "seals": seals,
+                    "policy_snapshot_sha256": snapshot,
                 })
             })
             .collect()
@@ -270,6 +273,58 @@ pub(crate) struct Frontier {
     pub(crate) baseline: Option<Baseline>,
     pub(crate) judged: std::collections::BTreeSet<String>,
     pub(crate) starts: Vec<(String, String, String)>,
+    /// The commits a stop record failed or held (`fail`, `fail_stands`, `hold`): each is out of
+    /// the frontier whatever its seals.
+    pub(crate) held: std::collections::BTreeSet<String>,
+    /// The commits a stop record passed, each with the policy digest of every such record
+    /// (`None`: a record with no seals, which a stop writes for a commit that changes nothing,
+    /// so that no policy judges it).
+    pub(crate) passes: std::collections::BTreeMap<String, Vec<Option<String>>>,
+}
+
+impl Frontier {
+    /// Release 0.11.1 (R10): a commit that only a `pass` record took out of the frontier stays
+    /// out only when one of its pass records is sealed to a policy digest of `accepted`, the
+    /// digests that were the project's accepted policy, or has no seals. A pass of 0.11.0 sealed
+    /// to a policy a left commit wrote (the hole of 0.11.0's stated limit) puts its commit back,
+    /// to be judged again; its new record is the worse one `agent verify-branch` takes. A stop
+    /// with no accepted policy does not call this: every pass counts, as in 0.11.0.
+    pub(crate) fn passes_sealed_to(&mut self, accepted: &std::collections::BTreeSet<String>) {
+        for (id, seals) in &self.passes {
+            let counts = seals
+                .iter()
+                .any(|seal| seal.as_ref().is_none_or(|policy| accepted.contains(policy)));
+            if !counts && !self.held.contains(id) {
+                self.judged.remove(id);
+            }
+        }
+    }
+}
+
+/// The digest of what a stop took the project's accepted policy from (rulings 2 and 4 of release
+/// 0.11.1): the first whole `baseline` record (its `head` and its `tips_sha256`) and the accepted
+/// policy's digest, each `none` when there is none. Every stop record carries it
+/// (`policy_snapshot_sha256`), so that a record says what it was judged by; comparing it again
+/// under the project's lock before the append is the next package's (L1c), which adds the
+/// acceptances to what it covers.
+pub(crate) fn snapshot_sha256(baseline: Option<&Baseline>, accepted: Option<&str>) -> String {
+    let baseline = baseline.map_or_else(
+        || "none".to_owned(),
+        |b| {
+            format!(
+                "{} {}",
+                b.head.as_deref().unwrap_or("null"),
+                tips_sha256(&b.tips)
+            )
+        },
+    );
+    deep_diff_forge_core::sha256_hex(
+        format!(
+            "deep-diff-forge.policy-snapshot.v1\nbaseline {baseline}\naccepted {}\n",
+            accepted.unwrap_or("none")
+        )
+        .as_bytes(),
+    )
 }
 
 /// The SHA-256 of `tips` one a line, as a `baseline` record names them.
@@ -332,6 +387,13 @@ pub(crate) fn frontier(own: &Path) -> Result<Frontier, String> {
                     .filter(|id| is_commit_id(id))
                 {
                     out.judged.insert(id.to_owned());
+                    if record["outcome"] == "pass" {
+                        let sealed = record["seals"]["policy_sha256"].as_str();
+                        (out.passes.entry(id.to_owned()).or_default())
+                            .push(sealed.map(str::to_owned));
+                    } else {
+                        out.held.insert(id.to_owned());
+                    }
                 }
             }
             Some("start") => {
@@ -663,7 +725,8 @@ const OUTCOMES: [&str; 5] = ["fail", "fail_stands", "hold", "pass", "unjudged"];
 /// writes them: the outcome is the one of its class ([`outcome_of`]); a blocked turn only for a
 /// class that holds a stop, and always for `fail`; a commit's and the stop's `worktree` null, a
 /// tree's a string; seals never on the unit `stop`, a tree's without the patch's and the
-/// verdict's digests, a commit's with the patch's.
+/// verdict's digests, a commit's with the patch's. A stop's `policy_snapshot_sha256` (release
+/// 0.11.1) is a SHA-256 where it is there; a record of 0.11.0 has none.
 fn is_whole_record(record: &Value) -> bool {
     let has = |name: &str| record.get(name);
     let text = |name: &str| has(name).and_then(Value::as_str);
@@ -707,6 +770,8 @@ fn is_whole_record(record: &Value) -> bool {
                 && matches!((runs, failed), (Some(runs), Some(failed)) if failed <= runs)
                 && has("ignored_elsewhere").is_some_and(Value::is_null)
                 && seals
+                // (0.11.1: absent in a record of 0.11.0, a digest in this build's)
+                && has("policy_snapshot_sha256").is_none_or(|v| v.as_str().is_some_and(is_sha256))
         }
         Some("check") => {
             session()
@@ -733,6 +798,11 @@ fn outcome_of(class: crate::hook::reason::ReasonClass) -> &'static str {
         code if code.starts_with("hold.") => "hold",
         _ => "unjudged",
     }
+}
+
+/// A SHA-256 as a record gives it: 64 lowercase hex digits.
+fn is_sha256(text: &str) -> bool {
+    text.len() == 64 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// A session's key as a record gives it ([`session_key`]): 16 lowercase hex digits.
@@ -840,7 +910,7 @@ mod tests {
             seals: None,
             blocked: true,
         });
-        append_stop(&own, "session-a", &units, WAIT).unwrap();
+        append_stop(&own, "session-a", &units, &"5".repeat(64), WAIT).unwrap();
         append_check(&own, "session-a", 3, 1, WAIT).unwrap();
         let baseline = Baseline {
             tips: vec![ID.to_owned(), OTHER.to_owned()],
@@ -1241,5 +1311,88 @@ mod tests {
         damaged["outcome"] = json!("pass");
         assert!(read_with(&own, &text, &damaged).is_ok());
         assert!(frontier(&own).unwrap().judged.contains(OTHER));
+    }
+
+    /// Release 0.11.1, ruling 4: every stop record of this build carries the digest of what the
+    /// stop took the accepted policy from; a record of 0.11.0 has none and stays whole (N109);
+    /// one that names it as anything but a digest refuses the ledger.
+    #[test]
+    fn the_policy_snapshot_is_written_read_and_optional() {
+        let (_scratch, own, text) = written("snapshot");
+        let stop = first(&text, "stop", |_| true);
+        assert_eq!(
+            stop["policy_snapshot_sha256"],
+            json!("5".repeat(64)),
+            "{stop}"
+        );
+        let mut old = stop.clone();
+        old.as_object_mut()
+            .unwrap()
+            .remove("policy_snapshot_sha256");
+        read_with(&own, &text, &old).unwrap_or_else(|e| panic!("a 0.11.0 record: {e}"));
+        for wrong in [
+            json!(1),
+            json!(null),
+            json!("5".repeat(63)),
+            json!("G".repeat(64)),
+        ] {
+            let mut record = stop.clone();
+            record["policy_snapshot_sha256"] = wrong.clone();
+            assert!(read_with(&own, &text, &record).is_err(), "{wrong}");
+        }
+        // the digest names the baseline and the accepted digest, each or none
+        let baseline = Baseline {
+            tips: vec![ID.to_owned()],
+            head: Some(ID.to_owned()),
+        };
+        let digests = [
+            snapshot_sha256(None, None),
+            snapshot_sha256(Some(&baseline), None),
+            snapshot_sha256(Some(&baseline), Some(&"a".repeat(64))),
+            snapshot_sha256(Some(&baseline), Some(&"b".repeat(64))),
+        ];
+        let distinct: std::collections::BTreeSet<&String> = digests.iter().collect();
+        assert_eq!(distinct.len(), digests.len(), "{digests:?}");
+    }
+
+    /// Release 0.11.1, R10: a commit that only a pass took out of the frontier stays out only when
+    /// a pass of it is sealed to an accepted digest, or has no seals (a commit that changes
+    /// nothing); a fail or a hold keeps it out whatever its seals.
+    #[test]
+    fn a_pass_sealed_to_a_policy_that_was_never_accepted_is_judged_again() {
+        let scratch = Scratch::new("ledger-unit-sealed-passes");
+        let own = scratch.path().to_path_buf();
+        let ids: Vec<String> = (1..=5).map(|n| format!("{n:040x}")).collect();
+        let sealed = |policy: Option<&str>| {
+            policy.map(|policy| Seals {
+                policy: policy.to_owned(),
+                patch: "b".repeat(64),
+                ranker: "c".repeat(64),
+                verdict: None,
+            })
+        };
+        let unit = |id: &str, outcome: &'static str, class, policy: Option<&str>| Unit {
+            name: Name::Commit(id.to_owned()),
+            outcome,
+            class,
+            seals: sealed(policy),
+            blocked: false,
+        };
+        let (accepted, other) = ("a".repeat(64), "f".repeat(64));
+        let units = [
+            unit(&ids[0], "pass", ReasonClass::Pass, Some(&accepted)),
+            unit(&ids[1], "pass", ReasonClass::Pass, Some(&other)),
+            unit(&ids[2], "pass", ReasonClass::Pass, None),
+            unit(&ids[3], "pass", ReasonClass::Pass, Some(&other)),
+            unit(&ids[3], "hold", ReasonClass::HoldRule, Some(&other)),
+            unit(&ids[4], "pass", ReasonClass::Pass, Some(&other)),
+            unit(&ids[4], "pass", ReasonClass::Pass, Some(&accepted)),
+        ];
+        append_stop(&own, "session-a", &units, &"5".repeat(64), WAIT).unwrap();
+        let mut found = frontier(&own).unwrap();
+        assert_eq!(found.judged.len(), 5, "{found:?}");
+        found.passes_sealed_to(&std::collections::BTreeSet::from([accepted]));
+        let out: Vec<&String> = ids.iter().filter(|id| found.judged.contains(*id)).collect();
+        assert_eq!(out, vec![&ids[0], &ids[2], &ids[3], &ids[4]], "{found:?}");
     }
 }
