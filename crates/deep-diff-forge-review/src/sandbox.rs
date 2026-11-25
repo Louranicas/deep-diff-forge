@@ -355,6 +355,50 @@ mod tests {
         );
     }
 
+    /// SECURITY.md (council sandbox): "A host path to mount that is not UTF-8 or holds `:` or `,`
+    /// is refused before the sandbox starts." The other half of the test above: a path that is
+    /// not UTF-8, in each of the four mount slots, is refused with the guard's own message, and
+    /// none reaches `--volume` in a lossy form. Unix only (a path from raw bytes); elsewhere a
+    /// path is UTF-16 and the case cannot be built this way.
+    #[cfg(unix)]
+    #[test]
+    fn a_mounted_path_that_is_not_utf8_is_refused() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let bad = Path::new(std::ffi::OsStr::from_bytes(b"/run/not-utf8-\xff\xfe"));
+        let good = Path::new("/run/ok");
+        assert!(bad.to_str().is_none(), "the case must not be UTF-8");
+        let spec = |slot: usize| Spec {
+            name: "n",
+            image_id: "i",
+            work: if slot == 0 { bad } else { good },
+            source: if slot == 1 { bad } else { good },
+            cargo_home: Some(if slot == 2 { bad } else { good }),
+            vendor: Some((if slot == 3 { bad } else { good }, "digest")),
+            inner: &[],
+            timeout_seconds: 1,
+            network: false,
+            mutation: false,
+            fuzz: false,
+        };
+        let sandbox = printing(0);
+        for slot in 0..4 {
+            let refused = sandbox.argv(&spec(slot)).map_or_else(
+                |error| error.to_string(),
+                |argv| format!("not refused: {argv:?}"),
+            );
+            assert!(
+                refused.contains("a host path to mount is not UTF-8"),
+                "a path that is not UTF-8 in mount slot {slot}: {refused}"
+            );
+        }
+        // The control: the same spec with every slot UTF-8 is built.
+        let argv = sandbox.argv(&spec(4)).unwrap();
+        assert!(
+            argv.contains(&"--volume=/run/ok:/work:Z".to_owned()),
+            "{argv:?}"
+        );
+    }
+
     /// A runtime whose control command is a shell script printing `bytes` zero bytes to stdout.
     fn printing(bytes: usize) -> Sandbox {
         Sandbox {

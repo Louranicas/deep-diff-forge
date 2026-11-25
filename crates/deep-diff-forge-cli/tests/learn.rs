@@ -189,3 +189,46 @@ fn doctor_reports_the_state_dir_the_store_uses() {
             .contains("state_dir=<unset: set XDG_STATE_HOME or HOME to an absolute path>\n")
     );
 }
+
+/// SECURITY.md (learning store): "Learning data is not uploaded by the project." The CLI's half
+/// of the negative surface (the learning crate's own half is its unit test
+/// `the_learning_crate_has_no_way_of_its_own_to_the_network`): the three `learn` functions of the
+/// command line, the only CLI code that reads or writes the store, name no socket or HTTP client
+/// and spawn no program. A fourth `learn_` function turns this red until it is read here too.
+/// Not proven here: what the functions they call do outside the learning crate (output and the
+/// argument reader), and that no other command reads the store (the TUI's learning panel does,
+/// to show it). A command the user runs on the store is not an upload by the project.
+#[test]
+fn the_learn_commands_have_no_way_to_the_network() {
+    let main = include_str!("../src/main.rs");
+    assert_eq!(
+        main.matches("\nfn learn_").count(),
+        3,
+        "the CLI's learn functions changed: read the new one here"
+    );
+    for name in ["learn_cmd", "learn_status", "learn_record"] {
+        let start = main
+            .find(&format!("\nfn {name}("))
+            .unwrap_or_else(|| panic!("no fn {name} in main.rs"));
+        let body = &main[start..];
+        let body = &body[..body.find("\n}\n").expect("the function's end")];
+        for network in [
+            "std::net",
+            "TcpStream",
+            "TcpListener",
+            "UdpSocket",
+            "UnixStream",
+            "UnixListener",
+            "UnixDatagram",
+            "rustix::net",
+            "Command",
+            "reqwest",
+            "ureq",
+            "hyper",
+            "http://",
+            "https://",
+        ] {
+            assert!(!body.contains(network), "fn {name} names `{network}`");
+        }
+    }
+}

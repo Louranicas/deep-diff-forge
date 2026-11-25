@@ -136,6 +136,15 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   target over 4,095 bytes, a target with a NUL) and at the bound itself (4,095 bytes read,
   4,096 refused); `release_workflow` holds `release.yml`'s triggers to the sentence of
   `SECURITY.md` (a push of `v*` tags and `workflow_dispatch`, nothing else).
+- Tests, and one check of the gate's: no product change. Security sentences that no test held
+  now have one that turns red when their code goes: a mounted host path that is not UTF-8; a
+  learning store file or directory replaced between its check and its open, and a link that
+  appears where a new store file is created (the directory and creation cases through a real
+  race); the parser version's form and both token bounds; hostile receipt metadata at the record
+  and read doors; no network surface in the learning crate or the `learn` commands; the oversized
+  request's connection closing; and the daemon's 30 s write timeouts. The CI wrapper
+  `scripts/security/review_policy_check.py` now also fails unless `fuzz/Cargo.toml` forbids
+  `unsafe_code` (an `allow` there passed); the checker the review crate embeds is unchanged.
 - What an agent or a person is told keeps its meaning under a long path: where a message is bounded, the
   paths the hook quoted give way in their middle, never the words that say what happened. Under a
   repository path of about 100 characters or more (any macOS temp directory) the line that counts what a
