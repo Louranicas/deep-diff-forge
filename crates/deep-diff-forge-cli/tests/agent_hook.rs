@@ -4348,14 +4348,21 @@ fn short(root: &Path, rev: &str) -> String {
 }
 
 /// The uncommitted change of the working tree at `top` as a stop names it: the path quoted,
-/// and cut at 120 characters as every path is.
+/// and past 120 characters cut in its middle (the first 60, `…`, the last 60) as `shown_path`
+/// cuts every path. (This cut its end, which no message shows: under a temp directory as long
+/// as macOS's, a test looked for words that were never there.)
 fn uncommitted_in(top: &Path) -> String {
-    let whole = top.display().to_string();
-    let mut cut: String = whole.chars().take(120).collect();
-    if cut.len() < whole.len() {
-        cut.push('…');
-    }
-    format!("Uncommitted changes in \"{cut}\"")
+    let whole: Vec<char> = top.display().to_string().chars().collect();
+    let shown: String = if whole.len() > 120 {
+        whole[..60]
+            .iter()
+            .chain(['…'].iter())
+            .chain(&whole[whole.len() - 60..])
+            .collect()
+    } else {
+        whole.into_iter().collect()
+    };
+    format!("Uncommitted changes in \"{shown}\"")
 }
 
 /// The state files in `dir`, without the lists of commits that are kept beside them.
@@ -8028,7 +8035,15 @@ fn a_repository_with_more_working_trees_than_are_read_says_so() {
     for n in 0..255 {
         add(n);
     }
-    start(&root, "before");
+    // Its start lists the commits of 256 trees: one past its time limit (8 s) records nothing,
+    // and the next hook starts again as the first, by then among 257. That is the probable
+    // cause of this test's failure on the 0.11.0 macOS runner: here it is named when it recurs.
+    let before = start(&root, "before");
+    assert!(
+        before.contains("deep-diff-forge is watching the changes of this session")
+            && !before.contains(WHY),
+        "the \"before\" start did not record its list: {before}"
+    );
     add(255);
     let started = start(&root, "after");
     assert!(
@@ -10563,41 +10578,30 @@ fn lock_file() -> PathBuf {
     locks[0].clone()
 }
 
-/// Hold an exclusive `flock` on `path` (made when it is not there) from another process
-/// until `go` is removed. Returns when the lock is held.
-fn hold_lock(path: &Path, go: &Path) -> std::process::Child {
-    std::fs::write(go, "").unwrap();
-    let held = go.with_extension("held");
-    // (`-o`: the command does not hold the file open; only `flock` itself does)
-    let child = Command::new("flock")
-        .arg("-o")
-        .arg(path)
-        .args([
-            "sh",
-            "-c",
-            "touch \"$1\"; while [ -e \"$2\" ]; do sleep 0.02; done",
-            "sh",
-        ])
-        .arg(&held)
-        .arg(go)
-        .stdin(Stdio::null())
-        .spawn()
-        .unwrap();
-    let asked = std::time::Instant::now();
-    while !held.exists() {
-        assert!(
-            asked.elapsed() < std::time::Duration::from_secs(20),
-            "no lock"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    child
-}
+// `hold_lock(path, go)`: an exclusive `flock(2)` on `path` (made when it is not there), held by
+// another process until `go` is removed; returns when the lock is held. One holder for Linux and
+// macOS, in the testkit (also used by `tests/council_tuicr.rs`): `flock(1)` is not on macOS.
+use deep_diff_forge_testkit::hold_lock;
 
-/// Whether a process of this user other than `but` has `path` open (a link under
-/// `/proc/*/fd` names it).
+/// Whether a process of this user other than `but` has `path` open: a link under `/proc/*/fd`
+/// names it, or where there is no `/proc` (macOS), `lsof -t` lists such a process.
 fn opened_by_a_process(path: &Path, but: u32) -> bool {
     let but = but.to_string();
+    if !Path::new("/proc/self/fd").is_dir() {
+        // (`lsof -t`: the pids that have the file open, one a line, and exit 1 for none)
+        let out = Command::new("lsof")
+            .arg("-t")
+            .arg("--")
+            .arg(path)
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .unwrap();
+        return String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::trim)
+            .any(|pid| !pid.is_empty() && pid != but);
+    }
     std::fs::read_dir("/proc")
         .unwrap()
         .flatten()
@@ -12754,36 +12758,78 @@ fn every_advice_item_equals_its_diagnostic() {
 /// F6.a (N-11): a file whose name this version cannot read (not UTF-8) is one item that names
 /// it as Git quoted it, and the other files of the change are still advised. The whole advice
 /// was off for the session.
+///
+/// Twice: the name in Git's objects alone (committed through the index and taken out of it
+/// again, a deletion no file system is asked about), and the name on disk, untracked. macOS's
+/// APFS refuses a name that is not UTF-8 (EILSEQ, 92): there the first case stands and the
+/// second says it is skipped.
 #[test]
 fn a_refused_path_does_not_silence_the_others() {
     use std::os::unix::ffi::OsStrExt as _;
-    let scratch = Scratch::new("hook-advice-refused-path");
-    let root = repository(&scratch);
-    let event = input("PostToolUse", &root, "s1", false);
-    std::fs::write(
-        root.join(std::ffi::OsStr::from_bytes(b"n\xffm.rs")),
-        "fn n() {}\n",
-    )
-    .unwrap();
-    std::fs::write(
-        root.join("a.rs"),
-        "fn a() {}\n#[allow(dead_code)]\nfn b() {}\n",
-    )
-    .unwrap();
-    let (code, stdout, stderr) = hook("post-tool", &[], &event);
-    assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
-    let advice = advice_of(&stdout);
-    assert!(
-        advice.contains("- \"\\\"a/n\\377m.rs\\\" \\\"b/n\\377m.rs\\\"\": this version could not read this file's change (its names as Git quoted them); nothing in it is advised.\n"),
-        "{advice}"
-    );
-    assert!(
-        advice.contains("- \"a.rs\":2: check_suppressed@line ("),
-        "the other file is not advised: {advice}"
-    );
-    assert!(!advice.contains("did not run"), "{advice}");
-    // said once
-    assert_eq!(hook("post-tool", &[], &event).1, "");
+    let name = std::ffi::OsStr::from_bytes(b"n\xffm.rs");
+    for on_disk in [false, true] {
+        let scratch = Scratch::new("hook-advice-refused-path");
+        let root = repository(&scratch);
+        let event = input("PostToolUse", &root, "s1", false);
+        if on_disk {
+            if let Err(e) = std::fs::write(root.join(name), "fn n() {}\n") {
+                assert!(
+                    cfg!(target_os = "macos") && e.raw_os_error() == Some(92),
+                    "{e}"
+                );
+                println!(
+                    "skipped: the name on disk: the file system refuses a name that is not UTF-8 ({e})"
+                );
+                return;
+            }
+        } else {
+            std::fs::write(scratch.join("n"), "fn n() {}\n").unwrap();
+            let blob = git(&root, &["hash-object", "-w", "../n"]);
+            let by_name = |args: &[&str]| {
+                let out = Command::new("git")
+                    .current_dir(&root)
+                    .envs(ISOLATE)
+                    .args(args)
+                    .arg(name)
+                    .output()
+                    .unwrap();
+                assert!(out.status.success(), "git {args:?}: {out:?}");
+            };
+            by_name(&[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                "100644",
+                blob.trim(),
+            ]);
+            let tree = git(&root, &["write-tree"]);
+            let commit = git(
+                &root,
+                &["commit-tree", tree.trim(), "-p", "HEAD", "-m", "n"],
+            );
+            git(&root, &["update-ref", "HEAD", commit.trim()]);
+            by_name(&["update-index", "--force-remove", "--"]);
+        }
+        std::fs::write(
+            root.join("a.rs"),
+            "fn a() {}\n#[allow(dead_code)]\nfn b() {}\n",
+        )
+        .unwrap();
+        let (code, stdout, stderr) = hook("post-tool", &[], &event);
+        assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
+        let advice = advice_of(&stdout);
+        assert!(
+            advice.contains("- \"\\\"a/n\\377m.rs\\\" \\\"b/n\\377m.rs\\\"\": this version could not read this file's change (its names as Git quoted them); nothing in it is advised.\n"),
+            "on disk: {on_disk}: {advice}"
+        );
+        assert!(
+            advice.contains("- \"a.rs\":2: check_suppressed@line ("),
+            "the other file is not advised (on disk: {on_disk}): {advice}"
+        );
+        assert!(!advice.contains("did not run"), "{advice}");
+        // said once
+        assert_eq!(hook("post-tool", &[], &event).1, "");
+    }
 }
 
 /// The words that begin a guard notice for `path`, as an advice says them.
@@ -13978,26 +14024,12 @@ fn a_ledger_that_cannot_be_written_changes_no_decision() {
 
     let mut holder = None;
     let started = std::cell::Cell::new(None);
+    let go = scratch.join("go-ledger");
     same_block(
         stop_beside(&root, &judge, "locked", |own| {
             std::fs::remove_file(file(own)).unwrap();
-            let mut child = Command::new("flock")
-                .args(["-o", "-x"])
-                .arg(file(own))
-                .args(["sleep", "60"])
-                .spawn()
-                .unwrap();
-            let held = (0..200).any(|_| {
-                std::thread::sleep(std::time::Duration::from_millis(25));
-                file(own).exists()
-                    && Command::new("flock")
-                        .args(["-n", "-x"])
-                        .arg(file(own))
-                        .arg("true")
-                        .status()
-                        .is_ok_and(|s| !s.success())
-            });
-            assert!(held, "the lock holder did not take the lock");
+            // (made by the holder, as `flock(1)` made it: a regular file, held)
+            let mut child = hold_lock(&file(own), &go);
             assert!(child.try_wait().unwrap().is_none(), "the lock holder ended");
             holder = Some(child);
             started.set(Some(std::time::Instant::now()));
@@ -14006,8 +14038,8 @@ fn a_ledger_that_cannot_be_written_changes_no_decision() {
     );
     let took = started.get().unwrap().elapsed();
     if let Some(mut child) = holder {
-        let _ = child.kill();
-        let _ = child.wait();
+        std::fs::remove_file(&go).unwrap();
+        assert!(child.wait().unwrap().success());
     }
     assert!(took < std::time::Duration::from_secs(20), "{took:?}");
 

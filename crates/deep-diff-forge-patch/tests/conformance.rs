@@ -1071,10 +1071,23 @@ fn shapes_git_fails_to_write_are_refused() {
         )
     };
     // A new symlink with no content: an empty target. Git has deleted `x` when it fails.
+    // That Git fails is Linux's: its symlink(2) refuses an empty target (ENOENT). BSD's, on
+    // macOS, takes one, and Git writes the link (the 0.11.0 macOS CI run: `s` a link with an
+    // empty target, `x` deleted). The refusal above is asserted on both.
     let (applied, _, after) = cannot(&format!(
         "{delete_x}diff --git a/s b/s\nnew file mode 120000\nindex 0000000..e69de29\n"
     ));
-    assert!(!applied && !after.contains_key("x"), "{after:?}");
+    if cfg!(target_os = "macos") {
+        let empty_link = after
+            .get("s")
+            .is_some_and(|s| s.symlink && s.content.as_deref() == Some(&b""[..]));
+        assert!(
+            applied && !after.contains_key("x") && empty_link,
+            "{after:?}"
+        );
+    } else {
+        assert!(!applied && !after.contains_key("x"), "{after:?}");
+    }
     let (applied, _, after) = cannot(&symlink(&"a".repeat(5000)));
     assert!(!applied && !after.contains_key("x"), "{after:?}");
     // A NUL: Git writes the link to `ab`, where the review showed `ab\0cd`.

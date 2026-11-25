@@ -1228,6 +1228,10 @@ fn the_commits_beyond_the_known_ones_are_listed_parents_first() {
 /// kibibyte, with an index whose listing is over a mebibyte and more than two kibibytes of its
 /// own ignore rules, is read whole.
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "a path over 1 KiB cannot exist by name where PATH_MAX is 1,024 (macOS)"
+)]
 fn a_long_path_a_large_index_and_many_ignore_rules_are_read_whole() {
     let scratch = Scratch::new("judge-patch-bounds");
     let mut deep = scratch.path().to_path_buf();
