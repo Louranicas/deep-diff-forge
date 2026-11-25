@@ -10920,8 +10920,11 @@ mod tests {
             Located::Trouble(why) => assert_eq!(why.class, ReasonClass::PlaceDirectoryGone),
             _ => panic!("the session's directory is gone"),
         }
+        // The canonical path, as the callers pass Git's `top`: a temp directory reached through a
+        // symbolic link (macOS's `/var` is `/private/var`) is not the state directory's own path.
+        let top = std::fs::canonicalize(scratch.path()).unwrap();
         assert_eq!(
-            session.inside(scratch.path()).map(|why| why.class),
+            session.inside(&top).map(|why| why.class),
             Some(ReasonClass::StateInsideTree)
         );
     }

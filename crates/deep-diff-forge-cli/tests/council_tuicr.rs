@@ -11,7 +11,9 @@
 )]
 
 use deep_diff_forge_review::Profile;
-use deep_diff_forge_testkit::Scratch;
+// `hold_lock`: an exclusive `flock(2)` held by another process until a file is removed, one
+// holder for Linux and macOS (also used by `tests/agent_hook.rs`): `flock(1)` is not on macOS.
+use deep_diff_forge_testkit::{Scratch, hold_lock};
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
 use std::{
@@ -1573,35 +1575,6 @@ fn real_tuicr_human_comment_is_imported_as_a_disposition() {
     println!("stale disposition: {}", stderr(&stale).trim());
 }
 
-/// Hold an exclusive `flock` on `path` from another process until `go` is removed; returns when
-/// it is held (as in the hook tests).
-fn hold_lock(path: &Path, go: &Path) -> std::process::Child {
-    fs::write(go, "").unwrap();
-    let held = go.with_extension("held");
-    let child = Command::new("flock")
-        .arg("-o")
-        .arg(path)
-        .args([
-            "sh",
-            "-c",
-            "touch \"$1\"; while [ -e \"$2\" ]; do sleep 0.02; done",
-            "sh",
-        ])
-        .arg(&held)
-        .arg(go)
-        .stdin(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
-    let asked = std::time::Instant::now();
-    while !held.exists() {
-        assert!(
-            asked.elapsed() < std::time::Duration::from_secs(20),
-            "no lock"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    child
-}
 /// Set the session's review-level human comments to `ids`, with `long` bytes of text on the last.
 fn decisions(session: &Path, ids: &[&str], long: usize) {
     edit_session(session, |s| {

@@ -192,7 +192,7 @@ case '@ANSWER@' in
   hold) code=8;;
   unreadable) printf 'not a verdict\n'; exit 7;;
 esac
-sum() { sha256sum < "$1" | cut -d' ' -f1; }
+sum() { if command -v sha256sum >/dev/null 2>&1; then sha256sum < "$1"; else shasum -a 256 < "$1"; fi | cut -d' ' -f1; }
 sum "$patch" >> "$0.patches"
 if [ '@ANSWER@' = admit ]; then
   if [ "$(sum "$ranker")" != "$(cat "$0.admit")" ]; then

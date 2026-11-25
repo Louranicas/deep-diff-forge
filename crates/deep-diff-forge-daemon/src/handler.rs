@@ -1304,39 +1304,93 @@ mod tests {
 
     /// S3.27.f parity (handed over by lane A of W1): a changed file whose name is not UTF-8 is
     /// refused as the change's own input, code 4 as the command line's exit 4, not 3 (retry).
+    ///
+    /// Twice: the name in Git's objects alone (two commits made through the index, read as a
+    /// range; no file system is asked about the name), and the name on disk in the working
+    /// tree. macOS's APFS refuses a name that is not UTF-8 (EILSEQ, 92): there the first case
+    /// stands and the second says it is skipped.
     #[test]
     #[expect(clippy::disallowed_methods, reason = "test: makes a Git repository")]
     fn a_non_utf8_file_name_is_a_change_input_refusal() {
         use std::os::unix::ffi::OsStrExt as _;
-        let scratch = deep_diff_forge_testkit::Scratch::new("change-latin");
-        let root = std::fs::canonicalize(scratch.path()).unwrap();
-        let git = |args: &[&str]| {
+        let name = std::ffi::OsStr::from_bytes(b"caf\xe9.rs");
+        // Git in `root`, its stdout; `name` follows the arguments when asked for.
+        let git = |root: &std::path::Path, args: &[&str], named: bool| {
             let out = std::process::Command::new("git")
                 .env("GIT_CONFIG_GLOBAL", "/dev/null")
                 .env("GIT_CONFIG_NOSYSTEM", "1")
                 .args(["-c", "user.name=t", "-c", "user.email=t@t.invalid"])
                 .args(args)
-                .current_dir(&root)
+                .args(named.then_some(name))
+                .current_dir(root)
                 .output()
                 .unwrap();
             assert!(out.status.success(), "{args:?}");
+            String::from_utf8(out.stdout).unwrap().trim().to_owned()
         };
-        let name = root.join(std::ffi::OsStr::from_bytes(b"caf\xe9.rs"));
-        git(&["init", "-q"]);
-        std::fs::write(&name, b"fn a() {}\n").unwrap();
-        git(&["add", "-A"]);
-        git(&["commit", "-q", "--no-gpg-sign", "-m", "base"]);
-        std::fs::write(&name, b"fn b() {}\n").unwrap();
+        let refused = |root: &std::path::Path, params: &serde_json::Value| {
+            let roots = [root.to_path_buf()];
+            let error = review_change(params, &roots, Wording::Released).unwrap_err();
+            assert_eq!(error.code, PATCH_PARSE_FAILED, "{}", error.message);
+            assert!(
+                error.message.contains("a file name that is not UTF-8"),
+                "{}",
+                error.message
+            );
+        };
+
+        let scratch = deep_diff_forge_testkit::Scratch::new("change-latin-index");
+        let root = std::fs::canonicalize(scratch.path()).unwrap();
+        git(&root, &["init", "-q"], false);
+        let mut parent = String::new();
+        for text in ["fn a() {}\n", "fn b() {}\n"] {
+            let source = root.join(".git/text");
+            std::fs::write(&source, text).unwrap();
+            let blob = git(
+                &root,
+                &["hash-object", "-w", source.to_str().unwrap()],
+                false,
+            );
+            git(
+                &root,
+                &["update-index", "--add", "--cacheinfo", "100644", &blob],
+                true,
+            );
+            let tree = git(&root, &["write-tree"], false);
+            let mut commit = vec!["commit-tree", tree.as_str(), "-m", "c"];
+            if !parent.is_empty() {
+                commit.extend(["-p", parent.as_str()]);
+            }
+            parent = git(&root, &commit, false);
+        }
+        git(&root, &["update-ref", "HEAD", &parent], false);
+        let range = serde_json::json!({"repo": root.to_str().unwrap(), "selection": "range", "range": "HEAD~1..HEAD"});
+        refused(&root, &range);
+
+        let scratch = deep_diff_forge_testkit::Scratch::new("change-latin");
+        let root = std::fs::canonicalize(scratch.path()).unwrap();
+        let file = root.join(name);
+        git(&root, &["init", "-q"], false);
+        if let Err(e) = std::fs::write(&file, b"fn a() {}\n") {
+            assert!(
+                cfg!(target_os = "macos") && e.raw_os_error() == Some(92),
+                "{e}"
+            );
+            println!(
+                "skipped: the name on disk: the file system refuses a name that is not UTF-8 ({e})"
+            );
+            return;
+        }
+        git(&root, &["add", "-A"], false);
+        git(
+            &root,
+            &["commit", "-q", "--no-gpg-sign", "-m", "base"],
+            false,
+        );
+        std::fs::write(&file, b"fn b() {}\n").unwrap();
         let params =
             serde_json::json!({"repo": root.to_str().unwrap(), "selection": "working_tree"});
-        let refused =
-            review_change(&params, std::slice::from_ref(&root), Wording::Released).unwrap_err();
-        assert_eq!(refused.code, PATCH_PARSE_FAILED, "{}", refused.message);
-        assert!(
-            refused.message.contains("a file name that is not UTF-8"),
-            "{}",
-            refused.message
-        );
+        refused(&root, &params);
     }
 
     /// `review.change` stops Git after 30 s and reads untracked files only when asked.

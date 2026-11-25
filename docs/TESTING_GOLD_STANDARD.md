@@ -184,10 +184,14 @@ era) no longer holds. How the standard is enforced today:
   builds its list from the tables in the code (every rule's tokens, modules, spaced heads and
   tails and secret prefixes, the JavaScript operand keywords, the Rust token reader's words,
   the shell's list words, the empty-handler rule's head words, and every ASCII punctuation
-  byte in every language; 397 triggers on 2026-11-18), and ranks two lines of 2 MiB for
-  each, the trigger repeated and one word ending in it, inside a bound of thread CPU time
-  (10 s in a debug build, 2 s in a release build). The gate runs all of them: on 16 threads
-  67 s in a debug build, the slowest line 3.2 s; in a release build 6 s, the slowest 0.22 s.
+  byte in every language; 397 triggers on 2026-11-18), and ranks two lines for each, the
+  trigger repeated and one word ending in it, at sizes that double up to 1 MiB, and bounds
+  how each line's thread CPU time grows at each doubling (under 3 times: a linear scan gives
+  about 2, a quadratic one about 4); a deadline of 120 s of wall time between two answers
+  guards only against a hang. Up to 0.11.0 the test ranked one size of 2 MiB inside 10 s of
+  thread CPU time in a debug build (2 s in a release build), which a slow runner fails on a
+  linear scan and a fast one passes on a scan three times slower. The gate runs all of them:
+  on 16 threads 74 s in a debug build (2026-11-25, 431 triggers).
   A new token, keyword or word is in the list without a new test. Readings that changed for
   the class are compared with the reading they replaced, kept for the tests, on seeded
   generated lines (the keyword test, the secret rule and the empty-handler rule: the same

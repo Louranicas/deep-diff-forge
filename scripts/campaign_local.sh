@@ -26,13 +26,20 @@ if [ -z "$root" ]; then
   echo "campaign_local.sh: set DDF_FUZZ_CORPUS_ROOT to a directory on disk (not the tmpfs /tmp)" >&2
   exit 2
 fi
+# Written for bash 3.2 as well (macOS's /bin/bash): no `mapfile`, and the count is kept apart,
+# since an array with no element is unbound under `set -u` before bash 4.4.
 if [ $# -gt 0 ]; then
   targets=("$@")
+  n=$#
 else
   list="$(bash scripts/fuzz_target.sh --list)" || exit 2
-  mapfile -t targets <<<"$list"
+  targets=()
+  n=0
+  while IFS= read -r t; do
+    if [ -n "$t" ]; then targets+=("$t"); n=$((n + 1)); fi
+  done <<<"$list"
 fi
-if [ "${#targets[@]}" -eq 0 ] || [ -z "${targets[0]}" ]; then
+if [ "$n" -eq 0 ] || [ -z "${targets[0]}" ]; then
   echo "campaign_local.sh: no fuzz targets" >&2
   exit 2
 fi
@@ -48,7 +55,7 @@ commit="$(git rev-parse HEAD)"
   echo "commit: $commit"
   echo "toolchain: $toolchain: $(cargo "+$toolchain" --version 2>&1 | head -1)"
   echo "seconds per target: $seconds"
-  echo "targets: ${#targets[@]}"
+  echo "targets: $n"
   echo "started: $(date -u +%FT%TZ)"
 } >"$receipt"
 
@@ -65,6 +72,6 @@ for target in "${targets[@]}"; do
     exit "$rc"
   fi
 done
-echo "result: GREEN, ${#targets[@]} targets clean for $seconds s each" >>"$receipt"
+echo "result: GREEN, $n targets clean for $seconds s each" >>"$receipt"
 echo "finished: $(date -u +%FT%TZ)" >>"$receipt"
 echo "receipt: $receipt"

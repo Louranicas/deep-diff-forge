@@ -1,5 +1,6 @@
 //! The repository's gate scripts fail closed: the pre-push secret hook, the diff-scoped mutation
-//! gate (anchor B-01), the fuzz runner and the release-tag signer. Each is run for real against a scratch repository,
+//! gate (anchor B-01), the fuzz runner and the release-tag signer; the local gate's step runner
+//! and the macOS-like temp directory are run as well. Each is run for real against a scratch repository,
 //! with a recording stand-in for the expensive tool it hands off to (gitleaks, cargo mutants,
 //! cargo fuzz), so what is checked is the script's own decision.
 #![cfg(unix)]
@@ -502,6 +503,221 @@ fn campaign_runs_every_listed_target_and_fails_on_one_crash() {
         ),
         "the campaign is a release recipe"
     );
+}
+
+/// macOS's `/bin/bash` is 3.2: `mapfile` was "command not found" there and the target list then
+/// unbound under `set -u` (the 0.11.0 macOS CI run). A run on Linux cannot show that, so the
+/// script's code (its comments aside) is read for what bash 3.2 lacks.
+#[test]
+fn the_campaign_uses_nothing_bash_3_2_lacks() {
+    let script = std::fs::read_to_string(format!("{ROOT}/scripts/campaign_local.sh")).unwrap();
+    let code: Vec<&str> = script
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect();
+    assert!(code.len() > 40, "{}", code.len());
+    for newer in [
+        "mapfile",
+        "readarray",
+        "declare -A",
+        "declare -n",
+        "local -A",
+        "local -n",
+        ",,}",
+        "^^}",
+        "|&",
+        "&>>",
+        "coproc",
+        "globstar",
+        ";;&",
+        "EPOCHREALTIME",
+        "EPOCHSECONDS",
+        "wait -n",
+        "[-1]",
+        "@Q}",
+    ] {
+        let found: Vec<&&str> = code.iter().filter(|line| line.contains(newer)).collect();
+        assert!(
+            found.is_empty(),
+            "{newer:?}, which bash 3.2 lacks: {found:?}"
+        );
+    }
+}
+
+// --- scripts/gate_steps.sh (the step runner of scripts/ci_local.sh) -------------------------
+
+/// P7: each step's line carries its time, and what it skipped in one form; a failed step shows
+/// the end of its output; the receipt lists every step with its status, seconds and skip.
+#[test]
+fn the_gate_says_how_long_each_step_took_and_what_it_skipped() {
+    let s = scratch("gate-steps");
+    let out = run(Command::new("bash")
+        .current_dir(&s.0)
+        .args([
+            "-c",
+            r#"gate_steps="$1/steps.tsv"
+. "$2/scripts/gate_steps.sh"
+step "quick" true
+step "slow" sleep 1
+step "corpus" sh -c 'echo working; echo "skipped: no corpus here (c)"'
+step "tests" printf 'test result: ok. 3 passed; 0 failed; 2 ignored; 0 measured\ntest result: ok. 1 passed; 0 failed; 1 ignored; 0 measured\n'
+step "matrix" printf 'real rows: 0 run, 12 skipped\nskipped: 12 rows (12 no FW_BIN)\nrows red: 0\n'
+step "red" sh -c 'echo one; echo two; exit 3'
+gate_receipt "$1/receipt.json" 0123abc
+echo "failed: $failed""#,
+            "bash",
+        ])
+        .arg(&s.0)
+        .arg(ROOT));
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success(), "{out:?}");
+    // `<status> <name> (<seconds> s<; what it said>)`: the seconds and the rest
+    let line = |status: &str, name: &str| -> (f64, String) {
+        let head = format!("{status} {name} (");
+        let line = stdout
+            .lines()
+            .find(|line| line.starts_with(&head))
+            .unwrap_or_else(|| panic!("no line {head}: {stdout}"));
+        let inner = line[head.len()..].strip_suffix(')').unwrap();
+        let (seconds, rest) = inner.split_once(" s").unwrap();
+        (seconds.parse().unwrap(), rest.to_owned())
+    };
+    // (bash 3.2, macOS's, has no EPOCHREALTIME: the clock is then whole seconds, and a step
+    // that crosses a second's edge takes 1.0)
+    let (quick, said) = line("PASS", "quick");
+    let (slow, _) = line("PASS", "slow");
+    assert!((1.0..30.0).contains(&slow), "{stdout}");
+    assert!(quick <= slow && said.is_empty(), "{stdout}");
+    assert_eq!(line("PASS", "corpus").1, "; skipped: no corpus here (c)");
+    assert_eq!(line("PASS", "tests").1, "; skipped: 3 tests ignored");
+    assert_eq!(
+        line("PASS", "matrix").1,
+        "; real rows: 0 run, 12 skipped; skipped: 12 rows (12 no FW_BIN)"
+    );
+    assert_eq!(line("FAIL", "red").1, "");
+    assert!(stdout.contains("\n    one\n    two\n"), "{stdout}");
+    assert!(stdout.ends_with("failed: 1\n"), "{stdout}");
+
+    let receipt: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(s.0.join("receipt.json")).unwrap()).unwrap();
+    assert_eq!(receipt["commit"], "0123abc");
+    assert_eq!(receipt["failed"], 1);
+    assert_eq!(receipt["uncommitted_changes"], false);
+    assert!(
+        receipt["started"].as_str().unwrap().ends_with('Z'),
+        "{receipt}"
+    );
+    let steps = receipt["steps"].as_array().unwrap();
+    let names: Vec<&str> = steps.iter().map(|s| s["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["quick", "slow", "corpus", "tests", "matrix", "red"]);
+    let status: Vec<&str> = steps
+        .iter()
+        .map(|s| s["status"].as_str().unwrap())
+        .collect();
+    assert_eq!(status, ["PASS", "PASS", "PASS", "PASS", "PASS", "FAIL"]);
+    assert!(
+        steps[1]["seconds"]
+            .as_f64()
+            .is_some_and(|seconds| (seconds - slow).abs() < 1e-9),
+        "{receipt}"
+    );
+    let skipped: Vec<Option<&str>> = steps.iter().map(|s| s["skipped"].as_str()).collect();
+    assert_eq!(
+        skipped,
+        [
+            None,
+            None,
+            Some("no corpus here (c)"),
+            Some("3 tests ignored"),
+            Some("12 rows (12 no FW_BIN)"),
+            None
+        ]
+    );
+}
+
+// --- scripts/long_tmpdir.sh ---------------------------------------------------------------
+
+/// The macOS-like temp directory: a link of the length asked for to a real, private directory
+/// of the longer length, both directly under the base; 49 and 57 by default where the base
+/// leaves room (a base under `/tmp` does; one under a longer TMPDIR is refused, saying why).
+#[test]
+fn long_tmpdir_makes_a_link_as_long_as_macos_s_to_a_longer_real_directory() {
+    let s = scratch("long-tmpdir");
+    let base = std::fs::canonicalize(&s.0).unwrap();
+    let n = base.as_os_str().len();
+    let long_tmpdir = |lengths: Option<(usize, usize)>| {
+        let mut command = Command::new("bash");
+        command
+            .arg(format!("{ROOT}/scripts/long_tmpdir.sh"))
+            .arg(&s.0)
+            .env_remove("LONG_TMPDIR_LINK")
+            .env_remove("LONG_TMPDIR_REAL");
+        if let Some((link, real)) = lengths {
+            command
+                .env("LONG_TMPDIR_LINK", link.to_string())
+                .env("LONG_TMPDIR_REAL", real.to_string());
+        }
+        run(&mut command)
+    };
+    let link_made = |out: &Output, link_len: usize, real_len: usize| -> PathBuf {
+        assert!(out.status.success(), "{out:?}");
+        let link = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim_end());
+        let real = std::fs::canonicalize(&link).unwrap();
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "{link:?}"
+        );
+        assert_eq!(
+            (link.as_os_str().len(), real.as_os_str().len()),
+            (link_len, real_len),
+            "{link:?} -> {real:?}"
+        );
+        assert_eq!(
+            (link.parent(), real.parent()),
+            (Some(base.as_path()), Some(base.as_path()))
+        );
+        let mode = std::fs::metadata(&real).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "{real:?}");
+        link
+    };
+    let first = link_made(&long_tmpdir(Some((n + 16, n + 24))), n + 16, n + 24);
+    let second = link_made(&long_tmpdir(Some((n + 16, n + 24))), n + 16, n + 24);
+    assert_ne!(first, second, "a second run made the same link");
+    // the defaults, as macOS has them
+    let out = long_tmpdir(None);
+    if n + 3 <= 49 {
+        link_made(&out, 49, 57);
+    } else {
+        assert_eq!(out.status.code(), Some(2), "{out:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains(&format!(
+                "is {n} characters: too long for a link of 49 and a directory of 57"
+            )),
+            "{out:?}"
+        );
+    }
+    // no room for the names, a real path shorter than the link, a base that is no directory
+    for (lengths, base) in [
+        (Some((n + 2, n + 24)), s.0.clone()),
+        (Some((n + 24, n + 16)), s.0.clone()),
+        (None, s.0.join("absent")),
+    ] {
+        let mut command = Command::new("bash");
+        command
+            .arg(format!("{ROOT}/scripts/long_tmpdir.sh"))
+            .arg(&base);
+        if let Some((link, real)) = lengths {
+            command
+                .env("LONG_TMPDIR_LINK", link.to_string())
+                .env("LONG_TMPDIR_REAL", real.to_string());
+        }
+        let out = run(&mut command);
+        assert_eq!(out.status.code(), Some(2), "{lengths:?} {base:?}: {out:?}");
+        assert!(out.stdout.is_empty(), "{out:?}");
+    }
 }
 
 // --- scripts/sign_release_tag.sh ----------------------------------------------------------

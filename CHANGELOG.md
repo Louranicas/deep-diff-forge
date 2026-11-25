@@ -32,6 +32,36 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   UNJUDGED. The limit that remains: a deliberate act by a process of the same user (a rewritten
   or removed ledger, a changed settings file together with a removed ledger) can still change
   what the hooks judge by; the pull request's judge is the boundary.
+- Tests only: no scanner changed. The tests that hold the line scanners to linear time bounded
+  one size in absolute seconds of a debug build, so they failed on a slower runner while the
+  scan was linear (`the_import_rule_is_linear_on_long_lines` on GitHub's Linux runner for
+  0.11.0). Six of them now bound how a scan's cost grows when its input doubles (under 3 times,
+  on the thread's CPU time, at sizes that double from small to large, so that a quadratic scan
+  fails while it is still fast), and keep an absolute deadline only against a hang:
+  `one_long_word_ranks_in_under_a_second` is renamed `one_long_word_ranks_in_linear_time`, and
+  the long-line test of every trigger ranks each line at sizes up to 1 MiB instead of once at 2
+  MiB, at the same cost. The seventh named with them, `the_backstop_scales_with_source_size`, is
+  pure arithmetic on the parse deadline, reads no clock, and is unchanged. The test helper
+  `within_deadline` (six copies) now fails with the work's own panic message instead of
+  "Disconnected". `crates/deep-diff-forge-cli/tests/LOAD_SENSITIVE` names hook tests that fail
+  on a loaded host (five measured, two observed once and marked so), and a test fails when a
+  name on it is no test; nothing reads the list yet.
+- Tests: the suite no longer assumes Linux or a short temp directory. A test that needs another
+  process to hold a lock takes it with `python3`'s `fcntl.flock` (one holder, in the testkit),
+  not `flock(1)`, which macOS lacks; the stand-in judge of `agent check`'s tests falls back to
+  `shasum -a 256`; names that are not UTF-8 are also put in Git's objects alone, and the case on
+  disk says it is skipped where the file system refuses it; paths are compared as messages show
+  them (cut in the middle, canonical); `scripts/campaign_local.sh` runs on bash 3.2.
+  `scripts/long_tmpdir.sh` makes a temp directory as long and as indirect as macOS's (a link of
+  49 characters to a directory of 57), so these failures can be seen on Linux. The 0.11.0 CI run
+  on macOS failed 22 tests; six of the failures that come back on Linux this way are of the
+  product (a message cut at the wrong place under a long path) and stay red until it is fixed.
+- The local gate (`scripts/ci_local.sh`) prints each step's time and what it skipped in one form
+  (`PASS test (500.2 s; skipped: 8 tests ignored)`), and writes a JSON receipt of the gate: the
+  commit, and each step's name, status, seconds and skip reason (its path is printed;
+  `DDF_GATE_RECEIPT` names another). The contract matrix prints `real rows: N run, M skipped`,
+  which the step's line carries, and one line `skipped: …` that counts the rows it skipped by
+  what was not given.
 
 ## [0.11.0] - 2026-11-25
 

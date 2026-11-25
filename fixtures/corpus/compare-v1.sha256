@@ -4,6 +4,18 @@
 # this file. The local gate's step "comparison corpus manifest" verifies the corpus where it
 # exists.
 #
+# The published 0.11.0 binary (named 2026-11-25, after the tag; EVIDENCE.md "0.11.0 binaries and
+# commits by name"). It was added to the corpus as bin/v0.11.0, which is why the digest on the
+# last line moved from the one the release commit carried
+# (bddd0a41ffc48a67fd798f6805e36da4324fb30adde0a903e363436962004dc6). Binary sha256
+# 415a72ef6ef70d21410812f5a124077656a9f554df1e0b9734276e4d5822eac3, taken from the release archive
+# of the signed tag v0.11.0; run 2026-11-24T17:53Z, record runs/20261124T175316Z-415a72ef6ef7 of
+# the corpus: every figure of the two records below (against the published 0.10.0, 106 patches
+# with a lost item or label, all note 3, and 1,002 with a gained one; 1,410 patches refused by
+# both, none differs), every result file the same but for the binary's name and sum, and the
+# same stdout, stderr and exit code as the release-prepared build 32fe5aa1… on all 7,715 patches
+# in --json, --rank --json and --diagnostics --json.
+#
 # 0.11.0. Added to the corpus on 2026-11-24, which is why its digest moved from the 0.10.0 one
 # (a6e6baff0360a41860ce9c1d24a7bdc3a58b0989c2cd3f6c8f1e57adb0674ec2, the record further down):
 # four sibling batteries for the readings this release widened (assert-class, let-drop,
@@ -82,4 +94,4 @@
 # Note 2: all 54 are trivial_assert on Python lines where "assert True" is followed by more
 #   (for example "assert True == False"), which 0.9.0 labelled though they can fail: the narrowing
 #   of task S3.16, a recorded exception to the floor.
-bddd0a41ffc48a67fd798f6805e36da4324fb30adde0a903e363436962004dc6  MANIFEST.sha256
+bdf7ee0372fa7e69f447e847110b544c6d0e14d4b2c0de967296fa95d207ed96  MANIFEST.sha256

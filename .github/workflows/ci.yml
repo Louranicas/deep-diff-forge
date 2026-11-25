@@ -69,12 +69,15 @@ jobs:
       - name: check on Rust 1.88
         run: cargo check --workspace --all-targets --locked
 
-  # macOS binaries ship from release.yml, so their tests run on every event: each pull request,
-  # each push to main, the weekly run, a manual run and a release (release.yml calls this
-  # workflow). Before 2026-10-30 they ran only weekly, manually and on release, and two macOS
-  # breaks in PR #44 were caught only by a manual run. The job takes about 4 minutes, so it runs
-  # on every pull request rather than behind a path filter, which would miss a break that reaches
-  # the daemon or the socket code through another crate.
+  # The whole suite on macOS, on every event: each pull request, each push to main, the weekly
+  # run, a manual run and a release (release.yml calls this workflow). release.yml has macOS
+  # targets, but releases are built locally since 0.8.4 (scripts/release_local.sh) and no macOS
+  # binary has shipped since 0.8.3; `cargo install deep-diff-forge-cli` builds there all the same.
+  # Every run on record from 2026-11-22 to 2026-11-24 was red here: 22 tests on the 0.11.0 tree,
+  # read to their cause, most of them tests that assumed Linux (flock(1), sha256sum, a short
+  # /tmp, file names that are not UTF-8), since made portable. The run on 224d4275 took about 35
+  # minutes. It runs on every pull request rather than behind a path filter, which would miss a
+  # break that reaches the daemon or the socket code through another crate.
   macos:
     name: macOS tests
     runs-on: macos-26

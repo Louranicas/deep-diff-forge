@@ -673,7 +673,7 @@ Measured on 2026-10-30 on Fedora 44 (Linux 7.2), with the debug build of this ch
 - **Racing starts.** Eight `daemon start --foreground --socket PATH` processes were started at once over a stale socket (bound and closed). One daemon served `daemon health`; the other seven exited 6 with `another daemon is running or starting on this socket; refusing to replace it`. `daemon stop` removed the socket; `d.sock.lock` (mode `0600`) stayed, as designed.
 - **A client of another user.** The daemon ran as uid 1000 with its directory loosened to `0711` and its socket to `0666`, so another user could reach it. A client run as uid 1 inside `podman unshare` (subordinate uid 524288 outside) connected and was reset without an answer. The daemon logged `refused a connection: the peer runs as uid 524288, not uid 1000`. `daemon health` as uid 1000 was still answered.
 - **A daemon of another user.** The daemon ran as uid 1 inside `podman unshare`, with the same loosened modes. `deep-diff-forge daemon health` as uid 1000 exited 6 with `the peer runs as uid 524288, not uid 1000`, and the Python `SocketClient` raised `TransportError` with the same uids before sending anything. That daemon also refused both clients from its side.
-- **Not measured here:** macOS (`getpeereid`), which the dispatched macOS CI job covers through the unit tests.
+- **Not measured here:** macOS (`getpeereid`), which the dispatched macOS CI job covers through the unit tests. (Added 2026-11-25: on `224d4275`, the 0.11.0 tree, that job ran `security::tests::a_peer_is_the_user_that_connected` and `a_peer_of_another_user_is_refused` and both passed. The job as a whole was red on 22 other tests, as on every run on record from 2026-11-22 to 2026-11-24, so its colour was no signal then.)
 
 ## Daemon requests in parallel (2026-10-30)
 
@@ -1864,3 +1864,82 @@ release build writes `RELEASE-MANIFEST.json`, which the owner signs in a namespa
   `x86_64-apple-darwin` or `aarch64-apple-darwin`. The known issues are in the release notes,
   the limit the review left stated among them: a commit that a session leaves without a stop
   can pass under its own edit of the policy.
+
+## 0.11.0 binaries and commits by name (2026-11-25, after the tag)
+
+Appended after the tag; the three 0.11.0 sections above stand as written. Dates here are UTC. It
+says what happened to the steps the release-commit section lists as pending, and names what each
+hash and commit of those sections and of `fixtures/corpus/compare-v1.sha256` is.
+
+- **The owner's steps, done 2026-11-24.** The release commit was merged into main at 17:23Z:
+  the merge commit `445233cb1cacc52c3ee06d3997ee115ce2aad436` (parents `76705464` and
+  `fb7227cd`), whose tree (`afa77067`) is the tree of `fb7227cd`. The signed tag `v0.11.0` (tag
+  object `e0d729e8754fa8ad1624dc09b45c6088f827fdba`) names that merge commit, and its signature
+  is good against `.github/allowed_signers`. The release tool ran the gate on the merge commit
+  (36 steps, 0 failed), built the tag twice from two exports with one SHA-256, and the owner
+  signed `SHA256SUMS` and `RELEASE-MANIFEST.json`, each in its own namespace;
+  `scripts/release_local.sh verify` passed its three checks.
+- **The published 0.11.0 binary** (`x86_64-unknown-linux-gnu`) is
+  `415a72ef6ef70d21410812f5a124077656a9f554df1e0b9734276e4d5822eac3`; its archive is
+  `b1585e4254bce46edd48f48dbaccd58d3cce6f608ab0a239dc9aa314b302cb67`. That is the SHA-256 the
+  section above gives for the dry run on `2843998a` ("None of them is the published binary" was
+  true when it was written: the build of the tag gave the same bytes).
+- **Commits.** `2843998a` is the commit the gate, the fuzz campaign and the dry run of the
+  release-commit section ran on. `fb7227cd` (the evidence commit on it) is the release commit
+  that was merged. `b8532c32` is the commit the reviewed binary `c19cf99c…` was built from, and
+  `aa5d9d9f` the commit both reviewers said GO on. The tag names `445233cb`.
+- **Where it is published.** GitLab, Gitea, Forgejo and GitHub each carry the tag on `445233cb`
+  and a release with eight files; GitLab's, Gitea's and Forgejo's main is `445233cb`.
+  GitHub's main is `224d4275dfe86e75803b1f903c5d51fbdca0df69`, a merge of its own with the same
+  tree (`afa77067`). crates.io has 0.11.0 of the fourteen published crates.
+- **The corpus record of the published binary.** It is in the comparison corpus as
+  `bin/v0.11.0`, so the corpus manifest's digest is now
+  `bdf7ee0372fa7e69f447e847110b544c6d0e14d4b2c0de967296fa95d207ed96` (the release commit's
+  fixture named `bddd0a41…`; this commit's names the new one). Record
+  `runs/20261124T175316Z-415a72ef6ef7` (17:53Z): against itself nothing lost or gained; against
+  the published 0.10.0 (`121503a8…`), 106 patches with a lost item or label, every one the
+  listed floor exception, and 1,002 with a gained item; 1,410 patches refused by both, none
+  differs; and the same stdout, stderr and exit code as `32fe5aa1…` on all 7,715 patches in
+  `--json`, `--rank --json` and `--diagnostics --json`. The counts of the exception are taken
+  with the corpus's `tools/diffitems.py` and `tools/lostclass.py`, which cut nothing.
+- **GitHub's own CI ran on the released tree, and it is red.** The release-commit section and
+  the release notes say it had not been measured for 0.11.0; the push that brought GitHub's main
+  to the released tree (`224d4275`, 17:29Z) started its `ci` workflow (run 45449170576), which
+  ended in failure. Passed: Linux arm64 tests, the declared Rust 1.88 compatibility, the supply
+  chain audit, the secret scan, the macOS launchd agent; the `codeql` workflow passed. Failed:
+  - `deploy gate-feature` (Linux x86_64), in its test step, on one test:
+    `evidence::tests::the_import_rule_is_linear_on_long_lines`, a bound on CPU time ("the long
+    lines took 20.16831319s of thread CPU time" on that runner). The local gate passes it.
+  - `macOS tests`: 22 tests in 10 test binaries. 16 of them failed on GitHub's main at 0.10.0
+    too (run 45172578481 on `35a636c1`: 17 failed there, and one of those,
+    `advice_off_is_told_to_the_model`, passes now). Six fail on this tree and did not then:
+    `a_held_session_lock_still_judges_the_tree_once`,
+    `a_ledger_that_cannot_be_written_changes_no_decision`,
+    `a_refused_path_does_not_silence_the_others`,
+    `check_uses_the_session_base_and_the_installed_judge`,
+    `hook_run::tests::every_stop_level_reason_has_its_class` and
+    `working_trees_inside_a_bare_repository_are_judged_from_inside`. None has been read to its
+    cause here. macOS is not built for this release.
+  - `review controller mutation and fuzz evidence` was cancelled after 75 minutes.
+  The counts are of the lines `test … FAILED` in the failed jobs' logs, each test once.
+- **Still not measured.** No independent rescore of 0.11.0. No mutation run over what 0.11.0
+  changed. forge-warden's published 0.2.1 binary was not run against this build. No binary was
+  built for `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin` or `aarch64-apple-darwin`.
+- **The mutation counts above are upper bounds (found on 2026-11-25).** This file says of the
+  run over what 0.10.0 changed that 450, and later 538, of its 729 mutants were "judged
+  caught". Neither figure measures what the tests catch. The run tested each mutant with the
+  tests of the whole workspace, four mutants at a time, and counted a mutant as caught when any
+  test failed. Four or five time-bound tests of the CLI's hooks fail under that load whatever
+  the mutant is. The run also started again whenever a gate ran (348 starts), and each start
+  tested again every mutant not yet on its list of caught mutants. So a mutant that the tests
+  miss was tested until one of those tests failed beside it: 29 mutants were reported missed or
+  timed out at some start, 28 of them were on the list of caught mutants on 2026-11-25, and the
+  lists of missed and timed-out mutants were empty. The one start whose logs were kept shows
+  it: four mutants of the patch parser, each reported missed before, were recorded caught on
+  failures of hook tests that do not reach the parser. A mutant recorded caught at its first
+  start may have been recorded the same way; how many were is not known. The run was put on
+  hold on 2026-11-25 with 615 mutants on that list (`wc -l` of its `previously_caught.txt`).
+  What this file says about a named mutant and the test written for it does not rest on those
+  counts. A run that tests a mutant with the tests of its own crate and of the crates that use
+  it, without the tests named in `crates/deep-diff-forge-cli/tests/LOAD_SENSITIVE`, and that
+  keeps every start's outcome, is being prepared; no count from it exists yet.
