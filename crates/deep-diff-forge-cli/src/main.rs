@@ -140,8 +140,12 @@ fn main() {
                     std::process::exit(code);
                 }
             }
+            // Both ends: a refusal's last words say what was not written (P3 of 0.11.1).
             Err(error) => {
-                eprintln!("error: {}", display_safe_bounded(&error.to_string(), 200));
+                eprintln!(
+                    "error: {}",
+                    deep_diff_forge_core::display_safe_bounded_ends(&error.to_string(), 200)
+                );
                 std::process::exit(exit::COUNCIL_REFUSED);
             }
         },

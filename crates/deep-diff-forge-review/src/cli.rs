@@ -223,7 +223,7 @@ fn import_tuicr(args: &[String]) -> Result<(String, i32)> {
         Err(incomplete @ crate::TuicrImportError::Incomplete { .. }) => {
             eprintln!(
                 "error: {}",
-                deep_diff_forge_core::display_safe_bounded(&incomplete.to_string(), 1024)
+                deep_diff_forge_core::display_safe_bounded_ends(&incomplete.to_string(), 1024)
             );
             return Ok((String::new(), exit::COUNCIL_RECORDED_INCOMPLETE));
         }

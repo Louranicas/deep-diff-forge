@@ -1654,6 +1654,39 @@ fn an_unwritable_checkpoint_refuses_before_the_append() {
     cut_back_is_detected(&f, &session);
 }
 
+/// Package P3 of 0.11.1, row 17 of the reading of the macOS CI run of 0.11.0: the command
+/// line shows 200 bytes of a council error, and under a temp directory of macOS's length the
+/// refusal above lost its last words, the ones that say nothing was written. The run under a
+/// directory of 200 characters and more: the refusal is exit 4, the journal unchanged, and
+/// the error line keeps its first and its last words within its bound.
+#[test]
+fn an_unwritable_checkpoint_under_a_long_path_still_says_nothing_was_appended() {
+    let (mut f, session) = journaled();
+    let deep = f.root.join("d".repeat(180));
+    fs::create_dir(&deep).unwrap();
+    let run = deep.join("run");
+    fs::rename(&f.run, &run).unwrap();
+    f.run = run;
+    assert!(f.run.to_str().unwrap().len() >= 200);
+    let before = fs::read(f.journal()).unwrap();
+    decisions(&session, &["h-1", "h-2"], 0);
+    let dir = f.run.join("decisions.checkpoints");
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
+    let out = f.import(&session, &["--execute"]);
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(fs::read(f.journal()).unwrap(), before);
+    refused(&out, "nothing was appended");
+    let line = stderr(&out);
+    let line = line.lines().find(|l| l.starts_with("error: ")).unwrap();
+    assert!(
+        line.starts_with("error: tuicr import refused (journal): ")
+            && line.ends_with("; nothing was appended")
+            && line.contains(" bytes omitted] ...")
+            && line.len() <= "error: ".len() + 200 + "... [999 bytes omitted] ...".len(),
+        "{line}"
+    );
+}
+
 /// FINDINGS A.2 (every later import refused): a torn last record no checkpoint names, made by a
 /// kill mid-append (`ulimit -f`, SIGXFSZ), is reported by a dry run, then cut off by the next
 /// executing import, its bytes kept beside the journal, and the import proceeds. The same limit
