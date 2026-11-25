@@ -16418,7 +16418,8 @@ fn a_file_put_into_the_hooks_directory_is_judged_once_staged() {
     secret(&laid.home, planted);
     let unstaged = hook_of(&laid, "stop", &laid.home, "s", &script);
     assert_ne!(
-        unstaged["decision"], "block",
+        unstaged["decision"],
+        "block",
         "the stated limit changed: an unstaged file in the hooks' directory was judged: {unstaged} {:?}",
         shown(&log)
     );
@@ -16428,7 +16429,9 @@ fn a_file_put_into_the_hooks_directory_is_judged_once_staged() {
     let staged = hook_of(&laid, "stop", &laid.home, "s", &script);
     assert!(
         staged["decision"] == "block"
-            && shown(&log).iter().any(|names| names.split(',').any(|name| name == planted)),
+            && shown(&log)
+                .iter()
+                .any(|names| names.split(',').any(|name| name == planted)),
         "a file the index lists in the hooks' directory was not judged as the working tree has it: {staged} {:?}",
         shown(&log)
     );
