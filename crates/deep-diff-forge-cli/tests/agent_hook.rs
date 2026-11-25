@@ -16402,8 +16402,11 @@ fn a_home_repository_does_not_list_the_hooks_files() {
 /// seen: in the layout of T1 (the home directory the main working tree of the project), a file
 /// the agent puts into the hooks' state directory there is ignored as the hooks' files are,
 /// and is not judged while it is not staged (as a file under any `.gitignore` that ignores
-/// itself, a limit SECURITY.md states); staged with `git add -f` it is in the next commit, and
-/// a stop judges it and blocks.
+/// itself, a limit SECURITY.md states). Once the repository's index lists it (`git add -f`) it
+/// is in the next commit, and the working tree's patch holds it as the working tree has it
+/// (HR-M-2): staged harmless and then given a secret in the working tree only, a stop blocks.
+/// (A stop also judges the index by itself, HR4-H-1: the staged version here is harmless so
+/// that only the working tree's patch can block.)
 #[test]
 fn a_file_put_into_the_hooks_directory_is_judged_once_staged() {
     let scratch = Scratch::new("hook-other-tree-planted");
@@ -16415,19 +16418,18 @@ fn a_file_put_into_the_hooks_directory_is_judged_once_staged() {
     secret(&laid.home, planted);
     let unstaged = hook_of(&laid, "stop", &laid.home, "s", &script);
     assert_ne!(
-        unstaged["decision"],
-        "block",
+        unstaged["decision"], "block",
         "the stated limit changed: an unstaged file in the hooks' directory was judged: {unstaged} {:?}",
         shown(&log)
     );
+    std::fs::write(laid.home.join(planted), "fn harmless() {}\n").unwrap();
     git(&laid.home, &["add", "-f", planted]);
+    secret(&laid.home, planted);
     let staged = hook_of(&laid, "stop", &laid.home, "s", &script);
     assert!(
         staged["decision"] == "block"
-            && shown(&log)
-                .iter()
-                .any(|names| names.split(',').any(|name| name == planted)),
-        "a staged file in the hooks' directory was not judged: {staged} {:?}",
+            && shown(&log).iter().any(|names| names.split(',').any(|name| name == planted)),
+        "a file the index lists in the hooks' directory was not judged as the working tree has it: {staged} {:?}",
         shown(&log)
     );
 }
