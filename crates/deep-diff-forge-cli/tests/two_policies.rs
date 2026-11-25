@@ -9,7 +9,8 @@
 //! policy file, `rule …`, is not read for it), or, for `path:NAME`, a patch that changes the
 //! file `NAME`; a line `@refuse` makes it refuse the
 //! ranker it is offered (exit 4, as a policy that does not admit this build does); `@hang`
-//! makes it use all the time it is given. Every run is logged with the digests of its policy
+//! makes it use all the time it is given; `@gap` makes it hold for a label it does not know
+//! (a version gap, as forge-warden's `unknown_signal` note). Every run is logged with the digests of its policy
 //! and patch, so a test can tell which policy judged what.
 #![cfg(unix)]
 #![expect(
@@ -118,6 +119,11 @@ p="$(sum "$policy")"; f="$(sum "$patch")"; r="$(sum "$ranker")"
 printf 'RUN %s %s %s\n' "$p" "$f" "$(date +%s.%N)" >> '@LOG@'
 if grep -q '^@refuse' "$policy"; then echo '{"exit":4,"name":"invalid_input","message":"this policy does not admit the ranker","next":"change_input"}' >&2; exit 4; fi
 if grep -q '^@hang' "$policy"; then sleep 600; fi
+if grep -q '^@gap' "$policy"; then
+  seals="{\"policy_sha256\":\"$p\",\"rank_sha256\":\"$f\",\"patch_sha256\":\"$f\",\"patch_facts_sha256\":null,\"provenance\":\"produced\",\"ranked_by\":{\"version\":\"stand-in\",\"sha256\":\"$r\"},\"git\":{\"path\":\"/usr/bin/git\",\"version\":\"git version 2.56.0\",\"sha256\":\"$p\",\"admission\":\"approved\",\"allowlist_sha256\":\"$f\"}}"
+  printf '{"schema":"forge-warden.verdict.v2","tool":{"name":"forge-warden","version":"0.2.0"},"evaluated_on":"2026-11-14","seals":%s,"verdict":"hold","exit":{"code":8,"name":"policy_hold","action":"review_evidence"},"summary":{"files":1,"rules":1,"passed":1,"waived":0,"held":0,"failed":0},"rules":[{"id":"quiet","kind":"forbid_signal","severity":"hold","outcome":"pass","why":"w","violations":[]}],"expired_waivers":[],"unused_waivers":[],"notes":[{"code":"unknown_signal","detail":"the signal `frobnicate` is not known to this build","path":"p"}]}\n' "$seals"
+  exit 8
+fi
 added="$(grep '^+' "$patch" | grep -v -e '^+++ ' -e '^+rule ' -e '^+@')"
 rules=; passed=0; held=0; failed=0
 while read -r kind id severity word; do
@@ -370,9 +376,10 @@ fn a_left_loosening_judges_neither_itself_nor_the_next_session() {
     let decision = p.stop("k1");
     assert!(blocks(&decision), "{decision}");
     assert!(
-        p.records_of(&own)
-            .iter()
-            .all(|(outcome, _, _)| outcome == "fail"),
+        !p.records_of(&own).is_empty()
+            && p.records_of(&own)
+                .iter()
+                .all(|(outcome, _, _)| outcome == "fail"),
         "{:?}",
         p.records_of(&own)
     );
@@ -412,11 +419,15 @@ fn a_left_loosening_judges_neither_itself_nor_the_next_session() {
     p.start("k1", "startup");
     assert!(blocks(&p.stop("k1")));
     assert!(
-        p.records_of(&key).iter().all(|r| r.0 == "fail"),
+        !p.records_of(&key).is_empty() && p.records_of(&key).iter().all(|r| r.0 == "fail"),
         "{:?}",
         p.records_of(&key)
     );
-    assert!(p.records_of(&innocent).iter().all(|r| r.0 == "pass"));
+    let records = p.records_of(&innocent);
+    assert!(
+        !records.is_empty() && records.iter().all(|r| r.0 == "pass"),
+        "{records:?}"
+    );
 }
 
 /// The invariant (the first critic's p1 and p1b, T-13 and T-14): half 1 is the policy at the
@@ -466,7 +477,11 @@ fn an_own_loosening_then_a_key_fails_whatever_the_ledger() {
     let key = p.commit(&[("notes.md", Some(KEY))], "B: a key (own)");
     assert!(blocks(&p.stop("k1")));
     assert!(p.records_of(&edit).iter().all(|r| r.0 == "pass"));
-    assert!(p.records_of(&key).iter().all(|r| r.0 == "fail"));
+    let records = p.records_of(&key);
+    assert!(
+        !records.is_empty() && records.iter().all(|r| r.0 == "fail"),
+        "{records:?}"
+    );
     p.start("k2", "startup");
     let later = p.commit(&[("later.md", Some(KEY))], "C: a key (the next session's)");
     assert!(blocks(&p.stop("k2")));
@@ -519,7 +534,7 @@ fn two_policies_that_tie_name_the_rules_of_both() {
     let decision = p.stop("k1");
     assert!(blocks(&decision), "{decision}");
     assert!(
-        p.records_of(&todo).iter().all(|r| r.0 == "fail"),
+        !p.records_of(&todo).is_empty() && p.records_of(&todo).iter().all(|r| r.0 == "fail"),
         "{:?}",
         p.records_of(&todo)
     );
@@ -561,6 +576,13 @@ fn a_policy_that_gives_no_verdict_makes_the_unit_unjudged_in_either_order() {
             said.contains("UNJUDGED") && said.contains(half),
             "{name}: {said}"
         );
+        // the left commit's hold says which policy gave no verdict, never "two policies"
+        assert!(
+            said.contains(&format!(
+                "This unit was judged under one of its two policies: {half}"
+            )) && !said.contains("judged under two policies"),
+            "{name}: {said}"
+        );
         let records = p.records_of(&innocent);
         assert!(
             !records.is_empty() && records.iter().all(|r| r.0 == "unjudged"),
@@ -573,7 +595,11 @@ fn a_policy_that_gives_no_verdict_makes_the_unit_unjudged_in_either_order() {
         );
         let (code, doc) = p.verify(&format!("{base}..HEAD"));
         assert_eq!(code, 7, "{name}: {doc}");
-        assert!(p.records_of(&left).iter().all(|r| r.0 != "pass"), "{name}");
+        let records = p.records_of(&left);
+        assert!(
+            !records.is_empty() && records.iter().all(|r| r.0 != "pass"),
+            "{name}: {records:?}"
+        );
     }
 }
 
@@ -764,7 +790,7 @@ fn an_accepted_policy_that_cannot_be_read_lets_no_unit_pass() {
     let decision = p.stop("k1");
     let said = words(&decision);
     assert!(
-        said.contains("this clone is shallow and does not have the history back to the commit this project's ledger first recorded")
+        said.contains("this clone is shallow and HEAD shares no history it has with the commit this project's ledger first recorded")
             && said.contains("(`place.shallow_parent`)"),
         "{said}"
     );
@@ -898,7 +924,7 @@ fn a_replace_ref_cannot_change_the_accepted_policy() {
     let decision = p.stop("k1");
     assert!(blocks(&decision), "{decision}");
     assert!(
-        p.records_of(&key).iter().all(|r| r.0 == "fail"),
+        !p.records_of(&key).is_empty() && p.records_of(&key).iter().all(|r| r.0 == "fail"),
         "{:?}",
         p.records_of(&key)
     );
@@ -930,16 +956,318 @@ fn the_stateless_stop_judges_under_both_policies() {
         "{said}"
     );
     assert!(
-        p.records_of(&left).iter().all(|r| r.0 != "pass"),
+        !p.records_of(&left).is_empty() && p.records_of(&left).iter().all(|r| r.0 != "pass"),
         "{:?}",
         p.records_of(&left)
     );
-    // it has no session base: its words call the first policy the one at HEAD (T8)
+    // it has no session base: its words name 0.11.0's policy first, then the one at HEAD (T8)
     assert!(
-        said.contains("This unit was judged under two policies: at HEAD (commit")
+        said.contains("This unit was judged under two policies: the one first recorded (commit")
+            && said.contains(") and the one at HEAD (commit")
             && !said.contains("at the session base"),
         "{said}"
     );
+}
+
+/// Damage the session's state so that the next stop is the stateless one.
+fn damage_state(p: &Project) {
+    let mut keys = 0;
+    for key in walk(&p.home.join(".local/state/deep-diff-forge")) {
+        if key.file_name().is_some_and(|name| name == "key") {
+            std::fs::write(&key, "x").unwrap();
+            keys += 1;
+        }
+    }
+    assert!(keys > 0, "no key file to damage");
+}
+
+/// Ruling 6 (the implementation review of L1b, F1): the stateless stop keeps 0.11.0's policy
+/// (the one at the commit the ledger first recorded) as its first, and the policy at HEAD is its
+/// second where it differs, so it never answers below 0.11.0's stateless stop.
+/// (a) No policy file at that commit; the session commits a loosening and a key: 0.11.0 was
+/// UNJUDGED (`chain.policy_missing`); 7cdc8b9d passed both under the session's own loosening.
+/// (b) HEAD has no policy file (the session removed it), then a key: 0.11.0 blocked under the
+/// first record's policy; 7cdc8b9d left every commit waiting.
+#[test]
+fn the_stateless_stop_never_answers_below_0_11_0() {
+    // (a)
+    let p = project("stateless-nofile", None);
+    let base = p.head();
+    p.start("k0", "startup");
+    p.commit(&[("warden.toml", Some(STRICT))], "P: the policy");
+    p.start("k1", "startup");
+    let loosening = p.commit(&[("warden.toml", Some(LOOSE))], "L2: loosen (own)");
+    let key = p.commit(&[("k.md", Some(KEY))], "K: a key (own)");
+    damage_state(&p);
+    let decision = p.stop("k1");
+    let said = words(&decision);
+    assert!(
+        said.contains("The commit this project's ledger first recorded has no file \"warden.toml\": a change is UNJUDGED, as before, unless the policy at HEAD, which a commit of this session can have changed, fails or holds it."),
+        "{said}"
+    );
+    for id in [&loosening, &key] {
+        let records = p.records_of(id);
+        assert!(
+            !records.is_empty() && records.iter().all(|r| r.0 == "unjudged"),
+            "{records:?}"
+        );
+    }
+    assert!(
+        p.ledger().iter().all(|r| r["outcome"] != "pass"),
+        "{:?}",
+        p.ledger()
+    );
+    assert_eq!(p.verify(&format!("{base}..HEAD")).0, 7);
+
+    // (b)
+    let p = project("stateless-head-nofile", Some(STRICT));
+    p.start("k1", "startup");
+    let removal = p.commit(&[("warden.toml", None)], "D: the policy removed (own)");
+    let key = p.commit(&[("k.md", Some(KEY))], "K: a key (own)");
+    damage_state(&p);
+    let decision = p.stop("k1");
+    assert!(blocks(&decision), "{decision}");
+    let records = p.records_of(&key);
+    assert!(
+        !records.is_empty() && records.iter().all(|r| r.0 == "fail"),
+        "{records:?}"
+    );
+    let records = p.records_of(&removal);
+    assert!(
+        !records.is_empty() && records.iter().all(|r| r.0 == "hold"),
+        "{records:?}"
+    );
+}
+
+/// Ruling 6, F1b, in the stop with its state: a left commit removes the policy file, and the
+/// next session begins there. Its own policy is missing; the accepted policy still fails the
+/// key and holds the removal (0.11.0 and 7cdc8b9d left every commit UNJUDGED). The start says
+/// what holds where its base has no policy file.
+#[test]
+fn a_session_whose_base_has_no_policy_is_judged_under_the_accepted_one() {
+    let p = project("base-nofile", Some(STRICT));
+    p.start("k0", "startup");
+    let removal = p.commit(&[("warden.toml", None)], "D: the policy removed, left");
+    let said = p.start("k1", "startup");
+    let said = said.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        said.contains("has no policy file \"warden.toml\" that can be read: a change is UNJUDGED unless the project's accepted policy (the one at commit")
+            && !said.contains("each change is judged under both"),
+        "{said}"
+    );
+    let key = p.commit(&[("k.md", Some(KEY))], "K: a key");
+    let innocent = p.commit(&[("b.rs", Some("fn b() {}\n"))], "X: innocent");
+    let decision = p.stop("k1");
+    assert!(blocks(&decision), "{decision}");
+    for (id, outcome) in [(&key, "fail"), (&removal, "hold"), (&innocent, "unjudged")] {
+        let records = p.records_of(id);
+        assert!(
+            !records.is_empty() && records.iter().all(|r| r.0 == outcome),
+            "{outcome}: {records:?}"
+        );
+    }
+    // the key's fail names the policy that gave no verdict, not "two policies"
+    let said = words(&decision);
+    assert!(
+        said.contains("This unit was judged under one of its two policies: under the policy at the session base (commit")
+            && said.contains("it got no verdict: the base commit has no policy file"),
+        "{said}"
+    );
+}
+
+/// Ruling 6, F2: a hold by a rule and a hold for a label the judge does not know (a version gap,
+/// which holds the stop once) tie; the version gap stands, as 0.11.0's answer did under the
+/// policy that gave it, and carries the rule of the other, in either order.
+#[test]
+fn a_version_gap_beside_a_hold_still_holds_the_stop_once() {
+    let held = format!("{STRICT}rule review-me hold HOLDME\n");
+    let gap = format!("{STRICT}@gap\n");
+    for (name, first, then) in [
+        ("gap-at-base", held.as_str(), gap.as_str()),
+        ("gap-accepted", gap.as_str(), held.as_str()),
+    ] {
+        let p = project(name, Some(first));
+        p.start("k0", "startup");
+        p.commit(
+            &[("warden.toml", Some(then))],
+            "L: the policy changes, left",
+        );
+        p.start("k1", "startup");
+        let h = p.commit(&[("h.md", Some("HOLDME\n"))], "H: held by a rule");
+        let decision = p.stop("k1");
+        assert!(blocks(&decision), "{name}: {decision}");
+        let said = words(&decision);
+        assert!(
+            said.contains("the paired forge-warden must be upgraded; tell a person. And the judge also holds this change for a person under the stop's other policy (rules review-me)."),
+            "{name}: {said}"
+        );
+        let records = p.records_of(&h);
+        assert!(
+            !records.is_empty()
+                && records
+                    .iter()
+                    .all(|r| r.0 == "hold" && r.1 == "hold.version_gap"),
+            "{name}: {records:?}"
+        );
+    }
+}
+
+/// R10 where the accepted policy cannot be read (the lane's decision 2): no pass counts, so a
+/// commit a stop passed is listed again; it cannot pass now, and is not judged under HEAD's
+/// policy alone. A shallow fetch across the first record (c2).
+#[test]
+fn passes_count_for_nothing_while_the_accepted_policy_cannot_be_read() {
+    let upstream = project("r10c-upstream", Some(STRICT));
+    upstream.commit(&[("b.rs", Some("fn b() {}\n"))], "U1");
+    let scratch = Scratch::new("two-policies-r10c");
+    let home = scratch.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let root = scratch.join("clone");
+    let url = format!("file://{}", upstream.root.display());
+    git(
+        &scratch.join(""),
+        &[
+            "clone",
+            "--quiet",
+            "--depth",
+            "1",
+            &url,
+            root.to_str().unwrap(),
+        ],
+    );
+    let (judge, log) = (scratch.join("judge"), scratch.join("judge.log"));
+    write_program(&judge, &JUDGE.replace("@LOG@", &log.display().to_string()));
+    let p = Project {
+        _scratch: scratch,
+        root,
+        home,
+        judge,
+        log,
+    };
+    p.start("k0", "startup");
+    let passed = p.commit(&[("x.rs", Some("fn x() {}\n"))], "X: innocent");
+    assert_eq!(p.stop("k0"), Value::Null);
+    let records = p.records_of(&passed);
+    assert!(records.len() == 1 && records[0].0 == "pass", "{records:?}");
+    upstream.commit(&[("c.rs", Some("fn c() {}\n"))], "U2");
+    upstream.commit(&[("d.rs", Some("fn d() {}\n"))], "U3");
+    git(
+        &p.root,
+        &["fetch", "--quiet", "--depth", "1", "origin", "main"],
+    );
+    git(&p.root, &["reset", "--quiet", "--hard", "FETCH_HEAD"]);
+    p.start("k1", "startup");
+    p.stop("k1");
+    let records = p.records_of(&passed);
+    assert!(records.len() > 1, "X was not judged again: {records:?}");
+    assert!(
+        records[1..]
+            .iter()
+            .all(|r| r.0 == "unjudged" && r.1 == "place.shallow_parent"),
+        "{records:?}"
+    );
+}
+
+/// R7 end to end (T-8): the accepted policy refuses this build's ranker on every run (a pin update
+/// the project has not accepted). The stop asks about three commits, asks that policy's probe,
+/// and leaves the rest waiting; nothing passes.
+#[test]
+fn a_policy_that_refuses_every_run_ends_the_asking_after_three() {
+    let refusing = format!("@refuse\n{STRICT}");
+    let p = project("first-asks", Some(&refusing));
+    let base = p.head();
+    p.start("k0", "startup");
+    p.commit(&[("warden.toml", Some(STRICT))], "L: the pin updated, left");
+    p.start("k1", "startup");
+    let mut own = Vec::new();
+    for n in 0..5 {
+        own.push(p.commit(&[(&format!("f{n}.rs"), Some("fn f() {}\n"))], "innocent"));
+    }
+    let before = p.runs().len();
+    p.stop("k1");
+    let refused: std::collections::BTreeSet<String> = p.runs()[before..]
+        .iter()
+        .filter(|(policy, _)| *policy == sha(&refusing))
+        .map(|(_, patch)| patch.clone())
+        .collect();
+    // three asks about commits and the policy's probe
+    assert_eq!(refused.len(), 4, "{:?}", p.runs());
+    for id in &own {
+        let records = p.records_of(id);
+        assert!(
+            !records.is_empty() && records.iter().all(|r| r.0 == "unjudged"),
+            "{records:?}"
+        );
+    }
+    assert!(p.ledger().iter().all(|r| r["outcome"] != "pass"));
+    assert_eq!(p.verify(&format!("{base}..HEAD")).0, 7);
+}
+
+/// Ruling 6, F3: in a shallow clone whose history between HEAD and the first record's commit is
+/// there (a session begun behind it), the accepted policy is defined: an innocent change passes
+/// (7cdc8b9d called it UNJUDGED, "shallow"), and a key fails.
+#[test]
+fn a_shallow_clone_with_the_history_there_is_judged() {
+    let upstream = project("behind-upstream", Some(STRICT));
+    upstream.commit(&[("b.rs", Some("fn b() {}\n"))], "U1");
+    upstream.commit(&[("c.rs", Some("fn c() {}\n"))], "U2");
+    upstream.commit(&[("d.rs", Some("fn d() {}\n"))], "U3");
+    let scratch = Scratch::new("two-policies-behind");
+    let home = scratch.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let root = scratch.join("clone");
+    let url = format!("file://{}", upstream.root.display());
+    git(
+        &scratch.join(""),
+        &[
+            "clone",
+            "--quiet",
+            "--depth",
+            "3",
+            &url,
+            root.to_str().unwrap(),
+        ],
+    );
+    let (judge, log) = (scratch.join("judge"), scratch.join("judge.log"));
+    write_program(&judge, &JUDGE.replace("@LOG@", &log.display().to_string()));
+    let p = Project {
+        _scratch: scratch,
+        root,
+        home,
+        judge,
+        log,
+    };
+    p.start("k0", "startup");
+    assert!(
+        p.root.join(".git/shallow").exists(),
+        "the clone is not shallow"
+    );
+    git(&p.root, &["checkout", "--quiet", "-b", "behind", "HEAD~1"]);
+    p.start("k1", "startup");
+    std::fs::write(p.root.join("e.rs"), "fn e() {}\n").unwrap();
+    assert_eq!(
+        p.stop("k1"),
+        Value::Null,
+        "an innocent change was not a pass"
+    );
+    // a commit on that branch: HEAD neither descends from the first record's commit nor leads to
+    // it, and the history between them is still there (the reviewer's case, F3)
+    let benign = p.commit(
+        &[("n.rs", Some("fn n() {}\n"))],
+        "N: benign on the older branch",
+    );
+    std::fs::remove_file(p.root.join("e.rs")).unwrap();
+    assert_eq!(p.stop("k1"), Value::Null, "a benign commit was not a pass");
+    let records = p.records_of(&benign);
+    assert!(
+        !records.is_empty() && records.iter().all(|r| r.0 == "pass"),
+        "{records:?}"
+    );
+    std::fs::write(p.root.join("k.md"), KEY).unwrap();
+    let decision = p.stop("k1");
+    let said = words(&decision);
+    assert!(blocks(&decision), "{said}");
+    assert!(!said.contains("shallow"), "{said}");
 }
 
 fn walk(dir: &Path) -> Vec<PathBuf> {
@@ -977,7 +1305,11 @@ fn two_stops_at_once_both_answer_and_the_ledger_stays_whole() {
     for line in text.lines() {
         serde_json::from_str::<Value>(line).unwrap_or_else(|e| panic!("{e}: {line}"));
     }
-    assert!(p.records_of(&key).iter().all(|r| r.0 == "fail"));
+    let records = p.records_of(&key);
+    assert!(
+        !records.is_empty() && records.iter().all(|r| r.0 == "fail"),
+        "{records:?}"
+    );
     assert_eq!(p.verify(&format!("{base}..HEAD")).0, 7);
 }
 

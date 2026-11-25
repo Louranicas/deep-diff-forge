@@ -338,7 +338,7 @@ pub(crate) fn guard_notice(guard: &Guard, remembered: bool, cap: usize) -> Strin
     use std::fmt::Write as _;
     let what = match guard.kind {
         GuardFile::Policy => {
-            "the policy file the stops judge with; this session's stops read the policy as it was at the commit the session began from, so this edit does not change how they judge, and committing it does not make it the project's accepted policy"
+            "the policy file the stops judge with; where this project's ledger first recorded a commit that has the policy file, committing an edit of it can make this session's stops stricter, never looser, and committing it does not make it the project's accepted policy"
         }
         GuardFile::GitAttributes => {
             "a Git attributes file, which decides how Git shows, compares and merges the files it names; the hooks read the change without the repository's attributes, so it hides nothing from them, but tools that honour it can show those files differently"
@@ -529,7 +529,7 @@ const LINK_CUT: &str = " [cut here]";
 
 /// What the start's first rule adds from release 0.11.1 (text T1): each change is judged under
 /// the project's accepted policy too, where its file differs from the one at the session's base.
-const ACCEPTED_TOO: &str = " and, where the project's ledger names an accepted policy whose file differs from it, against that one too, the stricter answer standing; a change that could not be judged under both is UNJUDGED";
+const ACCEPTED_TOO: &str = " and, where the project's ledger and policy record name an accepted policy whose file differs from it, against that one too, the stricter answer standing; a change that could not be judged under both is never a pass: it is UNJUDGED unless the policy it was judged under fails or holds it";
 
 /// What a session is told when it starts: what the hooks do, what its changes are measured
 /// from, and whether a stop can be judged here. Plain text: Claude Code adds a `SessionStart`
@@ -1260,10 +1260,10 @@ pub(crate) fn class_of(judged: &Judged, blocks: bool) -> ReasonClass {
         Judged::Fail { .. } => ReasonClass::FailStands,
         Judged::Hold { rules, .. } if !rules.is_empty() => ReasonClass::HoldRule,
         Judged::Hold { said, .. }
-            if said.iter().any(|words| !words.starts_with(TWO_POLICIES))
+            if said.iter().any(|words| !stops_words(words))
                 && said
                     .iter()
-                    .filter(|words| !words.starts_with(TWO_POLICIES))
+                    .filter(|words| !stops_words(words))
                     .all(|words| words.starts_with("note claims_unverified")) =>
         {
             ReasonClass::HoldClaimsUnverified
@@ -1464,12 +1464,16 @@ fn rules_text(rules: &[RuleOutcome], failed: bool) -> String {
 fn said_text(said: &[String]) -> String {
     use std::fmt::Write as _;
     // (what the stop says of its two policies is its own, said before the judge's: T8)
-    let (stops, judges): (Vec<&String>, Vec<&String>) = said
-        .iter()
-        .partition(|words| words.starts_with(TWO_POLICIES));
+    let (stops, judges): (Vec<&String>, Vec<&String>) =
+        said.iter().partition(|words| stops_words(words));
     let mut text = String::new();
+    // (a policy's reason in them can carry the judge's or Git's words: escaped as those are)
     for words in stops {
-        let _ = writeln!(text, "This unit was {words}.");
+        let _ = writeln!(
+            text,
+            "This unit was {}.",
+            display_safe(words.trim_end_matches('.'))
+        );
     }
     if judges.is_empty() {
         return text;
@@ -1584,7 +1588,7 @@ pub(crate) fn lines_whole(judged: &Judged) -> BTreeMap<String, usize> {
         }
     }
     // (what a stop said of its two policies is not the judge's: release 0.11.1, T8)
-    for words in said.iter().filter(|words| !words.starts_with(TWO_POLICIES)) {
+    for words in said.iter().filter(|words| !stops_words(words)) {
         lines.insert(line_key(&format!("\0said\0{words}")), 1);
     }
     lines
@@ -1594,6 +1598,16 @@ pub(crate) fn lines_whole(judged: &Judged) -> BTreeMap<String, usize> {
 /// under gave different answers (release 0.11.1, text T8). Such words are the stop's, not the
 /// judge's: they are no failing line ([`lines_whole`]) and no note ([`class_of`]).
 pub(crate) const TWO_POLICIES: &str = "judged under two policies: ";
+
+/// How a stop's words begin when it says beside a fail or a hold that the unit's other policy gave
+/// it no verdict (release 0.11.1): the stop's words too, as [`TWO_POLICIES`]'s.
+pub(crate) const ONE_OF_TWO: &str = "judged under one of its two policies: ";
+
+/// Whether `words` beside a verdict are the stop's own ([`TWO_POLICIES`], [`ONE_OF_TWO`]), not
+/// the judge's.
+pub(crate) fn stops_words(words: &str) -> bool {
+    words.starts_with(TWO_POLICIES) || words.starts_with(ONE_OF_TWO)
+}
 
 /// The failing lines of a verdict as a session remembers them: every line
 /// ([`lines_whole`]) while they are at most [`LINES_KEPT`], and else one mark for all of them
@@ -1745,7 +1759,7 @@ pub(crate) fn failure_part(judged: &Judged, keep: &BTreeSet<String>, rest: bool)
     let said: Vec<String> = said
         .iter()
         .filter(|words| {
-            if words.starts_with(TWO_POLICIES) {
+            if stops_words(words) {
                 !rest
             } else {
                 wanted(&line_key(&format!("\0said\0{words}")))
@@ -1753,7 +1767,7 @@ pub(crate) fn failure_part(judged: &Judged, keep: &BTreeSet<String>, rest: bool)
         })
         .cloned()
         .collect();
-    if part.is_empty() && said.iter().all(|words| words.starts_with(TWO_POLICIES)) {
+    if part.is_empty() && said.iter().all(|words| stops_words(words)) {
         return None;
     }
     let held = rules.iter().filter(|rule| rule.held).cloned();
@@ -4119,7 +4133,7 @@ mod tests {
         assert!(ready.contains("It is advice and never blocks."));
         // HR2-H-1: exactly what is judged, not "everything, committed or not"
         assert!(ready.contains(
-            "your uncommitted and staged changes, and each commit made since this session began (commit 0123456) that your branches, tags, stash, HEAD or their history name, with each commit those name that came after the project's ledger first recorded the project and has no stop's verdict there (a session that ended before its stop left it), are judged by forge-warden against the policy at that commit and, where the project's ledger names an accepted policy whose file differs from it, against that one too, the stricter answer standing; a change that could not be judged under both is UNJUDGED: each commit once, by its own change, so a later commit does not undo an earlier one. A fail holds the stop once. A hold is for a person. UNJUDGED means no verdict was made; it is not a pass. One stop has as many commits judged as fit in its time, and the rest at the next stop."
+            "your uncommitted and staged changes, and each commit made since this session began (commit 0123456) that your branches, tags, stash, HEAD or their history name, with each commit those name that came after the project's ledger first recorded the project and has no stop's verdict there (a session that ended before its stop left it), are judged by forge-warden against the policy at that commit and, where the project's ledger and policy record name an accepted policy whose file differs from it, against that one too, the stricter answer standing; a change that could not be judged under both is never a pass: it is UNJUDGED unless the policy it was judged under fails or holds it: each commit once, by its own change, so a later commit does not undo an earlier one. A fail holds the stop once. A hold is for a person. UNJUDGED means no verdict was made; it is not a pass. One stop has as many commits judged as fit in its time, and the rest at the next stop."
         ), "{ready}");
         assert!(!ready.contains("committed or not"), "{ready}");
         assert!(ready.contains("UNJUDGED means no verdict was made; it is not a pass."));

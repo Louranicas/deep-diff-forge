@@ -19,8 +19,9 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 - The stop hook judges every unit under two policies where their files differ: the policy at
   the session's base, as before, and the project's accepted policy, the policy file at the
   commit the project's ledger first recorded; the stricter answer stands, and a unit that one
-  of the two could not judge is UNJUDGED, never a pass. After this, a policy edit that is merely
-  committed does not judge anything, in the session that makes it or after it: in 0.11.0 a
+  of the two could not judge is never a pass (UNJUDGED unless the other fails or holds it). After
+  this, where the project's ledger first recorded a commit that has the policy file, a policy edit
+  that is merely committed does not judge anything, in the session that makes it or after it: in 0.11.0 a
   commit that a session left without its stop, deleting the rule against secrets and the
   policy's protection of its own file, judged itself and the next fresh session's own work, and
   a key passed and verified. A `pass` record takes a commit out of the frontier only when it is

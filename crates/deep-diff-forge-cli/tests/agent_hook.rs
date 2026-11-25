@@ -12870,7 +12870,7 @@ fn each_guard_file_is_named_once_and_again_when_its_content_changes() {
     let files = [
         (
             "warden.toml",
-            "the policy file the stops judge with; this session's stops read the policy as it was at the commit the session began from",
+            "the policy file the stops judge with; where this project's ledger first recorded a commit that has the policy file, committing an edit of it can make this session's stops stricter, never looser, and committing it does not make it the project's accepted policy",
         ),
         (".gitattributes", "a Git attributes file"),
         (".github/workflows/x.yml", "a CI workflow"),
@@ -13253,9 +13253,19 @@ fn a_damaged_state_still_judges_the_tree_once() {
     );
     assert!(!first.contains("TEXT-OF-THE-DAMAGED-STATE"), "{first}");
     // the tree, and the session's commit, which the ledger has no verdict for: each under the
-    // policy at HEAD and the accepted one (0.11.0 ran the second alone: two runs)
+    // accepted policy, as 0.11.0 judged them, and under the policy at HEAD, whose file differs
+    // (release 0.11.1, ruling 6: two runs each, four in all)
     assert_eq!(runs(&log), 4);
-    assert_eq!(last_policy(&log), "# the policy at the base commit");
+    let seen = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(
+        (
+            seen.matches("POLICY # the policy at the base commit\n")
+                .count(),
+            seen.matches("POLICY # loosened by the session\n").count()
+        ),
+        (2, 2),
+        "{seen}"
+    );
     // the stop that follows the block: the failure stands
     let (code, stdout, _) = hook(
         "stop",
@@ -13996,6 +14006,17 @@ fn a_ledger_that_cannot_be_written_changes_no_decision() {
     let file = |own: &Path| own.join("ledger.jsonl");
     let same_block = |(control, spoiled): (Value, Value), why: &str| {
         let (control, spoiled) = (blocked(&control), blocked(&spoiled));
+        // (release 0.11.1, L1c: a ledger replaced while the project's policy record stands
+        // makes the accepted policy unreadable, which the failing unit's words then say; the
+        // decision, the block, is the same)
+        let spoiled = spoiled
+            .lines()
+            .filter(|line| {
+                !line.starts_with("This unit was judged under one of its two policies: this project's policy record was made beside the first record of its ledger")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let spoiled = spoiled.as_str();
         assert!(spoiled.starts_with(control), "{control}\n---\n{spoiled}");
         let rest = &spoiled[control.len()..];
         assert!(

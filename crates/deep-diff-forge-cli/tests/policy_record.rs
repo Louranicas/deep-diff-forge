@@ -1174,3 +1174,71 @@ fn a_torn_last_line_neither_blocks_judging_nor_applies() {
         "{detail}"
     );
 }
+
+/// Ruling 8 (N2, R1): the texts of the stateless stop and of the guard notice. With no policy
+/// file at the commit the ledger first recorded, a commit the stateless stop cannot judge under
+/// that policy names it as that, not as "the accepted policy" (none exists) or "the base commit"
+/// (that stop has no session base). The guard notice for an edit of the policy says what is true
+/// of both kinds of stop.
+#[test]
+fn the_stateless_stop_and_the_guard_notice_say_what_is_true() {
+    let p = project("n2", STRICT);
+    git(&p.root, &["rm", "--quiet", "warden.toml"]);
+    git(
+        &p.root,
+        &[
+            "commit",
+            "--quiet",
+            "-m",
+            "no policy file at the first record",
+        ],
+    );
+    p.start("k0");
+    p.commit(&[("warden.toml", STRICT)], "P: a person adds the policy");
+    p.start("k1");
+    // the guard notice (T5), after an edit of the policy
+    std::fs::write(p.root.join("warden.toml"), LOOSE).unwrap();
+    let input = json!({"hook_event_name": "PostToolUse", "session_id": "k1", "cwd": p.root,
+        "tool_name": "Edit"});
+    let notice = p.hook_with("post-tool", &input, None);
+    let notice = notice.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        notice.contains("where this project's ledger first recorded a commit that has the policy file, committing an edit of it can make this session's stops stricter, never looser, and committing it does not make it the project's accepted policy"),
+        "{notice}"
+    );
+    git(&p.root, &["checkout", "--quiet", "--", "warden.toml"]);
+    let benign = p.commit(&[("b.rs", "fn b() {}\n")], "B: benign");
+    // the session's state is damaged: the next stop is the stateless one
+    let mut keys = 0;
+    let mut dirs = vec![p.home.join(".local/state/deep-diff-forge")];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.file_name().is_some_and(|name| name == "key") {
+                std::fs::write(&path, "x").unwrap();
+                keys += 1;
+            }
+        }
+    }
+    assert!(keys > 0, "no key file to damage");
+    let decision = p.stop("k1");
+    let said = words(&decision);
+    assert!(
+        said.contains(
+            "under the policy at the commit this project's ledger first recorded (commit"
+        ) && said.contains("that commit has no policy file \"warden.toml\""),
+        "{said}"
+    );
+    assert!(
+        !said.contains("under the accepted policy (commit")
+            && !said.contains("the base commit has no policy file"),
+        "{said}"
+    );
+    assert!(
+        p.records_of(&benign).iter().all(|r| r.0 != "pass") && !p.records_of(&benign).is_empty(),
+        "{:?}",
+        p.records_of(&benign)
+    );
+}
