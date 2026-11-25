@@ -137,6 +137,74 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   claims (in 0.11.0 the link read "held or fails" whether the policy protected its file or not,
   because the probe is held for its claims either way). The judge on the pull request, which reads
   the policy of the target branch, is the boundary.
+- **The policy record, the bound name and `agent policy-accept`, from 0.11.1.** The binding and
+  the acceptances live in a file of their own beside the ledger,
+  `deep-diff-forge/policy.jsonl` under the repository's Git common directory (one JSON object a
+  line, appended only, mode 0600, never through a link); the ledger's form and version do not
+  change, and 0.11.0 never reads this file. Its first record is the **binding**: the first hook of
+  any event (start, advice or stop) that finds the ledger's baseline and no binding writes it, under
+  the project lock, with the policy name it is given (`--policy NAME`, else `warden.toml`), the
+  ledger's first record it was made beside (its `head` and the digest of its commits) and the
+  digest of that policy file there. That is trust on first use, and the start that binds says so
+  once. A hook given another name than the bound one passes nothing: what the policy at the
+  session's base fails or holds keeps that answer, every other unit is UNJUDGED
+  (`chain.policy_missing`) and the words name both names. The accepted policy is the bound file at
+  the ledger's first record, replaced, in order, by each **acceptance** record that applies, and
+  by nothing else. An acceptance applies (a compare-and-swap) when its `from_sha256` is the accepted
+  digest at that point of the file (`null` where there was none), its commit is in the repository
+  and an ancestor of `HEAD` of the working tree the hook works in, and the file it names at that
+  commit has its `to_sha256`; one that does not apply is ignored by every reader, and `agent doctor
+  --gate` names it with why. A record that is JSON and not a whole record of this form, and a file
+  that is not a regular file or is over 4 MiB, cannot be read whole: then no unit passes (the
+  policy at the session's base still fails and holds), never "no accepted policy". A line that is
+  not JSON at all (a write that did not finish) is passed over and named, and the next writer
+  begins on a line of its own. A binding made beside another first record than the ledger has now
+  (the ledger was removed or replaced while the record stands) makes the accepted policy
+  unreadable (`place.base_gone`), never the new baseline's. A `pass` record takes its commit out of
+  the frontier, and verifies it for `agent verify-branch`, only when it is sealed to a digest that
+  was the accepted policy: the first record's, or an applied acceptance's. An acceptance verifies
+  nothing: a commit a stop held keeps its record, and units are judged again under the new accepted
+  policy at the next stops. **One snapshot at the append:** a stop reads the ledger and the policy
+  record under one project lock (`deep-diff-forge/project.lock`), lets it go for the judging, and
+  takes it again before its records are made: where the binding, the ledger's first record or the
+  applied acceptances changed meanwhile, every `pass` of that stop is recorded `unjudged`
+  (`chain.policy_missing`), the session does not keep the commit as passed, and the stop says so;
+  the lock is held through the ledger's append. The lock order is the session's lock, then the
+  project lock, then the ledger's own; `agent policy-accept` takes the project lock alone, and every
+  wait is bounded. **What this is not:** the policy record is a local convention, not
+  authentication. Any process running as this user can run `agent policy-accept` or write the
+  file. An acceptance record that a process of this user writes by hand, and that applies, takes
+  effect as one the command appended: the policy record is a local convention, not authentication.
+  Removing the file returns the project to the policy of the ledger's first record (never below
+  0.11.0, since the policy at the session's base is still judged by); removing the ledger and the
+  record together is the deliberate act it always was. The pull request's judge, under the target
+  branch's policy, is the authority. After an upgrade, a commit that passed under a policy that was
+  never the accepted one stops verifying until a stop judges it again or that policy is accepted;
+  the published 0.11.0 reading the same ledger counts every pass, so it can verify a commit this
+  release does not, never the other way round.
+- **`agent policy-accept --commit C [--policy NAME] [--judge PATH] [--yes-from-pipe]`** (0.11.1)
+  is the one way a project's accepted policy changes. It needs the ledger's first record and the
+  binding (the first hook of a session writes both). It shows the accepted digest now and the
+  digest of `C:<name>` (`--policy NAME` accepts a new name, which the acceptance then binds), the
+  whole diff of the policy file between them, the bound name and the change of the policy's
+  `[producer]` `sha256` list; the judge (`--judge PATH`, else `forge-warden` on `PATH` outside the
+  repository) must read the file (`lint`). Before it asks it prints: "A policy acceptance record is
+  a local convention, not authentication: any process running as this user can run this command or
+  write the record it appends. The judge on the pull request, under the target branch's policy, is
+  the authority." It refuses a standard input that is not a terminal unless given
+  `--yes-from-pipe`, and the person types the new digest in full. Nothing is written before that,
+  and no lock is held while it waits; then, under the project lock, the ledger and the record are
+  read again and one acceptance record is appended only when the accepted policy, the bound name,
+  the applied acceptances and the ledger's first record are the ones shown and `C` is still an
+  ancestor of `HEAD`: of two commands in a race exactly one applies. Exit codes: 0 appended, or
+  nothing to accept (the same name and digest); 2 usage, or a standard input that is not a terminal
+  without `--yes-from-pipe`; 3 the repository, Git, the lock, the ledger or the record could not be
+  read or written, no judge, or the judge did not answer in time; 4 refused: `C` names no commit or
+  is not an ancestor of `HEAD`, it has no regular file of the name, the judge does not read that
+  file, the digest typed is not the one shown, the accepted policy changed since it was shown, no
+  ledger record or binding yet, a record that cannot be read whole, or an accepted policy that
+  cannot be read (a commit of the first record that is gone, a shallow history to it, a binding the
+  ledger disagrees with); 6 the typed digest could not be read from the terminal.
 - **Which commits of others are judged.** A commit that was already in the repository when
   the project's ledger first recorded the project (else when the session began), named by any
   ref (remote-tracking refs included) or by a reflog, or that was made before the session
@@ -739,9 +807,18 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   appends, which is a convention and not a verdict. Each commit is said with its `outcome`
   (`pass`, `fail`, `fail_stands`, `hold`, `unjudged` or `no_record`), `cleared`, `verified`, how
   many stop records name it, and `agent_checks` of the first stop that gave it a verdict (the
-  checks with `--session` before it: a lower bound). `--json` prints
+  checks with `--session` before it: a lower bound). From 0.11.1 a `pass` record counts as a
+  stop's frontier counts it: where the project has an accepted policy, only when it is sealed to a
+  digest that was the accepted policy (the ledger's first record's, or an applied acceptance's of
+  the policy record, under the name the record binds) or has no seals; each commit then says
+  `passes_not_accepted`, the pass records it passed over, and the document's `accepted_policy`
+  says the rule in words. Where there is no accepted policy every pass counts, as in 0.11.0; where
+  it cannot be read no commit is verified and `unverified` says why. The published 0.11.0 reads no
+  policy record and counts every pass, so on the same ledger it can verify a commit this release
+  does not, never the other way round. `--json` prints
   `deep-diff-forge.agent-verify-branch.v0` (`range`, `ledger`, `commits`, `verified`,
-  `unverified`: why the range or the ledger could not be read, and `cannot_know`). Exit 0 when
+  `unverified`: why the range, the ledger or the accepted policy could not be read,
+  `accepted_policy`, and `cannot_know`). Exit 0 when
   every commit is verified (an empty range has none to refuse); exit 7 after the document when
   one is not, `refused: N of M commits are not verified by the ledger (verify-branch)`, or when
   the range or the ledger cannot be read, `refused: the range or the ledger could not be read
@@ -1371,7 +1448,9 @@ whether a stop holds; the last column says what the stop's own rules decide for 
 each cause, at most three stops" is the rule of the causes that hold once, above). The rule of
 the codes: a code's meaning never changes, other than to be widened to a cause of the same kind,
 which a release names (0.11.1 widens `place.base_gone` and `place.shallow_parent` to the commit
-the project's ledger first recorded); codes are added without a version change; a
+the project's ledger first recorded, and `chain.policy_missing` to a policy name the project's
+policy record does not bind, a policy record that cannot be read whole, and an accepted policy
+that changed while the stop judged); codes are added without a version change; a
 consumer treats an unknown code as not a PASS; removing one is a new ledger version. The codes
 `pass`, `fail.new`, `fail.stands`, `fail.unsaved_continuing`, `hold.rule`, `hold.version_gap`,
 `work.unreadable` and `work.skip_worktree` were written before this table and keep their

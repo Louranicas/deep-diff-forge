@@ -32,6 +32,26 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   UNJUDGED. The limit that remains: a deliberate act by a process of the same user (a rewritten
   or removed ledger, a changed settings file together with a removed ledger) can still change
   what the hooks judge by; the pull request's judge is the boundary.
+- `agent policy-accept --commit C [--policy NAME] [--judge PATH] [--yes-from-pipe]`: the one way
+  a project's accepted policy changes (with the two policies above, a project that updates its
+  ranker's pin would otherwise be held for ever). To change a policy now: commit the new policy,
+  then a person runs the command, reads the old and the new digest, the whole diff and the change
+  of the producer pins, and types the new digest at a terminal; one acceptance record is appended
+  to the project's new policy record, `.git/deep-diff-forge/policy.jsonl` beside the ledger, and
+  the hooks apply it as a compare-and-swap (its `from` is the accepted digest then, its commit an
+  ancestor of `HEAD`, its `to` the bytes there). The same file binds, on first use, the policy name
+  the hooks are given: hooks given another name pass nothing. What the convention is not: it is
+  not authentication; any process running as this user can run the command or write the file, and
+  a record written by hand that applies takes effect. The pull request's judge under the target
+  branch's policy is the authority. A stop reads the ledger and the policy record under one
+  project lock and compares them again before its append: a stop whose accepted policy changed
+  while it judged records no `pass`. The ledger's form and version are unchanged, and 0.11.0
+  ignores the new file. `agent verify-branch` now counts a pass as a stop's frontier does: after
+  an upgrade, commits that passed under a policy that was never the accepted one stop verifying
+  until a stop judges them again or the policy is accepted (the published 0.11.0 counts every
+  pass). `agent doctor --gate` has a new link, `policy_accepted`. The meaning of
+  `chain.policy_missing` is widened to an unbound policy name, a policy record that cannot be read
+  whole, and an accepted policy that changed while the stop judged.
 - Tests only: no scanner changed. The tests that hold the line scanners to linear time bounded
   one size in absolute seconds of a debug build, so they failed on a slower runner while the
   scan was linear (`the_import_rule_is_linear_on_long_lines` on GitHub's Linux runner for

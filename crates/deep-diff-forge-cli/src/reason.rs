@@ -234,7 +234,7 @@ impl ReasonClass {
                 "chain.policy_missing",
                 "UNJUDGED",
                 "never",
-                "the base commit has no policy file",
+                "a policy the stop judges by cannot be had: the base commit has no policy file, the hooks are given another policy name than the project's policy record binds, that record cannot be read whole, or the accepted policy changed while the stop judged",
             ),
             Self::ChainInputUnwritable => (
                 "chain.input_unwritable",

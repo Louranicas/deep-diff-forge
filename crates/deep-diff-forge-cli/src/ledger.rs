@@ -308,6 +308,20 @@ impl Frontier {
 /// under the project's lock before the append is the next package's (L1c), which adds the
 /// acceptances to what it covers.
 pub(crate) fn snapshot_sha256(baseline: Option<&Baseline>, accepted: Option<&str>) -> String {
+    snapshot_sha256_of(baseline, None, &[], accepted)
+}
+
+/// [`snapshot_sha256`] over the whole snapshot of release 0.11.1's package L1c (ruling 4): the
+/// baseline record's identity, the policy name the project's policy record binds (`None`: no
+/// binding), the acceptances that applied, in order (each as the policy record holds it: its
+/// name, its `from`, its `to` and its commit), and the accepted digest. Without a binding and an
+/// acceptance it is [`snapshot_sha256`]'s digest.
+pub(crate) fn snapshot_sha256_of(
+    baseline: Option<&Baseline>,
+    bound: Option<&str>,
+    applied: &[crate::policy_record::Acceptance],
+    accepted: Option<&str>,
+) -> String {
     let baseline = baseline.map_or_else(
         || "none".to_owned(),
         |b| {
@@ -318,17 +332,78 @@ pub(crate) fn snapshot_sha256(baseline: Option<&Baseline>, accepted: Option<&str
             )
         },
     );
-    deep_diff_forge_core::sha256_hex(
-        format!(
-            "deep-diff-forge.policy-snapshot.v1\nbaseline {baseline}\naccepted {}\n",
-            accepted.unwrap_or("none")
-        )
-        .as_bytes(),
-    )
+    let mut text = format!(
+        "deep-diff-forge.policy-snapshot.v1\nbaseline {baseline}\naccepted {}\n",
+        accepted.unwrap_or("none")
+    );
+    if let Some(bound) = bound {
+        // (a name holds no control character: the policy record's reader refuses one)
+        let _ = writeln!(text, "bound {bound}");
+    }
+    for acceptance in applied {
+        let _ = writeln!(
+            text,
+            "applied {} {} {} {}",
+            acceptance.commit,
+            acceptance.from.as_deref().unwrap_or("none"),
+            acceptance.to,
+            acceptance.policy
+        );
+    }
+    deep_diff_forge_core::sha256_hex(text.as_bytes())
+}
+
+/// The first whole `baseline` record of the ledger in `own`, as [`frontier`] takes it, read
+/// line by line up to it (the rest of the ledger is not read): what a stop compares again under
+/// the project lock before its append (release 0.11.1, ruling 4). `Ok(None)` when there is no
+/// ledger or no whole baseline; `Err` as [`frontier`] errs on a file that is not regular, is
+/// larger than [`WHOLE`] or cannot be read.
+pub(crate) fn first_baseline(own: &Path) -> Result<Option<Baseline>, String> {
+    use std::io::BufRead as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let path = own.join(FILE);
+    let shown = crate::hook::shown_path(&path.to_string_lossy());
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
+        .open(&path)
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("the ledger {shown} could not be opened: {e}")),
+    };
+    match file.metadata() {
+        Ok(found) if found.is_file() && found.len() <= WHOLE => {}
+        Ok(found) if found.is_file() => {
+            return Err(format!("the ledger {shown} is larger than {WHOLE} bytes"));
+        }
+        _ => return Err(format!("the ledger {shown} is not a regular file")),
+    }
+    let mut reader = std::io::BufReader::new(file.take(WHOLE));
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        let read = reader
+            .read_until(b'\n', &mut line)
+            .map_err(|e| format!("the ledger {shown} could not be read: {e}"))?;
+        if read == 0 {
+            return Ok(None);
+        }
+        let text = std::str::from_utf8(&line)
+            .map_err(|_| format!("the ledger {shown} could not be read: it is not UTF-8"))?;
+        let Some(record) = record(text.trim_end_matches('\n')).filter(|r| r["v"] == VERSION) else {
+            continue;
+        };
+        if record["kind"] == "baseline"
+            && let Some(baseline) = baseline_of(&record)
+        {
+            return Ok(Some(baseline));
+        }
+    }
 }
 
 /// The SHA-256 of `tips` one a line, as a `baseline` record names them.
-fn tips_sha256(tips: &[String]) -> String {
+pub(crate) fn tips_sha256(tips: &[String]) -> String {
     let text = tips.iter().fold(String::new(), |mut text, tip| {
         text.push_str(tip);
         text.push('\n');
@@ -565,15 +640,18 @@ pub(crate) fn verify_branch(args: &[String]) {
         "schema": "deep-diff-forge.agent-verify-branch.v0",
         "tool": {"name": "deep-diff-forge", "version": env!("CARGO_PKG_VERSION")},
         "range": range, "ledger": null, "commits": [], "verified": false, "unverified": null,
-        "cannot_know": CANNOT_KNOW,
+        "accepted_policy": null, "cannot_know": CANNOT_KNOW,
     });
     let class = deep_diff_forge_core::exit::refusal("branch_unverified");
     let read = std::env::current_dir()
         .map_err(|e| format!("the current directory cannot be read: {e}"))
-        .and_then(|dir| crate::hook_run::branch_commits(&dir, range))
-        .and_then(|(own, commits)| {
+        .and_then(|dir| {
+            let (own, commits) = crate::hook_run::branch_commits(&dir, range)?;
             doc["ledger"] = json!(own.join(FILE).to_string_lossy());
-            Ok((whole(&own)?, commits))
+            let records = whole(&own)?;
+            // release 0.11.1 (ruling 6, F5): a pass counts as a stop's frontier counts it
+            let seals = crate::hook_run::accepted_seals(&dir)?;
+            Ok((records, commits, seals))
         });
     match read {
         Err(why) => {
@@ -581,8 +659,15 @@ pub(crate) fn verify_branch(args: &[String]) {
             let text = "the range or the ledger could not be read".to_owned();
             crate::refusal::pending(&[(class, text)]);
         }
-        Ok((records, commits)) => {
-            let verdicts: Vec<Value> = commits.iter().map(|id| verdict(&records, id)).collect();
+        Ok((records, commits, seals)) => {
+            let set = seals.as_ref().map(|(set, _)| set);
+            doc["accepted_policy"] = seals
+                .as_ref()
+                .map_or(Value::Null, |(_, words)| json!(words));
+            let verdicts: Vec<Value> = commits
+                .iter()
+                .map(|id| verdict(&records, id, set))
+                .collect();
             let not = verdicts.iter().filter(|v| v["verified"] != true).count();
             doc["commits"] = json!(verdicts);
             doc["verified"] = json!(not == 0);
@@ -607,10 +692,31 @@ pub(crate) fn verify_branch(args: &[String]) {
 /// the worst outcome a stop recorded (`fail`, `fail_stands`, `hold`), else `pass` when a stop
 /// passed it, else `unjudged`, else `no_record`. Only `pass` and a clearance verify it. With it,
 /// the runs of `agent check --session` recorded before the first stop that gave it a verdict.
-fn verdict(records: &[Value], id: &str) -> Value {
+///
+/// Release 0.11.1 (ruling 6, F5): with `accepted` (the digests that were the project's accepted
+/// policy) a `pass` record counts only when it is sealed to one of them, or has no seals (a
+/// commit that changes nothing), as a stop's frontier counts it (R10); the others are counted
+/// (`passes_not_accepted`) and passed over.
+fn verdict(
+    records: &[Value],
+    id: &str,
+    accepted: Option<&std::collections::BTreeSet<String>>,
+) -> Value {
     let unit = format!("commit:{id}");
     let mine = records.iter().filter(|r| r["unit"] == unit.as_str());
-    let stops = mine.clone().filter(|r| r["kind"] == "stop");
+    let counts = |r: &&Value| {
+        r["outcome"] != "pass"
+            || accepted.is_none_or(|set| {
+                r["seals"]["policy_sha256"]
+                    .as_str()
+                    .is_none_or(|policy| set.contains(policy))
+            })
+    };
+    let not_accepted = mine
+        .clone()
+        .filter(|r| r["kind"] == "stop" && !counts(r))
+        .count();
+    let stops = mine.clone().filter(|r| r["kind"] == "stop").filter(counts);
     let has = |outcome: &str| stops.clone().any(|r| r["outcome"] == outcome);
     let outcome = OUTCOMES
         .into_iter()
@@ -624,7 +730,7 @@ fn verdict(records: &[Value], id: &str) -> Value {
     json!({
         "commit": id, "outcome": outcome, "cleared": cleared,
         "verified": cleared || outcome == "pass", "records": stops.count(),
-        "agent_checks": checks,
+        "agent_checks": checks, "passes_not_accepted": not_accepted,
     })
 }
 
@@ -641,6 +747,17 @@ fn verify_text(doc: &Value) -> String {
         let mut line = format!("{id} {}", commit["outcome"].as_str().unwrap_or_default());
         if commit["cleared"] == true {
             line.push_str(", cleared by a clearance record (a convention, not a verdict)");
+        }
+        if let Some(passes) = commit["passes_not_accepted"].as_u64().filter(|n| *n > 0) {
+            let (records, are) = if passes == 1 {
+                ("1 pass record".to_owned(), "is")
+            } else {
+                (format!("{passes} pass records"), "are")
+            };
+            let _ = write!(
+                line,
+                "; {records} sealed to a policy that was never this project's accepted policy {are} not counted"
+            );
         }
         if let Some(runs) = commit["agent_checks"]["runs"].as_u64() {
             let _ = write!(
@@ -664,6 +781,9 @@ fn verify_text(doc: &Value) -> String {
         out.push(format!(
             "{verified} of {all} commits are verified by the ledger."
         ));
+    }
+    if let Some(words) = doc["accepted_policy"].as_str() {
+        out.push(words.to_owned());
     }
     out.push(CANNOT_KNOW.to_owned());
     out.join("\n")

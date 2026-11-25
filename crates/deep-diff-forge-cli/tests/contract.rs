@@ -653,6 +653,10 @@ fn every_documented_option_is_admitted() {
 }
 
 /// One admitted invocation for each option of the patch-reading commands.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one row an option, in the order of the help"
+)]
 fn patch_option_rows<'a>(
     address: &'a str,
     cursor: &'a str,
@@ -689,6 +693,11 @@ fn patch_option_rows<'a>(
         ("--base", vec!["agent", "check", "--base", "refs/no/such"]),
         ("--range", vec!["agent", "check", "--range", "HEAD..HEAD"]),
         ("--require-pass", vec!["agent", "check", "--require-pass"]),
+        ("--commit", vec!["agent", "policy-accept", "--commit", "x"]),
+        (
+            "--yes-from-pipe",
+            vec!["agent", "policy-accept", "--commit", "x", "--yes-from-pipe"],
+        ),
         (
             "--judge",
             vec![
@@ -1835,6 +1844,11 @@ const SEVEN: [&str; 3] = ["EXIT_REFUSED", "INPUT_CONTRACT_REFUSED", "COUNCIL_HOL
 /// none of them 7 but the council's own.
 const PASS_THROUGH_EXITS: &[(&str, &str, &str)] = &[
     (
+        "deep-diff-forge-cli/src/policy_accept.rs",
+        "refused",
+        "usage, io, invalid_input or daemon_or_terminal, by the refusal (never 7)",
+    ),
+    (
         "deep-diff-forge-cli/src/main.rs",
         "main",
         "council's code (its HOLD is 7) and analysis errors",
@@ -2074,7 +2088,8 @@ fn refusal_driver(
             owned(&["agent", "doctor", "--gate"]),
             String::new(),
             here,
-            "refused: 13 checks failed (agent doctor)".into(),
+            // (14 since 0.11.1: the link policy_accepted)
+            "refused: 14 checks failed (agent doctor)".into(),
         ),
         "fail_on_label" => (
             owned(&[

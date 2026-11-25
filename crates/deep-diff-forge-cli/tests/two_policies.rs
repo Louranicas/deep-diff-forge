@@ -590,7 +590,7 @@ fn no_accepted_policy_judges_under_the_session_base_alone_and_says_so() {
     let said = p.start("k1", "startup");
     let said = said.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
-        said.contains("- This project's ledger names no accepted policy (the commit of its first record has no file \"warden.toml\"): changes are judged under the policy at commit"),
+        said.contains("- This project's ledger and policy record name no accepted policy (the commit of the ledger's first record has no file \"warden.toml\"): changes are judged under the policy at commit"),
         "{said}"
     );
     assert!(
@@ -638,7 +638,7 @@ fn no_accepted_policy_judges_under_the_session_base_alone_and_says_so() {
     let said = said.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
         said.contains(
-            "- This project's ledger names no accepted policy (its first record names no commit)"
+            "- This project's ledger and policy record name no accepted policy (the ledger's first record names no commit)"
         ),
         "{said}"
     );
@@ -654,7 +654,7 @@ fn no_accepted_policy_judges_under_the_session_base_alone_and_says_so() {
     let said = p.start("k1", "startup");
     assert!(
         said.split_whitespace().collect::<Vec<_>>().join(" ").contains(
-            "- This project's ledger names no accepted policy (it could not be read): changes are judged under the policy at commit"
+            "- This project's ledger and policy record name no accepted policy (the ledger could not be read): changes are judged under the policy at commit"
         ),
         "{said}"
     );
@@ -809,10 +809,13 @@ fn passes_sealed_to_a_policy_never_accepted_are_judged_again() {
         text.push('\n');
     }
     std::fs::write(&file, text).unwrap();
+    // the published 0.11.0 verifies this ledger (exit 0); from L1c (ruling 6, F5) this build's
+    // verify-branch counts a pass as the frontier does, so M's pass under L's own policy does not
+    // verify it even before a stop judges it again
     assert_eq!(
         p.verify(&format!("{base}..HEAD")).0,
-        0,
-        "the hole, as 0.11.0 left it"
+        7,
+        "the hole, as 0.11.0 left it, read by this build"
     );
     p.start("k1", "resume");
     let decision = p.stop("k1");

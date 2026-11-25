@@ -178,6 +178,7 @@ deep-diff-forge agent doctor [--gate [--judge PATH] [--policy NAME] [--ranker-di
 deep-diff-forge agent hook session-start|post-tool|stop --client claude [--judge PATH] [--policy NAME] [--ranker-dir DIR]  # the hook commands agent setup --hooks prints
 deep-diff-forge agent check [--session ID | --base REV] [--range A..B] [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--require-pass] [--json]  # the units a stop judges, judged with its judge and policy (agent-hooks.md)
 deep-diff-forge agent verify-branch BASE..HEAD [--json]  # every commit of the range passed by a stop in the project's ledger, else exit 7 (agent-hooks.md)
+deep-diff-forge agent policy-accept --commit C [--policy NAME] [--judge PATH] [--yes-from-pipe]  # a person's acceptance of the policy at C, a local convention, not authentication (agent-hooks.md)
 deep-diff-forge daemon {path|start [--foreground] [--allow-repo PATH]... [--log-format text|json]|health|status|metrics [--format json|prometheus] [--out PATH]|stop} [--socket PATH]
 ```
 
