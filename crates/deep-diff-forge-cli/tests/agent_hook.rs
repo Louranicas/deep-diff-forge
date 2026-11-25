@@ -79,15 +79,11 @@ fn git_above(dir: &Path) -> Option<PathBuf> {
         .find(|git| git.symlink_metadata().is_ok())
 }
 
-/// Note for a failure of this test what a hook met ([`MET`]) when it ran with no state directory
-/// yet (`first`): a `.git` above that directory before or after it ran, and whether it took no
-/// lock (it left a state and no lock file there).
-fn note_what_a_hook_met(event: &str, input: &Value, first: bool, above: Option<PathBuf>) {
-    if !first {
-        return;
-    }
-    let dir = sessions();
-    let kinds: Vec<PathBuf> = std::fs::read_dir(&dir)
+/// Note for a failure of this test what a hook met ([`MET`]) that ran with no state directory
+/// `dir` yet: a `.git` above it before or after it ran, and whether it took no lock (it left a
+/// state and no lock file there).
+fn note_what_a_hook_met(event: &str, input: &Value, dir: &Path, above: Option<PathBuf>) {
+    let kinds: Vec<PathBuf> = std::fs::read_dir(dir)
         .into_iter()
         .flatten()
         .flatten()
@@ -100,8 +96,9 @@ fn note_what_a_hook_met(event: &str, input: &Value, first: bool, above: Option<P
     };
     let lockless = has("json") && !has("lock");
     let hook = format!(
-        "the `{event}` hook of session {}, which made this test's hook state directory,",
-        input["session_id"]
+        "the `{event}` hook of session {}, which made the hook state directory {},",
+        input["session_id"],
+        dir.display()
     );
     let note = match (above, lockless) {
         (None, false) => return,
@@ -178,13 +175,24 @@ fn hook_in(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     shape(&mut command);
-    // (what the hook met is noted where it keeps the state in this test's home: `shape` left
-    // HOME and XDG_STATE_HOME as they are)
-    let ours = !command.get_envs().any(|(key, value)| {
-        (key == "XDG_STATE_HOME" && value.is_some())
-            || (key == "HOME" && value != Some(home().as_os_str()))
+    // Where the hook keeps the state (an absolute XDG_STATE_HOME, else HOME's), when it will
+    // make that directory: what it meets there is noted ([`note_what_a_hook_met`]).
+    let set = |key: &str| {
+        command
+            .get_envs()
+            .find(|(name, _)| *name == key)
+            .and_then(|(_, value)| value.map(PathBuf::from))
+    };
+    let made = match (set("XDG_STATE_HOME"), set("HOME")) {
+        (Some(xdg), _) if xdg.is_absolute() => Some(xdg.join("deep-diff-forge/hooks")),
+        (_, Some(home)) => Some(home.join(".local/state/deep-diff-forge/hooks")),
+        _ => None,
+    }
+    .filter(|dir| !dir.exists())
+    .map(|dir| {
+        let above = git_above(&dir);
+        (dir, above)
     });
-    let (first, above) = (!sessions().exists(), git_above(&sessions()));
     let mut child = command.spawn().unwrap();
     child
         .stdin
@@ -193,13 +201,9 @@ fn hook_in(
         .write_all(input.to_string().as_bytes())
         .unwrap();
     let out = child.wait_with_output().unwrap();
-    if ours {
-        note_what_a_hook_met(
-            event,
-            input,
-            first,
-            above.or_else(|| git_above(&sessions())),
-        );
+    if let Some((dir, above)) = made {
+        let above = above.or_else(|| git_above(&dir));
+        note_what_a_hook_met(event, input, &dir, above);
     }
     (
         out.status.code().unwrap(),
