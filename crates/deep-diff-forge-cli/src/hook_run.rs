@@ -3035,7 +3035,17 @@ fn accepted_words(place: &Place, id: &str, args: &[String], deadline: Deadline) 
     let read = crate::ledger::frontier(&place.own);
     let accepted = accepted_policy(place, read.as_ref().ok(), &name, deadline);
     let short = |id: &str| id.chars().take(7).collect::<String>();
+    // (a session's base with no policy file: nothing is judged under both; ruling 6, F3)
+    let at_base = file_at_commit(&place.top, id, &name, &deadline.git());
     match (&accepted, accepted.second_half(place, id, &name, deadline)) {
+        (_, Some(SecondHalf::Policy { commit, .. })) if !matches!(at_base, Ok(Some(_))) => {
+            format!(
+                "- The commit this session began from ({}) has no policy file {} that can be read: a change is UNJUDGED unless the project's accepted policy (the one at commit {}) fails or holds it.\n",
+                short(id),
+                hook::shown_path(&name),
+                short(&commit)
+            )
+        }
         (Accepted::None(cause), _) => format!(
             "- This project's ledger names no accepted policy ({}): changes are judged under the policy at commit {} alone, as before.\n",
             cause.cause(&name),
@@ -3416,19 +3426,21 @@ impl<'a> Bench<'a> {
                 ));
             }
         };
-        Self::with_policy(&name, &policy, scratch, args, writable, deadline)
+        Self::with_policy(&name, &policy, scratch, args, writable, (deadline, None))
     }
 
     /// A bench for the policy `policy` (the file `name` of some commit): one policy file of its
     /// own in the scratch directory, named by its digest, so that two benches of a stop never
-    /// judge with each other's policy (R7).
+    /// judge with each other's policy (R7). `known` are the rankers with their digests when
+    /// another bench of the stop has them: the rankers are fixed for a stop (ruling 4), so they
+    /// are hashed once a stop, not once a bench.
     fn with_policy(
         name: &str,
         policy: &[u8],
         scratch: &'a Scratch,
         args: &[String],
         writable: &[&Path],
-        deadline: Deadline,
+        (deadline, known): (Deadline, Option<Candidates>),
     ) -> Result<Self, Why> {
         let program = judge_program_why(args, writable)?;
         let policy_sha256 = deep_diff_forge_core::sha256_hex(policy);
@@ -3445,8 +3457,11 @@ impl<'a> Bench<'a> {
             policy_file,
             policy_sha256,
             probe: probe_patch(name, policy),
-            candidates: sealed_rankers(args, deadline)
-                .map_err(|text| Why::new(ReasonClass::ChainRankersUnlisted, text))?,
+            candidates: match known {
+                Some(known) => known,
+                None => sealed_rankers(args, deadline)
+                    .map_err(|text| Why::new(ReasonClass::ChainRankersUnlisted, text))?,
+            },
             deadline,
             ranked_by: std::cell::RefCell::new(None),
             sealed: std::cell::RefCell::new(None),
@@ -3712,7 +3727,7 @@ enum Part {
 ///
 /// | the run | the first half gets | the second half gets |
 /// | --- | --- | --- |
-/// | a working tree's change | half of (`left` less what is held back), else half of `left` when that is under [`COMMIT_FLOOR`] | `left` less what is held back, else all that is left when that is under [`COMMIT_FLOOR`] |
+/// | a working tree's change | half of (`left` less what is held back, which is at most `left` less two [`COMMIT_FLOOR`]s), else half of `left` | `left` less what is held back, which is at most `left` less one [`COMMIT_FLOOR`], else all that is left |
 /// | an ask about a commit, `k` asks owed after it | half of (`left` less `k` times [`ASK_OWED_TWO`]), at least [`COMMIT_FLOOR`] and at most `left` less [`COMMIT_FLOOR`] | `left` less `k` times [`ASK_OWED_TWO`], at least [`COMMIT_FLOOR`], at most `left` |
 ///
 /// So with [`OWED_ASKS_NEED_TWO`] left when a stop with two policies comes to its commits, both
@@ -3720,10 +3735,23 @@ enum Part {
 /// 4 + 4 seconds for a judge that uses all it is given, with two seconds a run left for Git.
 fn run_part(left: Duration, after: After, part: Part) -> Option<Duration> {
     let time = match (after, part) {
-        (_, Part::Alone) | (After::Trees(_), Part::Second) => return run_time(left, after),
-        (After::Trees(kept), Part::First) => Some(left.saturating_sub(kept) / 2)
-            .filter(|time| *time >= COMMIT_FLOOR)
-            .unwrap_or(left / 2),
+        (_, Part::Alone) => return run_time(left, after),
+        // What is held back is at most what leaves each half of this change a run: with a
+        // 35-second window (submodules, a linked tree) the reserves of two runs reach the
+        // window, and the first tree's two runs took all of it (the implementation review of
+        // L1b, F4, measured: 17.5 + 17.1 s, the staged change and every owed ask not run).
+        (After::Trees(kept), Part::First) => {
+            let kept = kept.min(left.saturating_sub(COMMIT_FLOOR * 2));
+            Some(left.saturating_sub(kept) / 2)
+                .filter(|time| *time >= COMMIT_FLOOR)
+                .unwrap_or(left / 2)
+        }
+        (After::Trees(kept), Part::Second) => {
+            return run_time(
+                left,
+                After::Trees(kept.min(left.saturating_sub(COMMIT_FLOOR))),
+            );
+        }
         (After::Asks(owed), Part::Second) => left
             .saturating_sub(ASK_OWED_TWO.saturating_mul(owed))
             .max(COMMIT_FLOOR)
@@ -4161,9 +4189,9 @@ struct Stopping<'a> {
     /// at `base`, or why it cannot be had; `None` when the stop judges under one policy (the same
     /// bytes, or no accepted policy: R6 a and b).
     second: Option<&'a SecondHalf>,
-    /// What the stop's words call `base`: "the session base", or "HEAD" for the stop whose
-    /// session state could not be used ([`stateless_stop`]), which has no session base.
-    base_is: &'static str,
+    /// What the stop's words call its two policies ([`STOP_NAMES`], or [`STATELESS_NAMES`] for
+    /// the stop whose session state could not be used, which has no session base).
+    names: Names,
     scratch: &'a Scratch,
     args: &'a [String],
     /// When the judging must be done: [`STOP_RESERVE`] before the stop's own deadline, and
@@ -4611,12 +4639,21 @@ struct Half<'a> {
     chain: Option<bool>,
 }
 
+/// The rankers with their digests that a bench of the stop already has, so that another bench
+/// does not hash them again (ruling 4: they are fixed for a stop).
+fn candidates_of(halves: &[Half<'_>]) -> Option<Candidates> {
+    halves.iter().find_map(|half| match &half.bench {
+        Some(Ok(bench)) => Some(bench.candidates.clone()),
+        _ => None,
+    })
+}
+
 /// The bench of one half of a stop ([`Half`]): the policy at the session's base, or the second
 /// policy ([`SecondHalf`]).
 fn half_bench<'a>(
     stop: &'a Stopping<'a>,
     trees: &[PathBuf],
-    second: Option<&'a SecondHalf>,
+    (second, known): (Option<&'a SecondHalf>, Option<Candidates>),
 ) -> Result<Bench<'a>, Why> {
     let place = &stop.work.place;
     let mut paths: Vec<&Path> = trees.iter().map(PathBuf::as_path).collect();
@@ -4636,7 +4673,7 @@ fn half_bench<'a>(
             stop.scratch,
             stop.args,
             &paths,
-            stop.deadline,
+            (stop.deadline, known),
         ),
         Some(SecondHalf::Unreadable(why)) => Err(why.clone()),
     }
@@ -4744,7 +4781,7 @@ impl<'a> Judge<'a> {
     fn words(&self) -> Halves {
         let short = |id: &str| id.chars().take(7).collect::<String>();
         Halves {
-            base_is: self.stop.base_is,
+            names: self.stop.names,
             base: short(self.stop.base),
             accepted: match self.stop.second {
                 Some(SecondHalf::Policy { commit, .. }) => Some(short(commit)),
@@ -4773,12 +4810,13 @@ impl<'a> Judge<'a> {
             after,
             ..
         } = self;
+        let known = candidates_of(halves);
         let Half {
             second,
             bench,
             chain,
         } = &mut halves[at];
-        let bench = bench.get_or_insert_with(|| half_bench(stop, writable, *second));
+        let bench = bench.get_or_insert_with(|| half_bench(stop, writable, (*second, known)));
         let bench = match bench {
             Ok(bench) => bench,
             Err(reason) => {
@@ -4855,6 +4893,7 @@ impl<'a> Judge<'a> {
             halves,
             ..
         } = self;
+        let candidates = candidates_of(halves);
         let Half {
             second,
             bench,
@@ -4863,22 +4902,23 @@ impl<'a> Judge<'a> {
         if let Some(known) = *chain {
             return known;
         }
-        let works = match bench.get_or_insert_with(|| half_bench(stop, writable, *second)) {
-            Ok(bench) => bench.probe.as_ref().is_some_and(|probe| {
-                !matches!(
-                    bench
-                        .judge(
-                            probe.as_bytes(),
-                            "probe.patch",
-                            (After::Asks(0), Part::Alone),
-                            None
-                        )
-                        .0,
-                    Judged::Unjudged { .. }
-                )
-            }),
-            Err(_) => false,
-        };
+        let works =
+            match bench.get_or_insert_with(|| half_bench(stop, writable, (*second, candidates))) {
+                Ok(bench) => bench.probe.as_ref().is_some_and(|probe| {
+                    !matches!(
+                        bench
+                            .judge(
+                                probe.as_bytes(),
+                                "probe.patch",
+                                (After::Asks(0), Part::Alone),
+                                None
+                            )
+                            .0,
+                        Judged::Unjudged { .. }
+                    )
+                }),
+                Err(_) => false,
+            };
         *chain = Some(works);
         works
     }
@@ -4888,37 +4928,88 @@ impl<'a> Judge<'a> {
         self.halves.iter().map(|half| half.chain).collect()
     }
 
-    /// Why no patch can be judged at this stop, when the judge could not be prepared for the
-    /// policy at the session's base. (Half 2's bench that cannot be had makes the units it
-    /// would judge UNJUDGED, unless half 1 fails or holds them: [`united`].)
+    /// Why no patch can be judged at this stop: the judge could be prepared under none of its
+    /// policies (the reason of the first). Where one half has a bench, the units are judged under
+    /// it, and what it fails or holds keeps that answer; the rest are UNJUDGED naming the half
+    /// that has none ([`united`]). (In 7cdc8b9d a missing first bench made every commit wait and
+    /// threw away the other half's fail or hold, where 0.11.0's stateless stop blocked: the
+    /// implementation review of L1b, F1b.)
     fn broken(&self) -> Option<&Why> {
-        match &self.halves.first()?.bench {
+        let mut reasons = self.halves.iter().map(|half| match &half.bench {
             Some(Err(reason)) => Some(reason),
             _ => None,
-        }
+        });
+        let first = reasons.next()??;
+        reasons.all(|reason| reason.is_some()).then_some(first)
     }
 }
 
-/// What names the two policies of a stop in what it says: what the first is called ("the session
-/// base", or "HEAD" where the stop has no session base) with its commit, and the commit of the
-/// accepted policy (`None`: it cannot be read, and its reason names it), seven digits each.
+/// What a stop calls its two policies in what it says (T7, T8): each in full and as T8 names
+/// it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Names {
+    first: &'static str,
+    first_short: &'static str,
+    second: &'static str,
+    second_short: &'static str,
+}
+
+/// A stop's names: the policy at the session's base, and the project's accepted policy.
+const STOP_NAMES: Names = Names {
+    first: "the policy at the session base",
+    first_short: "at the session base",
+    second: "the accepted policy",
+    second_short: "the accepted one",
+};
+
+/// The stateless stop's names: 0.11.0's policy (the one at the commit the ledger first
+/// recorded, the accepted policy), and the policy at `HEAD`.
+const STATELESS_NAMES: Names = Names {
+    first: "the accepted policy",
+    first_short: "the accepted one",
+    second: "the policy at HEAD",
+    second_short: "the one at HEAD",
+};
+
+/// What names the two policies of a stop in what it says: their names, the commit of the first
+/// and the commit of the second (`None`: it cannot be read, and its reason names it), seven
+/// digits each.
 struct Halves {
-    base_is: &'static str,
+    names: Names,
     base: String,
     accepted: Option<String>,
 }
 
+/// The most characters of a reason that [`no_verdict_said`] carries.
+const NO_VERDICT_CHARS: usize = 200;
+
 /// What [`united`] says beside a verdict when the two policies of a stop gave a unit different
-/// answers (text T8 of release 0.11.1); it starts with [`hook::TWO_POLICIES`]. Nothing when the
-/// accepted policy could not be read: the unit was not judged under two policies.
+/// verdicts (text T8 of release 0.11.1); it starts with [`hook::TWO_POLICIES`].
 fn two_policies_said(words: &Halves) -> Option<String> {
     let accepted = words.accepted.as_deref()?;
     Some(format!(
-        "{}at {} (commit {}) and the accepted one (commit {accepted}); the stricter stands",
+        "{}{} (commit {}) and {} (commit {accepted}); the stricter stands",
         hook::TWO_POLICIES,
-        words.base_is,
+        words.names.first_short,
         words.base,
+        words.names.second_short,
     ))
+}
+
+/// What [`united`] says beside a fail or a hold when the other policy gave the unit no verdict
+/// (`reason`; `other` names that policy, `None` when its reason names it): it was judged under
+/// one policy, and the other's run is named with why it gave none. It starts with
+/// [`hook::ONE_OF_TWO`]. (T8 said "judged under two policies" here: ruling 5, F-O1, and the
+/// implementation review of L1b, F3.)
+fn no_verdict_said(other: Option<&str>, reason: &str) -> String {
+    let reason: String = reason.chars().take(NO_VERDICT_CHARS).collect();
+    match other {
+        Some(other) => format!(
+            "{}under {other} it got no verdict: {reason}",
+            hook::ONE_OF_TWO
+        ),
+        None => format!("{}{reason}", hook::ONE_OF_TWO),
+    }
 }
 
 /// The order of the answers, the stricter first: fail, then hold (a [`Judged::Refused`] ranks
@@ -4932,32 +5023,53 @@ fn strictness(judged: &Judged) -> u8 {
     }
 }
 
-/// The answer of a unit judged under two policies (release 0.11.1, R1): `first` under the policy
-/// at the session's base, `second` under the accepted policy. The stricter answer stands (fail,
-/// hold, UNJUDGED, pass). On equal answers the rules, the judge's notes and so the remembered
-/// failing lines of both are united, and the class follows the united answer; a hold with rules
-/// stands over a hold for a label the judge does not know. A half that gave no verdict, or was
-/// not run, makes a unit UNJUDGED in either order, with words that name the half (T7), never a
-/// pass. Where the stricter is a fail or a hold the other half did not give, that is said
-/// beside it (T8), in words that no failing line is made of.
+/// The answer of a unit judged under two policies (release 0.11.1, R1): `first` under the stop's
+/// first policy (the session base's; the stateless stop's: 0.11.0's), `second` under its other.
+/// The stricter answer stands (fail, hold, UNJUDGED, pass), so the answer is never below either:
+/// nothing that the first policy alone failed or held passes. On equal answers the rules, the
+/// judge's notes and so the remembered failing lines of both are united, and the class follows
+/// the united answer; of a hold and a hold for a label the judge does not know, the second
+/// stands (it holds the stop once) and carries the first's rules. A half that gave no verdict,
+/// or was not run, makes a unit UNJUDGED in either order, with words that name the half (T7),
+/// unless the other fails or holds it, which stands and says which half gave no verdict. Where
+/// the stricter is a fail or a hold and the other policy gave another verdict, that is said
+/// beside it (T8). What the stop says beside a verdict is no failing line.
 fn united(first: Judged, second: Judged, words: &Halves) -> Judged {
     use std::cmp::Ordering;
-    const ACCEPTED: &str = "the accepted policy";
-    let short_based = format!("the policy at {}", words.base_is);
-    let based = format!("{short_based} (commit {})", words.base);
+    let names = words.names;
+    let based = format!("{} (commit {})", names.first, words.base);
     let accepted =
-        (words.accepted.as_deref()).map(|commit| format!("{ACCEPTED} (commit {commit})"));
+        (words.accepted.as_deref()).map(|commit| format!("{} (commit {commit})", names.second));
     match strictness(&first).cmp(&strictness(&second)) {
-        Ordering::Less => stricter(first, (Some(based.as_str()), ACCEPTED), words),
-        Ordering::Greater => stricter(second, (accepted.as_deref(), &short_based), words),
+        Ordering::Less => stricter(
+            first,
+            (Some(based.as_str()), names.second),
+            (&second, accepted.as_deref()),
+            words,
+        ),
+        Ordering::Greater => stricter(
+            second,
+            (accepted.as_deref(), names.first),
+            (&first, Some(based.as_str())),
+            words,
+        ),
         Ordering::Equal => tie(first, second, (based.as_str(), accepted.as_deref())),
     }
 }
 
 /// [`united`] where one half's answer, `judged`, is the stricter: `this` names its policy
-/// (`None`: the accepted policy, which could not be read, and the reason says so), `other` the
-/// other half's in a few words.
-fn stricter(judged: Judged, (this, other): (Option<&str>, &str), words: &Halves) -> Judged {
+/// (`None`: a policy that could not be read, and the reason says so), `other` the other half's
+/// in a few words; `(answer, named)` is the other half's answer and its policy named in full.
+fn stricter(
+    judged: Judged,
+    (this, other): (Option<&str>, &str),
+    (answer, named): (&Judged, Option<&str>),
+    words: &Halves,
+) -> Judged {
+    let beside = || match answer {
+        Judged::Unjudged { reason, .. } => Some(no_verdict_said(named, reason)),
+        _ => two_policies_said(words),
+    };
     match judged {
         Judged::Unjudged { reason, class } => {
             let reason = match this {
@@ -4969,21 +5081,60 @@ fn stricter(judged: Judged, (this, other): (Option<&str>, &str), words: &Halves)
                 }
                 // the judge's words with the half named in front
                 Some(this) => format!("under {this}: {reason}"),
-                // a reason of its own that names the policy (an accepted policy that cannot be
-                // read)
+                // a reason of its own that names the policy (one that cannot be read)
                 None => reason,
             };
             Judged::Unjudged { reason, class }
         }
         Judged::Fail { rules, mut said } => {
-            said.extend(two_policies_said(words));
+            said.extend(beside());
             Judged::Fail { rules, said }
         }
         Judged::Hold { rules, mut said } => {
-            said.extend(two_policies_said(words));
+            said.extend(beside());
             Judged::Hold { rules, said }
         }
         other @ (Judged::Pass | Judged::Refused { .. }) => other,
+    }
+}
+
+/// A hold (its `rules` and notes `said`) beside a hold for a label the judge does not know: the second
+/// stands, since it holds the stop once where a hold does not (as 0.11.0's answer did under the
+/// policy that gave it), and carries the first's rules and notes in its words, so that nothing
+/// of either is dropped (the implementation review of L1b, F2).
+fn refused_over_held(
+    (rules, said): (Vec<hook::RuleOutcome>, Vec<String>),
+    (class, sentence, reason, lines): (ReasonClass, String, String, Lines),
+) -> Judged {
+    let ids: Vec<&str> = rules
+        .iter()
+        .take(RULES_KEPT)
+        .map(|rule| rule.id.as_str())
+        .collect();
+    let more = rules.len().saturating_sub(RULES_KEPT);
+    let also = match (ids.is_empty(), more) {
+        (true, _) => {
+            "the judge also holds this change for a person under the stop's other policy".to_owned()
+        }
+        (false, 0) => format!(
+            "the judge also holds this change for a person under the stop's other policy (rules {})",
+            ids.join(", ")
+        ),
+        (false, more) => format!(
+            "the judge also holds this change for a person under the stop's other policy (rules {} and {more} more)",
+            ids.join(", ")
+        ),
+    };
+    let notes = if said.is_empty() {
+        String::new()
+    } else {
+        format!("; its notes: {}", said.join("; "))
+    };
+    Judged::Refused {
+        class,
+        sentence: format!("{sentence} And {also}."),
+        reason: format!("{reason}; {also}{notes}"),
+        lines,
     }
 }
 
@@ -5019,8 +5170,24 @@ fn tie(first: Judged, second: Judged, (based, accepted): (&str, Option<&str>)) -
             rules: rules_of(rules, more),
             said: said_of(said, also),
         },
-        (held @ Judged::Hold { .. }, Judged::Refused { .. })
-        | (Judged::Refused { .. }, held @ Judged::Hold { .. }) => held,
+        (
+            Judged::Hold { rules, said },
+            Judged::Refused {
+                class,
+                sentence,
+                reason,
+                lines,
+            },
+        )
+        | (
+            Judged::Refused {
+                class,
+                sentence,
+                reason,
+                lines,
+            },
+            Judged::Hold { rules, said },
+        ) => refused_over_held((rules, said), (class, sentence, reason, lines)),
         (
             Judged::Refused {
                 class,
@@ -5464,6 +5631,19 @@ impl Accepted {
     }
 }
 
+/// Whether the commit `head` comes after `HEAD`: `HEAD` is one of its ancestors (the best common
+/// ancestor of the two is `HEAD`). `false` when it cannot be told.
+fn head_is_ahead(place: &Place, head: &str, deadline: Deadline) -> bool {
+    let git = deadline.git();
+    let Ok(HeadState::Commit(at)) = head_state(&place.top, &git) else {
+        return false;
+    };
+    matches!(
+        deep_diff_forge_patch::merge_base(&place.top, &at, head, &git),
+        Ok(Some(base)) if base == at
+    )
+}
+
 /// The project's accepted policy (release 0.11.1, R2): the file of the policy name the hooks are
 /// given (`name`) at the `head` of the ledger's first whole baseline record. `frontier` is what
 /// the ledger gave, `None` when it could not be read. Replace objects and grafts cannot alter
@@ -5497,17 +5677,27 @@ fn accepted_policy(
             ),
         ))
     };
-    // A shallow clone whose history is cut before the baseline's commit: what lies between is
-    // not known, so the accepted policy is not tied to HEAD (R6 c2).
+    // A shallow clone whose history may be cut before the baseline's commit: what lies between
+    // is not known, so the accepted policy is not tied to HEAD (R6 c2). The cause decides the
+    // words (the implementation review of L1b, F3): the commit is not in the clone; or it is and
+    // HEAD does not descend from it in the history the clone has, which a cut cannot be told
+    // from. A HEAD that is an ancestor of it (a session begun behind the first record) is no
+    // cut: the history between them is there, and the accepted policy is defined, as in a
+    // complete repository (R6, "Not UNJUDGED").
     if place.common.join("shallow").exists() {
+        let shallow =
+            |words: String| Accepted::Unreadable(Why::new(ReasonClass::PlaceShallowParent, words));
         match head_contains(&place.top, head, &git) {
             Ok(true) => {}
-            Ok(false) | Err(GitAcquireError::InvalidSelection { .. }) => {
-                return Accepted::Unreadable(Why::new(
-                    ReasonClass::PlaceShallowParent,
-                    format!(
-                        "this clone is shallow and does not have the history back to the commit this project's ledger first recorded ({short}), so the accepted policy cannot be tied to it (`git fetch --unshallow` gets it) (`place.shallow_parent`)"
-                    ),
+            Ok(false) if head_is_ahead(place, head, deadline) => {}
+            Ok(false) => {
+                return shallow(format!(
+                    "this clone is shallow and HEAD does not descend, in the history the clone has, from the commit this project's ledger first recorded ({short}): whether that history is cut between them cannot be told, so the accepted policy cannot be tied to it (`git fetch --unshallow` tells) (`place.shallow_parent`)"
+                ));
+            }
+            Err(GitAcquireError::InvalidSelection { .. }) => {
+                return shallow(format!(
+                    "this clone is shallow and does not have the commit this project's ledger first recorded ({short}), so the accepted policy cannot be read (`git fetch --unshallow` gets it) (`place.shallow_parent`)"
                 ));
             }
             Err(error) => return failed(&error),
@@ -8711,7 +8901,7 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, Why> {
                         cwd: &input.cwd,
                         base: &base,
                         second: second.as_ref(),
-                        base_is: "the session base",
+                        names: STOP_NAMES,
                         scratch: &scratch,
                         args,
                         deadline: judging,
@@ -8899,6 +9089,26 @@ fn reflog_holder(place: &Place, short: &str) -> Option<PathBuf> {
         .map(|(_, top)| top)
 }
 
+/// The stateless stop's half 2 ([`stateless_stop`]): the policy file `name` at `HEAD` (the
+/// commit `head`) where it is there and is not the same bytes as at `base`, half 1's commit.
+fn head_half(
+    place: &Place,
+    base: &str,
+    head: &str,
+    name: &str,
+    deadline: Deadline,
+) -> Option<SecondHalf> {
+    let git = deadline.git();
+    let at_head = file_at_commit(&place.top, head, name, &git)
+        .ok()
+        .flatten()?;
+    let at_base = file_at_commit(&place.top, base, name, &git);
+    (!matches!(at_base, Ok(Some(ref same)) if *same == at_head)).then(|| SecondHalf::Policy {
+        commit: head.to_owned(),
+        bytes: at_head,
+    })
+}
+
 /// What heads the message of a stop whose session state could not be used ([`stateless_stop`]).
 /// `accepted` is the project's accepted policy and `two` whether the tree was judged under it
 /// beside the policy at `HEAD` (release 0.11.1, T11; `name` is the policy file's).
@@ -8915,8 +9125,13 @@ fn stateless_head(
         Accepted::None(NoAccepted::NullHead) => {
             format!(" This project's ledger names no commit for its first record, {AT_HEAD}")
         }
+        // (half 1 is that commit's policy, as in 0.11.0: none, so nothing passes)
+        Accepted::None(NoAccepted::NoFile) if two => format!(
+            " The commit this project's ledger first recorded has no file {}: a change is UNJUDGED, as before, unless the policy at HEAD, which a commit of this session can have changed, fails or holds it.",
+            hook::shown_path(name)
+        ),
         Accepted::None(NoAccepted::NoFile) => format!(
-            " The commit this project's ledger first recorded has no file {}, {AT_HEAD}",
+            " The commit this project's ledger first recorded has no file {}, and neither has HEAD: nothing could be judged, as before.",
             hook::shown_path(name)
         ),
         Accepted::None(NoAccepted::Unreadable) => {
@@ -8989,23 +9204,29 @@ fn stateless_stop(
     let name = policy_name(args);
     let accepted = accepted_policy(&work.place, read.as_ref().ok(), &name, deadline);
     let mut frontier = read.unwrap_or_default();
-    // half 1 is the policy at HEAD: the stateless stop has no session's base (with no commit at
-    // HEAD, the baseline's, as 0.11.0 judged)
-    let base = match (&work.project.base, &frontier.baseline) {
-        (Base::Commit(id), _) => id.clone(),
-        (
-            Base::NoCommit | Base::Orphan,
-            Some(crate::ledger::Baseline {
-                head: Some(head), ..
-            }),
-        ) => head.clone(),
-        (Base::NoCommit | Base::Orphan, _) => return Ok(Some(hook::unjudged_output(&why.text))),
+    // Half 1 is 0.11.0's choice exactly: the commit the ledger first recorded, else HEAD. Its
+    // absence is what it was in 0.11.0 (UNJUDGED, `chain.policy_missing`; a commit that is gone:
+    // Git's words). In 7cdc8b9d half 1 was HEAD's policy, which a commit of the session can have
+    // written: with no file at the first record's commit the session's own loosening then passed
+    // its own key where 0.11.0 was UNJUDGED (the implementation review of L1b, F1a).
+    let recorded = (frontier.baseline.as_ref()).and_then(|baseline| baseline.head.clone());
+    let base = match (recorded, &work.project.base) {
+        (Some(head), _) => head,
+        (None, Base::Commit(id)) => id.clone(),
+        (None, Base::NoCommit | Base::Orphan) => {
+            return Ok(Some(hook::unjudged_output(&why.text)));
+        }
     };
     let snapshot = crate::ledger::snapshot_sha256(frontier.baseline.as_ref(), accepted.sha256());
     if let Some(sealed_to) = accepted.sealed_to() {
         frontier.passes_sealed_to(&sealed_to);
     }
-    let second = accepted.second_half(&work.place, &base, &name, deadline);
+    // Half 2 is the policy at HEAD where it has the file and its bytes differ from half 1's: a
+    // commit of the session can only add to what is judged, never take from it.
+    let second = match &work.project.base {
+        Base::Commit(id) if *id != base => head_half(&work.place, &base, id, &name, deadline),
+        _ => None,
+    };
     // With the session's lock held by another hook, that hook answers for the commits (when it
     // is a stop): judging them here too would judge each twice at once, and block twice.
     let commits = frontier.baseline.is_some() && why.class != ReasonClass::StateLockBusy;
@@ -9020,7 +9241,7 @@ fn stateless_stop(
         cwd: &input.cwd,
         base: &base,
         second: second.as_ref(),
-        base_is: "HEAD",
+        names: STATELESS_NAMES,
         scratch: &scratch,
         args,
         deadline: judging,
@@ -15277,7 +15498,7 @@ mod tests {
     )]
     fn a_unit_under_two_policies_takes_the_stricter_answer_and_names_the_half() {
         let words = Halves {
-            base_is: "the session base",
+            names: STOP_NAMES,
             base: "aaaaaaa".to_owned(),
             accepted: Some("bbbbbbb".to_owned()),
         };
@@ -15339,28 +15560,89 @@ mod tests {
         ] {
             assert_eq!(text.chars().count(), 140, "{text}");
         }
-        // the stricter stands in either order, and says that two policies judged (T8)
+        // the stricter stands in either order, and says that two policies judged (T8) where the
+        // other policy gave a verdict; where it gave none, which policy that was and why
+        // (ruling 5, F-O1; the implementation review of L1b, F3)
         let said = "judged under two policies: at the session base (commit aaaaaaa) and the accepted one (commit bbbbbbb); the stricter stands";
         assert_eq!(said.chars().count(), 122);
-        for (first, second) in [
-            (fail("no-secrets"), Judged::Pass),
-            (Judged::Pass, fail("no-secrets")),
-            (fail("no-secrets"), hold("ci-is-owned")),
-            (hold("ci-is-owned"), fail("no-secrets")),
-            (fail("no-secrets"), refused.clone()),
-            (late.clone(), fail("no-secrets")),
+        let refused_by_accepted = "judged under one of its two policies: under the accepted policy (commit bbbbbbb) it got no verdict: the policy does not admit this ranker";
+        let late_at_base = format!(
+            "judged under one of its two policies: under the policy at the session base (commit aaaaaaa) it got no verdict: {NO_TIME}"
+        );
+        for (first, second, beside) in [
+            (fail("no-secrets"), Judged::Pass, said.to_owned()),
+            (Judged::Pass, fail("no-secrets"), said.to_owned()),
+            (fail("no-secrets"), hold("ci-is-owned"), said.to_owned()),
+            (hold("ci-is-owned"), fail("no-secrets"), said.to_owned()),
+            (
+                fail("no-secrets"),
+                refused.clone(),
+                refused_by_accepted.to_owned(),
+            ),
+            (late.clone(), fail("no-secrets"), late_at_base.clone()),
         ] {
             let Judged::Fail { rules, said: told } = united(first, second, &words) else {
                 panic!("not a fail")
             };
             assert_eq!(rules, vec![rule("no-secrets", false, "no-secrets")]);
-            assert_eq!(told, vec!["note of no-secrets".to_owned(), said.to_owned()]);
+            assert_eq!(told, vec!["note of no-secrets".to_owned(), beside]);
         }
+        // the stateless stop names its policies as it has them: 0.11.0's, then the one at HEAD
+        let stateless = Halves {
+            names: STATELESS_NAMES,
+            base: "aaaaaaa".to_owned(),
+            accepted: Some("ccccccc".to_owned()),
+        };
+        assert_eq!(
+            united(Judged::Pass, fail("no-secrets"), &stateless),
+            Judged::Fail {
+                rules: vec![rule("no-secrets", false, "no-secrets")],
+                said: vec![
+                    "note of no-secrets".to_owned(),
+                    "judged under two policies: the accepted one (commit aaaaaaa) and the one at HEAD (commit ccccccc); the stricter stands".to_owned()
+                ],
+            }
+        );
         for (first, second) in [
             (hold("ci-is-owned"), Judged::Pass),
             (refused.clone(), hold("ci-is-owned")),
         ] {
             assert!(matches!(united(first, second, &words), Judged::Hold { .. }));
+        }
+        // a hold beside a hold for a label the judge does not know: the second stands (it holds
+        // the stop once, as 0.11.0's did) and carries the hold's rules, in either order (F2)
+        let gap = Judged::Refused {
+            class: ReasonClass::HoldVersionGap,
+            sentence: "the judge does not know x: the paired forge-warden must be upgraded; tell a person.".to_owned(),
+            reason: "unknown_signal".to_owned(),
+            lines: std::collections::BTreeMap::from([("wabc".to_owned(), 1)]),
+        };
+        for (first, second) in [
+            (hold("review-me"), gap.clone()),
+            (gap.clone(), hold("review-me")),
+        ] {
+            let Judged::Refused {
+                class,
+                sentence,
+                reason,
+                lines,
+            } = united(first, second, &words)
+            else {
+                panic!("the version gap did not stand")
+            };
+            assert_eq!(class, ReasonClass::HoldVersionGap);
+            assert_eq!(
+                sentence,
+                "the judge does not know x: the paired forge-warden must be upgraded; tell a person. And the judge also holds this change for a person under the stop's other policy (rules review-me)."
+            );
+            assert!(
+                reason.starts_with("unknown_signal; the judge also holds"),
+                "{reason}"
+            );
+            assert_eq!(
+                lines,
+                std::collections::BTreeMap::from([("wabc".to_owned(), 1)])
+            );
         }
         // equal answers: the rules and notes of both, failing rules first; no T8
         let both = united(fail("no-todo"), fail("no-secrets"), &words);
@@ -15417,7 +15699,7 @@ mod tests {
         );
         // an accepted policy that cannot be read: its own reason, and no T8
         let unread = Halves {
-            base_is: "the session base",
+            names: STOP_NAMES,
             base: "aaaaaaa".to_owned(),
             accepted: None,
         };
@@ -15426,10 +15708,91 @@ mod tests {
             ReasonClass::PlaceBaseGone,
         );
         assert_eq!(united(Judged::Pass, gone.clone(), &unread), gone);
+        let Judged::Fail { said: told, .. } = united(fail("no-secrets"), gone, &unread) else {
+            panic!("not a fail")
+        };
         assert_eq!(
-            united(fail("no-secrets"), gone, &unread),
-            fail("no-secrets")
+            told,
+            vec![
+                "note of no-secrets".to_owned(),
+                "judged under one of its two policies: the commit this project's ledger first recorded, … (`place.base_gone`)".to_owned()
+            ]
         );
+        // the stop's words of either form are no failing line and no note of the judge's
+        let one_of_two = united(late.clone(), fail("no-secrets"), &words);
+        assert_eq!(
+            hook::failure_lines(&one_of_two),
+            hook::failure_lines(&fail("no-secrets"))
+        );
+        let held_alone = united(claims.clone(), refused.clone(), &words);
+        assert_eq!(
+            hook::class_of(&held_alone, false),
+            ReasonClass::HoldClaimsUnverified
+        );
+    }
+
+    /// The invariant of release 0.11.1 (ruling 1, R1; ruling 6 for the stateless stop): the
+    /// answer of a unit under two policies is never below either policy's own answer, in either
+    /// order. So nothing that 0.11.0's policy alone (the stop's first, or the stateless stop's
+    /// first) fails or holds passes, nor becomes UNJUDGED.
+    #[test]
+    fn two_policies_never_answer_below_either() {
+        let words = Halves {
+            names: STOP_NAMES,
+            base: "aaaaaaa".to_owned(),
+            accepted: Some("bbbbbbb".to_owned()),
+        };
+        let rule = |id: &str, held: bool| hook::RuleOutcome {
+            id: id.to_owned(),
+            why: "w".to_owned(),
+            held,
+            violations: Vec::new(),
+        };
+        let answers = [
+            Judged::Pass,
+            Judged::Fail {
+                rules: vec![rule("a", false)],
+                said: Vec::new(),
+            },
+            Judged::Hold {
+                rules: vec![rule("b", true)],
+                said: Vec::new(),
+            },
+            Judged::Hold {
+                rules: Vec::new(),
+                said: vec!["note claims_unverified: c".to_owned()],
+            },
+            Judged::Refused {
+                class: ReasonClass::HoldVersionGap,
+                sentence: "s".to_owned(),
+                reason: "r".to_owned(),
+                lines: std::collections::BTreeMap::new(),
+            },
+            Judged::Unjudged {
+                reason: NO_TIME.to_owned(),
+                class: ReasonClass::TimeNoTimeLeft,
+            },
+            Judged::Unjudged {
+                reason: "x".to_owned(),
+                class: ReasonClass::ChainPolicyMissing,
+            },
+        ];
+        let mut pairs = 0;
+        for first in &answers {
+            for second in &answers {
+                let both = united(first.clone(), second.clone(), &words);
+                assert!(
+                    strictness(&both) <= strictness(first).min(strictness(second)),
+                    "{first:?} and {second:?} gave {both:?}"
+                );
+                assert_eq!(
+                    matches!(both, Judged::Pass),
+                    matches!((first, second), (Judged::Pass, Judged::Pass))
+                );
+                pairs += 1;
+            }
+        }
+        assert_eq!(pairs, answers.len() * answers.len());
     }
 
     /// Release 0.11.1, R7 and the design's section 4: in a stop with two policies every owed ask
@@ -15503,6 +15866,28 @@ mod tests {
             ),
             Some(seconds(9_500))
         );
+        // a 35-second window (submodules, a linked tree) with every reserve of two runs: the
+        // stop's own change keeps 3 + 3 seconds, its staged change 3.5 + 3.5, and 22 are left for
+        // the owed asks (the implementation review of L1b, F4: the first tree took all 35)
+        let reserves = OWED_ASKS_NEED_TWO + ASK_OWED_TWO;
+        let first = run_part(seconds(35_000), After::Trees(reserves), Part::First).unwrap();
+        let second = run_part(
+            seconds(35_000).saturating_sub(first),
+            After::Trees(reserves),
+            Part::Second,
+        )
+        .unwrap();
+        assert_eq!((first, second), (seconds(3_000), seconds(3_000)));
+        let left = seconds(35_000).saturating_sub(first + second);
+        let staged = run_part(left, After::Trees(OWED_ASKS_NEED_TWO), Part::First).unwrap();
+        let again = run_part(
+            left.saturating_sub(staged),
+            After::Trees(OWED_ASKS_NEED_TWO),
+            Part::Second,
+        )
+        .unwrap();
+        assert_eq!((staged, again), (seconds(3_500), seconds(3_500)));
+        assert_eq!(left.saturating_sub(staged + again), OWED_ASKS_NEED_TWO);
         // one policy: the rule of 0.11.0
         for (left, after) in [
             (13_000, After::Asks(2)),

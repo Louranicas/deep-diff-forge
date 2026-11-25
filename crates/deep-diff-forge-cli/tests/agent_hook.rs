@@ -13191,9 +13191,19 @@ fn a_damaged_state_still_judges_the_tree_once() {
     );
     assert!(!first.contains("TEXT-OF-THE-DAMAGED-STATE"), "{first}");
     // the tree, and the session's commit, which the ledger has no verdict for: each under the
-    // policy at HEAD and the accepted one (0.11.0 ran the second alone: two runs)
+    // accepted policy, as 0.11.0 judged them, and under the policy at HEAD, whose file differs
+    // (release 0.11.1, ruling 6: two runs each, four in all)
     assert_eq!(runs(&log), 4);
-    assert_eq!(last_policy(&log), "# the policy at the base commit");
+    let seen = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(
+        (
+            seen.matches("POLICY # the policy at the base commit\n")
+                .count(),
+            seen.matches("POLICY # loosened by the session\n").count()
+        ),
+        (2, 2),
+        "{seen}"
+    );
     // the stop that follows the block: the failure stands
     let (code, stdout, _) = hook(
         "stop",

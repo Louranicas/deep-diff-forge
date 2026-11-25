@@ -410,8 +410,9 @@ bounded form.** What it holds to:
   a committed policy change was the policy for the rest of the session. A stop now judges
   the project wherever the session's directory is, by the policy of the recorded commit and,
   from 0.11.1, by the project's accepted policy too where its file differs, the stricter
-  answer standing: a policy edit that is merely committed does not judge anything, in the
-  session that makes it or after it. A
+  answer standing: where the project's ledger first recorded a commit that has the policy file, a
+  policy edit that is merely committed does not judge anything, in the session that makes it or
+  after it. A
   linked working tree the session's directory is in is judged as well.
 - **The unit that is judged is a commit, by its own change.** The session's first hook
   records, with the base, the id of every commit that something names then: every ref, the
@@ -1238,8 +1239,9 @@ says when it closed:
   judge reads the policy at the base.
 - From 0.11.1 the hooks judge every unit under the project's accepted policy too: the policy
   file at the commit the ledger first recorded, where it differs from the one at the session's
-  base. After this, a policy edit that is merely committed does not judge anything, in the
-  session that makes it or after it. A deliberate act by a process of the same user can still
+  base. After this, where the project's ledger first recorded a commit that has the policy file, a
+  policy edit that is merely committed does not judge anything, in the session that makes it or
+  after it. A deliberate act by a process of the same user can still
   change what the hooks judge by: a rewritten or removed ledger, or a changed settings file
   together with a removed ledger. The criteria of the 0.11.1 security review read as follows:
   U2 is **not met** against its named attacker; with the ledger intact and no act on it, a

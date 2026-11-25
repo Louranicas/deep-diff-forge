@@ -105,10 +105,10 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   under the project's **accepted policy** where its file differs: the policy file of the name the
   hooks are given, at the commit the project's ledger first recorded (the `head` of its first whole
   `baseline` record). The stricter answer stands (fail, then hold, then UNJUDGED, then pass), and on
-  equal answers the rules of both are named. A unit that one of the two could not judge (no time
-  left for that run, no verdict) is UNJUDGED, never a pass, and the stop names which policy's run it
-  lacks. So a policy edit that is merely committed judges nothing, in the session that makes it or
-  after it: a commit that deletes the rule against secrets and the policy's protection of its own
+  equal answers the rules of both are named. A unit that one of the two could not judge (no time left for that run, no verdict) is never a
+  pass: it is UNJUDGED unless the other fails or holds it, and the stop names which policy's run
+  it lacks. So, where the project's ledger first recorded a commit that has the policy file, a
+  policy edit that is merely committed judges nothing, in the session that makes it or after it: a commit that deletes the rule against secrets and the policy's protection of its own
   file, adds a secret and is left without a stop, which 0.11.0 passed at the next fresh session's
   stop (recorded `pass`; `agent verify-branch` exited 0, measured in the 0.11.0 tree review), fails
   there under the accepted policy, and so does that session's own work. Where the ledger names no
@@ -188,8 +188,11 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   (from 0.11.1; "The project's frontier", above) makes two runs an ask and holds back twice as
   much: with 22 seconds of its judging left when it comes to its commits (3 for each run of the
   first ask it owes and 8 for each of the two after it) both runs of each owed ask are made,
-  however long the first takes, and a run on a working tree's change gets half of its share,
-  the other half the rest. A run that forge-warden's bound mode refuses (exit 3 or 4) is made
+  however long the first takes, and a run on a working tree's change gets half of its share, the
+  other half the rest; what a tree's runs hold back for what comes after them is at most what
+  leaves each of its two runs 3 seconds, so in a stop whose judging is 35 seconds (a project with
+  submodules or linked trees) the stop's own change, its staged change and the owed asks each get
+  runs. A run that forge-warden's bound mode refuses (exit 3 or 4) is made
   again without `--repo` in the time that is left, and that second run is outside this
   guarantee. An ask that is not
   made is not written down: no attempt is counted, the commit keeps its turn, and the stop
@@ -492,10 +495,10 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   another hook of the session holds its lock, the stop no longer says only that it did not
   run. It reads no file of the state directory and writes none: with an empty memory, it
   finds the project from its input as a new session does, judges the uncommitted and staged
-  changes of the working trees (their patches against `HEAD`) under the policy at `HEAD` and,
-  where its file differs, the project's accepted policy, the policy at the commit the project's
-  ledger names as its baseline (0.11.0 judged under the latter alone), the stricter answer
-  standing; under the policy at `HEAD` alone when the ledger names no accepted policy, which the
+  changes of the working trees (their patches against `HEAD`) under the policy at the commit the project's ledger names as its baseline, as 0.11.0 judged them
+  (where that commit has no policy file, nothing passes: UNJUDGED), and, where the policy at
+  `HEAD` is there and its file differs, under that one too (from 0.11.1), the stricter answer
+  standing; under the policy at `HEAD` alone when the ledger names no baseline commit, which the
   message says with the cause (a commit of the session can have loosened that one), and decides as a stop
   with no memory: a failing tree blocks. At a stop that follows a block (`stop_hook_active`)
   the failure stands instead (FAIL STANDS), so the session is not trapped; at the next turn's
@@ -1077,9 +1080,13 @@ Deliberate evasion, made visible where that is cheap:
 
 Stated limits, which the judge on the pull request covers:
 
-- From 0.11.1 a policy edit that is merely committed does not judge anything, in the session
-  that makes it or after it: every unit is also judged under the project's accepted policy
-  ("The project's frontier", above). A deliberate act by a process of the same user can still
+- From 0.11.1, where the project's ledger first recorded a commit that has the policy file, a
+  policy edit that is merely committed does not judge anything, in the session that makes it or
+  after it: every unit is also judged under the project's accepted policy ("The project's
+  frontier", above). Where the first record names no commit (the project was first recorded before
+  its first commit), or its commit has no policy file, no accepted policy exists and the stops
+  judge as 0.11.0 did: with no commit named, the stateless stop judges under the policy at
+  `HEAD` alone, which a commit of the session can have loosened. A deliberate act by a process of the same user can still
   change what the hooks judge by: a rewritten or removed ledger, or a changed settings file
   together with a removed ledger; with the ledger removed the next stop judges under the
   policy at its session's base alone, as 0.11.0 did. A rule that a commit pulled in the middle
