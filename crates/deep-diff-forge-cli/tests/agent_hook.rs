@@ -15710,3 +15710,49 @@ fn a_state_directory_inside_the_project_is_refused_and_leaves_no_file_there() {
         assert_eq!(status(), before, "{case}");
     }
 }
+
+/// The session-start hook takes the session's lock for its reading and writing (SECURITY.md;
+/// release 0.11.1, an audit found no test of it: every test contended stops or advice hooks).
+/// Another process holds the lock of a session while its start runs: the start writes nothing
+/// into the state directory, says that it recorded nothing and why, and a start after the lock
+/// is let go records the session as usual.
+#[test]
+fn a_session_start_under_a_held_lock_records_nothing_and_says_so() {
+    let scratch = Scratch::new("hook-start-lock-held");
+    let root = repository(&scratch);
+    // (another session's start makes the state directory)
+    start(&root, "other");
+    let listing = || -> Vec<(String, Vec<u8>)> {
+        names_in(&sessions())
+            .into_iter()
+            .map(|name| {
+                let bytes = std::fs::read(sessions().join(&name)).unwrap();
+                (name, bytes)
+            })
+            .collect()
+    };
+    let lock = sessions().join(format!("{}.lock", stem("s")));
+    let go = scratch.join("go");
+    let mut holder = hold_lock(&lock, &go);
+    let before = listing();
+    let (code, said, stderr) = hook(
+        "session-start",
+        &[],
+        &input("SessionStart", &root, "s", false),
+    );
+    let after = listing();
+    std::fs::remove_file(&go).unwrap();
+    assert!(holder.wait().unwrap().success());
+    assert_eq!((code, stderr.as_str()), (0, ""), "{said}");
+    assert!(
+        said.contains("- The start of this session could not be recorded (another hook of this session was running, so this start recorded nothing): a later hook takes the commit HEAD names then, so commits made before it are not judged."),
+        "{said}"
+    );
+    assert_eq!(
+        after, before,
+        "the start wrote into the state directory while another hook held the session's lock"
+    );
+    // the lock let go, a start records the session
+    start(&root, "s");
+    assert!(sessions().join(format!("{}.json", stem("s"))).is_file());
+}
