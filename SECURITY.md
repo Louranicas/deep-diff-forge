@@ -283,8 +283,10 @@ flowchart LR
   by the effective user with mode `0700`; its socket is mode `0600`
   (`SECURE_DIR_MODE`, `SECURE_SOCKET_MODE` in `security.rs`). There is no `/tmp`
   fallback when `$XDG_RUNTIME_DIR` is unset: the CLI exits 2.
-- A socket path of 108 bytes or more (Linux's `sun_path`, its NUL included) is refused by
-  `daemon path` and `daemon start` with exit 2 before anything is created (since 0.10.0).
+- A socket path longer than the system's `sun_path` holds with its NUL (107 bytes on Linux, 103
+  on macOS) is refused by `daemon path` and `daemon start` with exit 2 before anything is created
+  (since 0.10.0; until 0.11.1 the limit was Linux's 107 on every system), and fails `deploy
+  doctor`'s `socket` check.
 - Explicit `--socket PATH` locations require an owner-private parent. A missing
   parent is created at `0700`; an existing parent is validated and never
   chmodded, so a `0755` parent is refused. Symlinks, wrong-owner directories,

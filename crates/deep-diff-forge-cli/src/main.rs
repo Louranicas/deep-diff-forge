@@ -667,11 +667,13 @@ fn daemon_cmd(opts: &[String]) {
         eprintln!("       set XDG_RUNTIME_DIR, or pass an explicit --socket PATH.");
         std::process::exit(exit::USAGE);
     };
-    // Linux holds a socket path and its NUL in 108 bytes (`sun_path`), so a longer one can be
-    // neither bound nor reached: refused up front (S3.8.c). Before, `path` printed it, exit 0.
-    let length = location.path().as_os_str().len();
-    if matches!(sub, Some("path" | "start")) && length >= 108 {
-        eprintln!("error: the socket path is {length} bytes; a Unix socket path is at most 107");
+    // The system holds a socket path and its NUL in `sun_path` (108 bytes on Linux, 104 on
+    // macOS), so a longer one can be neither bound nor reached: refused up front (S3.8.c), by
+    // the rule `deploy doctor` applies too. Before, `path` printed it, exit 0.
+    if matches!(sub, Some("path" | "start"))
+        && let Some(refusal) = doctor::socket_path_refusal(location.path())
+    {
+        eprintln!("error: {refusal}");
         std::process::exit(exit::USAGE);
     }
     match sub {
