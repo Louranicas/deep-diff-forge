@@ -1139,6 +1139,131 @@ fn shapes_git_fails_to_write_are_refused() {
     assert_eq!(s.read().len(), 3);
 }
 
+/// The tree before every case, with `l` a symlink to `x`.
+fn with_link() -> Tree {
+    with(
+        "l",
+        support::Entry {
+            symlink: true,
+            ..regular(b"x")
+        },
+    )
+}
+
+/// `l` retargeted to `target` after `x` is deleted. Git writes a symlink changed in place with no
+/// mode line, its mode on the `index` line alone (`gitdiff_index` takes it for the old mode, and
+/// the link keeps its type).
+fn retarget_link(target: &str) -> String {
+    format!(
+        "diff --git a/x b/x\ndeleted file mode 100644\nindex 1111111..0000000\n--- a/x\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\ndiff --git a/l b/l\nindex 1111111..2222222 120000\n--- a/l\n+++ b/l\n@@ -1 +1 @@\n-x\n\\ No newline at end of file\n+{target}\n\\ No newline at end of file\n"
+    )
+}
+
+/// A symlink changed in place is held to the targets Git can write, as a new one is (S3B-M-1),
+/// though its mode is known only from its `index` line: Git deletes `x` and then fails on an
+/// overlong target, and it writes a target with a NUL cut at the NUL. Each is refused.
+#[test]
+fn a_symlink_changed_in_place_is_refused_where_git_cannot_write_it() {
+    let r = rig("link-in-place");
+    for (target, written) in [
+        ("a".repeat(5000), None),
+        ("ab\0cd".to_owned(), Some(&b"ab"[..])),
+    ] {
+        let patch = retarget_link(&target);
+        let ddf = parse_decoded(&decode(patch.as_bytes()), ParseOptions::default());
+        assert!(
+            matches!(ddf, Err(PatchParseError::GitCannotWrite { .. })),
+            "a target of {} bytes: {ddf:?}",
+            target.len()
+        );
+        let (applied, _, after) = r.apply_outcome(&with_link(), patch.as_bytes());
+        assert!(!after.contains_key("x"), "{after:?}");
+        match written {
+            None => assert!(!applied, "{after:?}"),
+            Some(cut) => assert!(
+                applied && after["l"].symlink && after["l"].content.as_deref() == Some(cut),
+                "{after:?}"
+            ),
+        }
+    }
+}
+
+/// The longest symlink target Linux writes is 4,095 bytes (`PATH_MAX` less its NUL): a new or
+/// changed link with that target is read, and Git writes it; one byte more is refused, and Git
+/// deletes `x` and then fails. The bound is Linux's, so elsewhere only DDF's answer is asserted
+/// for the longest target.
+#[test]
+fn the_longest_symlink_target_git_writes_is_read_and_one_byte_more_refused() {
+    let r = rig("link-bound");
+    for link in ["s", "l"] {
+        let patch_for = |target: &str| {
+            if link == "l" {
+                return retarget_link(target);
+            }
+            format!(
+                "diff --git a/x b/x\ndeleted file mode 100644\nindex 1111111..0000000\n--- a/x\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\ndiff --git a/s b/s\nnew file mode 120000\nindex 0000000..1234567\n--- /dev/null\n+++ b/s\n@@ -0,0 +1 @@\n+{target}\n\\ No newline at end of file\n"
+            )
+        };
+        let longest = "a".repeat(4095);
+        let patch = patch_for(&longest);
+        let files = parse_decoded(&decode(patch.as_bytes()), ParseOptions::default())
+            .unwrap_or_else(|e| panic!("DDF refused a target of 4,095 bytes for `{link}`: {e}"));
+        let (applied, _, after) = r.apply_outcome(&with_link(), patch.as_bytes());
+        if cfg!(target_os = "linux") {
+            assert!(
+                applied && after[link].content.as_deref() == Some(longest.as_bytes()),
+                "Git applies a target of 4,095 bytes for `{link}`"
+            );
+            let reviewed = reviewed_tree(&with_link(), &files, &r.contents).unwrap();
+            assert!(agree(&after, &reviewed), "{link}: {reviewed:?}");
+        }
+        let patch = patch_for(&"a".repeat(4096));
+        let ddf = parse_decoded(&decode(patch.as_bytes()), ParseOptions::default());
+        assert!(
+            matches!(ddf, Err(PatchParseError::GitCannotWrite { .. })),
+            "a target of 4,096 bytes for `{link}`: {ddf:?}"
+        );
+        let (applied, _, after) = r.apply_outcome(&with_link(), patch.as_bytes());
+        assert!(!applied && !after.contains_key("x"), "{link}: {after:?}");
+    }
+}
+
+/// A mode line beside an `index` line with a mode, which Git never writes, is refused in either
+/// order whatever the two say (row `index` has one such pair). Git keeps the last old mode of the
+/// two: it applies where that is the file's own type, and refuses where it is a symlink's. So
+/// wherever `symlink_git_cannot_write` finds a mode on the `index` line, no mode line is beside
+/// it.
+#[test]
+fn a_mode_line_beside_an_index_mode_is_refused_in_either_order() {
+    let r = rig("mode-beside-index");
+    let index = "index 1111111..2222222 120000\n";
+    // (mode lines, `index` first, what Git leaves at `x`: `None` when it refuses)
+    for (modes, index_first, git) in [
+        ("old mode 100644\n", true, Some(file("b\n", false))),
+        ("old mode 100644\n", false, None),
+        ("new mode 120000\n", true, None),
+        ("new mode 120000\n", false, None),
+        (
+            "old mode 100644\nnew mode 100755\n",
+            true,
+            Some(file("b\n", true)),
+        ),
+        ("old mode 100644\nnew mode 100755\n", false, None),
+    ] {
+        let headers = if index_first {
+            format!("{index}{modes}")
+        } else {
+            format!("{modes}{index}")
+        };
+        let s = see(&r, &format!("{X}{headers}{HUNK}"));
+        s.refused(|e| matches!(e, PatchParseError::InconsistentHeader { .. }));
+        match git {
+            Some(x) => assert_eq!(s.git_tree()["x"], x, "{headers}"),
+            None => s.git_writes_nothing(),
+        }
+    }
+}
+
 /// `git diff -w` (or `-b`, `-I`, `--ignore-blank-lines`, a textconv driver) of a rename, a copy
 /// or a mode change whose edits it hides: Git writes the header with `index` and no body, and
 /// `git apply` makes the move or the mode change alone (S3B-M-2; 0.8.4 read them, `19a4cc6` and
