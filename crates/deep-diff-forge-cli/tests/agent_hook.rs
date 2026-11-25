@@ -4469,11 +4469,28 @@ fn a_state_that_cannot_be_kept_is_said_once_by_advice_and_always_by_a_stop() {
     );
     assert!(system_message(&run("post-tool", "PostToolUse", "in-tree", &inside)).contains(refused));
     assert_eq!(run("post-tool", "PostToolUse", "in-tree", &inside), "");
+    // (the session's lock may leave empty directories there, of which Git records none: P5c of
+    // release 0.11.1, row C6)
+    let left = files_left_under(&root.join(".state"));
     assert!(
-        !root.join(".state").exists(),
-        "a state was written into the working tree"
+        left.is_empty(),
+        "a state was written into the working tree: {left:?}"
     );
     assert_eq!(git(&root, &["status", "--porcelain=v1"]), " M a.rs\n");
+}
+
+/// The files (anything that is not a directory) under `dir`, as paths.
+fn files_left_under(dir: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.symlink_metadata().is_ok_and(|kind| kind.is_dir()) {
+            found.extend(files_left_under(&path));
+        } else {
+            found.push(path);
+        }
+    }
+    found
 }
 
 // ---- Round 11 of Vesper's review and the third independent review (2026-11-14, both NO-GO) ----

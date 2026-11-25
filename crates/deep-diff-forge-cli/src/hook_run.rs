@@ -622,12 +622,7 @@ fn own_directory(own: &Path) -> Result<(), String> {
     use std::os::unix::fs::DirBuilderExt as _;
     let is_own =
         |own: &Path| std::fs::symlink_metadata(own).map(|found| found.file_type().is_dir());
-    let refused = || {
-        format!(
-            "{} is not a directory of its own (a symbolic link or a file stands there)",
-            shown(own)
-        )
-    };
+    let refused = || not_own_words(own);
     match is_own(own) {
         Ok(true) => Ok(()),
         Ok(false) => Err(refused()),
@@ -647,6 +642,14 @@ fn own_directory(own: &Path) -> Result<(), String> {
         }
         Err(error) => Err(format!("its directory could not be read: {error}")),
     }
+}
+
+/// What is said of a directory of the hooks where a symbolic link or a file stands.
+fn not_own_words(dir: &Path) -> String {
+    format!(
+        "{} is not a directory of its own (a symbolic link or a file stands there)",
+        shown(dir)
+    )
 }
 
 /// The most entries of the hooks' directory that are looked at for scratch directories of
@@ -1049,6 +1052,80 @@ fn sessions_dir() -> Result<PathBuf, String> {
                 .to_owned()
         },
     )
+}
+
+/// Where the hooks keep the state of this user's sessions, and whether it is theirs
+/// ([`state_dir`]).
+#[derive(Debug, PartialEq, Eq)]
+enum StateDir {
+    /// A directory of its own: there, made now, or (when nothing was to be made) not there yet.
+    Own(PathBuf),
+    /// A symbolic link or a file stands there; `to_directory` when it is a link to a directory.
+    NotOwn { dir: PathBuf, to_directory: bool },
+    /// There is none: why.
+    None(Unmade),
+}
+
+/// Why there is no state directory ([`StateDir::None`]).
+#[derive(Debug, PartialEq, Eq)]
+enum Unmade {
+    /// No absolute `XDG_STATE_HOME` or `HOME` names one ([`sessions_dir`]'s words).
+    Unnamed(String),
+    /// A directory above it could not be made: what the system said.
+    Above(String),
+    /// It could not be made ([`own_directory`]'s words).
+    Refused(String),
+}
+
+impl Unmade {
+    /// What a hook says of a state it could not keep for this.
+    fn kept_words(&self) -> String {
+        match self {
+            Self::Unnamed(words) | Self::Refused(words) => words.clone(),
+            Self::Above(error) => format!("its state directory could not be made: {error}"),
+        }
+    }
+}
+
+/// The one decision of where a hook keeps the state of this user's sessions (release 0.11.1,
+/// P5c, row C1): [`sessions_dir`], and whether that is a directory of its own, made when
+/// `make` and it is missing. The session's lock, the writer of the state and the doctor make
+/// it ([`session_lock`], [`Session::keep`], [`state_directory_check`]); the readers do not
+/// ([`Session::open`], [`session_seen`]). No `.git` is looked at and no Git is run: whether
+/// the state may be kept there for a session is asked of the session's project alone
+/// ([`Session::inside`]). The lock asked about any `.git` above a missing directory and took
+/// none, while the writer made the directory and wrote: two first stops of a session both
+/// judged (P5c).
+fn state_dir(make: bool) -> StateDir {
+    state_dir_at(sessions_dir(), make)
+}
+
+/// [`state_dir`] for the directory `named` names, or for none.
+fn state_dir_at(named: Result<PathBuf, String>, make: bool) -> StateDir {
+    let dir = match named {
+        Ok(dir) => dir,
+        Err(words) => return StateDir::None(Unmade::Unnamed(words)),
+    };
+    match std::fs::symlink_metadata(&dir) {
+        Ok(found) if found.file_type().is_dir() => return StateDir::Own(dir),
+        Ok(_) => {
+            return StateDir::NotOwn {
+                to_directory: dir.is_dir(),
+                dir,
+            };
+        }
+        Err(_) if !make => return StateDir::Own(dir),
+        Err(_) => {}
+    }
+    if let Some(parent) = dir.parent()
+        && let Err(error) = std::fs::create_dir_all(parent)
+    {
+        return StateDir::None(Unmade::Above(error.to_string()));
+    }
+    match own_directory(&dir) {
+        Ok(()) => StateDir::Own(dir),
+        Err(words) => StateDir::None(Unmade::Refused(words)),
+    }
 }
 
 /// The base as the state file writes it: the commit's id, or one of two words.
@@ -1636,19 +1713,15 @@ impl Session {
     /// should be, or when the session's file is there and cannot be read as a state: none of
     /// these is "no state".
     fn open(id: &str) -> Result<Self, Why> {
-        let dir = sessions_dir().map_err(|text| Why::new(ReasonClass::StateNoDirectory, text))?;
-        match std::fs::symlink_metadata(&dir) {
-            Ok(found) if !found.file_type().is_dir() => {
-                return Err(Why::new(
-                    ReasonClass::StateNoDirectory,
-                    format!(
-                        "{} is not a directory of its own (a symbolic link or a file stands there)",
-                        shown(&dir)
-                    ),
-                ));
+        let dir = match state_dir(false) {
+            StateDir::Own(dir) => dir,
+            StateDir::NotOwn { dir, .. } => {
+                return Err(Why::new(ReasonClass::StateNoDirectory, not_own_words(&dir)));
             }
-            _ => {}
-        }
+            StateDir::None(why) => {
+                return Err(Why::new(ReasonClass::StateNoDirectory, why.kept_words()));
+            }
+        };
         let file = state_file(&dir, id);
         let read = load_read(&file)
             .map_err(|refusal| Why::new(refusal.class(), refused_text(&file, &refusal)))?;
@@ -1696,20 +1769,26 @@ impl Session {
     /// never names a list that is not there. Nothing is written when the file holds a state of
     /// a newer schema now, read just before the lists and again just before the state is
     /// moved into place ([`save`]).
-    fn keep(&mut self) -> Result<(), String> {
-        if self.tips.is_none()
-            && self.judged.is_none()
-            && !self.upgrade
-            && (self.kept.as_ref() == Some(&self.state)
-                || (self.kept.is_none() && self.state == State::default()))
-        {
+    ///
+    /// It writes only with `writable`, the token of the session's lock ([`lock`], P5c row C4),
+    /// and only into the directory that lock was taken in: anything else is refused, and
+    /// nothing is written.
+    fn keep(&mut self, writable: &Writable<'_>) -> Result<(), String> {
+        if self.nothing_to_keep() {
             return Ok(());
         }
-        if let Some(parent) = self.dir.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("its state directory could not be made: {e}"))?;
+        if writable.dir() != self.dir {
+            return Err(format!(
+                "its state could not be saved: the session's lock was taken in {}, not in its state directory {}",
+                shown(writable.dir()),
+                shown(&self.dir)
+            ));
         }
-        own_directory(&self.dir)?;
+        match state_dir_at(Ok(self.dir.clone()), true) {
+            StateDir::Own(_) => {}
+            StateDir::NotOwn { dir, .. } => return Err(not_own_words(&dir)),
+            StateDir::None(why) => return Err(why.kept_words()),
+        }
         if let Some(number) = newer_there(&self.file) {
             return Err(format!(
                 "its state could not be saved: {}",
@@ -1737,6 +1816,25 @@ impl Session {
         self.tips = None;
         self.judged = None;
         Ok(())
+    }
+
+    /// Whether [`Session::keep`] has nothing to write.
+    fn nothing_to_keep(&self) -> bool {
+        self.tips.is_none()
+            && self.judged.is_none()
+            && !self.upgrade
+            && (self.kept.as_ref() == Some(&self.state)
+                || (self.kept.is_none() && self.state == State::default()))
+    }
+
+    /// [`Session::keep`] in `turn`: with its token, or, when the turn gives none, why the
+    /// state is not kept (when there is anything to keep).
+    fn keep_in(&mut self, turn: &Turn) -> Result<(), String> {
+        match turn.writable() {
+            Some(writable) => self.keep(&writable),
+            None if self.nothing_to_keep() => Ok(()),
+            None => Err(turn.unkept()),
+        }
     }
 
     /// Write what an advice hook has to keep, and say whether it was written. The hook worked
@@ -1795,7 +1893,7 @@ impl Session {
                 self.state.guards.insert(key);
             }
         }
-        self.keep().map(|()| true)
+        self.keep_in(&turn).map(|()| true)
     }
 
     /// The session's tips: the ones this hook recorded and could not write yet, else the ones
@@ -2990,7 +3088,7 @@ fn session_start(input: &Input, args: &[String]) -> Option<String> {
             "another hook of this session was running, so this start recorded nothing".to_owned()
         })
     } else {
-        session.keep().err()
+        session.keep_in(&turn).err()
     };
     // the checks that follow take time and write nothing of the session
     drop(turn);
@@ -9378,129 +9476,202 @@ const LOCK_WAIT: Duration = Duration::from_secs(3);
 const START_LOCK_WAIT: Duration = Duration::from_secs(2);
 const ADVICE_LOCK_WAIT: Duration = Duration::from_millis(300);
 
-/// The session's lock, held: a `flock` on the file `session-<hash>.lock` beside its state. It
-/// is let go when this is dropped, and when the process ends however it ends: a hook that is
-/// killed holds nothing. The file is taken away again by a hook that leaves the session
-/// with no state (a stop where there is no repository), so that a session the hooks have
-/// nothing to do with leaves no file behind.
-struct Held {
-    #[expect(dead_code, reason = "held for its lock")]
-    lock: nix::fcntl::Flock<std::fs::File>,
-    path: PathBuf,
-    state: PathBuf,
-}
+/// The session's lock and the token of a write (release 0.11.1, P5c, rows C3 and C4). They are
+/// in a module of their own so that nothing else can make a token: a [`Writable`] comes only
+/// from a [`Turn`] that holds the lock ([`Turn::Mine`]) or from a file system that has no locks
+/// ([`Turn::NoLocks`]), and [`Session::keep`], the one writer of a session's state, takes one.
+/// So wherever a hook writes a session's state it holds the session's lock, unless the file
+/// system has none.
+mod lock {
+    use super::{
+        Deadline, Duration, Path, PathBuf, StateDir, not_own_words, state_dir, state_file,
+    };
 
-impl Drop for Held {
-    fn drop(&mut self) {
-        // still locked here: whoever waits on this file finds another at its path, or
-        // none, and takes that one ([`session_lock`])
-        if !self.state.exists() {
-            let _ = std::fs::remove_file(&self.path);
+    /// The session's lock, held: a `flock` on the file `session-<hash>.lock` beside its state.
+    /// It is let go when this is dropped, and when the process ends however it ends: a hook
+    /// that is killed holds nothing. The file is taken away again by a hook that leaves the
+    /// session with no state (a stop where there is no repository), so that a session the
+    /// hooks have nothing to do with leaves no file behind.
+    pub(super) struct Held {
+        #[expect(dead_code, reason = "held for its lock")]
+        lock: nix::fcntl::Flock<std::fs::File>,
+        /// The directory the lock was taken in.
+        dir: PathBuf,
+        path: PathBuf,
+        state: PathBuf,
+    }
+
+    impl Drop for Held {
+        fn drop(&mut self) {
+            // still locked here: whoever waits on this file finds another at its path, or
+            // none, and takes that one ([`session_lock`])
+            if !self.state.exists() {
+                let _ = std::fs::remove_file(&self.path);
+            }
+        }
+    }
+
+    /// The state directory of a file system that has no locks ([`Turn::NoLocks`]).
+    pub(super) struct NoFlock {
+        dir: PathBuf,
+    }
+
+    /// Whether a hook has its session's state to itself.
+    pub(super) enum Turn {
+        /// It has, for as long as this is held.
+        Mine(Held),
+        /// The file system has no locks: the state is written without one, as before (stated).
+        NoLocks(NoFlock),
+        /// Another hook of the session holds it and did not let go in the time given.
+        Taken,
+        /// There is no lock to have, so no state is written: no state directory can be made
+        /// (what the hook then says of its state says so too), or the session's lock file
+        /// cannot be opened. Why, in the words a hook says of a state it could not keep.
+        NoDirectory(String),
+    }
+
+    /// Leave to write the session's state into one directory: only a held lock gives it, or a
+    /// file system with no locks ([`Turn::writable`]). It lives no longer than the turn it
+    /// came from.
+    pub(super) struct Writable<'turn> {
+        dir: &'turn Path,
+    }
+
+    impl Writable<'_> {
+        /// The directory the lock was taken in.
+        pub(super) fn dir(&self) -> &Path {
+            self.dir
+        }
+
+        /// A token for `dir` with no lock: for the unit tests of the writer alone.
+        #[cfg(test)]
+        pub(super) fn for_test(dir: &Path) -> Writable<'_> {
+            Writable { dir }
+        }
+    }
+
+    impl Turn {
+        /// The token of a write, when this turn gives one.
+        pub(super) fn writable(&self) -> Option<Writable<'_>> {
+            match self {
+                Self::Mine(held) => Some(Writable { dir: &held.dir }),
+                Self::NoLocks(none) => Some(Writable { dir: &none.dir }),
+                Self::Taken | Self::NoDirectory(_) => None,
+            }
+        }
+
+        /// Why a state is not written in this turn, when it gives no token.
+        pub(super) fn unkept(&self) -> String {
+            match self {
+                Self::NoDirectory(why) => why.clone(),
+                Self::Mine(_) | Self::NoLocks(_) | Self::Taken => {
+                    "another hook of this session holds its state".to_owned()
+                }
+            }
+        }
+    }
+
+    /// Take the session's lock, waiting at most `wait`.
+    ///
+    /// Every hook reads the session's state, works, and writes it. Two that did so at the same
+    /// time wrote across each other. Two stops: one's list of judged commits, the other's list,
+    /// the other's state, the first's state, after which the state named a list that was not
+    /// in the file and every later stop was UNJUDGED (sixth independent review of the hooks).
+    /// Two stops that were both the session's first hook, which took no lock because there was
+    /// no state yet: both judged, both blocked for the same failure, both wrote (review V4
+    /// round 15, VD4R15-M-3). An advice hook and a stop: the advice hook's older copy of what
+    /// had blocked came back, so a failure that a stop had seen repaired and forgotten "had
+    /// blocked" again and did not block when it returned (seventh independent review,
+    /// HR7-L-4).
+    ///
+    /// So the lock is taken by every stop for all of its run, the first one too (the file is
+    /// named from the session's id, which a hook has before any state exists), by a
+    /// session-start hook for its reading and writing, and by an advice hook for its writing
+    /// ([`super::Session::keep_advice`]). It is taken in the state directory [`state_dir`]
+    /// gives, made when it is missing, whatever stands above it: until 0.11.1 a hook that
+    /// found no state directory under a `.git` (a home directory that is a Git repository,
+    /// or a fresh home under a tree) took no lock and the state was written all the same, and
+    /// two first stops of a session both judged (P5c). Through a symbolic link to a directory
+    /// it is taken there, as before; the state is refused there by its writer and reader.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the session-lock door: a hook waits a bounded time, in short sleeps, for another hook of its session"
+    )]
+    pub(super) fn session_lock(session: &str, wait: Duration) -> Turn {
+        use nix::fcntl::{Flock, FlockArg};
+        use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
+        let dir = match state_dir(true) {
+            StateDir::Own(dir)
+            | StateDir::NotOwn {
+                dir,
+                to_directory: true,
+            } => dir,
+            StateDir::NotOwn { dir, .. } => return Turn::NoDirectory(not_own_words(&dir)),
+            StateDir::None(why) => return Turn::NoDirectory(why.kept_words()),
+        };
+        let state = state_file(&dir, session);
+        let path = state.with_extension("lock");
+        let open = || {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o600)
+                .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
+                .open(&path)
+        };
+        let unopened = |error: std::io::Error| {
+            Turn::NoDirectory(format!(
+                "its state could not be saved: the session's lock file {} cannot be opened ({error})",
+                super::shown(&path)
+            ))
+        };
+        let until = Deadline::after(wait);
+        let mut file = match open() {
+            Ok(file) => file,
+            Err(error) => return unopened(error),
+        };
+        loop {
+            match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
+                Ok(lock) => {
+                    // The file that was locked must be the one at the path: a hook that left
+                    // the session with no state has taken its lock file away, and another may
+                    // have made a new one since.
+                    let same = match (lock.metadata(), std::fs::symlink_metadata(&path)) {
+                        (Ok(held), Ok(there)) => {
+                            held.ino() == there.ino() && held.dev() == there.dev()
+                        }
+                        _ => false,
+                    };
+                    if same {
+                        return Turn::Mine(Held {
+                            lock,
+                            dir,
+                            path,
+                            state,
+                        });
+                    }
+                    drop(lock);
+                    if until.left().is_zero() {
+                        return Turn::Taken;
+                    }
+                    file = match open() {
+                        Ok(again) => again,
+                        Err(error) => return unopened(error),
+                    };
+                }
+                Err((back, nix::errno::Errno::EWOULDBLOCK)) if !until.left().is_zero() => {
+                    file = back;
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                Err((_, nix::errno::Errno::EWOULDBLOCK)) => return Turn::Taken,
+                // a file system with no locks: as before
+                Err(_) => return Turn::NoLocks(NoFlock { dir }),
+            }
         }
     }
 }
-
-/// Whether a hook has its session's state to itself.
-enum Turn {
-    /// It has, for as long as this is held.
-    Mine(#[expect(dead_code, reason = "held for its lock")] Held),
-    /// There is no lock to have: no state directory can be made (what the hook then says
-    /// of its state says so too), or the file system has no locks.
-    Unlocked,
-    /// Another hook of the session holds it and did not let go in the time given.
-    Taken,
-}
-
-/// Take the session's lock, waiting at most `wait`.
-///
-/// Every hook reads the session's state, works, and writes it. Two that did so at the same
-/// time wrote across each other. Two stops: one's list of judged commits, the other's list,
-/// the other's state, the first's state, after which the state named a list that was not in
-/// the file and every later stop was UNJUDGED (sixth independent review of the hooks). Two
-/// stops that were both the session's first hook, which took no lock because there was no
-/// state yet: both judged, both blocked for the same failure, both wrote (review V4 round
-/// 15, VD4R15-M-3). An advice hook and a stop: the advice hook's older copy of what had
-/// blocked came back, so a failure that a stop had seen repaired and forgotten "had blocked"
-/// again and did not block when it returned (seventh independent review, HR7-L-4).
-///
-/// So the lock is taken by every stop for all of its run, the first one too (the file is
-/// named from the session's id, which a hook has before any state exists), by a
-/// session-start hook for its reading and writing, and by an advice hook for its writing
-/// ([`Session::keep_advice`]).
-#[expect(
-    clippy::disallowed_methods,
-    reason = "the session-lock door: a hook waits a bounded time, in short sleeps, for another hook of its session"
-)]
-fn session_lock(session: &str, wait: Duration) -> Turn {
-    use nix::fcntl::{Flock, FlockArg};
-    use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
-    let Ok(dir) = sessions_dir() else {
-        return Turn::Unlocked;
-    };
-    // The directory is made here when it is missing, unless it would lie inside a Git
-    // working tree: a state directory inside the project is refused by every hook, and
-    // nothing is written there to find that out.
-    let inside_a_tree = || {
-        resolved(&dir)
-            .ancestors()
-            .any(|above| above.join(".git").symlink_metadata().is_ok())
-    };
-    let made = dir.is_dir()
-        || (!inside_a_tree()
-            && dir
-                .parent()
-                .is_none_or(|parent| std::fs::create_dir_all(parent).is_ok())
-            && own_directory(&dir).is_ok());
-    if !made {
-        return Turn::Unlocked;
-    }
-    let state = state_file(&dir, session);
-    let path = state.with_extension("lock");
-    let open = || {
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
-            .open(&path)
-    };
-    let until = Deadline::after(wait);
-    let Ok(mut file) = open() else {
-        return Turn::Unlocked;
-    };
-    loop {
-        match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
-            Ok(lock) => {
-                // The file that was locked must be the one at the path: a hook that left
-                // the session with no state has taken its lock file away, and another may
-                // have made a new one since.
-                let same = match (lock.metadata(), std::fs::symlink_metadata(&path)) {
-                    (Ok(held), Ok(there)) => held.ino() == there.ino() && held.dev() == there.dev(),
-                    _ => false,
-                };
-                if same {
-                    return Turn::Mine(Held { lock, path, state });
-                }
-                drop(lock);
-                if until.left().is_zero() {
-                    return Turn::Taken;
-                }
-                let Ok(again) = open() else {
-                    return Turn::Unlocked;
-                };
-                file = again;
-            }
-            Err((back, nix::errno::Errno::EWOULDBLOCK)) if !until.left().is_zero() => {
-                file = back;
-                std::thread::sleep(Duration::from_millis(25));
-            }
-            Err((_, nix::errno::Errno::EWOULDBLOCK)) => return Turn::Taken,
-            // a file system with no locks: as before
-            Err(_) => return Turn::Unlocked,
-        }
-    }
-}
+use lock::{Turn, Writable, session_lock};
 
 /// What a stop says in a repository that has no commit: it has no base, so nothing in it is
 /// judged, and its files are in the project all the same. They are said, as everything is
@@ -9562,7 +9733,7 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, Why> {
     }
     let _ = begin_in_ledger(input, &mut session, &mut work, deadline);
     // The project and the base are recorded before anything else can fail.
-    let mut unsaved = session.keep().err();
+    let mut unsaved = session.keep_in(&turn).err();
     let mut beside: Vec<Note> = Vec::new();
     let mut memory: Vec<String> = Vec::new();
     // what the project's ledger records of this stop (F11): a stop that judged nothing is one
@@ -9719,7 +9890,7 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, Why> {
         hook::room_beside(&decision).saturating_sub(lines_taken(&memory)),
     );
     notes.append(&mut memory);
-    if let Err(why) = session.keep() {
+    if let Err(why) = session.keep_in(&turn) {
         unsaved = Some(why);
     }
     // A state that cannot be saved must not hide the decision, and is said with it: the same
@@ -10383,15 +10554,22 @@ fn companion(
 /// link was ready (second independent review of the hooks, HR2-L-1).
 fn state_directory_check(place: Option<&Place>) -> GateCheck {
     let usable = || -> Result<PathBuf, String> {
-        let dir = sessions_dir()?;
+        // (asked before anything is made: nothing is made in the project)
+        let dir = match state_dir(false) {
+            StateDir::Own(dir) | StateDir::NotOwn { dir, .. } => dir,
+            StateDir::None(why) => return Err(why.kept_words()),
+        };
         if let Some(why) = place.and_then(|place| inside_tree(&dir, &place.top)) {
             return Err(why);
         }
-        if let Some(parent) = dir.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("{} could not be made: {e}", shown(&dir)))?;
+        match state_dir_at(Ok(dir.clone()), true) {
+            StateDir::Own(_) => {}
+            StateDir::NotOwn { .. } => return Err(not_own_words(&dir)),
+            StateDir::None(Unmade::Above(error)) => {
+                return Err(format!("{} could not be made: {error}", shown(&dir)));
+            }
+            StateDir::None(why) => return Err(why.kept_words()),
         }
-        own_directory(&dir)?;
         let probe = dir.join(format!("gate-{}.probe", std::process::id()));
         let written = std::fs::write(&probe, b"");
         let _ = std::fs::remove_file(&probe);
@@ -10575,7 +10753,11 @@ pub(crate) struct SessionSeen {
 /// ([`load_read`]); no lock is taken and nothing is made or written, the state directory
 /// included. `agent check` is no hook of the session and must leave its record as it is.
 pub(crate) fn session_seen(session: &str) -> Result<SessionSeen, String> {
-    let file = state_file(&sessions_dir()?, session);
+    let dir = match state_dir(false) {
+        StateDir::Own(dir) | StateDir::NotOwn { dir, .. } => dir,
+        StateDir::None(why) => return Err(why.kept_words()),
+    };
+    let file = state_file(&dir, session);
     let state = match load_read(&file) {
         Ok(Some((state, _))) => state,
         Ok(None) => return Err(format!("it has no state ({} is not there)", shown(&file))),
@@ -14994,7 +15176,7 @@ mod tests {
                 "0123456789abcdef0123456789abcdef01234567:p".to_owned(),
             ]),
         };
-        let said = session.keep().unwrap_err();
+        let said = session.keep(&Writable::for_test(&dir)).unwrap_err();
         assert!(
             said.contains("is now of schema v14, written by a newer deep-diff-forge")
                 && said.contains("nothing was written over it"),
@@ -16811,6 +16993,133 @@ mod tests {
             assert_eq!(resolve_sessions_dir(None, os(relative)), None);
         }
         assert_eq!(resolve_sessions_dir(None, None), None);
+    }
+
+    /// Release 0.11.1, P5c row C1 (test U1): where the state is kept is decided without asking
+    /// about Git. A `.git` of any kind above the state directory (a repository, an empty
+    /// directory, the file of a linked working tree, a link to nothing) changes nothing: the
+    /// directory is the hooks' own, made with mode 0700 when it is to be made. The session's
+    /// lock asked about such a `.git` and took none, while the writer made the directory and
+    /// wrote: two first stops of a session both judged.
+    #[test]
+    fn the_state_directory_is_decided_without_asking_about_git() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-state-dir-decided");
+        let hooks = |root: &Path| root.join("home/.local/state/deep-diff-forge/hooks");
+        for name in [
+            "nothing",
+            "a-repository",
+            "an-empty-git-directory",
+            "a-git-file",
+            "a-git-link-to-nothing",
+        ] {
+            let root = scratch.join(name);
+            let git = root.join(".git");
+            std::fs::create_dir(&root).unwrap();
+            match name {
+                "a-repository" => {
+                    std::fs::create_dir_all(git.join("objects")).unwrap();
+                    std::fs::create_dir_all(git.join("refs/heads")).unwrap();
+                    std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+                }
+                "an-empty-git-directory" => std::fs::create_dir(&git).unwrap(),
+                "a-git-file" => {
+                    std::fs::write(&git, "gitdir: /nowhere/.git/worktrees/home\n").unwrap();
+                }
+                "a-git-link-to-nothing" => {
+                    std::os::unix::fs::symlink("/nowhere/at/all", &git).unwrap();
+                }
+                _ => {}
+            }
+            let dir = hooks(&root);
+            // a reader makes nothing
+            assert_eq!(
+                state_dir_at(Ok(dir.clone()), false),
+                StateDir::Own(dir.clone()),
+                "{name}"
+            );
+            assert!(!root.join("home").exists(), "{name}: a reader made it");
+            for _ in 0..2 {
+                assert_eq!(
+                    state_dir_at(Ok(dir.clone()), true),
+                    StateDir::Own(dir.clone()),
+                    "{name}"
+                );
+                let found = std::fs::symlink_metadata(&dir).unwrap();
+                assert!(
+                    found.is_dir() && found.permissions().mode() & 0o777 == 0o700,
+                    "{name}: {found:?}"
+                );
+            }
+        }
+        // a link to a directory, a link to nothing and a file where the directory should be
+        let dir = hooks(&scratch.join("not-own"));
+        std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
+        for (kind, to_directory) in [
+            ("a link to a directory", true),
+            ("a link to nothing", false),
+            ("a file", false),
+        ] {
+            match kind {
+                "a link to a directory" => {
+                    std::os::unix::fs::symlink(scratch.path(), &dir).unwrap();
+                }
+                "a link to nothing" => std::os::unix::fs::symlink("/nowhere/at/all", &dir).unwrap(),
+                _ => std::fs::write(&dir, "").unwrap(),
+            }
+            for make in [false, true] {
+                assert_eq!(
+                    state_dir_at(Ok(dir.clone()), make),
+                    StateDir::NotOwn {
+                        dir: dir.clone(),
+                        to_directory
+                    },
+                    "{kind}"
+                );
+            }
+            std::fs::remove_file(&dir).unwrap();
+        }
+        // no absolute variable names one
+        let os = |text: &str| Some(OsString::from(text));
+        let named = resolve_sessions_dir(os("state"), os("home")).ok_or_else(|| "none".to_owned());
+        assert_eq!(
+            state_dir_at(named, true),
+            StateDir::None(Unmade::Unnamed("none".to_owned()))
+        );
+    }
+
+    /// Release 0.11.1, P5c row C4 (test U2): the writer of a session's state writes only into
+    /// the directory its token names, the directory the session's lock was taken in. With a
+    /// token of another directory nothing is written (nor made); with its own the state is.
+    #[test]
+    fn a_state_is_written_only_into_the_directory_its_lock_was_taken_in() {
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-state-token");
+        let (dir, other) = (scratch.join("hooks"), scratch.join("other"));
+        std::fs::create_dir(&other).unwrap();
+        let file = state_file(&dir, "s");
+        let mut session = Session {
+            dir: dir.clone(),
+            file: file.clone(),
+            state: State {
+                stops: 1,
+                ..State::default()
+            },
+            kept: None,
+            upgrade: false,
+            new_key: None,
+            tips: None,
+            judged: None,
+        };
+        let said = session.keep(&Writable::for_test(&other));
+        assert!(
+            said.as_ref()
+                .is_err_and(|words| words.contains("the session's lock was taken in")),
+            "a state was kept with the token of another directory: {said:?}"
+        );
+        assert!(!dir.exists(), "the state directory was made");
+        assert_eq!(std::fs::read_dir(&other).unwrap().count(), 0);
+        session.keep(&Writable::for_test(&dir)).unwrap();
+        assert_eq!(load(&file), Ok(Some(session.state.clone())));
     }
 
     /// Independent review of the hooks, HR-L-2: a reason an advice hook has for not running is
