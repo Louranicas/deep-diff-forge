@@ -15391,10 +15391,15 @@ fn key_id(key: &[u8]) -> String {
     deep_diff_forge_core::sha256_hex(&bytes)[..16].to_owned()
 }
 
-/// The names in `dir`, sorted.
+/// The names in `dir`, sorted; none when `dir` is not there (so that an assertion about them
+/// says what it found instead of failing on the listing).
 fn names_in(dir: &Path) -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(dir)
-        .unwrap()
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => panic!("{}: {error}", dir.display()),
+    };
+    let mut names: Vec<String> = entries
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     names.sort();
