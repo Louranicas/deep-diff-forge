@@ -3318,7 +3318,18 @@ fn the_state_of_a_session_is_in_the_users_state_directory_or_the_hook_says_it_ha
     let root = repository(&scratch);
     silence_a_lint(&root);
     let event = input("PostToolUse", &root, "s", false);
-    let files = |dir: &Path| std::fs::read_dir(dir).map_or(0, Iterator::count);
+    // (the directory's `.gitignore`, release 0.11.1 P5d, is no file of a session: left out by name)
+    let files = |dir: &Path| {
+        std::fs::read_dir(dir).map_or(0, |entries| {
+            entries
+                .filter(|entry| {
+                    !entry
+                        .as_ref()
+                        .is_ok_and(|entry| entry.file_name() == ".gitignore")
+                })
+                .count()
+        })
+    };
 
     // an absolute XDG_STATE_HOME wins over the home directory; a relative one is not used
     let xdg = scratch.join("xdg-state");
@@ -9651,6 +9662,8 @@ fn state_and_lock_names_are_the_documented_ones() {
         .map(|kind| format!("{stem}.{kind}"))
         .into();
     documented.insert(0, "key".to_owned());
+    // (and the directory's `.gitignore`, documented since 0.11.1: P5d)
+    documented.insert(0, ".gitignore".to_owned());
     assert_eq!(names, documented);
 }
 
@@ -16153,5 +16166,309 @@ fn a_lock_that_cannot_be_taken_keeps_no_state_and_a_stop_says_its_cause_first() 
             && reason.contains("so this stop keeps no state: until the cause is repaired")
             && !reason.contains("its start included"),
         "{reason}"
+    );
+}
+
+// ---- Release 0.11.1, P5d: the hooks' state directory keeps itself out of every working tree ----
+
+/// Where the hooks' state directory lies in another working tree of the session's project
+/// (design D7 of P5d): the home directory, which holds the state, is that tree.
+#[derive(Clone, Copy, Debug)]
+enum OtherTree {
+    /// The home directory is the main working tree; the project is a linked one.
+    HomeMain,
+    /// The home directory is a linked working tree; the project is the main one.
+    HomeLinked,
+    /// The home directory is a dotfiles repository whose linked working tree, outside the home
+    /// directory, is the project.
+    Dotfiles,
+}
+
+/// A layout of [`OtherTree`]: the home directory (the tree the session enters), and the
+/// project the client names.
+struct Laid {
+    home: PathBuf,
+    project: PathBuf,
+}
+
+/// Lay `case` out in `scratch` (made the home of this thread's hooks), as the design's probes
+/// laid it (`probe_d7.py`): every tree with the files and the policy of [`repository`].
+fn lay_other_tree(scratch: &Scratch, case: OtherTree) -> Laid {
+    let main = repository(scratch);
+    let laid = match case {
+        OtherTree::HomeMain | OtherTree::HomeLinked => {
+            let linked = scratch.join("linked");
+            git(
+                &main,
+                &[
+                    "worktree",
+                    "add",
+                    "--quiet",
+                    "-b",
+                    "side",
+                    linked.to_str().unwrap(),
+                ],
+            );
+            if let OtherTree::HomeMain = case {
+                Laid {
+                    home: main,
+                    project: linked,
+                }
+            } else {
+                Laid {
+                    home: linked,
+                    project: main,
+                }
+            }
+        }
+        OtherTree::Dotfiles => {
+            std::fs::write(main.join(".bashrc"), "# dotfiles\n").unwrap();
+            git(&main, &["add", ".bashrc"]);
+            git(&main, &["commit", "--quiet", "-m", "dotfiles"]);
+            let project = scratch.join("work/proj");
+            std::fs::create_dir(scratch.join("work")).unwrap();
+            git(
+                &main,
+                &[
+                    "worktree",
+                    "add",
+                    "--quiet",
+                    "-b",
+                    "work",
+                    project.to_str().unwrap(),
+                ],
+            );
+            Laid {
+                home: main,
+                project,
+            }
+        }
+    };
+    home_is(&laid.home);
+    laid
+}
+
+/// Run the hook `event` of `session` from `cwd` with the client naming the project of `laid`
+/// (`CLAUDE_PROJECT_DIR`); a stop is given `judge`. A start must record the session, and a stop
+/// gives its decision (`Null` when it says nothing).
+fn hook_of(laid: &Laid, event: &str, cwd: &Path, session: &str, judge: &Path) -> Value {
+    let kind = match event {
+        "session-start" => "SessionStart",
+        "post-tool" => "PostToolUse",
+        _ => "Stop",
+    };
+    let extra: &[&str] = if event == "stop" {
+        &["--judge", judge.to_str().unwrap()]
+    } else {
+        &[]
+    };
+    let (code, stdout, stderr) = hook_in(event, extra, &input(kind, cwd, session, false), |c| {
+        c.env("CLAUDE_PROJECT_DIR", &laid.project);
+    });
+    assert_eq!((code, stderr.as_str()), (0, ""), "{event}: {stdout}");
+    assert!(
+        !stdout.contains("- The start of this session could not be recorded ("),
+        "{event}: {stdout}"
+    );
+    if event != "stop" || stdout.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{e}: {stdout:?}"))
+    }
+}
+
+/// The files of the patches the reading judge was shown that lie in the hooks' state
+/// directory of a home directory that is the tree's top.
+fn hooks_files_shown(log: &Path) -> Vec<String> {
+    shown(log)
+        .iter()
+        .flat_map(|names| names.split(','))
+        .filter(|name| name.starts_with(".local/state/deep-diff-forge/"))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Release 0.11.1, P5d (rows R2, R4; test T1). Where the home directory, which holds the hooks'
+/// state, is another working tree of the session's project, a stop made from that tree gave the
+/// judge the hooks' key, the session's state, its lock file and its tips as the agent's change
+/// (0.11.0 blocked on the key's random bytes, or held, with no change of the agent's). With
+/// the directory's `.gitignore` no patch the judge is given names a file of the hooks; a secret
+/// the agent then writes into that tree is judged and blocks, as anywhere. (Asserted on the
+/// patches' files, not on a real judge's verdict, which depends on the key's bytes.)
+#[test]
+fn the_hooks_files_in_another_working_tree_of_the_project_are_not_the_agents_change() {
+    for case in [
+        OtherTree::HomeMain,
+        OtherTree::HomeLinked,
+        OtherTree::Dotfiles,
+    ] {
+        let scratch = Scratch::new(&format!("hook-other-tree-{case:?}"));
+        let laid = lay_other_tree(&scratch, case);
+        let (script, log) = reading_judge(&scratch);
+        hook_of(&laid, "session-start", &laid.project, "s", &script);
+        hook_of(&laid, "post-tool", &laid.home, "s", &script);
+        assert!(
+            sessions().join("key").is_file() && laid.home.join(".git").symlink_metadata().is_ok(),
+            "{case:?}: (control) the hooks did not keep their state in the home directory's working tree"
+        );
+        let first = hook_of(&laid, "stop", &laid.home, "s", &script);
+        assert_ne!(first["decision"], "block", "{case:?}: {first}");
+        assert_eq!(
+            hooks_files_shown(&log),
+            Vec::<String>::new(),
+            "{case:?}: a judged patch named the hooks' files (no change of the agent's): {:?}",
+            shown(&log)
+        );
+        // the agent's own change in that tree is judged as before
+        secret(&laid.home, "leak.rs");
+        hook_of(&laid, "post-tool", &laid.home, "s", &script);
+        let after = runs(&log);
+        blocked(&hook_of(&laid, "stop", &laid.home, "s", &script));
+        assert!(
+            runs(&log) > after
+                && shown(&log)
+                    .iter()
+                    .any(|names| names.split(',').any(|name| name == "leak.rs")),
+            "{case:?}: the secret in the home directory's tree was not judged: {:?}",
+            shown(&log)
+        );
+        assert_eq!(
+            hooks_files_shown(&log),
+            Vec::<String>::new(),
+            "{case:?}: a judged patch named the hooks' files beside the agent's change: {:?}",
+            shown(&log)
+        );
+    }
+}
+
+/// Release 0.11.1, P5d (rows R2, R4; test T3; P5c's layout b): in a home directory that is a
+/// dotfiles repository, its `git status` lists no file of the hooks, whichever hook was the
+/// account's first (a start, an advice hook, a stop: each writes the state) and after a stop.
+/// Before, it listed the key, the states and the lists, and `git add --all` committed the key
+/// beside the states it keys. (The control: a file of another program in the same place is
+/// listed.)
+#[test]
+fn a_home_repository_does_not_list_the_hooks_files() {
+    let scratch = Scratch::new("hook-home-repository-ignores");
+    let root = repository(&scratch);
+    let (script, _) = reading_judge(&scratch);
+    silence_a_lint(&root);
+    for (row, first) in [
+        ("a start", "session-start"),
+        ("an advice hook", "post-tool"),
+        ("a stop", "stop"),
+    ] {
+        let home = fresh_home(&scratch, &format!("home-{first}"), Above::Repository);
+        let listed = || {
+            git(&home, &["status", "--porcelain", "--untracked-files=all"])
+                .lines()
+                .filter(|line| line.contains(".local/"))
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        let kind = match first {
+            "session-start" => "SessionStart",
+            "post-tool" => "PostToolUse",
+            _ => "Stop",
+        };
+        for (event, kind) in [(first, kind), ("stop", "Stop")] {
+            let judged = ["--judge", script.to_str().unwrap()];
+            let extra: &[&str] = if event == "stop" { &judged } else { &[] };
+            let (code, stdout, stderr) = hook(event, extra, &input(kind, &root, row, false));
+            assert_eq!((code, stderr.as_str()), (0, ""), "{row}: {stdout}");
+            assert!(
+                names_in(&sessions()).contains(&format!("{}.json", stem(row))),
+                "{row}: {event} kept no state: {:?}",
+                names_in(&sessions())
+            );
+            assert_eq!(
+                listed(),
+                Vec::<String>::new(),
+                "{row}: after {event} the home repository lists the hooks' files"
+            );
+        }
+        let other = home.join(".local/state/another-program/x");
+        std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+        std::fs::write(&other, "x\n").unwrap();
+        assert_eq!(
+            listed(),
+            ["?? .local/state/another-program/x".to_owned()],
+            "{row}: (control) the home repository does not list a file there"
+        );
+    }
+}
+
+/// Release 0.11.1, P5d (row R5; test T5), the stated limit asserted so that a change of it is
+/// seen: in the layout of T1 (the home directory the main working tree of the project), a file
+/// the agent puts into the hooks' state directory there is ignored as the hooks' files are,
+/// and is not judged while it is not staged (as a file under any `.gitignore` that ignores
+/// itself, a limit SECURITY.md states); staged with `git add -f` it is in the next commit, and
+/// a stop judges it and blocks.
+#[test]
+fn a_file_put_into_the_hooks_directory_is_judged_once_staged() {
+    let scratch = Scratch::new("hook-other-tree-planted");
+    let laid = lay_other_tree(&scratch, OtherTree::HomeMain);
+    let (script, log) = reading_judge(&scratch);
+    hook_of(&laid, "session-start", &laid.project, "s", &script);
+    hook_of(&laid, "post-tool", &laid.home, "s", &script);
+    let planted = ".local/state/deep-diff-forge/hooks/leak.rs";
+    secret(&laid.home, planted);
+    let unstaged = hook_of(&laid, "stop", &laid.home, "s", &script);
+    assert_ne!(
+        unstaged["decision"],
+        "block",
+        "the stated limit changed: an unstaged file in the hooks' directory was judged: {unstaged} {:?}",
+        shown(&log)
+    );
+    git(&laid.home, &["add", "-f", planted]);
+    let staged = hook_of(&laid, "stop", &laid.home, "s", &script);
+    assert!(
+        staged["decision"] == "block"
+            && shown(&log)
+                .iter()
+                .any(|names| names.split(',').any(|name| name == planted)),
+        "a staged file in the hooks' directory was not judged: {staged} {:?}",
+        shown(&log)
+    );
+}
+
+/// Release 0.11.1, P5d (rows R2, R4; test T6; N109): a state directory in the home directory's
+/// tree as an earlier build leaves it (the key and another session's state and lists, no
+/// `.gitignore`: the tree's `git status` lists them) gets the file at the first state this
+/// build keeps there; a stop from that tree then judges the agent's change and none of the
+/// directory's files, another session's included.
+#[test]
+fn another_sessions_files_in_the_tree_are_not_judged_after_a_kept_state() {
+    let scratch = Scratch::new("hook-other-tree-earlier");
+    let laid = lay_other_tree(&scratch, OtherTree::HomeMain);
+    let (script, log) = reading_judge(&scratch);
+    hook_of(&laid, "session-start", &laid.project, "other", &script);
+    // (as an earlier build leaves it; the control below says whether it is)
+    let _ = std::fs::remove_file(sessions().join(".gitignore"));
+    let listed = git(
+        &laid.home,
+        &["status", "--porcelain", "--untracked-files=all"],
+    );
+    assert!(
+        listed.contains(".local/state/deep-diff-forge/hooks/key")
+            && listed.contains(&format!("{}.json", stem("other"))),
+        "(control) the directory is not as an earlier build leaves it: {listed}"
+    );
+    hook_of(&laid, "session-start", &laid.project, "s", &script);
+    std::fs::write(laid.home.join("note.txt"), "a harmless change\n").unwrap();
+    hook_of(&laid, "post-tool", &laid.home, "s", &script);
+    hook_of(&laid, "stop", &laid.home, "s", &script);
+    assert!(
+        shown(&log)
+            .iter()
+            .any(|names| names.split(',').any(|name| name == "note.txt")),
+        "(control) the agent's change was not judged: {:?}",
+        shown(&log)
+    );
+    assert_eq!(
+        hooks_files_shown(&log),
+        Vec::<String>::new(),
+        "a judged patch named the hooks' files, another session's included: {:?}",
+        shown(&log)
     );
 }
