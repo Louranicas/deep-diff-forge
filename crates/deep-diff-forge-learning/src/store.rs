@@ -918,4 +918,324 @@ mod tests {
             Err(LearningError::NoStateDir)
         ));
     }
+
+    /// SECURITY.md (learning store): "Directory/file symlinks and inode replacement are
+    /// rejected." The file half, deterministically: the store's own steps (the path's metadata
+    /// first, the file opened after it) with the file replaced by another inode between them, as a
+    /// rename over the path does. `validate_receipts_file` is where every door compares the two
+    /// (read, append to an existing store, create), so the comparison is reached here directly
+    /// rather than through a race; the other checks it makes (regular file, owner-private, owned
+    /// by the user, size) all pass for the replacement, so only the identity check can refuse it.
+    #[cfg(unix)]
+    #[test]
+    fn a_receipt_store_replaced_between_its_check_and_its_open_is_refused() {
+        let scratch = Scratch::new("learn-store");
+        let path = receipts_path(&scratch.join("store"));
+        write_private(&path, b"\n");
+        let checked = fs::symlink_metadata(&path).unwrap();
+        // The control: the same steps with nothing replaced pass.
+        validate_receipts_file(&checked, &File::open(&path).unwrap()).unwrap();
+        let replacement = path.with_extension("replacement");
+        write_private(&replacement, b"\n");
+        fs::rename(&replacement, &path).unwrap();
+        let opened = File::open(&path).unwrap();
+        let refused = validate_receipts_file(&checked, &opened)
+            .map_or_else(|error| error.to_string(), |()| "accepted".to_owned());
+        assert!(
+            refused.contains("receipt store changed while it was being opened"),
+            "a store whose inode was replaced after its check: {refused}"
+        );
+    }
+
+    /// Flip the symbolic link `link` between `to_a` and `to_b` until `stop` is set: each flip is
+    /// one `rename` of a fresh link over `link`, so every path through `link` names an entry under
+    /// `to_a` or one under `to_b`, never nothing. Returns the number of flips.
+    #[cfg(unix)]
+    fn flip_until(
+        link: &Path,
+        to_a: &Path,
+        to_b: &Path,
+        stop: &std::sync::atomic::AtomicBool,
+    ) -> u64 {
+        let fresh = link.with_extension("fresh");
+        let mut flips = 0_u64;
+        while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+            for target in [to_a, to_b] {
+                let _ = fs::remove_file(&fresh);
+                if std::os::unix::fs::symlink(target, &fresh).is_ok()
+                    && fs::rename(&fresh, link).is_ok()
+                {
+                    flips += 1;
+                }
+            }
+        }
+        flips
+    }
+
+    /// How many times a race test calls the store's step against the flipping link.
+    #[cfg(unix)]
+    const RACE_ROUNDS: usize = 20_000;
+
+    /// SECURITY.md (learning store): "Directory/file symlinks and inode replacement are
+    /// rejected." The directory half, through a real race (the comparison of the directory's
+    /// metadata with the opened directory is inside `ensure_secure_dir`, which has no seam). The
+    /// store directory is reached through a link that a second thread flips between `real/`,
+    /// where `store` is a directory, and `trap/`, where `store` is a link to `victim`. A check
+    /// through `real/` followed by an open through `trap/` opens `victim`; only the identity check
+    /// keeps `victim` from being made `0700`. `victim` itself is reachable only through the link
+    /// `trap/store`, which the store refuses by its own metadata, so on correct code its mode
+    /// never changes, however the race falls: green does not depend on the timing. Red does: it
+    /// needs at least one open to land in the window, which is measured in the plant run of
+    /// 0.11.1 (lane T2), not promised. The rounds are counted, not timed.
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_replaced_between_its_check_and_its_open_is_not_secured() {
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let scratch = Scratch::new("learn-store");
+        let (real, trap, victim) = (
+            scratch.join("real"),
+            scratch.join("trap"),
+            scratch.join("victim"),
+        );
+        fs::create_dir_all(real.join("store")).unwrap();
+        fs::create_dir_all(&trap).unwrap();
+        fs::create_dir_all(&victim).unwrap();
+        fs::set_permissions(&victim, fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink(&victim, trap.join("store")).unwrap();
+        let via = scratch.join("via");
+        std::os::unix::fs::symlink(&real, &via).unwrap();
+        let dir = via.join("store");
+        let stop = AtomicBool::new(false);
+        let (refused, flips) = std::thread::scope(|scope| {
+            let flipper = scope.spawn(|| flip_until(&via, &real, &trap, &stop));
+            let mut refused = 0_usize;
+            for _ in 0..RACE_ROUNDS {
+                if ensure_secure_dir(&dir).is_err_and(|error| {
+                    error
+                        .to_string()
+                        .contains("learning directory changed while it was being secured")
+                }) {
+                    refused += 1;
+                }
+                if fs::metadata(&victim).unwrap().permissions().mode() & 0o777 != 0o755 {
+                    break;
+                }
+            }
+            stop.store(true, Ordering::Relaxed);
+            (refused, flipper.join().unwrap())
+        });
+        eprintln!(
+            "{RACE_ROUNDS} rounds, {flips} flips, {refused} replacements refused by identity"
+        );
+        assert_eq!(
+            fs::metadata(&victim).unwrap().permissions().mode() & 0o777,
+            0o755,
+            "a directory reached by replacing the store directory after its check was secured \
+             ({refused} replacements were refused by identity first)"
+        );
+    }
+
+    /// SECURITY.md (learning store): "New receipt files use exclusive creation." A store that is
+    /// absent when it is checked is created with `create_new`: if anything appears at the path
+    /// before the creation (here a link to a file that does not exist), the creation fails rather
+    /// than opening or creating what the link names. Through a real race, as above: the path is
+    /// reached through a link flipped between `empty/`, where there is no store, and `trap/`,
+    /// where the store is a dangling link to `elsewhere`. On correct code `elsewhere` is never
+    /// created, however the race falls; with a plain `create` the creation follows the link and
+    /// makes it. The rounds are counted, not timed; red needs one creation in the window
+    /// (measured in lane T2's plant run, not promised).
+    #[cfg(unix)]
+    #[test]
+    fn a_link_that_appears_at_the_creation_door_is_never_followed() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let scratch = Scratch::new("learn-store");
+        let (empty, trap, elsewhere) = (
+            scratch.join("empty"),
+            scratch.join("trap"),
+            scratch.join("elsewhere.jsonl"),
+        );
+        fs::create_dir_all(&empty).unwrap();
+        fs::create_dir_all(&trap).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, trap.join("strategy.jsonl")).unwrap();
+        let via = scratch.join("via");
+        std::os::unix::fs::symlink(&empty, &via).unwrap();
+        let path = via.join("strategy.jsonl");
+        let stop = AtomicBool::new(false);
+        let (exclusive, created, flips) = std::thread::scope(|scope| {
+            let flipper = scope.spawn(|| flip_until(&via, &empty, &trap, &stop));
+            let (mut exclusive, mut created) = (0_usize, 0_usize);
+            for _ in 0..RACE_ROUNDS {
+                match open_receipts_for_append(&path) {
+                    Ok(_) => created += 1,
+                    Err(LearningError::Io(error))
+                        if error.kind() == std::io::ErrorKind::AlreadyExists =>
+                    {
+                        exclusive += 1;
+                    }
+                    Err(_) => {}
+                }
+                // A store created in `empty/` is removed, so the next round meets no store there.
+                let _ = fs::remove_file(empty.join("strategy.jsonl"));
+                if fs::symlink_metadata(&elsewhere).is_ok() {
+                    break;
+                }
+            }
+            stop.store(true, Ordering::Relaxed);
+            (exclusive, created, flipper.join().unwrap())
+        });
+        eprintln!(
+            "{RACE_ROUNDS} rounds, {flips} flips, {created} stores created, {exclusive} creations refused as existing"
+        );
+        assert!(
+            fs::symlink_metadata(&elsewhere).is_err(),
+            "the store's creation followed a link that appeared at its path and created {}",
+            elsewhere.display()
+        );
+    }
+
+    /// SECURITY.md (learning store): "language and parser-version fields accept bounded token
+    /// characters rather than paths." The parser version and both bounds, on append and on load:
+    /// a path-like parser version is refused by name; a value at its bound (64 bytes for the
+    /// language, 128 for the parser version) is kept and one byte more is refused. Before 0.11.1
+    /// the parser-version check could be removed with the crate green, and no bound was tested
+    /// (U1 audit, 2026-11-26).
+    #[test]
+    fn the_parser_version_and_both_bounds_hold_on_append_and_on_load() {
+        let scratch = Scratch::new("learn-store");
+        let dir = scratch.join("store");
+        let with = |language: &str, version: &str| {
+            StrategyReceipt::new(crate::redacted_id("x"), language, version, Strategy::Patch)
+        };
+        let refusal = |receipt: &StrategyReceipt| {
+            append_receipt(&dir, receipt)
+                .map_or_else(|error| error.to_string(), |()| "accepted".to_owned())
+        };
+        let version = "parser_version must be a bounded identifier token";
+        let language = "language must be a bounded identifier token";
+        for path in [
+            "../../secret",
+            "/etc/passwd",
+            "src/secret.rs",
+            "C:\\secret",
+            "two words",
+            "",
+        ] {
+            let error = refusal(&with("rust", path));
+            assert!(error.contains(version), "parser version {path:?}: {error}");
+        }
+        let kept = [
+            with("rust", &"v".repeat(128)),
+            with(&"r".repeat(64), "v1"),
+            with("rust", "tree-sitter-rust_0.24.1+git@abc"),
+        ];
+        for receipt in &kept {
+            assert_eq!(refusal(receipt), "accepted", "{receipt:?}");
+        }
+        let error = refusal(&with("rust", &"v".repeat(129)));
+        assert!(
+            error.contains(version),
+            "a parser version of 129 bytes: {error}"
+        );
+        let error = refusal(&with(&"r".repeat(65), "v1"));
+        assert!(error.contains(language), "a language of 65 bytes: {error}");
+        assert_eq!(load_receipts(&dir).unwrap(), kept.to_vec());
+        // The read door applies the same checks to a hand-edited store.
+        let good = fs::read(receipts_path(&dir)).unwrap();
+        for (bad, why) in [
+            (with("rust", "/etc/passwd"), version),
+            (with("rust", &"v".repeat(129)), version),
+            (with(&"r".repeat(65), "v1"), language),
+        ] {
+            let mut store = good.clone();
+            store.extend_from_slice(bad.to_json().unwrap().as_bytes());
+            store.push(b'\n');
+            write_private(&receipts_path(&dir), &store);
+            let error = load_receipts(&dir).unwrap_err().to_string();
+            assert!(
+                error.contains("receipt store line 4: ") && error.contains(why),
+                "{bad:?}: {error}"
+            );
+        }
+    }
+
+    /// SECURITY.md (scope): "learning metadata supplied at the receipt boundary" is
+    /// attacker-controlled. The boundary as `learn record --stdin` crosses it
+    /// (`StrategyReceipt::from_json`, then `append_receipt`) and as a hand-edited store does
+    /// (`load_receipts`): each hostile receipt is refused with its reason and the store's bytes are
+    /// unchanged; an extra key is dropped at the record door and refused at the read door, and in
+    /// neither case is its value stored. Before 0.11.1 the only falsifier cited for this sentence
+    /// was a fuzz target that asserts no panic and a round trip (U1 audit, 2026-11-26).
+    #[test]
+    fn hostile_metadata_at_the_receipt_boundary_never_reaches_the_store() {
+        let scratch = Scratch::new("learn-store");
+        let dir = scratch.join("store");
+        let good = r#"{"file_hash":"0123456789abcdef","language":"rust","parser_version":"v1","strategy":"syntax","fallback":null,"elapsed_ms":3,"bytes":10,"nodes":2,"cache":"cold","outcome":"accepted","revisited":false}"#;
+        let record = |line: &str| {
+            StrategyReceipt::from_json(line)
+                .and_then(|receipt| append_receipt(&dir, &receipt))
+                .map_or_else(|error| error.to_string(), |()| "recorded".to_owned())
+        };
+        assert_eq!(record(good), "recorded");
+        let stored = fs::read(receipts_path(&dir)).unwrap();
+        let hostile = [
+            (
+                good.replace("0123456789abcdef", "/home/x/secret.rs"),
+                "redacted id",
+            ),
+            (
+                good.replace("0123456789abcdef", "0123456789ABCDEF"),
+                "redacted id",
+            ),
+            (
+                good.replace(r#""language":"rust""#, r#""language":"../../secret""#),
+                "language must be",
+            ),
+            (
+                good.replace(
+                    r#""parser_version":"v1""#,
+                    r#""parser_version":"/etc/passwd""#,
+                ),
+                "parser_version must be",
+            ),
+            (
+                good.replace(r#""outcome":"accepted""#, r#""outcome":"revisited""#),
+                "contradicts",
+            ),
+            (
+                good.replace(r#""strategy":"syntax""#, r#""strategy":"telepathy""#),
+                "deserialize error",
+            ),
+        ];
+        for (line, why) in &hostile {
+            let error = record(line);
+            assert!(error.contains(why), "recorded {line}: {error}");
+            assert_eq!(
+                fs::read(receipts_path(&dir)).unwrap(),
+                stored,
+                "the store changed after refusing {line}"
+            );
+        }
+        let extra = good.replacen('{', r#"{"source":"fn secret() {}","#, 1);
+        assert_eq!(record(&extra), "recorded");
+        let text = fs::read_to_string(receipts_path(&dir)).unwrap();
+        assert!(!text.contains("secret"), "an extra key was stored: {text}");
+        // The read door: each hostile line, written into the store by hand, is refused by line.
+        let stored = fs::read(receipts_path(&dir)).unwrap();
+        for (line, why) in hostile
+            .iter()
+            .map(|(line, why)| (line.as_str(), *why))
+            .chain([(extra.as_str(), "not a receipt field")])
+        {
+            let mut store = stored.clone();
+            store.extend_from_slice(line.as_bytes());
+            store.push(b'\n');
+            write_private(&receipts_path(&dir), &store);
+            let error = load_receipts(&dir).unwrap_err().to_string();
+            assert!(
+                error.contains("receipt store line 3: ") && error.contains(why),
+                "loaded {line}: {error}"
+            );
+        }
+    }
 }
