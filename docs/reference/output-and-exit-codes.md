@@ -126,8 +126,10 @@ refusal is pending: every verdict refusal (`findings verify --require-findings` 
 `--require-all` since 0.10.0, [DDF-2026-010](../advisories/DDF-2026-010.md); `eval` and
 `agent doctor` since 0.11.0, [DDF-2026-011](../advisories/DDF-2026-011.md); `--rank --fail-on`, `agent check --require-pass` and `agent verify-branch` from their first release, 0.11.0) is decided before its document is written and exits 7 with its
 reason lines on stderr even when the reader has gone or stdout cannot be written (`>/dev/full`).
-A diagnostic that cannot be written (`2>/dev/full`) leaves the exit code as it is; before 0.10.0 it exited 101. A daemon socket path of
-108 bytes or more is a usage error (exit 2) of `daemon path` and `daemon start` since 0.10.0.
+A diagnostic that cannot be written (`2>/dev/full`) leaves the exit code as it is; before 0.10.0 it exited 101. A daemon socket path longer
+than the system's `sun_path` holds with its NUL (107 bytes on Linux, 103 on macOS; until 0.11.1 Linux's 107 on
+every system) is a usage error (exit 2) of `daemon path` and `daemon start` since 0.10.0, and fails `deploy
+doctor`'s `socket` check (exit 6).
 
 The `council` subcommands use their own family ([review council](../REVIEW_COUNCIL.md)):
 

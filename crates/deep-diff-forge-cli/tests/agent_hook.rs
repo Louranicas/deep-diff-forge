@@ -10280,6 +10280,119 @@ fn a_tree_moved_by_hand_is_unjudged_until_repaired_and_then_stands() {
     }
 }
 
+/// Package P3 of 0.11.1, row 9 of the reading of the macOS CI run of 0.11.0: the test above
+/// under a directory of 200 characters and more. A message shows 300 characters of a reason,
+/// and under a long path the cut took the words after the two paths: now the paths give way
+/// in their middle, and the reason says what to do and what is not judged, within its bound.
+#[test]
+fn under_a_long_path_a_moved_tree_s_reason_keeps_its_words() {
+    let scratch = Scratch::new("hook-long-mv");
+    let root = repository(&scratch);
+    let (script, _) = reading_judge(&scratch);
+    let deep = scratch.join("d".repeat(180));
+    std::fs::create_dir(&deep).unwrap();
+    let (linked, moved) = (deep.join("linked"), deep.join("moved"));
+    linked_tree(&root, &linked, "side");
+    start(&root, "s");
+    secret(&linked, "first.rs");
+    blocked(&stop_from(&linked, "s", &script));
+    std::fs::rename(&linked, &moved).unwrap();
+    let said = allowed(&stop_from(&moved, "s", &script)).to_owned();
+    let reason = said
+        .lines()
+        .find_map(|line| line.strip_prefix("  not judged: "))
+        .unwrap_or_else(|| panic!("no reason line: {said}"));
+    assert!(
+        said.starts_with("deep-diff-forge: UNJUDGED. ")
+            && reason.starts_with("Git names \"/")
+            && reason.contains("/linked\" as that tree (`git worktree repair` in a tree moved with `mv` records where it is): whether the session's directory is another working tree could not be found out")
+            && reason.chars().count() <= 301,
+        "{said}"
+    );
+}
+
+/// Package P3 of 0.11.1, review 1, M1: the same stop from a tree moved to a directory whose
+/// name ends in a backslash, under a short base and a long one. Its path is shown ending `\"`;
+/// read by its quotes, the reason ran its first path on to the next and cut the words between
+/// them ("Git names "/var/…e records name "…/linked" as that tree … Git direct"). The words
+/// are whole and the path keeps its backslash at its end.
+#[test]
+fn a_tree_moved_to_a_name_ending_in_a_backslash_keeps_its_reason_s_words() {
+    for depth in [0, 180] {
+        let scratch = Scratch::new("hook-mv-bs");
+        let root = repository(&scratch);
+        let (script, _) = reading_judge(&scratch);
+        let deep = scratch.join("d".repeat(depth.max(1)));
+        std::fs::create_dir(&deep).unwrap();
+        let (linked, moved) = (deep.join("linked"), deep.join("moved\\"));
+        linked_tree(&root, &linked, "side");
+        start(&root, "s");
+        secret(&linked, "first.rs");
+        blocked(&stop_from(&linked, "s", &script));
+        std::fs::rename(&linked, &moved).unwrap();
+        let said = allowed(&stop_from(&moved, "s", &script)).to_owned();
+        let reason = said
+            .lines()
+            .find_map(|line| line.strip_prefix("  not judged: "))
+            .unwrap_or_else(|| panic!("no reason line: {said}"));
+        assert!(
+            said.starts_with("deep-diff-forge: UNJUDGED. ")
+                && reason.starts_with("Git names \"/")
+                && reason.contains("/moved\\\" as the working tree of a Git directory whose records name \"/")
+                && reason.contains("/linked\" as that tree (`git worktree repair` in a tree moved with `mv` records where it is): whether the session's directory is another working tree could not be found out")
+                && reason.chars().count() <= 301,
+            "{depth}: {said}"
+        );
+    }
+}
+
+/// Package P3 of 0.11.1, rows 5 to 8 of the reading of the macOS CI run of 0.11.0: the copy
+/// of `a_copy_the_records_were_repaired_onto_is_not_read_while_the_tree_stands` under a
+/// directory of 200 characters and more. The line that counts what is not judged showed 180
+/// characters of a name and cut its clauses; now the path gives way in its middle, and both
+/// clauses are whole, within the line's bound.
+#[test]
+fn under_a_long_path_the_counting_line_keeps_every_clause() {
+    let scratch = Scratch::new("hook-long-copy");
+    let root = repository(&scratch);
+    let (script, _) = reading_judge(&scratch);
+    let deep = scratch.join("d".repeat(180));
+    std::fs::create_dir(&deep).unwrap();
+    let (linked, copy) = (deep.join("linked"), deep.join("copy"));
+    linked_tree(&root, &linked, "side");
+    start(&root, "s");
+    secret(&linked, "first.rs");
+    blocked(&stop_from(&linked, "s", &script));
+    let copied = Command::new("cp")
+        .arg("-a")
+        .arg(&linked)
+        .arg(&copy)
+        .status()
+        .unwrap();
+    assert!(copied.success());
+    git(&copy, &["clean", "-fdq"]);
+    git(&copy, &["worktree", "repair"]);
+    secret(&linked, "second.rs");
+    let lines: Vec<String> = (0..2)
+        .filter_map(|_| {
+            let said = allowed(&stop_from(&root, "s", &script)).to_owned();
+            said.lines()
+                .find(|line| line.contains(" in this project ") && line.contains(" not judged: "))
+                .map(str::to_owned)
+        })
+        .collect();
+    assert!(!lines.is_empty(), "no stop counted what is not judged");
+    for line in &lines {
+        assert!(
+            line.contains(
+                "/copy\" (remembered at another directory, which stands) (a failure stands there)"
+            ) && line.contains("the working tree \"/")
+                && line.chars().count() <= 700,
+            "{line}"
+        );
+    }
+}
+
 /// Twelfth independent review of the hooks, HR12-L-4, as reproduced: the session's
 /// directory is under a directory of a linked tree that cannot be searched (mode 000). The
 /// stop is rightly UNJUDGED with the operating system's words, but the directory, which

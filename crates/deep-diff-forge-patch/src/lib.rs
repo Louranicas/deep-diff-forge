@@ -200,6 +200,8 @@ pub enum PatchParseError {
     /// A patch `git apply` fails to write after it has begun: a symlink whose target is empty,
     /// holds a NUL, is longer than 4,095 bytes or is in a binary body, or one path that is both
     /// a file and the directory of another. Git has then already removed what the patch deletes.
+    /// An empty target is Linux's case: its `symlink(2)` refuses one, while on macOS Git writes
+    /// the link. DDF refuses it on every system, and its message says which is which.
     GitCannotWrite {
         /// 1-based line number where the section began.
         line_number: usize,
@@ -286,6 +288,12 @@ impl PatchParseError {
     }
 }
 
+/// The reason of a [`PatchParseError::GitCannotWrite`] for a symlink whose target is empty. Git on
+/// Linux cannot write one (its `symlink(2)` refuses an empty target, after Git has removed what
+/// the patch deletes); Git on macOS writes the link (the macOS CI run of 0.11.0, row 22 of its
+/// reading). The refusal stays on every system; its message says which is which.
+pub(crate) const EMPTY_SYMLINK_TARGET: &str = "an empty symlink target";
+
 impl PatchParseError {
     /// The message of a refusal for what plain `git apply` would place or write otherwise.
     fn fmt_git_outcome(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -296,6 +304,14 @@ impl PatchParseError {
             } => write!(
                 f,
                 "the hunk at line {line_number} would be placed elsewhere by git apply: {reason} (git diff -U0 output; apply it with --unidiff-zero)"
+            ),
+            // (said as it is on each system: "cannot be written by git apply" was Linux's)
+            Self::GitCannotWrite {
+                line_number,
+                reason,
+            } if *reason == EMPTY_SYMLINK_TARGET => write!(
+                f,
+                "the file section beginning at line {line_number} is refused: {reason}, which git apply on Linux fails to write after removing files (git apply on macOS writes the link)"
             ),
             Self::GitCannotWrite {
                 line_number,

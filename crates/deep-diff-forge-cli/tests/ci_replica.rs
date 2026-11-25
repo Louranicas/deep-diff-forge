@@ -354,6 +354,42 @@ fn the_test_step_is_one_script_and_never_stops_at_the_first_failing_binary() {
     );
 }
 
+/// P3 of 0.11.1: the replica's test step runs under a temp directory as long and as indirect
+/// as macOS's, made by `scripts/long_tmpdir.sh` in the gate's scratch directory, and only that
+/// step: the gate's own `TMPDIR` comes back right after it. Under `/tmp` six tests that fail on
+/// macOS passed here (the product's bounds met no long path). CI's job is not changed: a
+/// runner's temp directory is its own.
+#[test]
+fn the_replica_s_test_step_runs_under_a_long_linked_tmpdir() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    let script = std::fs::read_to_string(format!("{root}/scripts/ci_local.sh")).unwrap();
+    let lines: Vec<&str> = script.lines().map(str::trim).collect();
+    let at = |wanted: &dyn Fn(&str) -> bool| lines.iter().position(|line| wanted(line));
+    let test = at(&|line| line == "step \"test\" scripts/test_step.sh").expect("the test step");
+    let made = at(&|line| {
+        line.contains("\"$here/long_tmpdir.sh\" \"$scratch\")") && !line.starts_with('#')
+    })
+    .expect("the long temp directory is made by scripts/long_tmpdir.sh in the scratch directory");
+    let set = at(&|line| line == "export TMPDIR=\"$long_tmp\"").expect("TMPDIR is set to it");
+    assert!(
+        made < set && set + 1 == test,
+        "the long TMPDIR is made, then set right before the test step"
+    );
+    assert!(
+        lines[test + 1].starts_with(
+            "if [ -n \"$gate_tmpdir\" ]; then export TMPDIR=\"$gate_tmpdir\"; else unset TMPDIR; fi"
+        ),
+        "the gate's TMPDIR comes back right after the test step: {}",
+        lines[test + 1]
+    );
+    assert!(
+        !lines[..set]
+            .iter()
+            .any(|line| line.starts_with("export TMPDIR")),
+        "no step before the test step runs under the long TMPDIR"
+    );
+}
+
 #[test]
 fn the_run_reader_reads_one_line_runs() {
     let workflow = "on:\njobs:\n  a:\n    steps:\n      - name: test\n        run: one\n      - name: block\n        run: |\n          x\n  b:\n    steps:\n      - name: test\n        run: two\n";

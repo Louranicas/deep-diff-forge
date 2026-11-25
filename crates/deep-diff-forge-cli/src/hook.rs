@@ -31,6 +31,7 @@ use deep_diff_forge_core::display_safe;
 use deep_diff_forge_graph::{remedy, signal_named};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Mutex, PoisonError};
 
 /// The most findings one message lists; the rest are counted.
 pub(crate) const MAX_FINDINGS: usize = 20;
@@ -224,7 +225,125 @@ pub(crate) fn shown_path(path: &str) -> String {
     } else {
         safe.into_iter().collect()
     };
-    format!("\"{}\"", cut.replace('"', "\\\""))
+    let shown = format!("\"{}\"", cut.replace('"', "\\\""));
+    let mut kept = SHOWN.lock().unwrap_or_else(PoisonError::into_inner);
+    if kept.len() < SHOWN_KEPT {
+        kept.insert(shown.clone());
+    }
+    shown
+}
+
+/// The most paths [`SHOWN`] keeps: far more than a hook, a check or a command shows. A path
+/// shown after them is not kept, and [`quoted_cut`] does not cut it: a message that holds it
+/// is cut at its end, as 0.11.0 cut it.
+const SHOWN_KEPT: usize = 1 << 16;
+
+/// The paths [`shown_path`] wrote in this process, each as it wrote it (quotes included): the
+/// parts [`quoted_cut`] may cut. Known by what wrote them, not read back from a message's
+/// quotes: `shown_path` escapes a `"` but not a `\`, so a path ending in `\` ends `\"` like an
+/// escaped quote, and a judge's or Git's words may hold a quote of their own; read by its
+/// quotes, a message under either was cut in its words and kept its paths (P3 of 0.11.1,
+/// review 1, M1). Its text is unchanged, so nothing keyed by a message's words changes.
+static SHOWN: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+
+/// The fewest characters [`quoted_cut`] leaves of a quoted part: its first 14 and its last 15,
+/// with "…" between them.
+pub(crate) const QUOTED_FLOOR: usize = 30;
+
+/// `text` (the characters of a quoted part) cut in its middle to `len` characters when it is
+/// longer: its first and its last characters, about half each, with "…" between them, as
+/// [`shown_path`] cuts a path (the end stays). The quote of an escape [`shown_path`] writes
+/// (`\"`) is not left without its backslash at the start of the end. `len` is at least 1.
+pub(crate) fn middle_cut(text: &[char], len: usize) -> String {
+    if text.len() <= len {
+        return text.iter().collect();
+    }
+    let tail = len / 2;
+    let head = len.saturating_sub(1 + tail);
+    let mut from = text.len() - tail;
+    if from > 0 && text[from - 1] == '\\' && text.get(from) == Some(&'"') {
+        from += 1;
+    }
+    text[..head]
+        .iter()
+        .chain(['…'].iter())
+        .chain(&text[from..])
+        .collect()
+}
+
+/// `text`, a message's own words with paths in it as [`shown_path`] wrote them, fitted to
+/// `bound` characters by cutting the paths alone where that is enough: each one longer than a
+/// common length is cut in its middle to it ([`middle_cut`]), the length the largest with
+/// which the whole fits and never under [`QUOTED_FLOOR`]. The words outside the paths are not
+/// cut here: when they do not fit even so, `text` comes back with its paths at the floor and
+/// over `bound`, and the caller cuts its end as before. Under a long path a cut at the end took
+/// the words after the paths (a reason that said what to do ended after two paths, the macOS
+/// CI run of 0.11.0): the payload is cut, never the verdict, while the verdict fits.
+///
+/// A path is one [`SHOWN`] holds, found in `text` with its quotes; where two overlap, the one
+/// that starts first, and of those the longest. Any other quote (a judge's, Git's, a file's
+/// words) starts no part and ends none, so no words of anyone move what is cut; a judge's own
+/// quoted path is words here, cut at the end with the rest.
+pub(crate) fn quoted_cut(text: &str, bound: usize) -> String {
+    let count = text.chars().count();
+    if count <= bound {
+        return text.to_owned();
+    }
+    // the shown paths it holds, by their bytes with their quotes
+    let mut found: Vec<(usize, usize)> = Vec::new();
+    {
+        let shown = SHOWN.lock().unwrap_or_else(PoisonError::into_inner);
+        for path in shown.iter() {
+            found.extend(
+                text.match_indices(path.as_str())
+                    .map(|(at, _)| (at, at + path.len())),
+            );
+        }
+    }
+    found.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+    // what each part holds: its bytes between its quotes, and its characters
+    let mut parts: Vec<(usize, usize, Vec<char>)> = Vec::new();
+    let mut end = 0;
+    for (from, to) in found {
+        if from >= end {
+            parts.push((from + 1, to - 1, text[from + 1..to - 1].chars().collect()));
+            end = to;
+        }
+    }
+    let words = count - parts.iter().map(|part| part.2.len()).sum::<usize>();
+    let fits = |len: usize| {
+        words
+            + parts
+                .iter()
+                .map(|part| part.2.len().min(len))
+                .sum::<usize>()
+            <= bound
+    };
+    // the largest length that fits, by halving: a longer one fits less
+    let (mut low, mut high) = (
+        QUOTED_FLOOR,
+        parts.iter().map(|part| part.2.len()).max().unwrap_or(0),
+    );
+    if high <= low || fits(high) {
+        low = high.max(QUOTED_FLOOR);
+    }
+    while low < high {
+        let mid = (low + high).div_ceil(2);
+        if fits(mid) {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut from = 0;
+    for (a, b, part) in &parts {
+        out.push_str(&text[from..*a]);
+        out.push_str(&middle_cut(part, low));
+        from = *b;
+    }
+    out.push_str(&text[from..]);
+    out
 }
 
 /// The line that says what answers a signal: its first accepted repair, and nothing else.
@@ -1852,7 +1971,7 @@ fn unit_text(unit: &TreeJudged, outcome: &str, named: bool) -> (String, bool) {
         }
         // With one unit this line is not used: its message says the reason itself.
         Some(Judged::Unjudged { reason, .. }) => {
-            let whole = display_safe(reason);
+            let whole = quoted_cut(&display_safe(reason), REASON_CHARS);
             let shown: String = whole.chars().take(REASON_CHARS).collect();
             let end = if shown.len() < whole.len() {
                 "…"
@@ -1890,7 +2009,7 @@ fn refused_text(
     if blocks {
         let _ = writeln!(text, "  {sentence}");
     } else {
-        let whole = display_safe(reason);
+        let whole = quoted_cut(&display_safe(reason), REASON_CHARS);
         let shown: String = whole.chars().take(REASON_CHARS).collect();
         let end = if shown.len() < whole.len() {
             "…"
@@ -2323,7 +2442,7 @@ fn no_verdict_of(unjudged: &[&TreeJudged], words: impl Fn(bool) -> &'static str)
                     Some(Judged::Unjudged { reason, .. }) => reason.as_str(),
                     _ => "",
                 };
-                let reason = display_safe(reason);
+                let reason = quoted_cut(&display_safe(reason), REASON_CHARS / 2);
                 let reason: String = if reason.chars().count() > REASON_CHARS / 2 {
                     reason
                         .chars()
@@ -2331,7 +2450,7 @@ fn no_verdict_of(unjudged: &[&TreeJudged], words: impl Fn(bool) -> &'static str)
                         .chain(['…'])
                         .collect()
                 } else {
-                    reason.into_owned()
+                    reason
                 };
                 let what = unit.what.replace(FRONTIER_MARK, "");
                 format!("{} ({reason})", what.trim_start_matches("Commit "))
@@ -6150,6 +6269,219 @@ mod tests {
         assert_eq!(
             unit_text(&unit(format!("{whole}s")), "UNJUDGED", false).0,
             format!("  not judged: {whole}…\n")
+        );
+    }
+
+    /// Package P3 of 0.11.1: a message cuts the paths in a text ([`shown_path`]'s) in their
+    /// middle before its own words. Each path longer than a common length is cut to it, the
+    /// largest with which the whole fits; a shorter one is whole; the words are never cut by
+    /// it, and when they alone do not fit the paths stay at the floor and the caller cuts the
+    /// end. A quote a path escapes is inside it, and the cut does not part an escape's quote
+    /// from its backslash. Quotes no path of [`shown_path`]'s makes are words.
+    #[test]
+    fn quoted_parts_give_way_before_the_words() {
+        let long = |c: char| shown_path(&format!("/{}", c.to_string().repeat(199)));
+        let text = format!(
+            "Git names {} as the tree whose records name {} as that tree: say what to do.",
+            long('a'),
+            long('b')
+        );
+        let cut = quoted_cut(&text, REASON_CHARS);
+        let n = cut.chars().count();
+        assert!((REASON_CHARS - 1..=REASON_CHARS).contains(&n), "{n}: {cut}");
+        let parts: Vec<&str> = cut.split('"').collect();
+        assert_eq!(parts.len(), 5, "{cut}");
+        assert_eq!(
+            (parts[0], parts[2], parts[4]),
+            (
+                "Git names ",
+                " as the tree whose records name ",
+                " as that tree: say what to do."
+            )
+        );
+        assert_eq!(parts[1].chars().count(), parts[3].chars().count(), "{cut}");
+        assert!(
+            parts[1].starts_with("/aaa") && parts[1].ends_with("aaa") && parts[1].contains('…')
+        );
+        // a text that fits is as it was; a short part is whole beside a long one
+        assert_eq!(quoted_cut(&text, text.chars().count()), text);
+        let text = format!("at {} and {} the end", shown_path("/short"), long('c'));
+        let cut = quoted_cut(&text, 100);
+        assert!(
+            cut.starts_with("at \"/short\" and \"/ccc")
+                && cut.ends_with("ccc\" the end")
+                && cut.chars().count() == 100,
+            "{cut}"
+        );
+        // the words alone too many: the parts at the floor, the rest for the caller to cut
+        let wordy = format!("{} {} {}", "w".repeat(200), long('d'), "x".repeat(200));
+        let cut = quoted_cut(&wordy, 300);
+        assert_eq!(
+            cut.chars().count(),
+            200 + 1 + QUOTED_FLOOR + 2 + 1 + 200,
+            "{cut}"
+        );
+        // an escaped quote stays inside its path
+        let escaped = format!(
+            "in {} end",
+            shown_path(&format!("{}\"{}", "e".repeat(50), "f".repeat(50)))
+        );
+        let cut = quoted_cut(&escaped, 80);
+        assert!(
+            cut.ends_with("fff\" end") && cut.chars().count() <= 80,
+            "{cut}"
+        );
+        // quotes that no shown path makes are words, closed or not
+        let quoted = format!("in \"{}\" end", "g".repeat(300));
+        assert_eq!(quoted_cut(&quoted, 80), quoted);
+        let unclosed = format!("in \"{} end", "g".repeat(300));
+        assert_eq!(quoted_cut(&unclosed, 80), unclosed);
+        // the end of a cut part does not begin with an escaped quote's quote alone
+        let part: Vec<char> = format!("{}\\\"{}", "x".repeat(20), "y".repeat(13))
+            .chars()
+            .collect();
+        assert_eq!(part[21], '"');
+        let cut = middle_cut(&part, 28);
+        assert_eq!(cut, format!("{}…{}", "x".repeat(13), "y".repeat(13)));
+        assert_eq!(
+            middle_cut(&part, part.len()),
+            part.iter().collect::<String>()
+        );
+        assert_eq!(middle_cut(&part, 1), "…");
+    }
+
+    /// Package P3 of 0.11.1, review 1, M1: what is cut is never moved by a path or by anyone's
+    /// words. A path ending in `\` is shown ending `\"`, and Git's words may hold a quote that
+    /// closes nothing; read by its quotes, a reason under either was cut in its words (the hint
+    /// of a tree moved with `mv`, "neither directory is judged") and kept its paths whole.
+    /// Under a short base and a long one: the words are whole, the bound holds, and the paths
+    /// gave way (each ends as it ended, the backslash with it): the positive control.
+    #[test]
+    fn a_path_ending_in_a_backslash_or_a_lone_quote_moves_nothing_that_is_cut() {
+        for base in [45, 211].map(|n| format!("/{}", "b".repeat(n - 1))) {
+            let moved = shown_path(&format!("{base}/moved\\"));
+            assert!(moved.ends_with("/moved\\\""), "{moved}");
+            let hint = " (`git worktree repair` in a tree moved with `mv` records where it is)";
+            let reason = format!(
+                "Git names {moved} as the working tree of a Git directory whose records name {} as that tree{hint}: neither directory is judged as that tree",
+                shown_path(&format!("{base}/linked"))
+            );
+            assert!(reason.chars().count() > REASON_CHARS, "{reason}");
+            let cut = quoted_cut(&reason, REASON_CHARS);
+            assert!(cut.chars().count() <= REASON_CHARS, "{cut}");
+            assert!(
+                cut.contains(
+                    "/moved\\\" as the working tree of a Git directory whose records name \"/bbb"
+                ) && cut.ends_with(&format!(
+                    "/linked\" as that tree{hint}: neither directory is judged as that tree"
+                )) && cut.matches('…').count() >= 2,
+                "{cut}"
+            );
+            // Git's words with a quote of their own before two paths
+            let failed = format!(
+                "`git rev-parse` failed: fatal: bad \"name. Git cannot say which working tree the session's directory is in (the Git directory {}; the session's directory {moved}): neither is judged until Git can say it",
+                shown_path(&format!("{base}/repo/.git/worktrees/linked"))
+            );
+            assert!(failed.chars().count() > REASON_CHARS, "{failed}");
+            let cut = quoted_cut(&failed, REASON_CHARS);
+            let words = [
+                "`git rev-parse` failed: fatal: bad \"name. Git cannot say which working tree the session's directory is in (the Git directory \"/bbb",
+                "\"; the session's directory \"/bbb",
+                "/moved\\\"): neither is judged until Git can say it",
+            ];
+            assert!(
+                cut.chars().count() <= REASON_CHARS
+                    && cut.starts_with(words[0])
+                    && cut.contains(words[1])
+                    && cut.ends_with(words[2])
+                    && cut.contains("/linked\"; "),
+                "{cut}"
+            );
+            // the Git directory, the longer path, gave way: the positive control
+            let git_dir = cut.split("(the Git directory \"").nth(1).unwrap();
+            assert!(git_dir.split("\"; ").next().unwrap().contains('…'), "{cut}");
+        }
+    }
+
+    /// Package P3 of 0.11.1, row 9 of the reading of the macOS CI run of 0.11.0: a reason with
+    /// two paths before its words, a refused unit's reason and a commit's reason on the line of
+    /// commits with no verdict, each under paths of 200 characters and more: the words are said
+    /// and the bound holds.
+    #[test]
+    fn reasons_and_names_under_long_paths_keep_their_words() {
+        let base = format!("/{}", "b".repeat(199));
+        let moved = shown_path(&format!("{base}/moved"));
+        let linked = shown_path(&format!("{base}/linked"));
+        let hint = " (`git worktree repair` in a tree moved with `mv` records where it is)";
+        let reason = format!(
+            "Git names {moved} as the working tree of a Git directory whose records name {linked} as that tree{hint}: whether the session's directory is another working tree could not be found out, and neither directory is judged as that tree (the Git directory {}; the session's directory {moved})",
+            shown_path(&format!("{base}/repo/.git/worktrees/linked"))
+        );
+        let unit = |judged: Judged| TreeJudged {
+            tag: String::new(),
+            what: tree_label(&format!("{base}/moved")),
+            judged: Some(judged),
+            holds: Holds::Never,
+        };
+        let (text, _) = unit_text(
+            &unit(Judged::Unjudged {
+                reason: reason.clone(),
+                class: reason::ReasonClass::PlaceUnpaired,
+            }),
+            "UNJUDGED",
+            false,
+        );
+        let line = text.strip_prefix("  not judged: ").unwrap().trim_end();
+        // (its own words are 333 characters: past the bound, what ends it is cut)
+        assert_eq!(line.chars().count(), REASON_CHARS + 1, "{line}");
+        assert!(
+            line.contains(&format!("/linked\" as that tree{hint}: whether the session's directory is another working tree could not be found out")),
+            "{line}"
+        );
+        // a refused unit's reason that does not block
+        let refused = format!(
+            "the files {} and {} could not be read: permission denied; they are not judged",
+            shown_path(&format!("{base}/src/lib.rs")),
+            shown_path(&format!("{base}/src/main.rs"))
+        );
+        let text = refused_text(
+            &unit(Judged::Refused {
+                class: reason::ReasonClass::WorkUnreadable,
+                sentence: String::new(),
+                reason: refused.clone(),
+                lines: BTreeMap::new(),
+            }),
+            (reason::ReasonClass::WorkUnreadable, "", &refused),
+            false,
+            false,
+        );
+        assert!(
+            text.starts_with("  not judged: the files \"/bbb")
+                && text.contains("/src/lib.rs\" and \"/bbb")
+                && text.ends_with(
+                    "/src/main.rs\" could not be read: permission denied; they are not judged.\n"
+                )
+                && text.chars().count() <= "  not judged: .\n".len() + REASON_CHARS,
+            "{text}"
+        );
+        // a commit's reason on the line of those with no verdict: half the room
+        let reason = format!(
+            "the judge at {} could not be run: it is not executable",
+            shown_path(&format!("{base}/bin/forge-warden"))
+        );
+        let commit = TreeJudged {
+            tag: String::new(),
+            what: commit_label("0123456789ab"),
+            judged: Some(Judged::Unjudged {
+                reason,
+                class: reason::ReasonClass::ChainJudgeMissing,
+            }),
+            holds: Holds::Never,
+        };
+        let line = no_verdict_line(std::slice::from_ref(&commit));
+        assert!(
+            line.contains("/forge-warden\" could not be run: it is not executable)"),
+            "{line}"
         );
     }
 

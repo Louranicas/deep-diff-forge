@@ -105,6 +105,36 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   target over 4,095 bytes, a target with a NUL) and at the bound itself (4,095 bytes read,
   4,096 refused); `release_workflow` holds `release.yml`'s triggers to the sentence of
   `SECURITY.md` (a push of `v*` tags and `workflow_dispatch`, nothing else).
+- What an agent or a person is told keeps its meaning under a long path: where a message is bounded, the
+  paths the hook quoted give way in their middle, never the words that say what happened. Under a
+  repository path of about 100 characters or more (any macOS temp directory) the line that counts what a
+  stop does not judge cut a working tree's name at its end; under a directory of 211 characters 0.11.0
+  said `1 thing in this project is not judged: the working tree "/var/mnt/storage/ddf-tmp/w111P3/n121/LLL…LLL/old/row5_copy_repaired-kjc9f1dk/copy" (remembered a… (a failure stands there).`
+  and this build says `1 thing in this project is not judged: the working tree "/var/mnt/storage/ddf-tmp/w111P3/n121/LLLLLL…LLLLLLL/new/row5_copy_repaired-9sh8mo3p/copy" (remembered at another directory, which stands) (a failure stands there).`
+  (the runs of `L` abridged here). The same rule holds where a stop shows a reason (300 characters; 150 on
+  the line of commits with no verdict): the reason of a tree moved with `mv` says what to do again
+  (``(`git worktree repair` in a tree moved with `mv` records
+  where it is): …``); a reason whose own words do not fit is still cut at its end with "…". The paths
+  that give way are the ones the hook wrote, known as it wrote them, never read back from quotes: a
+  path ending in `\` or a quote in a judge's or Git's words moves nothing that is cut. A judge's own
+  message past 300 characters ends with "…" (it was cut there without a mark). Limits: a judge's or
+  Git's words, with any path in them, do not give way to the hook's words and are cut at the end with
+  them; a unit's name with the judge's words (240 characters) is cut at its end and can lose its count
+  "(+N more)"; reasons whose own words pass 300 at any path length lose their last words (a tree the
+  session remembers at another directory: its remedy's last words; a pair Git names that the records
+  do not make: the closing clause after the hint), and one commit's reason on the line of commits with
+  no verdict (a shallow clone without the commit's parent) passes 150. A council or
+  tuicr error longer than the 200 bytes the command line shows keeps its first and last 100 bytes, so a
+  refused import says "nothing was appended" again
+  (`deep_diff_forge_core::display_safe_bounded_ends` is new). `daemon path`, `daemon start` and `deploy
+  doctor --socket` take the longest socket path from the system (107 bytes on Linux, as before; 103 on
+  macOS, where 0.11.0 printed a path of 104 to 107 bytes that could not be bound), and the doctor's
+  `socket` check fails on a longer one. The refusal of a symlink with an empty target says what each
+  system does (`… is refused: an empty symlink target, which git apply on Linux fails to write after
+  removing files (git apply on macOS writes the link)`); the refusal itself is unchanged, and
+  `SECURITY.md`'s table of what changes `git apply`'s writes has the platform's row. The local gate's
+  test step runs under a temp directory as long and as indirect as macOS's (`scripts/long_tmpdir.sh`).
+  What is judged and decided is unchanged.
 
 ## [0.11.0] - 2026-11-25
 

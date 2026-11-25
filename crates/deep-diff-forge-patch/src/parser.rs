@@ -1685,7 +1685,7 @@ impl FileBuf {
             }
         }
         if target.is_empty() {
-            Some("an empty symlink target")
+            Some(crate::EMPTY_SYMLINK_TARGET)
         } else if target.contains('\0') {
             Some("a symlink target with a NUL")
         } else if target.len() > 4095 {

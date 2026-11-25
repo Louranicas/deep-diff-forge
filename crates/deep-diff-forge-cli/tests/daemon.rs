@@ -103,11 +103,19 @@ fn temp_socket(name: &str) -> (Scratch, PathBuf) {
     (scratch, sock)
 }
 
+/// The longest socket path this system's `sun_path` holds with its NUL: 107 bytes on Linux, 103
+/// on macOS (and the other systems whose `sun_path` has 104 bytes). The CLI reads it from the
+/// system's type; this is the number a person reads in its refusal.
+const SOCKET_PATH_MOST: usize = if cfg!(any(target_os = "linux", target_os = "android")) {
+    107
+} else {
+    103
+};
+
 /// The default socket is `<XDG_RUNTIME_DIR>/deep-diff-forge/deep-diff-forge.sock`, printed. Its
 /// length follows the temp directory's: under macOS's (49 characters, against Linux's 5) it was
-/// 113 bytes and refused. The runtime directory is kept short; a path that still fits no
-/// system's socket (over 103 bytes: macOS holds 104 with the NUL) may be printed or refused as
-/// too long, never anything else.
+/// 113 bytes and refused. The runtime directory is kept short; a path that still does not fit
+/// this system's socket may be printed or refused as too long, never anything else.
 #[test]
 fn daemon_path_prints_socket() {
     let scratch = Scratch::new("clid");
@@ -117,10 +125,13 @@ fn daemon_path_prints_socket() {
     let (code, stdout, stderr) = run_with_runtime_dir(&["daemon", "path"], Some(&runtime));
     if code == 0 {
         assert_eq!(stdout.trim_end(), socket.to_str().unwrap(), "{stderr}");
-        assert!(length < 108, "a path of {length} bytes was printed");
+        assert!(
+            length <= SOCKET_PATH_MOST,
+            "a path of {length} bytes was printed"
+        );
     } else {
         assert!(
-            length > 103,
+            length > SOCKET_PATH_MOST,
             "a path of {length} bytes was refused: {stderr}"
         );
         assert_eq!((code, stdout.as_str()), (2, ""), "{stderr}");
@@ -147,19 +158,36 @@ fn daemon_unknown_subcommand_reports_usage_without_runtime_dir() {
     assert!(!stderr.contains("XDG_RUNTIME_DIR"));
 }
 
-/// S3.8.c: Linux holds a socket path and its NUL in 108 bytes, so a path of 108 bytes or more
-/// can be neither bound nor reached. `daemon path` and `daemon start` refuse it with exit 2 and an
-/// empty stdout; before, `daemon path` printed it with exit 0.
+/// S3.8.c: the system holds a socket path and its NUL in `sun_path` (108 bytes on Linux, 104 on
+/// macOS), so a longer path can be neither bound nor reached. `daemon path` and `daemon start`
+/// refuse it with exit 2 and an empty stdout, and say the system's number (P3 of 0.11.1: it was
+/// Linux's 107 everywhere); before, `daemon path` printed it with exit 0. `deploy doctor
+/// --socket` agrees: its socket check fails with the same words, exit 6.
 #[test]
 fn daemon_path_refuses_a_path_past_sun_len() {
+    let most = SOCKET_PATH_MOST;
     let path_of = |bytes: usize| format!("/{}", "s".repeat(bytes - 1));
-    let (code, stdout, stderr) = run(&["daemon", "path", "--socket", &path_of(107)]);
+    let (code, stdout, stderr) = run(&["daemon", "path", "--socket", &path_of(most)]);
     assert_eq!(
         (code, stdout.trim()),
-        (0, path_of(107).as_str()),
+        (0, path_of(most).as_str()),
         "{stderr}"
     );
-    for bytes in [108, 160] {
+    let (code, stdout, stderr) = run(&["deploy", "doctor", "--socket", &path_of(most)]);
+    assert!(
+        stdout.contains(&format!("  ok   socket     {}", path_of(most))),
+        "{code}: {stdout}{stderr}"
+    );
+    let (code, stdout, stderr) = run(&["deploy", "doctor", "--socket", &path_of(most + 1)]);
+    assert_eq!(code, 6, "{stdout}{stderr}");
+    assert!(
+        stdout.contains(&format!(
+            "  fail socket     the socket path is {} bytes; a Unix socket path is at most {most}: daemon path and daemon start refuse it",
+            most + 1
+        )),
+        "{stdout}"
+    );
+    for bytes in [most + 1, 160] {
         let (code, stdout, stderr) = run(&["daemon", "path", "--socket", &path_of(bytes)]);
         assert_eq!((code, stdout.as_str()), (2, ""), "{bytes} bytes: {stderr}");
         assert!(stderr.contains(&format!("is {bytes} bytes")), "{stderr}");
@@ -169,7 +197,7 @@ fn daemon_path_refuses_a_path_past_sun_len() {
     let (code, stdout, stderr) = run(&["daemon", "start", "--socket", long.to_str().unwrap()]);
     assert_eq!((code, stdout.as_str()), (2, ""), "{stderr}");
     assert!(
-        stderr.contains("a Unix socket path is at most 107"),
+        stderr.contains(&format!("a Unix socket path is at most {most}")),
         "{stderr}"
     );
 }

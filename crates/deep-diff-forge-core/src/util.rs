@@ -235,13 +235,7 @@ pub fn display_safe_bounded(value: &str, max_bytes: usize) -> String {
     let mut consumed = 0usize;
     for c in value.chars() {
         let mut rendered = String::new();
-        if is_terminal_unsafe(c) {
-            let _ = write!(rendered, "\\x{:02x}", u32::from(c));
-        } else if is_bidi_or_invisible(c) {
-            let _ = write!(rendered, "\\u{{{:04x}}}", u32::from(c));
-        } else {
-            rendered.push(c);
-        }
+        push_rendered(&mut rendered, c);
         if out.len().saturating_add(rendered.len()) > max_bytes {
             break;
         }
@@ -252,6 +246,62 @@ pub fn display_safe_bounded(value: &str, max_bytes: usize) -> String {
         let _ = write!(out, "... [{} bytes omitted]", value.len() - consumed);
     }
     out
+}
+
+/// [`display_safe_bounded`] for a message whose end says something too (a refusal's closing
+/// "nothing was appended", a remedy after a path): over `max_bytes` rendered bytes it keeps
+/// its first and its last `max_bytes / 2` rendered bytes, about, with the exact number of
+/// source bytes not shown between them. The middle goes and the end stays, as a path a
+/// message shows is cut; cut at its end, a refusal of the council's import under a long path
+/// lost its last words, "nothing was appended" (the macOS CI run of 0.11.0). A value within
+/// the bound is rendered whole, as [`display_safe`] renders it.
+#[must_use]
+pub fn display_safe_bounded_ends(value: &str, max_bytes: usize) -> String {
+    let size = |c: char| {
+        let mut rendered = String::new();
+        push_rendered(&mut rendered, c);
+        rendered.len()
+    };
+    if value.chars().map(size).sum::<usize>() <= max_bytes {
+        return display_safe(value).into_owned();
+    }
+    let tail_room = max_bytes / 2;
+    let (mut head, mut head_source) = (String::new(), 0usize);
+    for c in value.chars() {
+        if head.len() + size(c) > max_bytes - tail_room {
+            break;
+        }
+        push_rendered(&mut head, c);
+        head_source += c.len_utf8();
+    }
+    let (mut ending, mut tail_len, mut tail_source) = (Vec::new(), 0usize, 0usize);
+    for c in value[head_source..].chars().rev() {
+        if tail_len + size(c) > tail_room {
+            break;
+        }
+        ending.push(c);
+        tail_len += size(c);
+        tail_source += c.len_utf8();
+    }
+    let mut tail = String::with_capacity(tail_len);
+    for &c in ending.iter().rev() {
+        push_rendered(&mut tail, c);
+    }
+    format!(
+        "{head}... [{} bytes omitted] ...{tail}",
+        value.len() - head_source - tail_source
+    )
+}
+
+/// `c` as [`display_safe`] writes it, onto `out`.
+fn push_rendered(out: &mut String, c: char) {
+    if is_terminal_unsafe(c) {
+        let _ = write!(out, "\\x{:02x}", u32::from(c));
+    } else if is_bidi_or_invisible(c) {
+        let _ = write!(out, "\\u{{{:04x}}}", u32::from(c));
+    } else {
+        out.push(c);
+    }
 }
 
 #[cfg(test)]
@@ -627,5 +677,51 @@ mod tests {
         // Text that fits is returned whole, with no omission note.
         assert_eq!(display_safe_bounded("abc", 200), "abc");
         assert_eq!(display_safe_bounded("abc", 3), "abc");
+    }
+
+    /// Package P3 of 0.11.1: the council's errors keep their ends. Over the bound, the first
+    /// and the last halves of the rendered bytes are shown with the exact number of source
+    /// bytes between them; an escape is counted at its rendered size and never split; a
+    /// character of several bytes is never split; text that fits is whole.
+    #[test]
+    fn bounded_display_of_both_ends_keeps_the_closing_words() {
+        let said = format!(
+            "tuicr import refused (journal): /{}/decisions.checkpoints/1.json: Permission denied (os error 13); nothing was appended",
+            "p".repeat(150)
+        );
+        let out = display_safe_bounded_ends(&said, 200);
+        let (head, tail) = out.split_once("... [").unwrap();
+        let (omitted, tail) = tail.split_once(" bytes omitted] ...").unwrap();
+        assert_eq!((head.len(), tail.len()), (100, 100), "{out}");
+        assert!(said.starts_with(head) && said.ends_with(tail), "{out}");
+        assert_eq!(omitted.parse::<usize>().unwrap(), said.len() - 200, "{out}");
+        assert!(out.ends_with("; nothing was appended"), "{out}");
+        // escapes at their rendered size, never cut in two; characters whole
+        let hostile = format!(
+            "{}\u{1b}[2J{}é{}",
+            "a".repeat(99),
+            "b".repeat(150),
+            "c".repeat(98)
+        );
+        let out = display_safe_bounded_ends(&hostile, 200);
+        assert!(
+            !out.contains('\u{1b}') && out.starts_with(&"a".repeat(99)),
+            "{out}"
+        );
+        assert!(out.ends_with(&format!("é{}", "c".repeat(98))), "{out}");
+        let (head, rest) = out.split_once("... [").unwrap();
+        let (_, tail) = rest.split_once(" bytes omitted] ...").unwrap();
+        assert!(head.len() <= 100 && tail.len() <= 100, "{out}");
+        assert_eq!(
+            head,
+            "a".repeat(99),
+            "a four-byte escape does not fit the last byte"
+        );
+        // within the bound: whole, as display_safe writes it
+        assert_eq!(display_safe_bounded_ends("abc", 3), "abc");
+        assert_eq!(
+            display_safe_bounded_ends("a\u{1b}b", 200),
+            display_safe("a\u{1b}b")
+        );
     }
 }
