@@ -60,12 +60,13 @@ fn home_in(scratch: &Scratch) -> PathBuf {
 
 /// What the hooks of a test met that is not of the code under test and that a later assertion
 /// cannot name (lane P5b, measurement M7 of 0.11.1: `tests/LOAD_SENSITIVE`), by the test's home.
-/// A session's first hook takes no lock when a `.git` stands above the hooks' state directory:
-/// `session_lock` makes no state directory inside a Git working tree, and the state is then
-/// written without the lock. A test of the session's lock or of what is in its directory then
-/// fails far from the hook, on a count: no lock file, one file short, two first stops at once,
-/// "the state directory was written". (Measured: an empty `.git` in the home directory stood
-/// for seconds at a time while another agent's sandboxed commands ran.)
+/// Until package P5c of 0.11.1 a session's first hook took no lock when a `.git` stood above
+/// the hooks' state directory, and wrote the state without it; a hook that leaves a state and
+/// no lock file now breaks the rule that a state is written only under the session's lock. A
+/// test of the session's lock or of what is in its directory then fails far from the hook, on
+/// a count: no lock file, one file short, two first stops at once, "the state directory was
+/// written". (Measured: an empty `.git` in the home directory stood for seconds at a time
+/// while another agent's sandboxed commands ran.)
 static MET: std::sync::Mutex<Vec<(PathBuf, String)>> = std::sync::Mutex::new(Vec::new());
 
 /// The first `.git` (a directory, a file or a link) in an ancestor of `dir`, the part of `dir`
@@ -104,7 +105,7 @@ fn note_what_a_hook_met(event: &str, input: &Value, dir: &Path, above: Option<Pa
         (None, false) => return,
         (None, true) => format!("{hook} took no lock: it left a state and no lock file there"),
         (Some(git), _) => format!(
-            "{hook} {} while a .git stood at {} above that directory (session_lock makes no state directory inside a Git working tree)",
+            "{hook} {} while a .git stood at {} above that directory",
             if lockless {
                 "took no lock: it left a state and no lock file there"
             } else {

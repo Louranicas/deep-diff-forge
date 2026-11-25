@@ -20,6 +20,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   session's lock (or on a file system with no locks); a hook whose lock file cannot be opened
   says that its state could not be saved. A state directory inside the session's project is
   refused as before; the hooks may now leave empty directories there, which Git does not record.
+  The five hook tests that `crates/deep-diff-forge-cli/tests/LOAD_SENSITIVE` named for this cause
+  are off it: they pass alone with a `.git` above the temporary directory.
 - `agent doctor --gate` and a session's start: the link `policy_protects_itself` is ready only
   when a rule of the judge's verdict holds or fails the probe (a one-line edit of the policy
   file). In 0.11.0 any verdict that did not pass made the link ready, so a policy that does not
