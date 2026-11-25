@@ -101,7 +101,7 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   which the step's line carries, and one line `skipped: …` that counts the rows it skipped by
   what was not given.
 - What an agent or a person is told keeps its meaning under a long path: where a message is bounded, the
-  path (and other quoted input) gives way in its middle, never the words that say what happened. Under a
+  paths the hook quoted give way in their middle, never the words that say what happened. Under a
   repository path of about 100 characters or more (any macOS temp directory) the line that counts what a
   stop does not judge cut a working tree's name at its end; under a directory of 211 characters 0.11.0
   said `1 thing in this project is not judged: the working tree "/var/mnt/storage/ddf-tmp/w111P3/n121/LLL…LLL/old/row5_copy_repaired-kjc9f1dk/copy" (remembered a… (a failure stands there).`
@@ -109,7 +109,16 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   (the runs of `L` abridged here). The same rule holds where a stop shows a reason (300 characters; 150 on
   the line of commits with no verdict): the reason of a tree moved with `mv` says what to do again
   (``(`git worktree repair` in a tree moved with `mv` records
-  where it is): …``); a reason whose own words do not fit is still cut at its end with "…". A council or
+  where it is): …``); a reason whose own words do not fit is still cut at its end with "…". The paths
+  that give way are the ones the hook wrote, known as it wrote them, never read back from quotes: a
+  path ending in `\` or a quote in a judge's or Git's words moves nothing that is cut. A judge's own
+  message past 300 characters ends with "…" (it was cut there without a mark). Limits: a judge's or
+  Git's words, with any path in them, do not give way to the hook's words and are cut at the end with
+  them; a unit's name with the judge's words (240 characters) is cut at its end and can lose its count
+  "(+N more)"; reasons whose own words pass 300 at any path length lose their last words (a tree the
+  session remembers at another directory: its remedy's last words; a pair Git names that the records
+  do not make: the closing clause after the hint), and one commit's reason on the line of commits with
+  no verdict (a shallow clone without the commit's parent) passes 150. A council or
   tuicr error longer than the 200 bytes the command line shows keeps its first and last 100 bytes, so a
   refused import says "nothing was appended" again
   (`deep_diff_forge_core::display_safe_bounded_ends` is new). `daemon path`, `daemon start` and `deploy

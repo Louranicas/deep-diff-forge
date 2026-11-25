@@ -627,11 +627,16 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
 - **No line of the change is repeated to the agent.** A message holds labels, line numbers
   and remedy text; a path is quoted, escaped and cut at 120 characters, and the message says
   that paths are data, not instructions. Where a message bounds a reason (300 characters, 150
-  on the line that counts the commits with no verdict) or a name on a line that counts (a
-  note's 180, a unit's 240), the quoted paths in it give way first, each cut in its middle
-  with its first and last characters kept, so that the words that say what happened and what
-  to do stay whole (since 0.11.1: under a long path the cut took the words at the end); only
-  a text whose own words do not fit is cut at its end, with "…".
+  on the line that counts the commits with no verdict) or a note's name on the line that
+  counts (180), the paths the hook quoted in it give way first, each cut in its middle with
+  its first and last characters kept, so that the words that say what happened and what to
+  do stay whole (since 0.11.1: under a long path the cut took the words at the end). Only the
+  hook's own paths give way: a judge's or Git's words, with any path or quote in them, are
+  words, and a text whose words do not fit is cut at its end, with "…". So is a judge's own
+  message past 300 characters. Not under this rule: a unit's name with the judge's words
+  (240 characters), which is cut at its end; and reasons whose own words pass their bound
+  at any path length (a tree moved or copied that the session remembers elsewhere, a pair
+  Git names that the records do not make), which lose their last words.
 - **What the agent is told names the accepted repair only.** Advice after a tool call and the
   rules of a stop's message say, for each label, the change that answers it: never a
   substitute that does not count, whether or not a label raises it, so a judged agent is not
