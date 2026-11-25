@@ -1740,12 +1740,20 @@ pub(crate) fn failure_part(judged: &Judged, keep: &BTreeSet<String>, rest: bool)
             })
         })
         .collect();
+    // (what a stop said of its two policies goes with the new part, and makes no part:
+    // release 0.11.1, T8)
     let said: Vec<String> = said
         .iter()
-        .filter(|words| wanted(&line_key(&format!("\0said\0{words}"))))
+        .filter(|words| {
+            if words.starts_with(TWO_POLICIES) {
+                !rest
+            } else {
+                wanted(&line_key(&format!("\0said\0{words}")))
+            }
+        })
         .cloned()
         .collect();
-    if part.is_empty() && said.is_empty() {
+    if part.is_empty() && said.iter().all(|words| words.starts_with(TWO_POLICIES)) {
         return None;
     }
     let held = rules.iter().filter(|rule| rule.held).cloned();

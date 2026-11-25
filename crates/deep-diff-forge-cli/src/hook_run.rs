@@ -15391,6 +15391,10 @@ mod tests {
         let alone = fail("no-secrets");
         let told = united(fail("no-secrets"), Judged::Pass, &words);
         assert_eq!(hook::failure_lines(&told), hook::failure_lines(&alone));
+        // and no part of a failure that stands beside a new one: it goes with the new part
+        let lines: BTreeSet<String> = hook::failure_lines(&told).into_keys().collect();
+        assert_eq!(hook::failure_part(&told, &lines, true), None);
+        assert_eq!(hook::failure_part(&told, &lines, false), Some(told.clone()));
         let claims = Judged::Hold {
             rules: Vec::new(),
             said: vec!["note claims_unverified: c".to_owned()],
