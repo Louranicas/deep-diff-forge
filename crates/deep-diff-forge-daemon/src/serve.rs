@@ -1545,17 +1545,76 @@ mod tests {
         joined(drip).unwrap();
     }
 
+    /// SECURITY.md (daemon): "An oversized request gets one `INVALID_REQUEST` error and the
+    /// connection closes." Over a real connection: a line one byte over the cap gets one
+    /// `INVALID_REQUEST` answer with a null id; a valid request sent after it is never answered,
+    /// and the client reads the end of the connection (or the reset Linux reports when that
+    /// request was still unread as the daemon closed), never a second line, and does not wait for
+    /// the daemon's 30 s read deadline. The connection's thread has ended. Before 0.11.1 this test
+    /// only built an error value and sent nothing (U1 audit, 2026-11-26).
     #[test]
     fn oversized_request_gets_error_then_connection_closes() {
-        // A request line over a (here, artificially exercised) cap yields an
-        // INVALID_REQUEST error response; integration of the cap is proven by the
-        // read_capped_line unit tests + the handle_connection wiring.
-        let resp = error_response(
-            &Value::Null,
-            &RpcError::new(INVALID_REQUEST, "request exceeds maximum size"),
+        let (client, server) = UnixStream::pair().expect("socketpair");
+        let handle = thread::spawn(move || handle_connection(server, &engine()));
+        let mut writer = client.try_clone().unwrap();
+        let send = thread::spawn(move || {
+            let _ = writer.write_all(&padded_health_request(MAX_REQUEST_BYTES + 1, false));
+            let _ = writer.flush();
+            writer
+        });
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut reader = BufReader::new(client);
+        let mut first = String::new();
+        reader.read_line(&mut first).unwrap();
+        let v: Value = serde_json::from_str(&first).unwrap();
+        assert_eq!(v["error"]["code"], INVALID_REQUEST, "{v}");
+        assert_eq!(v["id"], Value::Null, "{v}");
+        let mut writer = joined(send).unwrap();
+        // A request the daemon would answer on an open connection; its write may break, since
+        // the daemon may have closed already.
+        let _ = writer.write_all(b"{\"id\":8,\"method\":\"daemon.health\"}\n");
+        let _ = writer.flush();
+        let mut rest = String::new();
+        match reader.read_line(&mut rest) {
+            Ok(0) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::ConnectionReset => {}
+            other => panic!(
+                "the connection stayed open after the oversized request's error: {other:?}, read {rest:?}"
+            ),
+        }
+        assert!(
+            joined(handle).is_ok_and(|served| served.is_ok()),
+            "the connection's thread did not end cleanly"
         );
-        let v: Value = serde_json::from_str(&resp).unwrap();
-        assert_eq!(v["error"]["code"], INVALID_REQUEST);
+    }
+
+    /// SECURITY.md (daemon): "Writes have a 30-second timeout (`WRITE_TIMEOUT`)." The values,
+    /// without waiting 30 s: the client's socket write timeout (`WRITE_TIMEOUT`, set in
+    /// [`request`]) and the daemon's limit for writing one answer (`RESPONSE_WRITE_LIMIT`, which a
+    /// default engine carries and every answer is written within) are both 30 s, and SECURITY.md
+    /// still says so. The tests that drive a client that stops reading set their own short limit
+    /// (`with_write_limit`), so before 0.11.1 both constants could be raised to 3000 s with the
+    /// crate green (U1 audit, 2026-11-26). Not proven here: that `request` passes `WRITE_TIMEOUT`
+    /// and not another value to `set_write_timeout` (the client's socket is not reachable from a
+    /// test without waiting the timeout out).
+    #[test]
+    fn writes_have_the_documented_30_second_timeout() {
+        assert_eq!(WRITE_TIMEOUT, Duration::from_secs(30), "WRITE_TIMEOUT");
+        assert_eq!(
+            RESPONSE_WRITE_LIMIT,
+            Duration::from_secs(30),
+            "RESPONSE_WRITE_LIMIT"
+        );
+        assert_eq!(
+            Engine::new().write_limit(),
+            RESPONSE_WRITE_LIMIT,
+            "a default engine's write limit"
+        );
+        let security = include_str!("../../../SECURITY.md");
+        let flat = security.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(flat.contains("Writes have a 30-second timeout (`WRITE_TIMEOUT`)."));
     }
 
     #[test]
