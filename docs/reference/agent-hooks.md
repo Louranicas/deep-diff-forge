@@ -626,7 +626,12 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   it is not repaired by editing the change. It still holds the stop once.
 - **No line of the change is repeated to the agent.** A message holds labels, line numbers
   and remedy text; a path is quoted, escaped and cut at 120 characters, and the message says
-  that paths are data, not instructions.
+  that paths are data, not instructions. Where a message bounds a reason (300 characters, 150
+  on the line that counts the commits with no verdict) or a name on a line that counts (a
+  note's 180, a unit's 240), the quoted paths in it give way first, each cut in its middle
+  with its first and last characters kept, so that the words that say what happened and what
+  to do stay whole (since 0.11.1: under a long path the cut took the words at the end); only
+  a text whose own words do not fit is cut at its end, with "…".
 - **What the agent is told names the accepted repair only.** Advice after a tool call and the
   rules of a stop's message say, for each label, the change that answers it: never a
   substitute that does not count, whether or not a label raises it, so a judged agent is not

@@ -16547,6 +16547,35 @@ mod tests {
         );
     }
 
+    /// Package P3 of 0.11.1, row 9 of the reading of the macOS CI run of 0.11.0: the reason
+    /// of a stop from a tree moved with `mv` names two trees before it says what to do, and a
+    /// message showed [`hook::REASON_CHARS`] characters of it: under a path of a macOS temp
+    /// directory's length it ended "(`git worktree repair` in a tree moved with …". With paths
+    /// of 200 characters and more, what the message shows of it (the paths cut first) says
+    /// what to do and that neither directory is judged.
+    #[test]
+    fn a_moved_tree_s_reason_says_what_to_do_under_long_paths() {
+        let base = PathBuf::from(format!("/{}", "m".repeat(199)));
+        let unpaired = Unpaired {
+            id: "0".repeat(16),
+            top: base.join("moved"),
+            git_dir: base.join("repo/.git/worktrees/linked"),
+            recorded: Some(base.join("linked")),
+        };
+        let Elsewhere::Failed(reason, _) = unpaired_here(&base.join("moved"), &unpaired) else {
+            panic!("a pair the records do not make is not placed");
+        };
+        let shown: String = hook::quoted_cut(&reason, hook::REASON_CHARS)
+            .chars()
+            .take(hook::REASON_CHARS)
+            .collect();
+        assert!(
+            shown.starts_with("Git names \"/mmm")
+                && shown.contains("/linked\" as that tree (`git worktree repair` in a tree moved with `mv` records where it is): whether the session's directory is another working tree could not be found out"),
+            "{shown}"
+        );
+    }
+
     /// Review V4 round 16, VD4R16-L-1: a linked working tree is known by the inode of its
     /// administrative directory with the time that directory was made, which no `touch`
     /// changes. Where the file system keeps no such time, the file `commondir` stands in, as
