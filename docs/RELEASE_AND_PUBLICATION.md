@@ -132,8 +132,9 @@ The step `test`, in the gate and in CI's `gate` job, is
 with the tests [`crates/deep-diff-forge-cli/tests/LOAD_SENSITIVE`](../crates/deep-diff-forge-cli/tests/LOAD_SENSITIVE)
 names skipped (`--exact --skip`), then those tests alone, one at a time (`--test-threads=1`); every
 failing test binary is reported, not only the first, and the step fails unless the second pass ran
-each listed test once. The list says why each name is on it (a wait in wall time, or a `.git` above
-the hooks' state directory); a failure of one of them says what its hooks met under its panic.
+each listed test once. The list holds tests that fail for a cause outside the code under test, with
+the cause of each (a `.git` above the hooks' state directory; two marked as not measured); a failure
+of one of them says what its hooks met under its panic.
 `just gate-release` is the smaller gate `just release-tag` runs: `fmt`, `check`,
 `clippy`, `pedantic`, `test`, `contracts` and `docs`. The checklist:
 

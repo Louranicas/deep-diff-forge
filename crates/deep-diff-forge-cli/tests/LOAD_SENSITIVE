@@ -1,7 +1,7 @@
-# Tests whose outcome depends on the host and not only on the code under test: they wait for a
-# process, a lock or a deadline in wall time, or they need the hooks' state directory to have no
-# `.git` above it. One test function name a line, as it is written after `fn` in a file of this
-# directory; `#` starts a comment, and blank lines are skipped.
+# Tests that fail for a cause outside the code under test, each with its cause written above it
+# (the file keeps its name of 0.11.1: the first cause looked for was the host's load). A name
+# whose cause is not measured is marked so. One test function name a line, as it is written after
+# `fn` in a file of this directory; `#` starts a comment, and blank lines are skipped.
 #
 # Who reads it: the gate's test step, scripts/test_step.sh (the step `test` of ci.yml's job `gate`
 # and of scripts/ci_local.sh). It runs the workspace's tests with these names skipped, then these
@@ -11,34 +11,38 @@
 #
 # How a name gets on it: a failure of the test that is not of the code, recorded with the run that
 # showed it (a command and its log) and its cause, while the test passes on the same tree
-# otherwise. A name that is here because the code is slow is a finding about the code, not an
-# entry. The test `the_load_sensitive_list_names_tests_that_exist` (in agent_hook.rs) fails when a
-# name here is no test function of this directory, or is here twice.
+# otherwise; it comes off by a measurement that the cause is gone. A name that is here because
+# the code is slow is a finding about the code, not an entry. The test
+# `the_load_sensitive_list_names_tests_that_exist` (in agent_hook.rs) fails when a name here is
+# no test function of this directory, or is here twice.
 #
 # The first five: the first three failed in 19, 16 and 16 kept logs of the mutation campaign over
 # 0.10.0's changes, the first turned two gates of 0.11.1 red, and all five failed in one run of
-# them alone (2026-11-25 07:53 AEDT). Measured the same day (lane P5b, M7 of 0.11.1): they fail when a `.git` stands above the hooks' state
-# directory while a session's first hook runs. That hook takes no lock (`session_lock` makes no
-# state directory inside a Git working tree) and writes the state all the same: no lock file, one
-# file short, two first stops at once, "the state directory was written". On the machine of those
-# gates an empty `.git` in the home directory stood for 1 to 32 s at a time while another agent's
-# sandboxed commands ran. With a `.git` above TMPDIR all five fail alone, on one thread, on an idle
-# host; without it all seven pass. Load did not reproduce it: under 10 to 24 busy loops on 16 CPUs
-# or a second build, one failure in 8 runs of the whole binary (the second name, before that
-# `.git` was watched for), none in 608 runs of the seven names, eight at once, under 16 loops. A
-# failure of one of them says what its hooks met under its panic ("note (not of the code under
-# test): …").
+# them alone (2026-11-25 07:53 AEDT). Cause, measured the same day (lane P5b, M7 of 0.11.1): a
+# `.git` above the hooks' state directory while a session's first hook runs. That hook takes no
+# lock (`session_lock` makes no state directory inside a Git working tree) and writes the state
+# all the same: no lock file, one file short, two first stops at once, "the state directory was
+# written". On the machine of those gates an empty `.git` in the home directory stood for 1 to
+# 32 s at a time while another agent's sandboxed commands ran. With a `.git` above TMPDIR all five
+# fail alone, on one thread, on an idle host; without it all seven pass. Load did not reproduce
+# it: under 10 to 24 busy loops on 16 CPUs or a second build, one failure in 8 runs of the whole
+# binary (the second name, before that `.git` was watched for), none in 608 runs of the seven
+# names, eight at once, under 16 loops. A failure of one of them says what its hooks met under its
+# panic ("note (not of the code under test): …"). The behaviour is the product's (package P5c of
+# 0.11.1; it is the state of every user whose home directory is a Git repository): they stay here
+# until it is changed, and a measurement then takes them off.
 a_stop_waits_for_the_session_s_lock_and_takes_only_the_one_that_is_there
 two_first_stops_of_a_session_do_not_run_at_once
 the_state_of_a_session_is_in_the_users_state_directory_or_the_hook_says_it_has_none
 a_damaged_state_after_a_failing_commit_still_judges_the_commit
 a_damaged_state_still_judges_the_tree_once
 
-# These two fail by a session start's time limit (8 s) on a host far busier than a gate's: in 12
-# and 1 kept logs of that mutation campaign (several mutants built and tested at once): "before"
-# recorded no list of commits; `git hash-object` and `git for-each-ref` "did not finish in the
-# time a hook has". Not reproduced at the loads above. Their failures say so: the start helper
-# fails at a start that recorded nothing, with its words and seconds, and the second test prints
-# the start's words.
+# Cause not measured. These two failed by a session start's time limit (8 s) on a host far busier
+# than a gate's, as read from their failures in 12 and 1 kept logs of that mutation campaign
+# (several mutants built and tested at once): "before" recorded no list of commits; `git
+# hash-object` and `git for-each-ref` "did not finish in the time a hook has". Not reproduced at
+# the loads above (and both pass alone, on one thread, with a `.git` above TMPDIR). Their failures
+# say so: the start helper fails at a start that recorded nothing, with its words and seconds,
+# and the second test prints the start's words.
 a_repository_with_more_working_trees_than_are_read_says_so
 session_start_states_the_contract_and_whether_a_stop_can_be_judged
