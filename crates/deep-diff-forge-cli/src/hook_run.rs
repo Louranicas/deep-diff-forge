@@ -5631,16 +5631,17 @@ impl Accepted {
     }
 }
 
-/// Whether the commit `head` comes after `HEAD`: `HEAD` is one of its ancestors (the best common
-/// ancestor of the two is `HEAD`). `false` when it cannot be told.
-fn head_is_ahead(place: &Place, head: &str, deadline: Deadline) -> bool {
+/// Whether `HEAD` and the commit `head` share history in the commits the repository has: they
+/// have a common ancestor (a branch forked before `head`, or a `HEAD` behind it). A shallow cut
+/// between them leaves none. `false` when it cannot be told.
+fn shares_history(place: &Place, head: &str, deadline: Deadline) -> bool {
     let git = deadline.git();
     let Ok(HeadState::Commit(at)) = head_state(&place.top, &git) else {
         return false;
     };
     matches!(
         deep_diff_forge_patch::merge_base(&place.top, &at, head, &git),
-        Ok(Some(base)) if base == at
+        Ok(Some(_))
     )
 }
 
@@ -5680,19 +5681,19 @@ fn accepted_policy(
     // A shallow clone whose history may be cut before the baseline's commit: what lies between
     // is not known, so the accepted policy is not tied to HEAD (R6 c2). The cause decides the
     // words (the implementation review of L1b, F3): the commit is not in the clone; or it is and
-    // HEAD does not descend from it in the history the clone has, which a cut cannot be told
-    // from. A HEAD that is an ancestor of it (a session begun behind the first record) is no
-    // cut: the history between them is there, and the accepted policy is defined, as in a
-    // complete repository (R6, "Not UNJUDGED").
+    // HEAD shares no history with it in the commits the clone has, which a cut cannot be told
+    // from. A HEAD that shares history with it (a branch forked before it, a session begun
+    // behind it) is no cut: the history between them is there, and the accepted policy is
+    // defined, as in a complete repository (R6, "Not UNJUDGED").
     if place.common.join("shallow").exists() {
         let shallow =
             |words: String| Accepted::Unreadable(Why::new(ReasonClass::PlaceShallowParent, words));
         match head_contains(&place.top, head, &git) {
             Ok(true) => {}
-            Ok(false) if head_is_ahead(place, head, deadline) => {}
+            Ok(false) if shares_history(place, head, deadline) => {}
             Ok(false) => {
                 return shallow(format!(
-                    "this clone is shallow and HEAD does not descend, in the history the clone has, from the commit this project's ledger first recorded ({short}): whether that history is cut between them cannot be told, so the accepted policy cannot be tied to it (`git fetch --unshallow` tells) (`place.shallow_parent`)"
+                    "this clone is shallow and HEAD shares no history it has with the commit this project's ledger first recorded ({short}): a cut cannot be told apart, so the accepted policy is not tied to it (`git fetch --unshallow` tells) (`place.shallow_parent`)"
                 ));
             }
             Err(GitAcquireError::InvalidSelection { .. }) => {

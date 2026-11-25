@@ -790,8 +790,8 @@ fn an_accepted_policy_that_cannot_be_read_lets_no_unit_pass() {
     let decision = p.stop("k1");
     let said = words(&decision);
     assert!(
-        said.contains("this clone is shallow and HEAD does not descend, in the history the clone has, from the commit this project's ledger first recorded")
-            && said.contains("(`place.shallow_par"),
+        said.contains("this clone is shallow and HEAD shares no history it has with the commit this project's ledger first recorded")
+            && said.contains("(`place.shallow_parent`)"),
         "{said}"
     );
     assert!(
@@ -1246,6 +1246,19 @@ fn a_shallow_clone_with_the_history_there_is_judged() {
         p.stop("k1"),
         Value::Null,
         "an innocent change was not a pass"
+    );
+    // a commit on that branch: HEAD neither descends from the first record's commit nor leads to
+    // it, and the history between them is still there (the reviewer's case, F3)
+    let benign = p.commit(
+        &[("n.rs", Some("fn n() {}\n"))],
+        "N: benign on the older branch",
+    );
+    std::fs::remove_file(p.root.join("e.rs")).unwrap();
+    assert_eq!(p.stop("k1"), Value::Null, "a benign commit was not a pass");
+    let records = p.records_of(&benign);
+    assert!(
+        !records.is_empty() && records.iter().all(|r| r.0 == "pass"),
+        "{records:?}"
     );
     std::fs::write(p.root.join("k.md"), KEY).unwrap();
     let decision = p.stop("k1");
