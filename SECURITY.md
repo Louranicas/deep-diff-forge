@@ -376,6 +376,9 @@ path to mount that is not UTF-8 or holds `:` or `,` is refused before the sandbo
   owner-private (`0700` directories and `0600` files).
 - Directory/file symlinks and inode replacement are rejected. New receipt files
   use exclusive creation.
+  These checks read each path's last component: a swapped parent directory is not
+  caught (a process of the same user that can replace a parent directory can replace
+  the store itself).
 - The store is capped at 64 MiB, individual JSONL records at 1 MiB, and retained
   records at 100,000.
 - File identifiers must be redacted lowercase hexadecimal values; language and
