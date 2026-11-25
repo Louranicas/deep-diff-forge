@@ -1151,7 +1151,10 @@ mod tests {
             store.extend_from_slice(bad.to_json().unwrap().as_bytes());
             store.push(b'\n');
             write_private(&receipts_path(&dir), &store);
-            let error = load_receipts(&dir).unwrap_err().to_string();
+            let error = load_receipts(&dir).map_or_else(
+                |error| error.to_string(),
+                |loaded| format!("loaded {} receipts", loaded.len()),
+            );
             assert!(
                 error.contains("receipt store line 4: ") && error.contains(why),
                 "{bad:?}: {error}"
@@ -1231,7 +1234,10 @@ mod tests {
             store.extend_from_slice(line.as_bytes());
             store.push(b'\n');
             write_private(&receipts_path(&dir), &store);
-            let error = load_receipts(&dir).unwrap_err().to_string();
+            let error = load_receipts(&dir).map_or_else(
+                |error| error.to_string(),
+                |loaded| format!("loaded {} receipts", loaded.len()),
+            );
             assert!(
                 error.contains("receipt store line 3: ") && error.contains(why),
                 "loaded {line}: {error}"
