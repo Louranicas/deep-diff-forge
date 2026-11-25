@@ -179,6 +179,7 @@ must exist. Measured with Git 2.56 on Linux, 2026-11-23.
 | `--3way` | declared; measured by `a_setting_that_changes_the_write_is_declared` | Where plain `git apply` refuses a hunk, Git merges with the blob the `index` line names and writes the result, with conflict markers when the merge conflicts, while it exits non-zero. DDF promises only the outcomes of a plain apply. |
 | `core.fileMode` | declared; measured by `a_setting_that_changes_the_write_is_declared` | With `false`, Git does not trust the executable bit: an edit of an executable file that names no mode is written as `100644`, and the mode an `index` line names is the one written (`CONFORMANCE.md`, "A non-default configuration"). |
 | A case-insensitive file system (`core.ignorecase`) | declared; not measured (it needs a file system that folds case) | DDF compares paths byte for byte. Where the file system folds case, two paths that differ only in case name one file, so what Git writes for one can land on the other. |
+| The platform: macOS, whose `symlink(2)` takes an empty target | declared; not measured here (Linux), held on each system by `shapes_git_fails_to_write_are_refused` | A new symlink with an empty target: Git on Linux cannot write it (its `symlink(2)` refuses one) and fails after removing what the patch deletes; Git on macOS writes the link (the macOS CI run of 0.11.0). DDF refuses such a patch on every system (`GitCannotWrite`), and its message says what each system does. |
 
 ## Enforced controls
 

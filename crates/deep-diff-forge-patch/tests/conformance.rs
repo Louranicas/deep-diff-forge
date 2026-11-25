@@ -1423,9 +1423,10 @@ const SETTINGS: &[Setting] = &[
     },
 ];
 
-/// The settings the table holds, one row each; the last is not measured here (it needs a file
-/// system that folds case).
-const SETTING_KEYS: [&str; 7] = [
+/// The settings the table holds, one row each; the last two are not measured here (one needs a
+/// file system that folds case; the platform's row is macOS's, whose outcome
+/// `shapes_git_fails_to_write_are_refused` holds where it runs).
+const SETTING_KEYS: [&str; 8] = [
     "apply.whitespace",
     "core.autocrlf",
     "`-p",
@@ -1433,6 +1434,7 @@ const SETTING_KEYS: [&str; 7] = [
     "--3way",
     "core.fileMode",
     "case-insensitive",
+    "The platform",
 ];
 
 /// The rows of `SECURITY.md`'s settings table: (setting cell, state cell).
