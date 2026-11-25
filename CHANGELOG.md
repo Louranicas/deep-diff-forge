@@ -147,7 +147,12 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   (``(`git worktree repair` in a tree moved with `mv` records
   where it is): …``); a reason whose own words do not fit is still cut at its end with "…". The paths
   that give way are the ones the hook wrote, known as it wrote them, never read back from quotes: a
-  path ending in `\` or a quote in a judge's or Git's words moves nothing that is cut. A judge's own
+  path ending in `\` or a quote in a judge's or Git's words moves nothing that is cut, with two
+  display-only exceptions that change no decision and never exceed the bound: a path in a judge's or
+  Git's words that is, byte for byte, a path the hook showed in the same process is cut like the
+  hook's own; and a path the hook showed that equals a stretch of the product's own words between
+  two quotes could make the cut fall inside those words (at a stop only policy file names reach
+  that, never repository content). A judge's own
   message past 300 characters ends with "…" (it was cut there without a mark). Limits: a judge's or
   Git's words, with any path in them, do not give way to the hook's words and are cut at the end with
   them; a unit's name with the judge's words (240 characters) is cut at its end and can lose its count
