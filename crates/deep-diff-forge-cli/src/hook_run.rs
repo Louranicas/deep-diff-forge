@@ -3258,7 +3258,14 @@ fn judge_words(stderr: &[u8]) -> Option<String> {
         },
         Err(_) => last.trim().to_owned(),
     };
-    Some(words.chars().take(JUDGE_WORDS).collect())
+    // a cut is said, with "…": cut without a mark, a judge's words read as whole where a reason
+    // had room for all that was kept (P3 of 0.11.1, review 1, M2)
+    if words.chars().count() <= JUDGE_WORDS {
+        return Some(words);
+    }
+    let mut kept: String = words.chars().take(JUDGE_WORDS - 1).collect();
+    kept.push('…');
+    Some(kept)
 }
 
 /// What one run of the judge gave: its exit code, its verdict document, what it said on its
@@ -16703,6 +16710,39 @@ mod tests {
             judge_words(long.as_bytes()).map(|w| w.chars().count()),
             Some(JUDGE_WORDS)
         );
+        // P3 of 0.11.1, review 1, M2: a cut is said with "…"; words at the bound are whole
+        let said = |n: usize| format!("{{\"message\":\"{}; the run stops\"}}", "m".repeat(n));
+        let cut = judge_words(said(JUDGE_WORDS).as_bytes()).unwrap();
+        assert!(
+            cut.ends_with("mmm…") && cut.chars().count() == JUDGE_WORDS,
+            "{cut}"
+        );
+        let whole = judge_words(said(JUDGE_WORDS - "; the run stops".len()).as_bytes()).unwrap();
+        assert!(
+            whole.ends_with("m; the run stops") && whole.chars().count() == JUDGE_WORDS,
+            "{whole}"
+        );
+        // the band between the bases the lane rendered (45 and 211; the review's was 56): a
+        // judge's path under a base of 56 characters, its message just within and just past
+        // the bound. The judge's quotes are its words: a reason does not cut them in the
+        // middle, and its end is cut with "…" where the line has no room.
+        let base = format!("/{}", "p".repeat(55));
+        for (js, ends) in [(160, "; the run stops"), (200, "…")] {
+            let message = format!(
+                "{{\"name\":\"io\",\"message\":\"cannot read \\\"{base}/{}/policy-cache/entry.json\\\": permission denied; the run stops\"}}",
+                "j".repeat(js)
+            );
+            let words = judge_words(message.as_bytes()).unwrap();
+            assert!(
+                words.starts_with(&format!("io: cannot read \"{base}/jjj"))
+                    && words.ends_with(ends)
+                    && words.chars().count() <= JUDGE_WORDS,
+                "{words}"
+            );
+            let reason =
+                format!("the judge could not read its inputs or its environment (exit 3): {words}");
+            assert_eq!(hook::quoted_cut(&reason, hook::REASON_CHARS), reason);
+        }
     }
 
     #[test]

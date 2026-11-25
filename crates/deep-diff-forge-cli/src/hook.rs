@@ -31,6 +31,7 @@ use deep_diff_forge_core::display_safe;
 use deep_diff_forge_graph::{remedy, signal_named};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Mutex, PoisonError};
 
 /// The most findings one message lists; the rest are counted.
 pub(crate) const MAX_FINDINGS: usize = 20;
@@ -224,8 +225,26 @@ pub(crate) fn shown_path(path: &str) -> String {
     } else {
         safe.into_iter().collect()
     };
-    format!("\"{}\"", cut.replace('"', "\\\""))
+    let shown = format!("\"{}\"", cut.replace('"', "\\\""));
+    let mut kept = SHOWN.lock().unwrap_or_else(PoisonError::into_inner);
+    if kept.len() < SHOWN_KEPT {
+        kept.insert(shown.clone());
+    }
+    shown
 }
+
+/// The most paths [`SHOWN`] keeps: far more than a hook, a check or a command shows. A path
+/// shown after them is not kept, and [`quoted_cut`] does not cut it: a message that holds it
+/// is cut at its end, as 0.11.0 cut it.
+const SHOWN_KEPT: usize = 1 << 16;
+
+/// The paths [`shown_path`] wrote in this process, each as it wrote it (quotes included): the
+/// parts [`quoted_cut`] may cut. Known by what wrote them, not read back from a message's
+/// quotes: `shown_path` escapes a `"` but not a `\`, so a path ending in `\` ends `\"` like an
+/// escaped quote, and a judge's or Git's words may hold a quote of their own; read by its
+/// quotes, a message under either was cut in its words and kept its paths (P3 of 0.11.1,
+/// review 1, M1). Its text is unchanged, so nothing keyed by a message's words changes.
+static SHOWN: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 
 /// The fewest characters [`quoted_cut`] leaves of a quoted part: its first 14 and its last 15,
 /// with "…" between them.
@@ -252,45 +271,58 @@ pub(crate) fn middle_cut(text: &[char], len: usize) -> String {
         .collect()
 }
 
-/// `text`, a message's own words with quoted parts in them (paths, quoted input), fitted to
-/// `bound` characters by cutting the quoted parts alone where that is enough: each one longer
-/// than a common length is cut in its middle to it ([`middle_cut`]), the length the largest
-/// with which the whole fits and never under [`QUOTED_FLOOR`]. The words outside the quotes
-/// are not cut here: when they do not fit even so, `text` comes back with its quoted parts at
-/// the floor and over `bound`, and the caller cuts its end as before. Under a long path a cut
-/// at the end took the words after the paths (a reason that said what to do ended after two
-/// paths, the macOS CI run of 0.11.0): the payload is cut, never the verdict, while the
-/// verdict fits.
+/// `text`, a message's own words with paths in it as [`shown_path`] wrote them, fitted to
+/// `bound` characters by cutting the paths alone where that is enough: each one longer than a
+/// common length is cut in its middle to it ([`middle_cut`]), the length the largest with
+/// which the whole fits and never under [`QUOTED_FLOOR`]. The words outside the paths are not
+/// cut here: when they do not fit even so, `text` comes back with its paths at the floor and
+/// over `bound`, and the caller cuts its end as before. Under a long path a cut at the end took
+/// the words after the paths (a reason that said what to do ended after two paths, the macOS
+/// CI run of 0.11.0): the payload is cut, never the verdict, while the verdict fits.
 ///
-/// A quoted part is read as [`shown_path`] writes one: from a `"` to the next `"` that no
-/// backslash comes before, so that a quote inside a path, which it escapes, does not end it.
-/// A path whose last character is a backslash ends in `\"`, and its part runs on to the next
-/// quote: then words between the two may be cut in the middle instead of at the end, and the
-/// bound holds as before.
+/// A path is one [`SHOWN`] holds, found in `text` with its quotes; where two overlap, the one
+/// that starts first, and of those the longest. Any other quote (a judge's, Git's, a file's
+/// words) starts no part and ends none, so no words of anyone move what is cut; a judge's own
+/// quoted path is words here, cut at the end with the rest.
 pub(crate) fn quoted_cut(text: &str, bound: usize) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= bound {
+    let count = text.chars().count();
+    if count <= bound {
         return text.to_owned();
     }
-    // what each quoted part holds: (its first character, the one after its last)
-    let mut parts = Vec::new();
-    let mut at = 0;
-    while let Some(open) = (at..chars.len()).find(|&i| chars[i] == '"') {
-        let Some(close) =
-            (open + 1..chars.len()).find(|&i| chars[i] == '"' && chars[i - 1] != '\\')
-        else {
-            break;
-        };
-        parts.push((open + 1, close));
-        at = close + 1;
+    // the shown paths it holds, by their bytes with their quotes
+    let mut found: Vec<(usize, usize)> = Vec::new();
+    {
+        let shown = SHOWN.lock().unwrap_or_else(PoisonError::into_inner);
+        for path in shown.iter() {
+            found.extend(
+                text.match_indices(path.as_str())
+                    .map(|(at, _)| (at, at + path.len())),
+            );
+        }
     }
-    let words = chars.len() - parts.iter().map(|(a, b)| b - a).sum::<usize>();
-    let fits =
-        |len: usize| words + parts.iter().map(|(a, b)| (b - a).min(len)).sum::<usize>() <= bound;
+    found.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+    // what each part holds: its bytes between its quotes, and its characters
+    let mut parts: Vec<(usize, usize, Vec<char>)> = Vec::new();
+    let mut end = 0;
+    for (from, to) in found {
+        if from >= end {
+            parts.push((from + 1, to - 1, text[from + 1..to - 1].chars().collect()));
+            end = to;
+        }
+    }
+    let words = count - parts.iter().map(|part| part.2.len()).sum::<usize>();
+    let fits = |len: usize| {
+        words
+            + parts
+                .iter()
+                .map(|part| part.2.len().min(len))
+                .sum::<usize>()
+            <= bound
+    };
     // the largest length that fits, by halving: a longer one fits less
     let (mut low, mut high) = (
         QUOTED_FLOOR,
-        parts.iter().map(|(a, b)| b - a).max().unwrap_or(0),
+        parts.iter().map(|part| part.2.len()).max().unwrap_or(0),
     );
     if high <= low || fits(high) {
         low = high.max(QUOTED_FLOOR);
@@ -305,12 +337,12 @@ pub(crate) fn quoted_cut(text: &str, bound: usize) -> String {
     }
     let mut out = String::with_capacity(text.len());
     let mut from = 0;
-    for &(a, b) in &parts {
-        out.extend(&chars[from..a]);
-        out.push_str(&middle_cut(&chars[a..b], low));
-        from = b;
+    for (a, b, part) in &parts {
+        out.push_str(&text[from..*a]);
+        out.push_str(&middle_cut(part, low));
+        from = *b;
     }
-    out.extend(&chars[from..]);
+    out.push_str(&text[from..]);
     out
 }
 
@@ -6240,17 +6272,17 @@ mod tests {
         );
     }
 
-    /// Package P3 of 0.11.1: a message cuts the quoted parts of a text (paths, quoted input)
-    /// in their middle before its own words. Each part longer than a common length is cut to
-    /// it, the largest with which the whole fits; a shorter one is whole; the words are never
-    /// cut by it, and when they alone do not fit the parts stay at the floor and the caller
-    /// cuts the end. A quote a path escapes does not end its part, and the cut does not part
-    /// an escape's quote from its backslash.
+    /// Package P3 of 0.11.1: a message cuts the paths in a text ([`shown_path`]'s) in their
+    /// middle before its own words. Each path longer than a common length is cut to it, the
+    /// largest with which the whole fits; a shorter one is whole; the words are never cut by
+    /// it, and when they alone do not fit the paths stay at the floor and the caller cuts the
+    /// end. A quote a path escapes is inside it, and the cut does not part an escape's quote
+    /// from its backslash. Quotes no path of [`shown_path`]'s makes are words.
     #[test]
     fn quoted_parts_give_way_before_the_words() {
-        let long = |c: char| format!("/{}", c.to_string().repeat(199));
+        let long = |c: char| shown_path(&format!("/{}", c.to_string().repeat(199)));
         let text = format!(
-            "Git names \"{}\" as the tree whose records name \"{}\" as that tree: say what to do.",
+            "Git names {} as the tree whose records name {} as that tree: say what to do.",
             long('a'),
             long('b')
         );
@@ -6273,7 +6305,7 @@ mod tests {
         );
         // a text that fits is as it was; a short part is whole beside a long one
         assert_eq!(quoted_cut(&text, text.chars().count()), text);
-        let text = format!("at \"/short\" and \"{}\" the end", long('c'));
+        let text = format!("at {} and {} the end", shown_path("/short"), long('c'));
         let cut = quoted_cut(&text, 100);
         assert!(
             cut.starts_with("at \"/short\" and \"/ccc")
@@ -6282,20 +6314,26 @@ mod tests {
             "{cut}"
         );
         // the words alone too many: the parts at the floor, the rest for the caller to cut
-        let wordy = format!("{} \"{}\" {}", "w".repeat(200), long('d'), "x".repeat(200));
+        let wordy = format!("{} {} {}", "w".repeat(200), long('d'), "x".repeat(200));
         let cut = quoted_cut(&wordy, 300);
         assert_eq!(
             cut.chars().count(),
             200 + 1 + QUOTED_FLOOR + 2 + 1 + 200,
             "{cut}"
         );
-        // an escaped quote stays inside its part; an unclosed quote is no part
-        let escaped = format!("in \"{}\\\"{}\" end", "e".repeat(100), "f".repeat(100));
+        // an escaped quote stays inside its path
+        let escaped = format!(
+            "in {} end",
+            shown_path(&format!("{}\"{}", "e".repeat(50), "f".repeat(50)))
+        );
         let cut = quoted_cut(&escaped, 80);
         assert!(
             cut.ends_with("fff\" end") && cut.chars().count() <= 80,
             "{cut}"
         );
+        // quotes that no shown path makes are words, closed or not
+        let quoted = format!("in \"{}\" end", "g".repeat(300));
+        assert_eq!(quoted_cut(&quoted, 80), quoted);
         let unclosed = format!("in \"{} end", "g".repeat(300));
         assert_eq!(quoted_cut(&unclosed, 80), unclosed);
         // the end of a cut part does not begin with an escaped quote's quote alone
@@ -6310,6 +6348,59 @@ mod tests {
             part.iter().collect::<String>()
         );
         assert_eq!(middle_cut(&part, 1), "…");
+    }
+
+    /// Package P3 of 0.11.1, review 1, M1: what is cut is never moved by a path or by anyone's
+    /// words. A path ending in `\` is shown ending `\"`, and Git's words may hold a quote that
+    /// closes nothing; read by its quotes, a reason under either was cut in its words (the hint
+    /// of a tree moved with `mv`, "neither directory is judged") and kept its paths whole.
+    /// Under a short base and a long one: the words are whole, the bound holds, and the paths
+    /// gave way (each ends as it ended, the backslash with it): the positive control.
+    #[test]
+    fn a_path_ending_in_a_backslash_or_a_lone_quote_moves_nothing_that_is_cut() {
+        for base in [45, 211].map(|n| format!("/{}", "b".repeat(n - 1))) {
+            let moved = shown_path(&format!("{base}/moved\\"));
+            assert!(moved.ends_with("/moved\\\""), "{moved}");
+            let hint = " (`git worktree repair` in a tree moved with `mv` records where it is)";
+            let reason = format!(
+                "Git names {moved} as the working tree of a Git directory whose records name {} as that tree{hint}: neither directory is judged as that tree",
+                shown_path(&format!("{base}/linked"))
+            );
+            assert!(reason.chars().count() > REASON_CHARS, "{reason}");
+            let cut = quoted_cut(&reason, REASON_CHARS);
+            assert!(cut.chars().count() <= REASON_CHARS, "{cut}");
+            assert!(
+                cut.contains(
+                    "/moved\\\" as the working tree of a Git directory whose records name \"/bbb"
+                ) && cut.ends_with(&format!(
+                    "/linked\" as that tree{hint}: neither directory is judged as that tree"
+                )) && cut.matches('…').count() >= 2,
+                "{cut}"
+            );
+            // Git's words with a quote of their own before two paths
+            let failed = format!(
+                "`git rev-parse` failed: fatal: bad \"name. Git cannot say which working tree the session's directory is in (the Git directory {}; the session's directory {moved}): neither is judged until Git can say it",
+                shown_path(&format!("{base}/repo/.git/worktrees/linked"))
+            );
+            assert!(failed.chars().count() > REASON_CHARS, "{failed}");
+            let cut = quoted_cut(&failed, REASON_CHARS);
+            let words = [
+                "`git rev-parse` failed: fatal: bad \"name. Git cannot say which working tree the session's directory is in (the Git directory \"/bbb",
+                "\"; the session's directory \"/bbb",
+                "/moved\\\"): neither is judged until Git can say it",
+            ];
+            assert!(
+                cut.chars().count() <= REASON_CHARS
+                    && cut.starts_with(words[0])
+                    && cut.contains(words[1])
+                    && cut.ends_with(words[2])
+                    && cut.contains("/linked\"; "),
+                "{cut}"
+            );
+            // the Git directory, the longer path, gave way: the positive control
+            let git_dir = cut.split("(the Git directory \"").nth(1).unwrap();
+            assert!(git_dir.split("\"; ").next().unwrap().contains('…'), "{cut}");
+        }
     }
 
     /// Package P3 of 0.11.1, row 9 of the reading of the macOS CI run of 0.11.0: a reason with
