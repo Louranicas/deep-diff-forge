@@ -4161,6 +4161,9 @@ struct Stopping<'a> {
     /// at `base`, or why it cannot be had; `None` when the stop judges under one policy (the same
     /// bytes, or no accepted policy: R6 a and b).
     second: Option<&'a SecondHalf>,
+    /// What the stop's words call `base`: "the session base", or "HEAD" for the stop whose
+    /// session state could not be used ([`stateless_stop`]), which has no session base.
+    base_is: &'static str,
     scratch: &'a Scratch,
     args: &'a [String],
     /// When the judging must be done: [`STOP_RESERVE`] before the stop's own deadline, and
@@ -4741,6 +4744,7 @@ impl<'a> Judge<'a> {
     fn words(&self) -> Halves {
         let short = |id: &str| id.chars().take(7).collect::<String>();
         Halves {
+            base_is: self.stop.base_is,
             base: short(self.stop.base),
             accepted: match self.stop.second {
                 Some(SecondHalf::Policy { commit, .. }) => Some(short(commit)),
@@ -4895,9 +4899,11 @@ impl<'a> Judge<'a> {
     }
 }
 
-/// What names the two policies of a stop in what it says: the session's base and the commit of
-/// the accepted policy (`None`: it cannot be read, and its reason names it), seven digits each.
+/// What names the two policies of a stop in what it says: what the first is called ("the session
+/// base", or "HEAD" where the stop has no session base) with its commit, and the commit of the
+/// accepted policy (`None`: it cannot be read, and its reason names it), seven digits each.
 struct Halves {
+    base_is: &'static str,
     base: String,
     accepted: Option<String>,
 }
@@ -4908,8 +4914,9 @@ struct Halves {
 fn two_policies_said(words: &Halves) -> Option<String> {
     let accepted = words.accepted.as_deref()?;
     Some(format!(
-        "{}at the session base (commit {}) and the accepted one (commit {accepted}); the stricter stands",
+        "{}at {} (commit {}) and the accepted one (commit {accepted}); the stricter stands",
         hook::TWO_POLICIES,
+        words.base_is,
         words.base,
     ))
 }
@@ -4935,14 +4942,14 @@ fn strictness(judged: &Judged) -> u8 {
 /// beside it (T8), in words that no failing line is made of.
 fn united(first: Judged, second: Judged, words: &Halves) -> Judged {
     use std::cmp::Ordering;
-    const BASED: &str = "the policy at the session base";
     const ACCEPTED: &str = "the accepted policy";
-    let based = format!("{BASED} (commit {})", words.base);
+    let short_based = format!("the policy at {}", words.base_is);
+    let based = format!("{short_based} (commit {})", words.base);
     let accepted =
         (words.accepted.as_deref()).map(|commit| format!("{ACCEPTED} (commit {commit})"));
     match strictness(&first).cmp(&strictness(&second)) {
         Ordering::Less => stricter(first, (Some(based.as_str()), ACCEPTED), words),
-        Ordering::Greater => stricter(second, (accepted.as_deref(), BASED), words),
+        Ordering::Greater => stricter(second, (accepted.as_deref(), &short_based), words),
         Ordering::Equal => tie(first, second, (based.as_str(), accepted.as_deref())),
     }
 }
@@ -8704,6 +8711,7 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, Why> {
                         cwd: &input.cwd,
                         base: &base,
                         second: second.as_ref(),
+                        base_is: "the session base",
                         scratch: &scratch,
                         args,
                         deadline: judging,
@@ -9012,6 +9020,7 @@ fn stateless_stop(
         cwd: &input.cwd,
         base: &base,
         second: second.as_ref(),
+        base_is: "HEAD",
         scratch: &scratch,
         args,
         deadline: judging,
@@ -15268,6 +15277,7 @@ mod tests {
     )]
     fn a_unit_under_two_policies_takes_the_stricter_answer_and_names_the_half() {
         let words = Halves {
+            base_is: "the session base",
             base: "aaaaaaa".to_owned(),
             accepted: Some("bbbbbbb".to_owned()),
         };
@@ -15407,6 +15417,7 @@ mod tests {
         );
         // an accepted policy that cannot be read: its own reason, and no T8
         let unread = Halves {
+            base_is: "the session base",
             base: "aaaaaaa".to_owned(),
             accepted: None,
         };

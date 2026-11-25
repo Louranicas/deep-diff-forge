@@ -931,6 +931,12 @@ fn the_stateless_stop_judges_under_both_policies() {
         "{:?}",
         p.records_of(&left)
     );
+    // it has no session base: its words call the first policy the one at HEAD (T8)
+    assert!(
+        said.contains("This unit was judged under two policies: at HEAD (commit")
+            && !said.contains("at the session base"),
+        "{said}"
+    );
 }
 
 fn walk(dir: &Path) -> Vec<PathBuf> {
