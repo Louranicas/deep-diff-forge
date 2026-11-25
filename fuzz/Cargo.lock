@@ -91,6 +91,7 @@ dependencies = [
  "deep-diff-forge-core",
  "deep-diff-forge-daemon",
  "deep-diff-forge-graph",
+ "deep-diff-forge-learning",
  "deep-diff-forge-patch",
  "deep-diff-forge-review",
  "deep-diff-forge-syntax",
@@ -104,6 +105,15 @@ name = "deep-diff-forge-graph"
 version = "0.11.0"
 dependencies = [
  "deep-diff-forge-core",
+]
+
+[[package]]
+name = "deep-diff-forge-learning"
+version = "0.11.0"
+dependencies = [
+ "rustix",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

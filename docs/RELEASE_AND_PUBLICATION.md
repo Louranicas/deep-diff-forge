@@ -150,7 +150,7 @@ Corpus regression snapshots and release receipts were part of the original
 checklist; neither has tooling yet.
 
 Run the local fuzz campaign before the tag: `DDF_FUZZ_CORPUS_ROOT=<a directory on disk> just
-fuzz-campaign` (`scripts/campaign_local.sh`, 300 s per target, 18 targets, about 90 minutes
+fuzz-campaign` (`scripts/campaign_local.sh`, 300 s per target, 21 targets, about 105 minutes
 plus builds). It must end `result: GREEN`, and its RECEIPT is cited in `EVIDENCE.md`.
 
 ## Tag And Push

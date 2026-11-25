@@ -1067,11 +1067,14 @@ SBOM, and attests it before irreversible publication.
 
 ### Readers of hostile bytes and their fuzz targets
 
-Eighteen fuzz targets cover the readers of bytes a patch, a peer or a judge controls; release
+Twenty-one fuzz targets cover the readers of bytes a patch, a peer or a judge controls; release
 0.10.0 added three for readers it added or changed: `verdict_reader` (forge-warden verdict
 documents v2 and v3 as the stop hook judges them), `journal_recover` (the decision journal's
-reading and torn-record repair) and `git_raw_stream` (Git's `--raw -z --patch` stream). Two
-readers have no target of their own, on purpose:
+reading and torn-record repair) and `git_raw_stream` (Git's `--raw -z --patch` stream). Release
+0.11.1 added three missing hostile-input boundaries: `learning_receipt` (the JSON receipt parser
+used by `learn record --stdin`), `council_request` (typed council request parsing and admission)
+and `council_analysis` (the full council prepare path through analysis verification and sealing).
+Two readers have no target of their own, on purpose:
 
 - The tuicr session reader (`review tuicr import`, `open_session` in
   `crates/deep-diff-forge-review/src/tuicr.rs`): the session is a file the reviewer's own tuicr

@@ -155,6 +155,10 @@ Every strategy decision gets a receipt. The built form is one JSON object per li
 {"file_hash":"deadbeefdeadbeef","language":"rust","parser_version":"tree-sitter-rust-0.24","strategy":"syntax","fallback":null,"elapsed_ms":12,"bytes":18420,"nodes":2840,"cache":"hit","outcome":"accepted","revisited":false}
 ```
 
+The `learning_receipt` fuzz target drives these untrusted JSON bytes through the same
+`StrategyReceipt::from_json` parser as `learn record --stdin`, then holds typed serialization to a
+stable parse.
+
 `strategy` is `patch`, `syntax` or `hybrid`; `fallback` is null or `byte_budget`, `node_budget`,
 `parse_errors`, `time_budget`, `unsupported`; `cache` is `hit`, `miss`, `cold` or `bypass`;
 `outcome` is `accepted`, `rejected`, `skipped`, `revisited` or `pending`.
