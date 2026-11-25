@@ -1359,7 +1359,9 @@ Stated limits, which the judge on the pull request covers:
   list of commits that have their answer. Files of sessions that have
   ended are not removed. The state directory may be anywhere, also inside another Git
   repository (a home directory that is a dotfiles repository): the hooks keep their state and
-  take the session's lock there as anywhere else. That repository's `git clean -x` removes the
+  take the session's lock there as anywhere else, and write the state through the directory
+  they took the lock in (one moved away or replaced while a hook holds the lock gets nothing
+  written into its replacement). That repository's `git clean -x` removes the
   sessions' state, and its `git status` lists the files unless they are ignored. Only a state
   directory inside the working tree of the session's project is refused: no stop of that
   session is judged, and the hooks say so. Hooks for Codex are not designed.

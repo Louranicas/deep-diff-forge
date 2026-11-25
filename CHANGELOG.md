@@ -17,9 +17,18 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   blocked again (28 of 46 measured races). Those hooks now take the lock as every other does:
   one of two first stops judges with the state and the other judges the tree without it, as
   where no `.git` stands above. A session's state is written only by a hook that holds the
-  session's lock (or on a file system with no locks); a hook whose lock file cannot be opened
-  says that its state could not be saved. A state directory inside the session's project is
-  refused as before; the hooks may now leave empty directories there, which Git does not record.
+  session's lock (or where `flock` fails for another cause than another holder, such as a file
+  system with no locks); a hook whose lock file cannot be opened says that its state could not
+  be saved, and a stop then says that cause first, before the sentences it says of a session
+  with no record of its start (which name this stop as where the session's hooks first ran,
+  may call the session's own commit "not this session's", and no longer tell it to install
+  the session-start hook). The state is written through the directory the lock was taken in,
+  held open, and only with the token of that session's lock: a state directory moved away and
+  replaced while a hook holds the lock gets nothing written into the replacement, and the hook
+  says its state could not be saved (0.11.0 wrote by the directory's name, so the state went
+  into the replacement while the lock stayed in the directory moved away; a process of the
+  same user, the agent's included, could do it). A state directory inside the session's
+  project is refused as before; the hooks may now leave empty directories there, which Git does not record.
   The five hook tests that `crates/deep-diff-forge-cli/tests/LOAD_SENSITIVE` named for this cause
   are off it: they pass alone with a `.git` above the temporary directory.
 - `agent doctor --gate` and a session's start: the link `policy_protects_itself` is ready only

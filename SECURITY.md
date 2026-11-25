@@ -797,7 +797,13 @@ bounded form.** What it holds to:
   project's working tree is refused the same way. Every hook that writes a session's state
   holds that session's lock, the first hook of an account too, whatever repository stands
   above the state directory (before 0.11.1 a hook that found no state directory under a `.git`
-  took no lock while it made one). When the state cannot be kept, a stop
+  took no lock while it made one). It writes through the directory it took the lock in, held
+  open: a process that moves the state directory away and puts another at its name while a
+  hook holds the lock gets nothing written into the other, and the hook says that its state
+  could not be saved. Where the lock cannot be taken in the state directory (its lock file
+  cannot be opened), no state is written and a stop says that cause first. A file system on
+  which `flock` fails for another cause than another holder is the stated exception: there the
+  state is written without a lock, as before 0.11.1. When the state cannot be kept, a stop
   says so every time and the advice hook once, marked by an empty file beside the scratch
   directory.
 - **Each directory of the hooks is a directory of its own.** `deep-diff-forge/` under the Git
