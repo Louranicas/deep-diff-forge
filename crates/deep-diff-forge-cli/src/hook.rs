@@ -227,6 +227,27 @@ pub(crate) fn shown_path(path: &str) -> String {
     format!("\"{}\"", cut.replace('"', "\\\""))
 }
 
+/// `text` (the characters of a quoted part) cut in its middle to `len` characters when it is
+/// longer: its first and its last characters, about half each, with "…" between them, as
+/// [`shown_path`] cuts a path (the end stays). The quote of an escape [`shown_path`] writes
+/// (`\"`) is not left without its backslash at the start of the end. `len` is at least 1.
+pub(crate) fn middle_cut(text: &[char], len: usize) -> String {
+    if text.len() <= len {
+        return text.iter().collect();
+    }
+    let tail = len / 2;
+    let head = len.saturating_sub(1 + tail);
+    let mut from = text.len() - tail;
+    if from > 0 && text[from - 1] == '\\' && text.get(from) == Some(&'"') {
+        from += 1;
+    }
+    text[..head]
+        .iter()
+        .chain(['…'].iter())
+        .chain(&text[from..])
+        .collect()
+}
+
 /// The line that says what answers a signal: its first accepted repair, and nothing else.
 ///
 /// It also named the first substitute that does not count, and some of those no label raises:

@@ -9270,18 +9270,46 @@ const NOTE_NAME: usize = 180;
 /// stands there)", which is the one thing the line is there to say of it. (Found by the
 /// mutation run, whose scratch directory has a longer path than a gate's: its baseline
 /// failed on the test of a working tree inside the project.)
+///
+/// What gives way is the quoted path, in its middle ([`hook::middle_cut`]), and every clause
+/// of the name is kept whole: cut at its end, the name of a tree under a path of a macOS
+/// temp directory's length lost "(remembered at another directory, which s…" (the macOS CI
+/// run of 0.11.0, rows 5 to 8 of its reading). The path is what lies between the name's first
+/// and its last quote: the words of a name hold none. A name with no quoted path, or whose
+/// words alone do not leave the path a character (no name of this build: the longest has 94
+/// characters besides its path), is cut after its last whole word that fits and keeps what
+/// it says of a failure that stands.
 fn counted_name(name: &str) -> String {
-    let count = name.chars().count();
-    if count <= NOTE_NAME {
+    let chars: Vec<char> = name.chars().collect();
+    if chars.len() <= NOTE_NAME {
         return name.to_owned();
+    }
+    let quotes = (
+        chars.iter().position(|&c| c == '"'),
+        chars.iter().rposition(|&c| c == '"'),
+    );
+    if let (Some(first), Some(last)) = quotes
+        && first < last
+        && chars.len() - (last - first - 1) < NOTE_NAME
+    {
+        let room = NOTE_NAME - (chars.len() - (last - first - 1));
+        let before: String = chars[..=first].iter().collect();
+        let after: String = chars[last..].iter().collect();
+        return format!(
+            "{before}{}{after}",
+            hook::middle_cut(&chars[first + 1..last], room)
+        );
     }
     let said = name
         .rfind(" (a failure stands")
         .map_or("", |at| &name[at..]);
-    let head: String = name
-        .chars()
-        .take(NOTE_NAME.saturating_sub(said.chars().count() + 1))
-        .collect();
+    let room = NOTE_NAME.saturating_sub(said.chars().count() + 1);
+    let mut head: String = chars[..room].iter().collect();
+    if chars.get(room).is_some_and(|&c| c != ' ')
+        && let Some(at) = head.rfind(' ')
+    {
+        head.truncate(at);
+    }
     format!("{head}…{said}")
 }
 
@@ -15654,7 +15682,12 @@ mod tests {
         );
         let cut = counted_name(&name);
         assert_eq!(cut.chars().count(), NOTE_NAME, "{cut}");
-        assert!(cut.ends_with("d… (a failure stands there)"), "{cut}");
+        assert!(
+            cut.starts_with("the working tree \"/dd")
+                && cut.contains("d…d")
+                && cut.ends_with("d\" (a failure stands there)"),
+            "{cut}"
+        );
 
         let note = |n: usize| Note {
             name: format!("n{n}"),
@@ -16372,14 +16405,14 @@ mod tests {
         assert!(line(long).chars().count() <= COUNT_LINE);
         // A name that is cut keeps what it says of a failure that stands: the path of a
         // working tree as a message shows it (120 characters) fits whole, and a longer
-        // name loses its middle, not its end.
+        // name loses its path's middle, not its end.
         let path = hook::shown_path(&format!("/home/u/{}/tree", "d".repeat(300)));
         let whole =
             format!("the working tree {path} (it could not be looked at) (a failure stands there)");
         assert!(whole.chars().count() > NOTE_NAME);
         let said = line(vec![note(&whole, 1)]);
         assert!(
-            said.ends_with("… (a failure stands there).") && said.chars().count() <= COUNT_LINE,
+            said.ends_with("d/tree\" (it could not be looked at) (a failure stands there)."),
             "{said}"
         );
         let fits = format!("the working tree {path} (a failure stands there)");
@@ -16404,6 +16437,114 @@ mod tests {
         assert_eq!(look_share(seconds(6), 1), seconds(6));
         assert_eq!(look_share(seconds(6), 0), seconds(6));
         assert_eq!(look_share(Duration::ZERO, 3), Duration::ZERO);
+    }
+
+    /// Package P3 of 0.11.1 (rows 5 to 8 of the reading of the macOS CI run of 0.11.0): under
+    /// a long path the counting line kept a name's path and cut its clauses ("(remembered at
+    /// another directory, which s…"). Every form of a name a note of this build has, with a
+    /// path of 200 characters and more under a base as long as one: the path loses its middle,
+    /// its first and last characters stay, every clause is whole, and the name has
+    /// [`NOTE_NAME`] characters at most; three of them on the counting line keep it within
+    /// [`COUNT_LINE`]. (The forms as `other_trees`, `no_longer_trees`, `left_out`,
+    /// `trees_to_judge` and `submodules_with_changes` write them.)
+    #[test]
+    fn a_counted_name_under_a_long_path_keeps_every_clause() {
+        let base = format!("/{}", "b".repeat(199));
+        let mut names = Vec::new();
+        for (path, tail) in [
+            (format!("{base}/linked"), "/linked"),
+            (format!("{base}/{}/copy", "c".repeat(80)), "/copy"),
+        ] {
+            let p = hook::shown_path(&path);
+            for what in [
+                "",
+                " (gone)",
+                " (the session's directory may be in it)",
+                " (remembered at another directory, which stands)",
+                " (it could not be looked at)",
+            ] {
+                for stands in ["", " (a failure stands there)"] {
+                    names.push((format!("the working tree {p}{what}{stands}"), tail));
+                }
+            }
+            for what in ["", "; it could not be looked at"] {
+                names.push((
+                    format!(
+                        "the directory {p} (no longer a working tree{what}; a failure stands there)"
+                    ),
+                    tail,
+                ));
+            }
+            names.push((
+                format!("the directory {p} (no working tree by the records)"),
+                tail,
+            ));
+            names.push((format!("the nested repository {p}"), tail));
+            names.push((format!("the repository {p} the session is in"), tail));
+            names.push((format!("the submodule {p}"), tail));
+        }
+        let mut longest_words = 0;
+        for (name, tail) in &names {
+            let (first, last) = (name.find('"').unwrap(), name.rfind('"').unwrap());
+            let (before, after) = (&name[..=first], &name[last..]);
+            longest_words = longest_words.max(before.chars().count() + after.chars().count());
+            let cut = counted_name(name);
+            assert!(cut.chars().count() <= NOTE_NAME, "{cut}");
+            assert!(
+                cut.starts_with(&format!("{before}/bbbbbbbb"))
+                    && cut.ends_with(&format!("{tail}{after}"))
+                    && cut.contains('…'),
+                "{name}\n{cut}"
+            );
+            // the longer the name, the more of its path goes, and no more: it fills its room
+            if name.chars().count() > NOTE_NAME {
+                assert_eq!(cut.chars().count(), NOTE_NAME, "{cut}");
+            }
+        }
+        assert_eq!(
+            longest_words, 94,
+            "the words of the longest name besides its path"
+        );
+        // a path that leaves its clauses room is not cut
+        let fits = "the working tree \"/a/b\" (remembered at another directory, which stands) (a failure stands there)";
+        assert_eq!(counted_name(fits), fits);
+        // the words alone leave the path no room: cut after a whole word, the failure said
+        let wordy = format!(
+            "the working tree \"/a\" ({}) (a failure stands there)",
+            "many words ".repeat(20).trim_end()
+        );
+        let cut = counted_name(&wordy);
+        assert!(
+            cut.ends_with(" words… (a failure stands there)") && cut.chars().count() <= NOTE_NAME,
+            "{cut}"
+        );
+        // three of the longest on the counting line, and more counted: within its room
+        let note = |name: &str| Note {
+            name: name.to_owned(),
+            text: format!("In full: {name}."),
+            standing: 1,
+        };
+        let mut state = State {
+            project: Some(project(Base::Commit(COMMIT.to_owned()))),
+            ..State::default()
+        };
+        let mut longest: Vec<&String> = names.iter().map(|(name, _)| name).collect();
+        longest.sort_by_key(|name| std::cmp::Reverse(name.chars().count()));
+        let said = notes_of(
+            &mut state,
+            longest.iter().map(|name| note(name)).collect(),
+            0,
+        );
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(said[0].chars().count() <= COUNT_LINE, "{}", said[0]);
+        for name in &longest[..3] {
+            assert!(said[0].contains(&counted_name(name)), "{name}\n{}", said[0]);
+        }
+        assert!(
+            said[0].ends_with(", and 29 more (among them 29 working trees where a failure stands that has blocked)."),
+            "{}",
+            said[0]
+        );
     }
 
     /// Review V4 round 16, VD4R16-L-1: a linked working tree is known by the inode of its
