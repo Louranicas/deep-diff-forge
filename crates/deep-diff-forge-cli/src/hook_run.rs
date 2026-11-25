@@ -1661,7 +1661,8 @@ fn newer_there(path: &Path) -> Option<u32> {
     newer_in(&load_read(path))
 }
 
-/// [`newer_there`] of the state file `file` in the open directory `at`.
+/// The newer schema of the state file `file` in the open directory `at`, as `newer_there`
+/// reads it of a path ([`StateRefusal::Newer`]).
 fn newer_there_at(at: &At, file: &Path) -> Option<u32> {
     newer_in(&load_read_at(at, file))
 }
@@ -1707,7 +1708,7 @@ fn write_private_unless(
     write_private_unless_at(&at, &file, text, refuse)
 }
 
-/// [`write_private_unless`] of the file `file` in the open directory `at`: the partial file,
+/// `write_private_unless` of the file `file` in the open directory `at`: the partial file,
 /// the move and the removal are all made in that directory.
 fn write_private_unless_at(
     at: &At,
@@ -1736,7 +1737,7 @@ fn save(path: &Path, state: &State) -> Result<(), String> {
     save_at(&at, &file, state)
 }
 
-/// [`save`] of the state file `file` in the open directory `at`.
+/// Write a session's state file `file` in the open directory `at`.
 fn save_at(at: &At, file: &Path, state: &State) -> Result<(), String> {
     let text = state_text(state);
     // Never written: what the next hook would refuse to read.
@@ -1951,7 +1952,7 @@ impl Session {
     /// making its directory first; and before it the lists this hook recorded, so that a state
     /// never names a list that is not there. Nothing is written when the file holds a state of
     /// a newer schema now, read just before the lists and again just before the state is
-    /// moved into place ([`save`]).
+    /// moved into place ([`save_at`]).
     ///
     /// It writes only with `writable`, the token of this session's lock ([`lock`], P5c row
     /// C4), and only through the directory that lock was taken in, held open: a token of
