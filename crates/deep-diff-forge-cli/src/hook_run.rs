@@ -1443,6 +1443,32 @@ fn keep_key_at(at: &At, key: &[u8; 32]) -> Result<[u8; 32], String> {
     }
 }
 
+/// The name of the file that keeps the hooks' state directory out of every Git working tree it
+/// lies in ([`ignore_everything_at`]).
+const IGNORE_FILE: &str = ".gitignore";
+
+/// What that file holds: every name in the directory is ignored, the file's own included.
+const IGNORE_TEXT: &[u8] =
+    b"# deep-diff-forge: the hooks' state of this user's sessions; no part of any commit.\n*\n";
+
+/// Make the hooks' `.gitignore` ([`IGNORE_TEXT`]) in the open state directory `at`, made new
+/// (mode 0600) and never written over or through a link: where anything stands at its name (a
+/// file of any content, a link, a directory) it is left as it is, and a file that cannot be
+/// made is not made. Either way the state is kept as before, and nothing is said (release
+/// 0.11.1, P5d). Where the directory lies inside a Git working tree (a home directory that is a
+/// dotfiles repository, or another working tree of the session's own project), Git then leaves
+/// the hooks' key, states and lists out of `git status` and `git add --all`, and a stop that
+/// judges that tree no longer judges them as the agent's change: before, it gave the judge the
+/// key and blocked on its random bytes with no change of the agent's. Files the tree's index
+/// lists are judged whatever it says ([`judge_patch_probed`]). Only
+/// [`Session::keep`] calls it, through the directory the session's lock was taken in.
+fn ignore_everything_at(at: &At) {
+    use std::io::Write as _;
+    if let Ok(mut file) = at.file(Path::new(IGNORE_FILE), At::NEW) {
+        let _ = file.write_all(IGNORE_TEXT);
+    }
+}
+
 /// An open directory of the hooks (release 0.11.1, review of P5c, V1): what is made, moved,
 /// linked and removed through it is made, moved, linked and removed in that directory,
 /// whatever its name names by then. The session's lock is taken through one and keeps it
@@ -1973,6 +1999,8 @@ impl Session {
     /// (another process moved it away, or put another in its place, while this hook held the
     /// lock: review of P5c, V1). Nothing is written then. What a moved directory is sent after
     /// the last look goes into the directory the lock was taken in, never into the other.
+    /// Before the key and the state it makes the directory's `.gitignore` when none is there
+    /// ([`ignore_everything_at`], P5d).
     fn keep(&mut self, writable: &Writable<'_>) -> Result<(), String> {
         if self.nothing_to_keep() {
             return Ok(());
@@ -2007,6 +2035,7 @@ impl Session {
         if let Some(number) = newer_there_at(at, &state) {
             return Err(saved(newer_written(&self.file, number)));
         }
+        ignore_everything_at(at);
         if let Some(key) = self.new_key.take() {
             keep_key_at(at, &key).map_err(saved)?;
         }
@@ -17914,6 +17943,134 @@ mod tests {
             "a state was kept through a link at the state directory: {said:?}"
         );
         assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0);
+    }
+
+    /// A write of a state of session `s` in the directory `dir` (a fresh `stops`, with a new key
+    /// or none), through that directory held open; the state is kept (tests of P5d).
+    fn keep_a_state(row: &str, dir: &Path, stops: u64, new_key: Option<[u8; 32]>) {
+        let file = state_file(dir, "s");
+        let mut session = Session {
+            dir: dir.to_path_buf(),
+            file: file.clone(),
+            state: State {
+                stops,
+                ..State::default()
+            },
+            kept: None,
+            upgrade: false,
+            new_key,
+            tips: None,
+            judged: None,
+        };
+        let at = At::open(dir, false).unwrap();
+        let said = session.keep(&Writable::for_test(&at, &file));
+        assert!(
+            said.is_ok() && load(&file).is_ok_and(|kept| kept == Some(session.state.clone())),
+            "{row}: the state was not kept: {said:?}"
+        );
+    }
+
+    /// The bytes of the hooks' `.gitignore` (P5d, row R1), written out here so that a change of
+    /// them is seen.
+    const IGNORE_WRITTEN: &[u8] =
+        b"# deep-diff-forge: the hooks' state of this user's sessions; no part of any commit.\n*\n";
+
+    /// Release 0.11.1, P5d (rows R1, R2; test T2, first half): the writer of a session's state
+    /// makes the state directory's `.gitignore`, holding exactly [`IGNORE_WRITTEN`], a regular
+    /// file of mode 0600, beside the key and the state; and in a directory an earlier build made
+    /// (a key and a state, no such file) at its next write.
+    #[test]
+    fn the_state_directory_ignores_everything_in_it() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-state-ignore");
+        let dir = scratch.join("new");
+        std::fs::create_dir(&dir).unwrap();
+        keep_a_state("new", &dir, 1, Some([7; 32]));
+        let state = state_file(&dir, "s");
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                ".gitignore".to_owned(),
+                "key".to_owned(),
+                state.file_name().unwrap().to_string_lossy().into_owned()
+            ],
+            "new: the directory holds other files"
+        );
+        assert_eq!(
+            std::fs::read(dir.join(".gitignore")).unwrap(),
+            IGNORE_WRITTEN,
+            "new: the .gitignore does not hold the hooks' text"
+        );
+        let made = std::fs::symlink_metadata(dir.join(".gitignore")).unwrap();
+        assert!(
+            made.is_file() && (made.permissions().mode() & 0o777) == 0o600,
+            "new: the .gitignore is not a regular file of mode 0600: {made:?}"
+        );
+        // a directory an earlier build made, with a key and a state and no such file
+        let dir = scratch.join("earlier");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("key"), [7; 32]).unwrap();
+        std::fs::write(state_file(&dir, "s"), b"{}").unwrap();
+        keep_a_state("earlier", &dir, 2, None);
+        assert_eq!(
+            std::fs::read(dir.join(".gitignore")).ok().as_deref(),
+            Some(IGNORE_WRITTEN),
+            "earlier: a directory without the file did not get it at the next write"
+        );
+    }
+
+    /// Release 0.11.1, P5d (row R3; test T2, second half): what stands at the name `.gitignore`
+    /// in the state directory is left as it is, and the state is kept all the same: a link to a
+    /// file (the link and its target unchanged), a link to nothing (no target made), a file of
+    /// other bytes, a directory.
+    #[test]
+    fn what_stands_at_the_state_directorys_gitignore_is_kept() {
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-state-ignore-kept");
+        let fresh = |name: &str| {
+            let dir = scratch.join(name);
+            std::fs::create_dir(&dir).unwrap();
+            dir
+        };
+        let target = scratch.join("target");
+        std::fs::write(&target, b"x\n").unwrap();
+        for (row, to) in [
+            ("a link", target.clone()),
+            ("a dangling link", scratch.join("nothing")),
+        ] {
+            let dir = fresh(&row.replace(' ', "-"));
+            std::os::unix::fs::symlink(&to, dir.join(".gitignore")).unwrap();
+            keep_a_state(row, &dir, 1, None);
+            assert_eq!(
+                (
+                    std::fs::read_link(dir.join(".gitignore")).ok(),
+                    std::fs::read(&target).unwrap(),
+                    scratch.join("nothing").symlink_metadata().is_ok()
+                ),
+                (Some(to), b"x\n".to_vec(), false),
+                "{row}: a link at .gitignore was written through or replaced"
+            );
+        }
+        let dir = fresh("other-bytes");
+        std::fs::write(dir.join(".gitignore"), b"mine\n").unwrap();
+        keep_a_state("other bytes", &dir, 1, None);
+        assert_eq!(
+            std::fs::read(dir.join(".gitignore")).unwrap(),
+            b"mine\n",
+            "other bytes: an existing .gitignore was written over"
+        );
+        let dir = fresh("a-directory");
+        std::fs::create_dir(dir.join(".gitignore")).unwrap();
+        keep_a_state("a directory", &dir, 1, None);
+        assert!(
+            dir.join(".gitignore").symlink_metadata().unwrap().is_dir()
+                && std::fs::read_dir(dir.join(".gitignore")).unwrap().count() == 0,
+            "a directory: the directory at .gitignore was changed"
+        );
     }
 
     /// Independent review of the hooks, HR-L-2: a reason an advice hook has for not running is
