@@ -100,6 +100,11 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   `DDF_GATE_RECEIPT` names another). The contract matrix prints `real rows: N run, M skipped`,
   which the step's line carries, and one line `skipped: …` that counts the rows it skipped by
   what was not given.
+- Tests only: the patch parser's refusal of a symlink Git cannot write is now held, against a
+  real `git apply`, for a link changed in place whose mode is on its `index` line alone (a
+  target over 4,095 bytes, a target with a NUL) and at the bound itself (4,095 bytes read,
+  4,096 refused); `release_workflow` holds `release.yml`'s triggers to the sentence of
+  `SECURITY.md` (a push of `v*` tags and `workflow_dispatch`, nothing else).
 
 ## [0.11.0] - 2026-11-25
 
