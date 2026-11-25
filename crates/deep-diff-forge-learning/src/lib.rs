@@ -178,6 +178,97 @@ mod tests {
         assert_eq!(lenient.trusted_default, Some(Strategy::Patch));
     }
 
+    /// SECURITY.md (learning store): "Learning data is not uploaded by the project." A small
+    /// negative surface: the crate that holds the learning data has no way of its own to the
+    /// network. Its normal dependencies are exactly `serde`, `serde_json` and `rustix`, `rustix`
+    /// with only its `process` feature (not `net`), and it has no target-specific or build
+    /// dependencies; its code outside the test modules names no socket or HTTP client and spawns
+    /// no program. A change that adds any of these turns this red, so its author must say why it
+    /// is not an upload. Not proven here: that `serde`, `serde_json` or `rustix`'s `process`
+    /// module cannot reach a network (they are not read); that no other crate sends what this
+    /// crate stores (the CLI's learn commands are held by the CLI's `tests/learn.rs`; the TUI,
+    /// which reads the store, is not held). A copy the user makes or a command the user runs is
+    /// not an upload by the project.
+    #[test]
+    fn the_learning_crate_has_no_way_of_its_own_to_the_network() {
+        // A line reader over this manifest's own layout, not a TOML parser.
+        let manifest = include_str!("../Cargo.toml");
+        let mut section = "";
+        let mut dependency_sections = Vec::new();
+        let mut dependencies = Vec::new();
+        for line in manifest.lines().map(str::trim) {
+            if line.starts_with('[') {
+                section = line;
+                if line.contains("dependencies") {
+                    dependency_sections.push(line);
+                }
+            } else if section == "[dependencies]" && !line.is_empty() && !line.starts_with('#') {
+                dependencies.push(line);
+            }
+        }
+        assert_eq!(
+            dependency_sections,
+            ["[dependencies]", "[dev-dependencies]"],
+            "the learning crate's dependency sections"
+        );
+        let names: Vec<&str> = dependencies
+            .iter()
+            .map(|line| line.split(['=', '.', ' ']).next().unwrap_or_default())
+            .collect();
+        assert_eq!(
+            names,
+            ["serde", "serde_json", "rustix"],
+            "the learning crate's dependencies"
+        );
+        assert!(
+            dependencies.contains(&r#"rustix = { version = "1.1", features = ["process"] }"#),
+            "rustix with a feature other than `process`: {dependencies:?}"
+        );
+        let mut files = vec![std::path::PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src"
+        ))];
+        let mut read = 0;
+        while let Some(path) = files.pop() {
+            if path.is_dir() {
+                files.extend(
+                    std::fs::read_dir(&path)
+                        .unwrap()
+                        .map(|entry| entry.unwrap().path()),
+                );
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let code = text
+                .split_once("\n#[cfg(test)]\nmod tests {")
+                .map_or(text.as_str(), |(code, _)| code);
+            for name in [
+                "std::net",
+                "TcpStream",
+                "TcpListener",
+                "UdpSocket",
+                "UnixStream",
+                "UnixListener",
+                "UnixDatagram",
+                "rustix::net",
+                "Command",
+                "reqwest",
+                "ureq",
+                "hyper",
+                "http://",
+                "https://",
+            ] {
+                assert!(
+                    !code.contains(name),
+                    "{} names `{name}` outside its tests",
+                    path.display()
+                );
+            }
+            read += 1;
+        }
+        assert!(read >= 10, "only {read} source files were read");
+    }
+
     #[test]
     fn public_api_is_reexported() {
         // Compile-time proof the headline types are reachable from the crate
