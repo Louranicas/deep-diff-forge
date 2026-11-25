@@ -4862,7 +4862,9 @@ impl<'a> Judge<'a> {
             names: self.stop.names,
             base: match self.stop.first {
                 Some(SecondHalf::Policy { commit, .. }) => short(commit),
-                _ => short(self.stop.base),
+                // (an accepted policy that cannot be had has no commit to name: ruling 11, N3)
+                Some(SecondHalf::Unreadable(_)) => String::new(),
+                None => short(self.stop.base),
             },
             accepted: match self.stop.second {
                 Some(SecondHalf::Policy { commit, .. }) => Some(short(commit)),
@@ -5147,7 +5149,11 @@ fn strictness(judged: &Judged) -> u8 {
 fn united(first: Judged, second: Judged, words: &Halves) -> Judged {
     use std::cmp::Ordering;
     let names = words.names;
-    let based = format!("{} (commit {})", names.first, words.base);
+    let based = if words.base.is_empty() {
+        names.first.to_owned()
+    } else {
+        format!("{} (commit {})", names.first, words.base)
+    };
     let accepted =
         (words.accepted.as_deref()).map(|commit| format!("{} (commit {commit})", names.second));
     match strictness(&first).cmp(&strictness(&second)) {
@@ -5774,6 +5780,8 @@ struct Derivation {
     /// before it (ruling 10, F2): the policy reached (its digest, commit and bytes), from which the
     /// owner's next acceptance applies. `None` otherwise.
     reached: Option<Reached>,
+    /// Those disagreeing acceptances, in the file's order (ruling 11).
+    disagreeing: Vec<crate::policy_record::Acceptance>,
 }
 
 /// The accepted policy a derivation reached before an acceptance that disagrees with it: its
@@ -5785,7 +5793,7 @@ type Reached = (Option<String>, Option<String>, Option<Vec<u8>>);
 fn ledger_unreadable() -> Why {
     Why::new(
         ReasonClass::ChainPolicyMissing,
-        "this project's ledger cannot be read whole (it is larger than its readers read, not a regular file, or not text), so its accepted policy cannot be had: no change passes until a person deals with the file (`chain.policy_missing`)",
+        "this project's ledger cannot be read whole (it is larger than its readers read, not a regular file, not text, or cannot be opened or read), so its accepted policy cannot be had: no change passes until a person deals with the file (`chain.policy_missing`)",
     )
 }
 
@@ -5830,41 +5838,17 @@ fn now_words(
     }
 }
 
-/// Whether the acceptance `acceptance` applies after the accepted digest `accepted` (release
-/// 0.11.1, R4, a compare-and-swap): its `from_sha256` is that digest (`None` for none), its commit
-/// is in the repository and an ancestor of `HEAD` of the working tree at `place` (ruling 3, N3),
-/// and the file it names at that commit has the digest `to_sha256`. `Ok(Ok(bytes))`: it applies,
-/// with the file's bytes; `Ok(Err(why))`: it does not; `Err`: Git could not say.
+/// Whether the acceptance `acceptance` applies (release 0.11.1, R4, a compare-and-swap), once
+/// [`accepted_policy`] has found its commit in this tree's history (ruling 3, N3, decided first:
+/// ruling 11) and its `from_sha256` the digest reached: the file it names at that commit has the
+/// digest `to_sha256`. `Ok(Ok(bytes))`: it applies, with the file's bytes; `Ok(Err(why))`: it does
+/// not; `Err`: Git could not say.
 fn applies(
     place: &Place,
     acceptance: &crate::policy_record::Acceptance,
-    accepted: Option<&str>,
     git: &GitAcquireOptions,
 ) -> Result<Result<Vec<u8>, String>, GitAcquireError> {
     let commit = &acceptance.commit[..12];
-    if acceptance.from.as_deref() != accepted {
-        return Ok(Err(format!(
-            "its from_sha256 is not the accepted digest at that point ({})",
-            accepted.map_or("none", |digest| &digest[..12])
-        )));
-    }
-    match head_contains(&place.top, &acceptance.commit, git) {
-        Ok(true) => {}
-        Ok(false) => {
-            return Ok(Err(format!(
-                "its commit {commit} is not an ancestor of HEAD in {}",
-                shown(&place.top)
-            )));
-        }
-        Err(GitAcquireError::InvalidSelection { detail })
-            if detail.ends_with("does not name a commit") =>
-        {
-            return Ok(Err(format!(
-                "its commit {commit} is not in this repository"
-            )));
-        }
-        Err(error) => return Err(error),
-    }
     let name = hook::shown_path(&acceptance.policy);
     Ok(
         match file_at_commit(&place.top, &acceptance.commit, &acceptance.policy, git)? {
@@ -6029,37 +6013,59 @@ fn accepted_policy(
     // An acceptance in this tree's history that neither applies nor repeats the digest reached
     // (two branches' acceptances met in a merge: ruling 10, F2) leaves the accepted policy
     // unknown until a later acceptance applies from the digest reached.
-    let mut disagreeing: Option<Why> = None;
+    let mut disagreeing: Vec<crate::policy_record::Acceptance> = Vec::new();
     for acceptance in record.map_or(&[][..], |r| r.acceptances.as_slice()) {
         let at = current.as_ref().map(|c| c.0.as_str());
-        if acceptance.from.as_deref() != at && Some(acceptance.to.as_str()) != at {
-            match head_contains(&place.top, &acceptance.commit, &git) {
-                Ok(true) => {
-                    let reached = current.as_ref().map_or_else(
-                        || "no accepted policy".to_owned(),
-                        |c| format!("the one at commit {}", &c.1[..12]),
-                    );
-                    disagreeing = Some(Why::new(
-                        ReasonClass::ChainPolicyMissing,
-                        format!(
-                            "an acceptance in this tree's history (of commit {}) does not follow from the accepted policy reached before it ({reached}), as after a merge of two branches' acceptances, so the accepted policy cannot be had until an acceptance from that one is recorded (`chain.policy_missing`)",
-                            &acceptance.commit[..12]
-                        ),
-                    ));
-                    derived.ignored.push((
-                        acceptance.clone(),
-                        format!(
-                            "it is in this tree's history and does not follow from the accepted policy reached before it ({reached})"
-                        ),
-                        false,
-                    ));
-                    continue;
-                }
-                Ok(false) | Err(GitAcquireError::InvalidSelection { .. }) => {}
-                Err(error) => return (failed(&error), derived),
+        // first: is it of this tree's history at all (ruling 11, F3)? One of another branch is
+        // never a disagreement and never fails the doctor's link
+        let short = &acceptance.commit[..12];
+        match head_contains(&place.top, &acceptance.commit, &git) {
+            Ok(true) => {}
+            Ok(false) => {
+                derived.ignored.push((
+                    acceptance.clone(),
+                    format!(
+                        "its commit {short} is not an ancestor of HEAD in {}",
+                        shown(&place.top)
+                    ),
+                    true,
+                ));
+                continue;
             }
+            Err(GitAcquireError::InvalidSelection { detail })
+                if detail.ends_with("does not name a commit") =>
+            {
+                derived.ignored.push((
+                    acceptance.clone(),
+                    format!("its commit {short} is not in this repository"),
+                    true,
+                ));
+                continue;
+            }
+            Err(error) => return (failed(&error), derived),
         }
-        match applies(place, acceptance, at, &git) {
+        if acceptance.from.as_deref() != at {
+            if Some(acceptance.to.as_str()) == at {
+                // a repeat of the digest reached: passed over
+                derived.ignored.push((
+                    acceptance.clone(),
+                    "it repeats the accepted digest reached before it".to_owned(),
+                    true,
+                ));
+            } else {
+                // in this tree's history and not from the policy reached: a disagreement, which
+                // stays until an acceptance at a commit that has it in its history applies
+                // (ruling 11, N-F2: an acceptance of the other branch does not settle it)
+                derived.ignored.push((
+                    acceptance.clone(),
+                    "it is in this tree's history and does not follow from the accepted policy reached before it".to_owned(),
+                    false,
+                ));
+                disagreeing.push(acceptance.clone());
+            }
+            continue;
+        }
+        match applies(place, acceptance, &git) {
             Ok(Ok(bytes)) => {
                 sealed.insert(acceptance.to.clone());
                 bound.clone_from(&acceptance.policy);
@@ -6070,22 +6076,37 @@ fn accepted_policy(
                     Some(acceptance.commit.clone()),
                 ));
                 derived.applied.push(acceptance.clone());
-                // settled: what disagreed before is harmless now (named, the doctor stays ready)
-                if disagreeing.take().is_some() {
+                // settled only by an acceptance at a commit that has every disagreeing one in
+                // its history (made where the owner saw both)
+                let mut settles = !disagreeing.is_empty();
+                for earlier in &disagreeing {
+                    match deep_diff_forge_patch::merge_base(
+                        &place.top,
+                        &earlier.commit,
+                        &acceptance.commit,
+                        &git,
+                    ) {
+                        Ok(Some(base)) if base == earlier.commit => {}
+                        Ok(_) => settles = false,
+                        Err(error) => return (failed(&error), derived),
+                    }
+                }
+                if settles {
+                    disagreeing.clear();
                     for entry in &mut derived.ignored {
                         if !entry.2 && entry.1.contains("does not follow from the accepted policy")
                         {
-                            entry.1.push_str("; a later acceptance settled it");
+                            entry.1.push_str("; an acceptance at commit ");
+                            entry.1.push_str(short);
+                            entry
+                                .1
+                                .push_str(", which has it in its history, settled it");
                             entry.2 = true;
                         }
                     }
                 }
             }
-            Ok(Err(why)) => {
-                let other = why.contains("is not an ancestor of HEAD")
-                    || why.contains("is not in this repository");
-                derived.ignored.push((acceptance.clone(), why, other));
-            }
+            Ok(Err(why)) => derived.ignored.push((acceptance.clone(), why, false)),
             Err(error) => return (failed(&error), derived),
         }
     }
@@ -6103,11 +6124,24 @@ fn accepted_policy(
         );
         return (Accepted::Unreadable(why), derived);
     }
-    if let Some(why) = disagreeing {
+    if !disagreeing.is_empty() {
+        let reached = current.as_ref().map_or_else(
+            || "no accepted policy".to_owned(),
+            |c| format!("the one at commit {}", &c.1[..12]),
+        );
+        let commits: Vec<&str> = disagreeing.iter().map(|a| &a.commit[..12]).collect();
+        let why = Why::new(
+            ReasonClass::ChainPolicyMissing,
+            format!(
+                "acceptances in this tree's history (of commit {}) do not follow from the accepted policy reached before them ({reached}), as after a merge of two branches' acceptances, so the accepted policy cannot be had until the owner accepts at a commit that has them in its history (`chain.policy_missing`)",
+                commits.join(", ")
+            ),
+        );
         derived.reached = Some(match current {
             Some((sha256, commit, bytes, _)) => (Some(sha256), Some(commit), Some(bytes)),
             None => (None, None, None),
         });
+        derived.disagreeing = disagreeing;
         return (Accepted::Unreadable(why), derived);
     }
     match current {
@@ -10709,6 +10743,10 @@ pub(crate) struct AcceptPlan {
     pub(crate) pins: String,
     /// Nothing to accept: the same name and the same bytes are the accepted policy now.
     pub(crate) same: bool,
+    /// Where acceptances disagree (ruling 11, N1): each disagreeing acceptance's commit, its `to`
+    /// digest, and the diff of the policy to accept against it; `from` is then the policy reached
+    /// before them, not an accepted policy.
+    pub(crate) disagreements: Vec<(String, String, String)>,
     place: Place,
     snapshot: String,
 }
@@ -10851,11 +10889,11 @@ fn pins_change(old: Option<&[u8]>, new: &[u8]) -> String {
 /// to print.
 fn policy_diff(
     scratch: &Scratch,
-    old: Option<&[u8]>,
-    new: &[u8],
+    (old, new): (Option<&[u8]>, &[u8]),
+    label: &str,
     deadline: Deadline,
 ) -> Result<String, String> {
-    let dir = scratch.sub("accept")?;
+    let dir = scratch.sub(label)?;
     let (old_path, new_path) = (dir.join("accepted"), dir.join("to-accept"));
     std::fs::write(&old_path, old.unwrap_or_default())
         .and_then(|()| std::fs::write(&new_path, new))
@@ -10928,6 +10966,10 @@ fn judge_reads(program: &Path, path: &Path, deadline: Deadline) -> Result<(), Ac
 /// does not read that file, and when the project's policy cannot be derived (no ledger record or
 /// binding yet, a policy record that cannot be read whole, an accepted policy that cannot be
 /// read, which includes a shallow history to the ledger's first record). Writes nothing.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one plan read under one lock, in the order the command shows it"
+)]
 pub(crate) fn policy_accept_plan(
     dir: &Path,
     commit: &str,
@@ -11013,7 +11055,45 @@ pub(crate) fn policy_accept_plan(
     })?;
     let program = judge_program(args, &[&place.top, &place.common]).map_err(|why| (IO, why))?;
     judge_reads(&program, &file, deadline)?;
-    let diff = policy_diff(&scratch, old, &bytes, deadline).map_err(|why| (IO, why))?;
+    let diff = policy_diff(&scratch, (old, &bytes), "accept", deadline).map_err(|why| (IO, why))?;
+    // Settling a disagreement (ruling 11, N1): each disagreeing acceptance, its digest and the diff
+    // of the policy to accept against it; the commit must have every one of them in its history.
+    let mut disagreements = Vec::new();
+    for (at, earlier) in projected.derived.disagreeing.iter().enumerate() {
+        match deep_diff_forge_patch::merge_base(
+            &place.top,
+            &earlier.commit,
+            &commit,
+            &deadline.git(),
+        ) {
+            Ok(Some(base)) if base == earlier.commit => {}
+            Ok(_) => {
+                return Err((
+                    INVALID_INPUT,
+                    format!(
+                        "commit {short} does not have in its history commit {}, whose acceptance disagrees with the accepted policy reached: accept at a commit that has every disagreeing acceptance in its history",
+                        &earlier.commit[..12]
+                    ),
+                ));
+            }
+            Err(error) => return Err((IO, git_words(&error))),
+        }
+        let theirs = file_at_commit(
+            &place.top,
+            &earlier.commit,
+            &earlier.policy,
+            &deadline.git(),
+        )
+        .map_err(|error| (IO, git_words(&error)))?;
+        let diff = policy_diff(
+            &scratch,
+            (theirs.as_deref(), &bytes),
+            &format!("disagreeing-{at}"),
+            deadline,
+        )
+        .map_err(|why| (IO, why))?;
+        disagreements.push((earlier.commit.clone(), earlier.to.clone(), diff));
+    }
     let pins = pins_change(old, &bytes);
     Ok(AcceptPlan {
         record: crate::policy_record::shown(&place.own),
@@ -11025,6 +11105,7 @@ pub(crate) fn policy_accept_plan(
         diff,
         pins,
         same,
+        disagreements,
         snapshot: projected.snapshot,
         place,
     })
@@ -11604,11 +11685,11 @@ fn accepted_check(place: &Place, args: &[String], deadline: Deadline) -> GateChe
     // what to do (ruling 10): a ledger that cannot be read, or acceptances that disagree
     if projected.derived.reached.is_some() {
         facts.push(
-            "to settle it, a person accepts the policy this tree should be judged by with agent policy-accept: it shows the accepted policy reached before the disagreeing record, from which the new acceptance applies".to_owned(),
+            "to settle it, a person accepts the policy this tree should be judged by with agent policy-accept at a commit that has every disagreeing acceptance in its history: it shows each of them and the policy reached before them".to_owned(),
         );
     } else if frontier.is_err() {
         facts.push(
-            "to settle it, a person deals with the ledger: moved aside together with the policy record, the project is recorded and bound again from its next session's start, and its acceptances are made again with agent policy-accept".to_owned(),
+            "to settle it, a person deals with the ledger: after it is moved aside together with the policy record, the next session's start records the project again at the commit HEAD names and binds the policy name its hooks are given, and the policy at that commit is then the accepted one: check that file first, or accept the policy you want with agent policy-accept after it".to_owned(),
         );
     }
     let holds = match &projected.record {

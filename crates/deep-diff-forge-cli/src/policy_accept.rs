@@ -49,6 +49,10 @@ fn refused(code: i32) -> ! {
     std::process::exit(code)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "what the command shows, in the order a person reads it"
+)]
 pub(crate) fn run(args: &[String]) {
     crate::args::admit_or_exit(
         args,
@@ -85,12 +89,30 @@ pub(crate) fn run(args: &[String]) {
         );
         return;
     }
+    if !plan.disagreements.is_empty() {
+        emitln!(
+            "This project's accepted policy cannot be had: acceptances in this tree's history do not follow from the policy reached before them (as after a merge of two branches' acceptances). Accepting here settles it; the policy to accept replaces each of them:"
+        );
+        for (commit, digest, _) in &plan.disagreements {
+            emitln!(
+                "  disagreeing acceptance: sha256 {digest} (at commit {})",
+                &commit[..12]
+            );
+        }
+    }
     emitln!("Policy record: {}", plan.record);
     emitln!("Bound policy name: {}", safe(&plan.bound));
     if plan.name != plan.bound {
         emitln!("New policy name: {} (accepting binds it)", safe(&plan.name));
     }
     match &plan.from {
+        Some((digest, at)) if !plan.disagreements.is_empty() => emitln!(
+            "Policy reached before them: sha256 {digest} (the file at commit {})",
+            &at[..12]
+        ),
+        None if !plan.disagreements.is_empty() => {
+            emitln!("Policy reached before them: none");
+        }
         Some((digest, at)) => emitln!(
             "Accepted policy now: sha256 {digest} (the file at commit {})",
             &at[..12]
@@ -106,8 +128,20 @@ pub(crate) fn run(args: &[String]) {
         &plan.commit[..12]
     );
     emitln!("Producer pins: {}", plan.pins);
-    emitln!("The whole diff of the policy file, accepted policy to policy to accept:");
-    crate::emit(&plan.diff);
+    if plan.disagreements.is_empty() {
+        emitln!("The whole diff of the policy file, accepted policy to policy to accept:");
+        crate::emit(&plan.diff);
+    } else {
+        emitln!("The whole diff of the policy file, policy reached to policy to accept:");
+        crate::emit(&plan.diff);
+        for (commit, _, diff) in &plan.disagreements {
+            emitln!(
+                "The whole diff of the policy file, the disagreeing acceptance at commit {} to policy to accept:",
+                &commit[..12]
+            );
+            crate::emit(diff);
+        }
+    }
     emitln!("{CONVENTION}");
     let terminal = std::io::stdin().is_terminal();
     if !terminal && !args.iter().any(|a| a == "--yes-from-pipe") {

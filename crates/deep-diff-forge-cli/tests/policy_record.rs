@@ -1415,6 +1415,11 @@ fn the_stateless_stop_judges_under_the_accepted_policy_too() {
             words(&decision).contains("these hooks are given the policy name \"loose.toml\"; this project's policy record binds \"warden.toml\""),
             "{damaged}: {decision}"
         );
+        // ruling 11, N3: an accepted policy that cannot be had names no commit as its own
+        assert!(
+            !words(&decision).contains("the accepted policy (commit"),
+            "{damaged}: {decision}"
+        );
     }
 }
 
@@ -1545,7 +1550,7 @@ fn acceptances_of_two_branches_that_meet_in_a_merge_pass_nothing_until_settled()
     );
     assert!(
         words(&decision).contains(&format!(
-            "an acceptance in this tree's history (of commit {})",
+            "acceptances in this tree's history (of commit {})",
             &tight[..12]
         )),
         "{decision}"
@@ -1610,7 +1615,10 @@ fn the_first_acceptance_from_none_and_the_shallow_refusal() {
                 "{kind}: the first acceptance did not hold: {records:?}"
             );
         } else {
-            assert!(records.iter().all(|r| r.0 != "pass"), "{kind}: {records:?}");
+            assert!(
+                !records.is_empty() && records.iter().all(|r| r.0 != "pass"),
+                "{kind}: {records:?}"
+            );
         }
     }
     // the shallow refusal: a depth-1 clone recorded, then HEAD moved across a cut
@@ -1679,4 +1687,93 @@ fn the_command_and_the_stop_say_what_is_true() {
         said.contains("\"other.toml\"") && said.contains("binds \"warden.toml\""),
         "{said}"
     );
+}
+
+/// Ruling 11 (N-F2, N1, F3): the owner accepts B on a feature branch, D (a tightening) on main
+/// and E on the feature branch again, in either order of D and E in the record. Without a merge,
+/// main blocks under D, and each tree's doctor stays ready (the other branch's acceptances are
+/// not of its history). With the merge, nothing passes in either order: E, made where D was not
+/// in history, does not settle D's disagreement. The command refuses to settle at a commit that
+/// lacks D, names D and shows the diff against it, and settles at the merge commit.
+#[test]
+fn a_disagreement_is_settled_only_where_the_owner_saw_it() {
+    const E_POLICY: &str =
+        "rule no-todo hold NEVER-WRITTEN-ANYWHERE\nrule e-loose hold NEVER-EITHER\n";
+    for (merged, d_first) in [(false, true), (false, false), (true, true), (true, false)] {
+        let label = format!("settle-{merged}-{d_first}");
+        let p = project(&label, STRICT);
+        p.start("k0");
+        git(&p.root, &["checkout", "--quiet", "-b", "feature"]);
+        let b = p.commit(&[("warden.toml", LOOSE)], "feature: B");
+        let (code, out, err) = p.accept(&b, &[], &format!("{}\n", sha(LOOSE)));
+        assert_eq!(code, 0, "{out}{err}");
+        let accept_on = |branch: &str, policy: &str, message: &str| {
+            git(&p.root, &["checkout", "--quiet", branch]);
+            let at = p.commit(&[("warden.toml", policy)], message);
+            let (code, out, err) = p.accept(&at, &[], &format!("{}\n", sha(policy)));
+            assert_eq!(code, 0, "{label} {message}: {out}{err}");
+            at
+        };
+        let (d, _e) = if d_first {
+            let d = accept_on("main", TIGHT, "main: D");
+            (d, accept_on("feature", E_POLICY, "feature: E"))
+        } else {
+            let e = accept_on("feature", E_POLICY, "feature: E");
+            (accept_on("main", TIGHT, "main: D"), e)
+        };
+        git(&p.root, &["checkout", "--quiet", "feature"]);
+        let (ok, detail) = p.accepted_link();
+        assert!(ok, "{label}: the feature tree's doctor: {detail}");
+        git(&p.root, &["checkout", "--quiet", "main"]);
+        let (ok, detail) = p.accepted_link();
+        assert!(ok, "{label}: main's doctor: {detail}");
+        if merged {
+            git(
+                &p.root,
+                &["merge", "--quiet", "--no-edit", "-X", "theirs", "feature"],
+            );
+        }
+        p.start("k1");
+        let m = p.commit(&[("m.md", "TIGHT only D fails\n")], "M");
+        let decision = p.stop("k1");
+        let records = p.records_of(&m);
+        assert!(!records.is_empty(), "{label}: {:?}", p.ledger());
+        if !merged {
+            assert!(
+                blocks(&decision) && records.iter().any(|r| r.0 == "fail"),
+                "{label}: {decision} {records:?}"
+            );
+            continue;
+        }
+        assert!(
+            records.iter().all(|r| r.0 != "pass"),
+            "{label}: the merge settled D's disagreement: {records:?}"
+        );
+        assert!(
+            words(&decision).contains(&format!("(of commit {}", &d[..12])),
+            "{label}: {decision}"
+        );
+        // the command at a commit that lacks D is refused, naming D
+        let (code, _, err) = p.accept(&b, &[], &format!("{}\n", sha(LOOSE)));
+        assert_eq!(code, 4, "{label}: {err}");
+        assert!(
+            err.contains(&format!("does not have in its history commit {}", &d[..12])),
+            "{label}: {err}"
+        );
+        // at the merge commit it settles, and says what it settles first
+        let merge = p.head();
+        let text = std::fs::read_to_string(p.root.join("warden.toml")).unwrap();
+        let (code, out, err) = p.accept(&merge, &[], &format!("{}\n", sha(&text)));
+        assert_eq!(code, 0, "{label}: {out}{err}");
+        assert!(
+            out.starts_with("This project's accepted policy cannot be had: acceptances in this tree's history do not follow")
+                && out.contains(&format!("disagreeing acceptance: sha256 {} (at commit {})", sha(TIGHT), &d[..12]))
+                && out.contains("Policy reached before them: sha256")
+                && out.contains(&format!("the disagreeing acceptance at commit {} to policy to accept:", &d[..12]))
+                && out.contains("-rule tight fail TIGHT"),
+            "{label}: {out}"
+        );
+        let (ok, detail) = p.accepted_link();
+        assert!(ok, "{label}: after the settle: {detail}");
+    }
 }

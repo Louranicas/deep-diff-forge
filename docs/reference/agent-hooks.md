@@ -177,14 +177,19 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   accepted policy from the next stop, and a commit a stop already passed under an earlier accepted
   policy keeps that pass. An acceptance in the working tree's history that neither applies nor
   repeats the digest reached before it (two branches' acceptances meeting in a merge) leaves the
-  accepted policy unknown: no change passes, naming both commits, until a person accepts again
-  from the policy reached (the command shows it). With 30 applied acceptances a stop took about
+  accepted policy unknown: no change passes, naming the disagreeing commits, until the owner
+  accepts at a commit that has every disagreeing acceptance in its history (an acceptance made on
+  the other branch does not settle it); the command then shows each disagreeing acceptance and the
+  diff of the policy to accept against each, and refuses a commit that lacks one of them. With 30 applied acceptances a stop took about
   1.1 s more than with none (linear in their number: Git calls of each derivation). **A ledger
   that exists and cannot be read whole** (larger than the 64 MiB its readers read, not a regular
   file, not text) leaves the accepted policy unknown, as a policy record that cannot be read whole
   does: the policy at the session's base still judges and what it fails or holds keeps that
   answer, every other unit is UNJUDGED naming the ledger, no `pass` is written, and the doctor's
-  link fails and says what to do. A session's own commits and stops can grow the ledger past that
+  link fails and says what to do: after the ledger is moved aside together with the policy record,
+  the next session's start records the project again at the commit HEAD names and binds the policy
+  name its hooks are given, and the policy at that commit is then the accepted one: check that file
+  first, or accept the policy you want with the command after it. A session's own commits and stops can grow the ledger past that
   bound: each stop appends one record of about 355 bytes for each commit that waits for its turn,
   so 100,000 waiting commits made the ledger unreadable after two stops in a measurement. From
   0.11.1 a commit already recorded as waiting is not recorded again while it still waits, but
