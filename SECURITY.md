@@ -794,7 +794,10 @@ bounded form.** What it holds to:
   length is never read as another list: the stop is UNJUDGED with the reason and nothing is
   recorded over either. Before, a block with thousands of violations wrote a state the next
   hook would not read, and the session forgot its base. A state directory inside the
-  project's working tree is refused the same way. When the state cannot be kept, a stop
+  project's working tree is refused the same way. Every hook that writes a session's state
+  holds that session's lock, the first hook of an account too, whatever repository stands
+  above the state directory (before 0.11.1 a hook that found no state directory under a `.git`
+  took no lock while it made one). When the state cannot be kept, a stop
   says so every time and the advice hook once, marked by an empty file beside the scratch
   directory.
 - **Each directory of the hooks is a directory of its own.** `deep-diff-forge/` under the Git

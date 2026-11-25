@@ -6,6 +6,20 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+- The agent hooks take a session's lock wherever they keep its state. In 0.11.0 a hook that ran
+  while the hooks' state directory did not exist yet took no lock when a directory above it held
+  a `.git` (a home directory that is a Git repository, such as a dotfiles repository; an empty
+  `.git`; the `.git` file of a linked working tree), and wrote the state there all the same: the
+  first hooks on an account unless `agent doctor --gate` ran first, the first hooks after the
+  dotfiles repository's `git clean -xfd` removed the directory, and every session of an account
+  whose home is made fresh per run (CI jobs, sandboxes, test harnesses). Two first stops of one
+  session then both judged and both wrote the state, and the stop the client makes after a block
+  blocked again (28 of 46 measured races). Those hooks now take the lock as every other does:
+  one of two first stops judges with the state and the other judges the tree without it, as
+  where no `.git` stands above. A session's state is written only by a hook that holds the
+  session's lock (or on a file system with no locks); a hook whose lock file cannot be opened
+  says that its state could not be saved. A state directory inside the session's project is
+  refused as before; the hooks may now leave empty directories there, which Git does not record.
 - `agent doctor --gate` and a session's start: the link `policy_protects_itself` is ready only
   when a rule of the judge's verdict holds or fails the probe (a one-line edit of the policy
   file). In 0.11.0 any verdict that did not pass made the link ready, so a policy that does not
