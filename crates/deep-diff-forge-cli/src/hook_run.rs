@@ -10194,27 +10194,37 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, Why> {
     }
     // (held through the append: ruling 4)
     drop(project_lock);
-    // Where the session's lock cannot be taken in its state directory, no hook of the session
-    // has kept its state, its start included: the sentences a stop says of a session with no
-    // record of its start are then false ("when this session's hooks first ran", a commit of
-    // the session's "not this session's", "the session-start hook must be installed"). The
-    // cause is said first, with how to read them (review of P5c, L1).
+    // Where the session's lock cannot be taken in its state directory, this hook keeps no
+    // state, and the cause is said first (review of P5c, L1). Where no state of the session
+    // was ever kept, no hook of it kept one, its start included: the sentences a stop says of
+    // a session with no record of its start are then false ("when this session's hooks first
+    // ran", a commit of the session's "not this session's", "the session-start hook must be
+    // installed"), and the cause comes with how to read them.
     if let Some(cause) = turn.unlockable() {
-        let late = hook::first_stop();
-        notes.retain(|note| *note != late);
-        decision = led_by(decision, &unlockable_words(cause));
+        let never = session.kept.is_none();
+        if never {
+            let late = hook::first_stop();
+            notes.retain(|note| *note != late);
+        }
+        decision = led_by(decision, &unlockable_words(cause, never));
     }
     let note = (!notes.is_empty()).then(|| notes.join("\n"));
     Ok(hook::stop_output_with(&decision, note.as_deref()))
 }
 
 /// What a stop says first where the session's lock cannot be taken in its state directory
-/// (`cause`): [`stop`].
-fn unlockable_words(cause: &str) -> String {
-    format!(
-        "deep-diff-forge: this session's lock cannot be taken where its state is kept ({}), so no hook of this session has kept its state, its start included. Read what follows with that: \"when this session's hooks first ran\" means this stop; a commit marked \"not this session's\" may be this session's own work; and the session-start hook may be installed and have run. Until the cause is repaired, the same failure can block again and a commit can be judged again.",
-        deep_diff_forge_core::display_safe(cause)
-    )
+/// (`cause`), and `never` any state of the session was kept: [`stop`].
+fn unlockable_words(cause: &str, never: bool) -> String {
+    let cause = deep_diff_forge_core::display_safe(cause);
+    if never {
+        format!(
+            "deep-diff-forge: this session's lock cannot be taken where its state is kept ({cause}), so no hook of this session has kept its state, its start included. Read what follows with that: \"when this session's hooks first ran\" means this stop; a commit marked \"not this session's\" may be this session's own work; and the session-start hook may be installed and have run. Until the cause is repaired, the same failure can block again and a commit can be judged again."
+        )
+    } else {
+        format!(
+            "deep-diff-forge: this session's lock cannot be taken where its state is kept ({cause}), so this stop keeps no state: until the cause is repaired, the same failure can block again and a commit can be judged again."
+        )
+    }
 }
 
 /// `decision` with `lead` said before anything else it says.

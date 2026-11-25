@@ -15889,4 +15889,19 @@ fn a_lock_that_cannot_be_taken_keeps_no_state_and_a_stop_says_its_cause_first() 
             && !reason.contains("The hook could not keep its state ("),
         "{reason}"
     );
+    // a session whose start was recorded, and whose lock file cannot be opened from then on:
+    // its start kept a state, and the stop says so no other way
+    start(&root, "r");
+    let lock = sessions().join(format!("{}.lock", stem("r")));
+    std::fs::remove_file(&lock).unwrap();
+    std::fs::create_dir(&lock).unwrap();
+    secret(&root, "k2.rs");
+    let said = stop_from(&root, "r", &script);
+    let reason = blocked(&said);
+    assert!(
+        reason.starts_with("deep-diff-forge: this session's lock cannot be taken where its state is kept (the session's lock file ")
+            && reason.contains("so this stop keeps no state: until the cause is repaired")
+            && !reason.contains("its start included"),
+        "{reason}"
+    );
 }
