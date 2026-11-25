@@ -2,7 +2,8 @@
 //! job, not per step, so a step-level `if:` cannot keep a write or OIDC token away from the build
 //! scripts, proc macros and smoke-run binary of the same job; and a release published from inside
 //! a matrix leg goes public before the other legs have passed. This reads the workflow's fixed
-//! two-space layout (it is not a YAML executor) and checks both.
+//! two-space layout (it is not a YAML executor) and checks both. It also holds the workflow's
+//! triggers to what `SECURITY.md` says of them.
 
 /// One job of a workflow: its job-level keys and every line of its body.
 #[derive(Debug, Default)]
@@ -208,6 +209,165 @@ fn the_reader_refuses_tomllib_in_a_matrix_job_without_setup_python() {
     );
     let single = "jobs:\n  build:\n    steps:\n      - run: python3 -c 'import tomllib'\n";
     assert_eq!(check(&format!("{single}{release}")), Vec::<String>::new());
+}
+
+/// The workflow's triggers, in the same fixed two-space layout: each two-space key of its
+/// top-level `on:` block, as written, with the lines indented under it, trimmed; comments, a
+/// line's trailing ` #` comment and blank lines left out. `None` when the workflow has no `on:`
+/// line of its own, has two, or names its triggers in another form (`on: push`, `on: [push]`,
+/// a quoted `"on":`), which this reader does not read.
+fn triggers(workflow: &str) -> Option<Vec<(String, Vec<String>)>> {
+    let mut found: Option<Vec<(String, Vec<String>)>> = None;
+    let mut inside = false;
+    for line in workflow.lines() {
+        let code = line.split(" #").next().unwrap_or_default().trim_end();
+        if code.trim_start().is_empty() || code.trim_start().starts_with('#') {
+            continue;
+        }
+        if !code.starts_with(' ') {
+            inside = false;
+            let key = code.split(':').next().unwrap_or_default();
+            if key.trim().trim_matches(['"', '\'']) == "on" {
+                if code != "on:" || found.is_some() {
+                    return None;
+                }
+                found = Some(Vec::new());
+                inside = true;
+            }
+            continue;
+        }
+        let Some(events) = found.as_mut().filter(|_| inside) else {
+            continue;
+        };
+        if let Some(event) = code.strip_prefix("  ").filter(|e| !e.starts_with(' ')) {
+            events.push((event.to_owned(), Vec::new()));
+        } else if let Some((_, under)) = events.last_mut() {
+            under.push(code.trim().to_owned());
+        }
+    }
+    found
+}
+
+/// `SECURITY.md`'s sentence on the release workflow's triggers.
+const TRIGGER_SENTENCE: &str = "`release.yml` runs on `v*` tags and on manual `workflow_dispatch`.";
+
+/// What the sentence allows, in the reader's terms: a push of tags matching `v*` (no branch, no
+/// other tag pattern), and a manual dispatch; nothing else.
+const TRIGGERS: &[(&str, &[&str])] = &[("push:", &["tags: ['v*']"]), ("workflow_dispatch:", &[])];
+
+fn trigger_problems(workflow: &str) -> Vec<String> {
+    let Some(events) = triggers(workflow) else {
+        return vec!["no `on:` block in the two-space layout this reader reads".to_owned()];
+    };
+    let mut problems = Vec::new();
+    for (event, under) in &events {
+        match TRIGGERS.iter().find(|(allowed, _)| allowed == event) {
+            None => problems.push(format!(
+                "the workflow runs on `{event}` {under:?}, which SECURITY.md does not name"
+            )),
+            Some((_, says)) if under != says => problems.push(format!(
+                "`{event}` is {under:?}, where SECURITY.md allows {says:?}"
+            )),
+            Some(_) => {}
+        }
+    }
+    for (allowed, _) in TRIGGERS {
+        let named = events.iter().filter(|(event, _)| event == allowed).count();
+        if named != 1 {
+            problems.push(format!(
+                "`{allowed}` is named {named} times, where SECURITY.md names it once"
+            ));
+        }
+    }
+    problems
+}
+
+#[test]
+fn the_release_runs_only_on_v_tags_and_manual_dispatch() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    let security = std::fs::read_to_string(format!("{root}/SECURITY.md")).unwrap();
+    let words = security.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        words.contains(TRIGGER_SENTENCE),
+        "SECURITY.md no longer says {TRIGGER_SENTENCE:?}: hold this check to what it says now"
+    );
+    let workflow =
+        std::fs::read_to_string(format!("{root}/.github/workflows/release.yml")).unwrap();
+    assert_eq!(trigger_problems(&workflow), Vec::<String>::new());
+}
+
+#[test]
+fn the_trigger_reader_reports_every_other_trigger() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../.github/workflows/release.yml"
+    );
+    let workflow = std::fs::read_to_string(path).unwrap();
+    let tags = "  push:\n    tags: ['v*']\n";
+    let dispatch = "  workflow_dispatch:\n";
+    // (what is altered, the text it replaces, its replacement, a word of the problem)
+    for (case, from, to, says) in [
+        (
+            "a branch push added",
+            tags,
+            "  push:\n    tags: ['v*']\n    branches: [main]\n",
+            "branches: [main]",
+        ),
+        ("every push, unfiltered", tags, "  push:\n", "`push:` is []"),
+        (
+            "the tag pattern widened to `*`",
+            tags,
+            "  push:\n    tags: ['*']\n",
+            "tags: ['*']",
+        ),
+        (
+            "a second tag pattern",
+            tags,
+            "  push:\n    tags: ['v*', '*']\n",
+            "tags: ['v*', '*']",
+        ),
+        (
+            "pull_request_target added",
+            dispatch,
+            "  workflow_dispatch:\n  pull_request_target:\n",
+            "pull_request_target",
+        ),
+        (
+            "pull_request added",
+            dispatch,
+            "  pull_request:\n    branches: [main]\n  workflow_dispatch:\n",
+            "`pull_request:`",
+        ),
+        (
+            "a schedule added",
+            dispatch,
+            "  workflow_dispatch:\n  schedule:\n    - cron: '0 3 * * *'\n",
+            "`schedule:`",
+        ),
+        (
+            "workflow_dispatch removed",
+            dispatch,
+            "",
+            "`workflow_dispatch:` is named 0 times",
+        ),
+        (
+            "the triggers in a form the reader does not read",
+            "\non:\n",
+            "\non: [push, workflow_dispatch]\nx:\n",
+            "no `on:` block",
+        ),
+    ] {
+        assert!(
+            workflow.contains(from),
+            "{case}: release.yml has no {from:?}"
+        );
+        let altered = workflow.replacen(from, to, 1);
+        let problems = trigger_problems(&altered);
+        assert!(
+            problems.iter().any(|p| p.contains(says)),
+            "{case}: {problems:#?}"
+        );
+    }
 }
 
 /// Every `runs-on:` label and matrix `os:` value that floats: a `-latest` label moves to a new
