@@ -28,6 +28,7 @@ pub(crate) fn run(args: &[String]) {
             eprintln!("       {}", crate::agent_check::CHECK_USAGE);
             eprintln!("       {}", crate::ledger::VERIFY_USAGE);
             eprintln!("       {}", crate::policy_accept::USAGE);
+            eprintln!("{}", crate::policy_accept::SCOPE);
             eprintln!("       {}", crate::hook_run::USAGE);
             std::process::exit(exit::USAGE);
         }

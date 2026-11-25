@@ -173,8 +173,24 @@ deep-diff-forge agent setup --client claude --hooks --ranker-dir DIR   # the sam
   unreadable (`place.base_gone`), never the new baseline's. A `pass` record takes its commit out of
   the frontier, and verifies it for `agent verify-branch`, only when it is sealed to a digest that
   was the accepted policy: the first record's, or an applied acceptance's. An acceptance verifies
-  nothing: a commit a stop held keeps its record, and units are judged again under the new accepted
-  policy at the next stops. **One snapshot at the append:** a stop reads the ledger and the policy
+  nothing: a commit a stop held keeps its record, units not yet judged are judged under the new
+  accepted policy from the next stop, and a commit a stop already passed under an earlier accepted
+  policy keeps that pass. An acceptance in the working tree's history that neither applies nor
+  repeats the digest reached before it (two branches' acceptances meeting in a merge) leaves the
+  accepted policy unknown: no change passes, naming both commits, until a person accepts again
+  from the policy reached (the command shows it). With 30 applied acceptances a stop took about
+  1.1 s more than with none (linear in their number: Git calls of each derivation). **A ledger
+  that exists and cannot be read whole** (larger than the 64 MiB its readers read, not a regular
+  file, not text) leaves the accepted policy unknown, as a policy record that cannot be read whole
+  does: the policy at the session's base still judges and what it fails or holds keeps that
+  answer, every other unit is UNJUDGED naming the ledger, no `pass` is written, and the doctor's
+  link fails and says what to do. A session's own commits and stops can grow the ledger past that
+  bound: each stop appends one record of about 355 bytes for each commit that waits for its turn,
+  so 100,000 waiting commits made the ledger unreadable after two stops in a measurement. From
+  0.11.1 a commit already recorded as waiting is not recorded again while it still waits, but
+  other records still add up: a ledger grown past the bound stops every pass in the project until
+  a person deals with the file. That is the safe direction, and it is a way to deny the hooks'
+  service that the pull request's judge does not have. **One snapshot at the append:** a stop reads the ledger and the policy
   record under one project lock (`deep-diff-forge/project.lock`), lets it go for the judging, and
   takes it again before its records are made: where the binding, the ledger's first record or the
   applied acceptances changed meanwhile, every `pass` of that stop is recorded `unjudged`

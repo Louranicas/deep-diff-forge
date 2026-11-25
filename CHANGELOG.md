@@ -51,8 +51,13 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   an upgrade, commits that passed under a policy that was never the accepted one stop verifying
   until a stop judges them again or the policy is accepted (the published 0.11.0 counts every
   pass). `agent doctor --gate` has a new link, `policy_accepted`. The meaning of
-  `chain.policy_missing` is widened to an unbound policy name, a policy record that cannot be read
-  whole, and an accepted policy that changed while the stop judged.
+  `chain.policy_missing` is widened to an unbound policy name, a policy record or a ledger that
+  cannot be read whole, and an accepted policy that changed while the stop judged. A ledger that
+  exists and cannot be read whole (a session's own commits and stops can grow it past the 64 MiB
+  its readers read) now leaves the accepted policy unknown: no change passes until a person deals
+  with the file (0.11.0 judged under the policy at the session's base alone there); a commit
+  already recorded as waiting for its turn is no longer recorded again at every stop. Acceptances
+  of two branches that meet in a merge pass nothing until the owner accepts again.
 - Tests only: no scanner changed. The tests that hold the line scanners to linear time bounded
   one size in absolute seconds of a debug build, so they failed on a slower runner while the
   scan was linear (`the_import_rule_is_linear_on_long_lines` on GitHub's Linux runner for

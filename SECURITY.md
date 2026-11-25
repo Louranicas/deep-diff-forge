@@ -1258,7 +1258,10 @@ says when it closed:
   the ledger's first record is accepted again, which is never below 0.11.0, since the policy at
   the session's base is still judged by), or truncating it inside a record (the cut line is
   passed over and the doctor names it; the accepted policy goes back to the one before that
-  record, and an acceptance chained on it no longer applies). A record that cannot be read whole, a binding the
+  record, and an acceptance chained on it no longer applies). A ledger grown past the 64 MiB its
+  readers read (a session's own commits and stops can do it) leaves the accepted policy unknown:
+  no change passes in the project until a person deals with the file, a way to deny the hooks'
+  service but never a way to pass. A record that cannot be read whole, a binding the
   ledger disagrees with, and a hook given another policy name than the bound one pass nothing;
   a stop whose accepted policy changed while it judged records no `pass`. The pull request's
   judge, under the target branch's policy, is the authority.

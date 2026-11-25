@@ -14012,7 +14012,8 @@ fn a_ledger_that_cannot_be_written_changes_no_decision() {
         let spoiled = spoiled
             .lines()
             .filter(|line| {
-                !line.starts_with("This unit was judged under one of its two policies: this project's policy record was made beside the first record of its ledger")
+                !line.starts_with("This unit was judged under one of its two policies: this project's policy record and its ledger disagree")
+                    && !line.starts_with("This unit was judged under one of its two policies: this project's ledger cannot be read whole")
             })
             .collect::<Vec<_>>()
             .join("\n");

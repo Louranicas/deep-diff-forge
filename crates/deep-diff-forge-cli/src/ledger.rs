@@ -280,6 +280,11 @@ pub(crate) struct Frontier {
     /// (`None`: a record with no seals, which a stop writes for a commit that changes nothing,
     /// so that no policy judges it).
     pub(crate) passes: std::collections::BTreeMap<String, Vec<Option<String>>>,
+    /// The commits whose last stop record says they wait for their turn (`unjudged`,
+    /// `time.not_asked`): a stop does not record them again while they still wait (release
+    /// 0.11.1, ruling 10: one record a waiting commit at every stop could grow the ledger past
+    /// what its readers read).
+    pub(crate) waiting: std::collections::BTreeSet<String>,
 }
 
 impl Frontier {
@@ -353,45 +358,17 @@ pub(crate) fn snapshot_sha256_of(
     deep_diff_forge_core::sha256_hex(text.as_bytes())
 }
 
-/// The first whole `baseline` record of the ledger in `own`, as [`frontier`] takes it, read
-/// line by line up to it (the rest of the ledger is not read): what a stop compares again under
-/// the project lock before its append (release 0.11.1, ruling 4). `Ok(None)` when there is no
-/// ledger or no whole baseline; `Err` as [`frontier`] errs on a file that is not regular, is
-/// larger than [`WHOLE`] or cannot be read.
+/// The first whole `baseline` record of the ledger in `own`, as [`frontier`] takes it, from the
+/// same read: the whole file, which must be a regular file of at most [`WHOLE`] bytes and text
+/// throughout (so this errs exactly where [`frontier`] errs: release 0.11.1, ruling 10, F1),
+/// with the lines parsed only up to that record. What a stop compares again under the project
+/// lock before its append (ruling 4). `Ok(None)` when there is no ledger or no whole baseline.
 pub(crate) fn first_baseline(own: &Path) -> Result<Option<Baseline>, String> {
-    use std::io::BufRead as _;
-    use std::os::unix::fs::OpenOptionsExt as _;
-    let path = own.join(FILE);
-    let shown = crate::hook::shown_path(&path.to_string_lossy());
-    let file = match std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
-        .open(&path)
-    {
-        Ok(file) => file,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(format!("the ledger {shown} could not be opened: {e}")),
+    let Some(text) = whole_text(own)? else {
+        return Ok(None);
     };
-    match file.metadata() {
-        Ok(found) if found.is_file() && found.len() <= WHOLE => {}
-        Ok(found) if found.is_file() => {
-            return Err(format!("the ledger {shown} is larger than {WHOLE} bytes"));
-        }
-        _ => return Err(format!("the ledger {shown} is not a regular file")),
-    }
-    let mut reader = std::io::BufReader::new(file.take(WHOLE));
-    let mut line = Vec::new();
-    loop {
-        line.clear();
-        let read = reader
-            .read_until(b'\n', &mut line)
-            .map_err(|e| format!("the ledger {shown} could not be read: {e}"))?;
-        if read == 0 {
-            return Ok(None);
-        }
-        let text = std::str::from_utf8(&line)
-            .map_err(|_| format!("the ledger {shown} could not be read: it is not UTF-8"))?;
-        let Some(record) = record(text.trim_end_matches('\n')).filter(|r| r["v"] == VERSION) else {
+    for line in text.lines() {
+        let Some(record) = record(line).filter(|r| r["v"] == VERSION) else {
             continue;
         };
         if record["kind"] == "baseline"
@@ -400,6 +377,7 @@ pub(crate) fn first_baseline(own: &Path) -> Result<Option<Baseline>, String> {
             return Ok(Some(baseline));
         }
     }
+    Ok(None)
 }
 
 /// The SHA-256 of `tips` one a line, as a `baseline` record names them.
@@ -451,6 +429,20 @@ pub(crate) fn frontier(own: &Path) -> Result<Frontier, String> {
         match record["kind"].as_str() {
             Some("baseline") if out.baseline.is_none() => out.baseline = baseline_of(&record),
             Some("stop")
+                if record["outcome"] == "unjudged"
+                    && record["unit"]
+                        .as_str()
+                        .and_then(|unit| unit.strip_prefix("commit:"))
+                        .is_some_and(is_commit_id) =>
+            {
+                let id = record["unit"].as_str().unwrap_or_default()["commit:".len()..].to_owned();
+                if record["class"] == "time.not_asked" {
+                    out.waiting.insert(id);
+                } else {
+                    out.waiting.remove(&id);
+                }
+            }
+            Some("stop")
                 if matches!(
                     record["outcome"].as_str(),
                     Some("pass" | "fail" | "fail_stands" | "hold")
@@ -461,6 +453,7 @@ pub(crate) fn frontier(own: &Path) -> Result<Frontier, String> {
                     .and_then(|unit| unit.strip_prefix("commit:"))
                     .filter(|id| is_commit_id(id))
                 {
+                    out.waiting.remove(id);
                     out.judged.insert(id.to_owned());
                     if record["outcome"] == "pass" {
                         let sealed = record["seals"]["policy_sha256"].as_str();

@@ -671,7 +671,8 @@ fn no_accepted_policy_judges_under_the_session_base_alone_and_says_so() {
     std::fs::write(p.root.join("k.md"), KEY).unwrap();
     assert!(blocks(&p.stop("k1")));
 
-    // a ledger that cannot be read
+    // a ledger that cannot be read: since ruling 10 (F1) the accepted policy cannot be had there
+    // (never "no accepted policy"): the policy at the session's base still fails what it fails
     let p = project("unreadable", Some(STRICT));
     p.start("k0", "startup");
     let file = p.root.join(".git/deep-diff-forge/ledger.jsonl");
@@ -680,7 +681,7 @@ fn no_accepted_policy_judges_under_the_session_base_alone_and_says_so() {
     let said = p.start("k1", "startup");
     assert!(
         said.split_whitespace().collect::<Vec<_>>().join(" ").contains(
-            "- This project's ledger and policy record name no accepted policy (the ledger could not be read): changes are judged under the policy at commit"
+            "- This project's accepted policy cannot be read (this project's ledger cannot be read whole"
         ),
         "{said}"
     );
@@ -688,7 +689,7 @@ fn no_accepted_policy_judges_under_the_session_base_alone_and_says_so() {
     let decision = p.stop("k1");
     assert!(blocks(&decision), "{decision}");
     assert!(
-        words(&decision).contains("No accepted policy could be read from it, so they were judged under the policy at the commit this session began from alone."),
+        words(&decision).contains("the project's accepted policy cannot be had while the ledger cannot be read, so a change that policy does not fail or hold is UNJUDGED"),
         "{decision}"
     );
 }

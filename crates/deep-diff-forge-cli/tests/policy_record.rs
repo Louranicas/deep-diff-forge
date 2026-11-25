@@ -277,6 +277,25 @@ impl Project {
         std::fs::read_to_string(self.own().join("policy.jsonl")).unwrap_or_default()
     }
 
+    /// [`Project::records_of`] for a ledger that holds a line that is not text (read lossy, such
+    /// lines passed over).
+    fn records_of_bytes(&self, id: &str) -> Vec<(String, String, Option<String>)> {
+        let unit = format!("commit:{id}");
+        let bytes = std::fs::read(self.own().join("ledger.jsonl")).unwrap_or_default();
+        String::from_utf8_lossy(&bytes)
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|r| r["kind"] == "stop" && r["unit"] == unit.as_str())
+            .map(|r| {
+                (
+                    r["outcome"].as_str().unwrap().to_owned(),
+                    r["class"].as_str().unwrap().to_owned(),
+                    r["seals"]["policy_sha256"].as_str().map(str::to_owned),
+                )
+            })
+            .collect()
+    }
+
     /// The stop records of the commit `id`: (outcome, class, policy digest).
     fn records_of(&self, id: &str) -> Vec<(String, String, Option<String>)> {
         let unit = format!("commit:{id}");
@@ -535,9 +554,10 @@ fn an_acceptance_that_does_not_apply_is_ignored_and_named() {
     let (ok, detail) = p.accepted_link();
     assert!(!ok, "{detail}");
     for why in [
-        "the acceptance record on line 2 is ignored: its from_sha256 is not the accepted digest at that point",
+        // (in this tree's history and not from the policy reached: a disagreement, ruling 10 F2)
+        "the acceptance record on line 2 is ignored: it is in this tree's history and does not follow from the accepted policy reached before it",
         &format!(
-            "the acceptance record on line 3 is ignored: its commit {} is not an ancestor of HEAD",
+            "the acceptance record on line 3 does not apply here and is harmless: its commit {} is not an ancestor of HEAD",
             &side[..12]
         ),
         &format!(
@@ -802,7 +822,7 @@ fn every_exit_of_the_comparison_at_the_append_is_probed() {
         let mut text = p.record_text();
         text.push_str(
             &json!({"v": 1, "kind": "acceptance", "policy": "warden.toml",
-                "from_sha256": sha(LOOSE), "to_sha256": sha(TIGHT), "commit": p.head()})
+                "from_sha256": sha(LOOSE), "to_sha256": sha(TIGHT), "commit": "f".repeat(40)})
             .to_string(),
         );
         text.push('\n');
@@ -840,23 +860,51 @@ fn every_exit_of_the_comparison_at_the_append_is_probed() {
         "{decision}"
     );
     assert_eq!(passes(&p, &m), 0, "{:?}", p.records_of(&m));
-    // (e) the ledger cannot be read again
+    // (e) the ledger cannot be read again (a byte that is not text appended while the judge
+    // ran): the arm (readable, then not); the records can still be appended, so the count of
+    // passes holds the exit
     let (p, _, _) = tightenable("exit-e");
     p.start("k1");
     let m = p.commit(&[("m.md", "fn m() {}\n")], "M");
     let ledger = p.own().join("ledger.jsonl");
-    let kept = std::fs::read(&ledger).unwrap();
     let decision = paused_stop(&p, "k1", || {
-        std::fs::remove_file(&ledger).unwrap();
-        std::fs::create_dir(&ledger).unwrap();
+        let mut bytes = std::fs::read(&ledger).unwrap();
+        bytes.extend_from_slice(b"\xff\n");
+        std::fs::write(&ledger, bytes).unwrap();
     });
     assert!(
         words(&decision).contains("UNJUDGED: this project's ledger could not be read again before this stop's records were made"),
         "{decision}"
     );
-    std::fs::remove_dir(&ledger).unwrap();
-    std::fs::write(&ledger, kept).unwrap();
-    assert_eq!(passes(&p, &m), 0, "{:?}", p.records_of(&m));
+    assert!(!p.records_of_bytes(&m).is_empty(), "nothing was recorded");
+    assert_eq!(
+        p.records_of_bytes(&m)
+            .iter()
+            .filter(|r| r.0 == "pass")
+            .count(),
+        0,
+        "{:?}",
+        p.records_of_bytes(&m)
+    );
+    // (g) the ledger cannot be read at either read (ruling 10, F1): the accepted policy cannot be
+    // had, nothing passes, and the words name the ledger
+    let (p, _, _) = tightenable("exit-g");
+    p.start("k1");
+    let m = p.commit(&[("m.md", "fn m() {}\n")], "M");
+    let mut bytes = std::fs::read(ledger_of(&p)).unwrap();
+    bytes.extend_from_slice(b"\xff\n");
+    std::fs::write(ledger_of(&p), bytes).unwrap();
+    let decision = p.stop("k1");
+    assert!(
+        words(&decision).contains("this project's ledger cannot be read whole"),
+        "{decision}"
+    );
+    assert!(!p.records_of_bytes(&m).is_empty(), "nothing was recorded");
+    assert!(
+        p.records_of_bytes(&m).iter().all(|r| r.0 != "pass"),
+        "{:?}",
+        p.records_of_bytes(&m)
+    );
     // (f) the policy record cannot be read whole at the re-read
     let (p, _, _) = tightenable("exit-f");
     p.start("k1");
@@ -1032,7 +1080,7 @@ fn the_record_under_acts_of_the_same_user() {
     let decision = p.stop("k3");
     assert!(
         words(&decision)
-            .contains("the two files disagree (as after the ledger was removed or replaced)"),
+            .contains("this project's policy record and its ledger disagree, so the accepted policy cannot be read"),
         "{decision}"
     );
     assert!(
@@ -1368,4 +1416,267 @@ fn the_stateless_stop_judges_under_the_accepted_policy_too() {
             "{damaged}: {decision}"
         );
     }
+}
+
+fn ledger_of(p: &Project) -> PathBuf {
+    p.own().join("ledger.jsonl")
+}
+
+/// Ruling 10, F1: a ledger that exists and cannot be read whole (here grown past the 64 MiB its
+/// readers read, as a session's own commits and stops can grow it) leaves the accepted policy
+/// unknown, never "no accepted policy": a hook given another name passes nothing, an accepted
+/// tighter policy is not dropped into a pass, and the doctor's link fails and says what to do.
+#[test]
+fn a_ledger_grown_past_its_readers_passes_nothing() {
+    let pad = |p: &Project| {
+        let line = format!(
+            "{}\n",
+            json!({"v": 1, "kind": "check", "session": "0123456789abcdef", "units": 1, "failed": 0})
+        );
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(ledger_of(p))
+            .unwrap();
+        let block = line.repeat(1 << 14);
+        let mut written = 0_usize;
+        while written <= 65 << 20 {
+            file.write_all(block.as_bytes()).unwrap();
+            written += block.len();
+        }
+    };
+    // another name than the bound one
+    let p = project("grown-name", STRICT);
+    std::fs::write(p.root.join("loose.toml"), LOOSE).unwrap();
+    git(&p.root, &["add", "--all"]);
+    git(
+        &p.root,
+        &["commit", "--quiet", "-m", "a lenient file beside it"],
+    );
+    p.start("k0");
+    pad(&p);
+    p.start_with("k1", Some("loose.toml"));
+    let key = p.commit(&[("k.md", KEY)], "a key");
+    let decision = p.stop_with("k1", Some("loose.toml"));
+    assert!(
+        !blocks(&decision) && words(&decision).contains("UNJUDGED"),
+        "{decision}"
+    );
+    let ledger = std::fs::read(ledger_of(&p)).unwrap();
+    let tail =
+        String::from_utf8_lossy(&ledger[ledger.len().saturating_sub(1 << 16)..]).into_owned();
+    let mine: Vec<Value> = tail
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|r| r["unit"] == format!("commit:{key}").as_str())
+        .collect();
+    assert!(
+        !mine.is_empty() && mine.iter().all(|r| r["outcome"] != "pass"),
+        "a key passed under another name than the bound one: {mine:?}"
+    );
+    // an accepted tighter policy: what only it fails does not pass
+    let (p, tight, _) = tightenable("grown-accepted");
+    let (code, out, err) = p.accept(&tight, &[], &format!("{}\n", sha(TIGHT)));
+    assert_eq!(code, 0, "{out}{err}");
+    pad(&p);
+    p.start("k1");
+    let m = p.commit(&[("m.md", "TIGHT only the accepted policy fails\n")], "M");
+    let decision = p.stop("k1");
+    let ledger = std::fs::read(ledger_of(&p)).unwrap();
+    let tail =
+        String::from_utf8_lossy(&ledger[ledger.len().saturating_sub(1 << 16)..]).into_owned();
+    let mine: Vec<Value> = tail
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|r| r["unit"] == format!("commit:{m}").as_str())
+        .collect();
+    assert!(
+        !mine.is_empty() && mine.iter().all(|r| r["outcome"] != "pass"),
+        "{decision} {mine:?}"
+    );
+    let (ok, detail) = p.accepted_link();
+    assert!(
+        !ok && detail.contains("this project's ledger cannot be read whole")
+            && detail.contains("to settle it, a person deals with the ledger"),
+        "{detail}"
+    );
+}
+
+/// Ruling 10, F2 and F3: two branches' acceptances. On main, an acceptance made on a feature
+/// branch is not of main's history: the doctor names it and stays ready. After the feature branch
+/// is merged, its acceptance is in main's history and does not follow from the policy reached:
+/// no change passes, naming both commits, until a person accepts again from the policy reached.
+#[test]
+fn acceptances_of_two_branches_that_meet_in_a_merge_pass_nothing_until_settled() {
+    let p = project("merge", STRICT);
+    p.start("k0");
+    // the feature branch: a looser policy accepted there
+    git(&p.root, &["checkout", "--quiet", "-b", "feature"]);
+    let loose = p.commit(&[("warden.toml", LOOSE)], "feature: loose");
+    let (code, out, err) = p.accept(&loose, &[], &format!("{}\n", sha(LOOSE)));
+    assert_eq!(code, 0, "{out}{err}");
+    // main: a tighter policy accepted from the first one
+    git(&p.root, &["checkout", "--quiet", "main"]);
+    let tight = p.commit(&[("warden.toml", TIGHT)], "main: tight");
+    let (code, out, err) = p.accept(&tight, &[], &format!("{}\n", sha(TIGHT)));
+    assert_eq!(code, 0, "{out}{err}");
+    let (ok, detail) = p.accepted_link();
+    assert!(
+        ok && detail.contains("does not apply here and is harmless")
+            && detail.contains(&format!("the one at commit {}", &tight[..7])),
+        "{detail}"
+    );
+    // the control: no merge; a commit only TIGHT fails blocks
+    p.start("k1");
+    let before = p.commit(&[("m.md", "TIGHT\n")], "M");
+    assert!(blocks(&p.stop("k1")));
+    assert!(p.records_of(&before).iter().any(|r| r.0 == "fail"));
+    // the merge brings the feature's acceptance into main's history
+    git(
+        &p.root,
+        &["merge", "--quiet", "--no-edit", "-X", "theirs", "feature"],
+    );
+    p.start("k2");
+    let after = p.commit(&[("n.md", "TIGHT again\n")], "N");
+    let decision = p.stop("k2");
+    let records = p.records_of(&after);
+    assert!(
+        !records.is_empty() && records.iter().all(|r| r.0 != "pass"),
+        "{decision} {records:?}"
+    );
+    assert!(
+        words(&decision).contains(&format!(
+            "an acceptance in this tree's history (of commit {})",
+            &tight[..12]
+        )),
+        "{decision}"
+    );
+    let (ok, detail) = p.accepted_link();
+    assert!(
+        !ok && detail.contains("to settle it, a person accepts"),
+        "{detail}"
+    );
+    // settled: the owner accepts the merged policy, from the policy reached
+    let merged = p.head();
+    let text = std::fs::read_to_string(p.root.join("warden.toml")).unwrap();
+    let (code, out, err) = p.accept(&merged, &[], &format!("{}\n", sha(&text)));
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(
+        out.contains(&format!("the file at commit {}", &loose[..12])),
+        "{out}"
+    );
+    let (ok, detail) = p.accepted_link();
+    assert!(ok, "{detail}");
+}
+
+/// Ruling 7 row 3 and ruling 10 F8: where the ledger's first record names no commit, or that
+/// commit has no policy file, an acceptance from no accepted policy supplies the first one, and
+/// after it the stop without its state does not pass a key committed beside a loosening (it did
+/// before the acceptance: the stated limit). And the shallow refusal of the command, with its
+/// control.
+#[test]
+fn the_first_acceptance_from_none_and_the_shallow_refusal() {
+    for (kind, accepted) in [("nofile", false), ("nofile", true), ("nullhead", true)] {
+        let p = project(&format!("first-{kind}-{accepted}"), STRICT);
+        if kind == "nullhead" {
+            // a repository whose first hook ran before its first commit
+            std::fs::remove_dir_all(p.root.join(".git")).unwrap();
+            git(&p.root, &["init", "--quiet"]);
+            p.start("k0");
+            git(&p.root, &["add", "a.rs"]);
+            git(&p.root, &["commit", "--quiet", "-m", "first"]);
+        } else {
+            git(&p.root, &["rm", "--quiet", "--cached", "warden.toml"]);
+            git(&p.root, &["commit", "--quiet", "-m", "no policy file"]);
+            p.start("k0");
+        }
+        let policy = p.commit(&[("warden.toml", STRICT)], "P: a person adds the policy");
+        p.start("k1");
+        if accepted {
+            let (code, out, err) = p.accept(&policy, &[], &format!("{}\n", sha(STRICT)));
+            assert_eq!(code, 0, "{kind}: {out}{err}");
+            assert!(
+                out.contains("Accepted policy now: none (this project has no accepted policy yet"),
+                "{out}"
+            );
+        }
+        p.commit(&[("warden.toml", LOOSE)], "L: loosen");
+        let key = p.commit(&[("k.md", KEY)], "K: a key");
+        damage(&p);
+        p.stop("k1");
+        let records = p.records_of(&key);
+        if accepted {
+            assert!(
+                !records.is_empty() && records.iter().all(|r| r.0 != "pass"),
+                "{kind}: the first acceptance did not hold: {records:?}"
+            );
+        } else {
+            assert!(records.iter().all(|r| r.0 != "pass"), "{kind}: {records:?}");
+        }
+    }
+    // the shallow refusal: a depth-1 clone recorded, then HEAD moved across a cut
+    let upstream = project("shallow-up", STRICT);
+    upstream.commit(&[("b.rs", "fn b() {}\n")], "U1");
+    let p = project("shallow-clone", STRICT);
+    std::fs::remove_dir_all(&p.root).unwrap();
+    let url = format!("file://{}", upstream.root.display());
+    git(
+        p.root.parent().unwrap(),
+        &[
+            "clone",
+            "--quiet",
+            "--depth",
+            "1",
+            &url,
+            p.root.to_str().unwrap(),
+        ],
+    );
+    p.start("k0");
+    upstream.commit(&[("c.rs", "fn c() {}\n")], "U2");
+    let tight = upstream.commit(&[("warden.toml", TIGHT)], "U3: tight");
+    git(
+        &p.root,
+        &["fetch", "--quiet", "--depth", "1", "origin", "main"],
+    );
+    git(&p.root, &["reset", "--quiet", "--hard", "FETCH_HEAD"]);
+    let (code, _, err) = p.accept(&tight, &[], &format!("{}\n", sha(TIGHT)));
+    assert_eq!(code, 4, "{err}");
+    assert!(err.contains("this clone is shallow"), "{err}");
+    git(&p.root, &["fetch", "--quiet", "--unshallow", "origin"]);
+    let (code, out, err) = p.accept(&tight, &[], &format!("{}\n", sha(TIGHT)));
+    assert_eq!(code, 0, "{out}{err}");
+}
+
+/// Ruling 10, F4 to F6: the command's last line says what an acceptance does to units already
+/// judged; a refusal of its arguments carries what the command is not; a stop given another name
+/// whose file is missing at the base names both names.
+#[test]
+fn the_command_and_the_stop_say_what_is_true() {
+    let (p, tight, _) = tightenable("texts");
+    let (code, out, err) = p.accept(&tight, &[], &format!("{}\n", sha(TIGHT)));
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(
+        out.contains("Units not yet judged are judged under it from the next stop; a commit a stop already passed under an earlier accepted policy keeps that pass, and no commit is verified by this."),
+        "{out}"
+    );
+    let refused = p
+        .command()
+        .args(["agent", "policy-accept", "--bogus"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert_eq!(refused.status.code(), Some(2), "{said}");
+    assert!(
+        said.contains("any process running as this user can invoke or write the record of, not authentication; the pull request's judge, under the target branch's policy, is the authority."),
+        "{said}"
+    );
+    // a name whose file is missing at the base, and which the record does not bind
+    p.start_with("k1", Some("other.toml"));
+    p.commit(&[("m.md", "m\n")], "M");
+    let decision = p.stop_with("k1", Some("other.toml"));
+    let said = words(&decision);
+    assert!(
+        said.contains("\"other.toml\"") && said.contains("binds \"warden.toml\""),
+        "{said}"
+    );
 }

@@ -302,7 +302,7 @@ pub(crate) fn lock(own: &Path, wait: Duration) -> Result<ProjectLock, String> {
             }
             Err((_, nix::errno::Errno::EWOULDBLOCK)) => {
                 return Err(
-                    "the project lock was held by another stop or command for longer than this one waits"
+                    "the project lock was held by another hook (a stop, a session start or an advice hook) or by agent policy-accept for longer than this one waits"
                         .to_owned(),
                 );
             }

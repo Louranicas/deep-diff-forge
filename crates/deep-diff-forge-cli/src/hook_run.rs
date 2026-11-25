@@ -5015,13 +5015,33 @@ impl<'a> Judge<'a> {
     /// that has none ([`united`]). (In 7cdc8b9d a missing first bench made every commit wait and
     /// threw away the other half's fail or hold, where 0.11.0's stateless stop blocked: the
     /// implementation review of L1b, F1b.)
-    fn broken(&self) -> Option<&Why> {
-        let mut reasons = self.halves.iter().map(|half| match &half.bench {
-            Some(Err(reason)) => Some(reason),
-            _ => None,
-        });
-        let first = reasons.next()??;
-        reasons.all(|reason| reason.is_some()).then_some(first)
+    ///
+    /// Where both halves have no bench the reason names both (ruling 10, F6: a hook given another
+    /// name than the bound one, whose file is missing at the base, named only the missing file).
+    fn broken(&self) -> Option<Why> {
+        let reasons: Vec<Option<&Why>> = (self.halves.iter())
+            .map(|half| match &half.bench {
+                Some(Err(reason)) => Some(reason),
+                _ => None,
+            })
+            .collect();
+        if reasons.is_empty() || reasons.iter().any(Option::is_none) {
+            return None;
+        }
+        let mut both = reasons.into_iter().flatten();
+        let first = both.next()?.clone();
+        Some(match both.next() {
+            // (the second's first: the accepted policy's reason is what decides, and a long
+            // reason is cut at its end)
+            Some(second) if second.text != first.text => Why::new(
+                second.class,
+                format!(
+                    "under {}: {}; and under {}: {}",
+                    self.stop.names.second, second.text, self.stop.names.first, first.text
+                ),
+            ),
+            _ => first,
+        })
     }
 }
 
@@ -5638,8 +5658,6 @@ fn with_frontier(
 enum NoAccepted {
     /// The ledger has no whole baseline record: it is new, or was removed.
     NoRecord,
-    /// The ledger could not be read (not a regular file, over its size, an error).
-    Unreadable,
     /// The baseline record names no commit: the project was first recorded before its first.
     NullHead,
     /// The baseline's commit has no policy file of the name the hooks are given.
@@ -5651,7 +5669,6 @@ impl NoAccepted {
     fn cause(self, name: &str) -> String {
         match self {
             Self::NoRecord => "the ledger has no record of the project yet".to_owned(),
-            Self::Unreadable => "the ledger could not be read".to_owned(),
             Self::NullHead => "the ledger's first record names no commit".to_owned(),
             Self::NoFile => format!(
                 "the commit of the ledger's first record has no file {}",
@@ -5750,7 +5767,26 @@ fn shares_history(place: &Place, head: &str, deadline: Deadline) -> bool {
 struct Derivation {
     bound: Option<String>,
     applied: Vec<crate::policy_record::Acceptance>,
-    ignored: Vec<(crate::policy_record::Acceptance, String)>,
+    /// The acceptances that did not apply, each with why and whether its commit is outside this
+    /// working tree's history (harmless here: the doctor names it and stays ready, ruling 10 F3).
+    ignored: Vec<(crate::policy_record::Acceptance, String, bool)>,
+    /// Where an acceptance in this tree's history disagrees with the accepted policy reached
+    /// before it (ruling 10, F2): the policy reached (its digest, commit and bytes), from which the
+    /// owner's next acceptance applies. `None` otherwise.
+    reached: Option<Reached>,
+}
+
+/// The accepted policy a derivation reached before an acceptance that disagrees with it: its
+/// digest, its commit and its bytes (each `None` where there was none).
+type Reached = (Option<String>, Option<String>, Option<Vec<u8>>);
+
+/// Why the accepted policy cannot be had while the project's ledger exists and cannot be read
+/// whole (ruling 10, F1): what a stop's units, the start and the doctor say.
+fn ledger_unreadable() -> Why {
+    Why::new(
+        ReasonClass::ChainPolicyMissing,
+        "this project's ledger cannot be read whole (it is larger than its readers read, not a regular file, or not text), so its accepted policy cannot be had: no change passes until a person deals with the file (`chain.policy_missing`)",
+    )
 }
 
 /// The first seven characters of a commit id, as the texts name a commit.
@@ -5766,7 +5802,7 @@ fn disagreement(binding: &crate::policy_record::Binding, now: &str) -> Why {
     Why::new(
         ReasonClass::PlaceBaseGone,
         format!(
-            "this project's policy record was made beside the first record of its ledger, which named {}, and {now}: the two files disagree (as after the ledger was removed or replaced), so the accepted policy cannot be read (`place.base_gone`)",
+            "this project's policy record and its ledger disagree, so the accepted policy cannot be read: the record was made beside a first record of the ledger that named {}, and {now} (as after the ledger was removed or replaced) (`place.base_gone`)",
             binding.baseline_head.as_ref().map_or_else(
                 || "no commit".to_owned(),
                 |head| format!("commit {}", &head[..12])
@@ -5869,8 +5905,11 @@ fn accepted_policy(
     deadline: Deadline,
 ) -> (Accepted, Derivation) {
     let mut derived = Derivation::default();
+    // A ledger that exists and cannot be read whole (over what its readers read, not a regular
+    // file, not text) leaves the accepted policy unknown: never "no accepted policy" (ruling 10,
+    // F1: an agent's own commits and stops can grow the ledger past its readers' bound).
     let Some(frontier) = frontier else {
-        return (Accepted::None(NoAccepted::Unreadable), derived);
+        return (Accepted::Unreadable(ledger_unreadable()), derived);
     };
     let record = match record {
         Ok(record) => record.as_ref(),
@@ -5987,8 +6026,39 @@ fn accepted_policy(
             derived,
         );
     }
+    // An acceptance in this tree's history that neither applies nor repeats the digest reached
+    // (two branches' acceptances met in a merge: ruling 10, F2) leaves the accepted policy
+    // unknown until a later acceptance applies from the digest reached.
+    let mut disagreeing: Option<Why> = None;
     for acceptance in record.map_or(&[][..], |r| r.acceptances.as_slice()) {
         let at = current.as_ref().map(|c| c.0.as_str());
+        if acceptance.from.as_deref() != at && Some(acceptance.to.as_str()) != at {
+            match head_contains(&place.top, &acceptance.commit, &git) {
+                Ok(true) => {
+                    let reached = current.as_ref().map_or_else(
+                        || "no accepted policy".to_owned(),
+                        |c| format!("the one at commit {}", &c.1[..12]),
+                    );
+                    disagreeing = Some(Why::new(
+                        ReasonClass::ChainPolicyMissing,
+                        format!(
+                            "an acceptance in this tree's history (of commit {}) does not follow from the accepted policy reached before it ({reached}), as after a merge of two branches' acceptances, so the accepted policy cannot be had until an acceptance from that one is recorded (`chain.policy_missing`)",
+                            &acceptance.commit[..12]
+                        ),
+                    ));
+                    derived.ignored.push((
+                        acceptance.clone(),
+                        format!(
+                            "it is in this tree's history and does not follow from the accepted policy reached before it ({reached})"
+                        ),
+                        false,
+                    ));
+                    continue;
+                }
+                Ok(false) | Err(GitAcquireError::InvalidSelection { .. }) => {}
+                Err(error) => return (failed(&error), derived),
+            }
+        }
         match applies(place, acceptance, at, &git) {
             Ok(Ok(bytes)) => {
                 sealed.insert(acceptance.to.clone());
@@ -6000,8 +6070,22 @@ fn accepted_policy(
                     Some(acceptance.commit.clone()),
                 ));
                 derived.applied.push(acceptance.clone());
+                // settled: what disagreed before is harmless now (named, the doctor stays ready)
+                if disagreeing.take().is_some() {
+                    for entry in &mut derived.ignored {
+                        if !entry.2 && entry.1.contains("does not follow from the accepted policy")
+                        {
+                            entry.1.push_str("; a later acceptance settled it");
+                            entry.2 = true;
+                        }
+                    }
+                }
             }
-            Ok(Err(why)) => derived.ignored.push((acceptance.clone(), why)),
+            Ok(Err(why)) => {
+                let other = why.contains("is not an ancestor of HEAD")
+                    || why.contains("is not in this repository");
+                derived.ignored.push((acceptance.clone(), why, other));
+            }
             Err(error) => return (failed(&error), derived),
         }
     }
@@ -6017,6 +6101,13 @@ fn accepted_policy(
                 hook::shown_path(&bound)
             ),
         );
+        return (Accepted::Unreadable(why), derived);
+    }
+    if let Some(why) = disagreeing {
+        derived.reached = Some(match current {
+            Some((sha256, commit, bytes, _)) => (Some(sha256), Some(commit), Some(bytes)),
+            None => (None, None, None),
+        });
         return (Accepted::Unreadable(why), derived);
     }
     match current {
@@ -6174,7 +6265,11 @@ fn project_policy(
     );
     // what the append compares against: the same derivation, unless this read wrote the
     // ledger's baseline (a first record), when it is derived again from what stands now
-    let ledger = crate::ledger::first_baseline(&place.own);
+    // (from the same reader as `frontier`: where that could not be read, neither can this)
+    let ledger = match frontier {
+        Some(_) => crate::ledger::first_baseline(&place.own),
+        None => Err("the ledger could not be read whole".to_owned()),
+    };
     let reference = match &ledger {
         Ok(now) if now.as_ref() != frontier.and_then(|f| f.baseline.as_ref()) => {
             snapshot_from(place, now.clone(), &record, name, deadline).0
@@ -6255,8 +6350,17 @@ fn snapshot_again(
     let record = crate::policy_record::read(&place.own);
     let baseline = match (crate::ledger::first_baseline(&place.own), &first.ledger) {
         (Ok(baseline), Ok(_)) => baseline,
-        // unreadable at both reads: no accepted policy at either (R6 a)
-        (Err(_), Err(_)) => return (Some(held), None),
+        // unreadable at both reads: the accepted policy cannot be had (ruling 10, F1), so no pass
+        // of this stop is known to be under it
+        (Err(why), Err(_)) => {
+            return (
+                Some(held),
+                Some(format!(
+                    "this project's ledger cannot be read whole ({}), so the accepted policy cannot be had",
+                    deep_diff_forge_core::display_safe(&why)
+                )),
+            );
+        }
         (Err(why), Ok(_)) => {
             return (
                 Some(held),
@@ -6356,7 +6460,7 @@ fn project_frontier(
         Err(why) => (
             crate::ledger::Frontier::default(),
             note(format!(
-                "The project's ledger could not be read ({}): this stop judged the commits made since this session began, as before. No accepted policy could be read from it, so they were judged under the policy at the commit this session began from alone.",
+                "The project's ledger could not be read ({}): this stop judged the commits made since this session began, as before, under the policy at the commit this session began from, and the project's accepted policy cannot be had while the ledger cannot be read, so a change that policy does not fail or hold is UNJUDGED. A ledger that a session's commits and stops have grown past what its readers read stays so until a person deals with the file; the pull request's judge is the boundary.",
                 deep_diff_forge_core::display_safe(&why)
             )),
             false,
@@ -6924,7 +7028,7 @@ fn judge_commits(
     let (mut units, asks) = sorted_commits(listed, known);
     let mut owed = u32::try_from(asks.iter().filter(|ask| ask.reserved).count()).unwrap_or(0);
     // Why the commits from here on wait, once one has to.
-    let mut waits: Option<Why> = tribunal.broken().cloned();
+    let mut waits: Option<Why> = tribunal.broken();
     let (mut waiting, mut failed) = (0_usize, 0_usize);
     // the stop's time is what makes the commits from here on wait
     let mut out_of_time = false;
@@ -6987,7 +7091,7 @@ fn judge_commits(
         sealed.insert(at, tribunal.last_seals());
         let unanswered = tribunal.unanswered();
         if let Some(reason) = tribunal.broken() {
-            waits = Some(reason.clone());
+            waits = Some(reason);
             waiting += usize::from(ask.attempts.is_none());
             waited.extend(ask.attempts.is_none().then(|| id.clone()));
             continue;
@@ -9540,6 +9644,7 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, Why> {
                         .map(|unit| hook::blocks_now(unit, &session.state.blocked))
                         .collect();
                     records = ledger_units(&judging, &blocks);
+                    unrecord_waiting(&mut records, &frontier);
                     // One snapshot at the append (ruling 4): the project lock again, held
                     // through the ledger's append; a stale pass is never recorded, nor
                     // remembered by the session.
@@ -9791,14 +9896,15 @@ fn stateless_head(
             " The commit this project's ledger first recorded has no file {}, and neither has HEAD: nothing could be judged, as before.",
             hook::shown_path(name)
         ),
-        Accepted::None(NoAccepted::Unreadable) => {
-            format!(" This project's ledger could not be read, {AT_HEAD}")
-        }
         Accepted::Policy { commit, .. } if two => format!(
             " The tree was judged under the policy at HEAD and under the project's accepted policy (the one at commit {}), whose files differ; the stricter answer stands.",
             commit.chars().take(7).collect::<String>()
         ),
-        Accepted::Policy { .. } | Accepted::Unreadable(_) => String::new(),
+        Accepted::Unreadable(why) => format!(
+            " The project's accepted policy cannot be had ({}): a change is UNJUDGED unless the policy at HEAD fails or holds it.",
+            deep_diff_forge_core::display_safe(&why.text)
+        ),
+        Accepted::Policy { .. } => String::new(),
     };
     let commits = match (commits, why.class) {
         (true, _) => {
@@ -9954,6 +10060,7 @@ fn stateless_stop(
         .map(|unit| hook::blocks_now(unit, &[]))
         .collect();
     let mut records = ledger_units(&judging, &blocks);
+    unrecord_waiting(&mut records, &frontier);
     // the stop's own record: the session's state was not used, for this class
     records.push(crate::ledger::Unit {
         name: crate::ledger::Name::Stop,
@@ -10066,6 +10173,19 @@ fn ledger_units(judging: &Judging, blocks: &[bool]) -> Vec<crate::ledger::Unit> 
     }
     out.append(&mut passed);
     out
+}
+
+/// A commit the ledger already records as waiting for its turn (`time.not_asked`) is not
+/// recorded again while it still waits (release 0.11.1, ruling 10): every stop used to append
+/// one record of about 355 bytes for each waiting commit, which a session's own commits could
+/// grow past what the ledger's readers read. A change of its state (a verdict, another cause) is
+/// recorded.
+fn unrecord_waiting(records: &mut Vec<crate::ledger::Unit>, frontier: &crate::ledger::Frontier) {
+    records.retain(|unit| {
+        !(unit.outcome == "unjudged"
+            && unit.class == ReasonClass::TimeNotAsked
+            && matches!(&unit.name, crate::ledger::Name::Commit(id) if frontier.waiting.contains(id)))
+    });
 }
 
 /// One link of the chain a judged stop depends on.
@@ -10623,7 +10743,11 @@ fn accept_state(
         Ok(_) => {}
     }
     let (projected, bound) = as_bound(place, Some(&frontier), deadline);
-    if let Accepted::Unreadable(why) = &projected.accepted {
+    // (acceptances that disagree, ruling 10 F2, are settled by this command: it accepts from the
+    // policy reached before the disagreeing record)
+    if let Accepted::Unreadable(why) = &projected.accepted
+        && projected.derived.reached.is_none()
+    {
         return Err((
             INVALID_INPUT,
             format!(
@@ -10664,8 +10788,36 @@ fn producer_pins(text: &str) -> Option<BTreeSet<String>> {
     found
 }
 
+/// Whether a policy's `[producer]` table is in the plain form [`producer_pins`] reads: the header
+/// written `[producer]`, its `sha256` list of double-quoted strings, no dotted key or inline table
+/// for it (ruling 10, F7: forms the judge reads, which the line reader would misread).
+fn plain_producer(text: &str) -> bool {
+    let mut table = false;
+    for line in text.lines() {
+        let line = line.split('#').next().unwrap_or_default().trim();
+        let squeezed: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+        if squeezed.starts_with('[') {
+            if squeezed.contains("producer") && line != "[producer]" {
+                return false;
+            }
+            table = line == "[producer]";
+        } else if squeezed.starts_with("producer.")
+            || squeezed.starts_with("producer=")
+            || squeezed.starts_with("\"producer\"")
+            || (table && line.contains('\''))
+        {
+            return false;
+        }
+    }
+    true
+}
+
 /// The change of the producer pins between the accepted policy (`old`) and the one to accept.
 fn pins_change(old: Option<&[u8]>, new: &[u8]) -> String {
+    let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
+    if !old.is_none_or(|old| plain_producer(&text(old))) || !plain_producer(&text(new)) {
+        return "not summarised: a [producer] table is not in the plain form this line reads; read the diff below".to_owned();
+    }
     let read = |bytes: &[u8]| std::str::from_utf8(bytes).ok().and_then(producer_pins);
     let (old, new) = (old.map(read), read(new));
     let list = |pins: &BTreeSet<String>| {
@@ -10835,9 +10987,19 @@ pub(crate) fn policy_accept_plan(
             Some((sha256.clone(), commit.clone())),
             Some(bytes.as_slice()),
         ),
-        Accepted::None(_) | Accepted::Unreadable(_) => (None, None),
+        Accepted::Unreadable(_) => match &projected.derived.reached {
+            Some((Some(sha256), Some(commit), Some(bytes))) => (
+                Some((sha256.clone(), commit.clone())),
+                Some(bytes.as_slice()),
+            ),
+            _ => (None, None),
+        },
+        Accepted::None(_) => (None, None),
     };
-    let same = name == bound && from.as_ref().is_some_and(|(digest, _)| *digest == to);
+    // (where acceptances disagree the same digest is still accepted again: that settles it)
+    let same = name == bound
+        && projected.derived.reached.is_none()
+        && from.as_ref().is_some_and(|(digest, _)| *digest == to);
     let scratch = Scratch::new(&place.own).map_err(|why| (IO, why))?;
     let file = scratch
         .sub("lint")
@@ -10928,7 +11090,7 @@ pub(crate) fn policy_accept_write(plan: &AcceptPlan) -> Result<String, AcceptRef
     drop(held);
     Ok(match &now.accepted {
         Accepted::Policy { sha256, .. } if *sha256 == plan.to => format!(
-            "Accepted: the policy {} at commit {} (sha256 {}) is now this project's accepted policy; one acceptance record was appended to {}. Every unit is judged again under it at the next stops; no commit is verified by this.",
+            "Accepted: the policy {} at commit {} (sha256 {}) is now this project's accepted policy; one acceptance record was appended to {}. Units not yet judged are judged under it from the next stop; a commit a stop already passed under an earlier accepted policy keeps that pass, and no commit is verified by this.",
             hook::shown_path(&plan.name),
             &plan.commit[..12],
             plan.to,
@@ -11424,12 +11586,30 @@ fn accepted_check(place: &Place, args: &[String], deadline: Deadline) -> GateChe
             false
         }
     };
-    for (acceptance, why) in &projected.derived.ignored {
-        ok = false;
-        facts.push(format!(
-            "the acceptance record on line {} is ignored: {why}",
-            acceptance.line
-        ));
+    for (acceptance, why, other) in &projected.derived.ignored {
+        // (one of another branch's history is harmless here: named, the link stays ready)
+        if *other {
+            facts.push(format!(
+                "the acceptance record on line {} does not apply here and is harmless: {why}",
+                acceptance.line
+            ));
+        } else {
+            ok = false;
+            facts.push(format!(
+                "the acceptance record on line {} is ignored: {why}",
+                acceptance.line
+            ));
+        }
+    }
+    // what to do (ruling 10): a ledger that cannot be read, or acceptances that disagree
+    if projected.derived.reached.is_some() {
+        facts.push(
+            "to settle it, a person accepts the policy this tree should be judged by with agent policy-accept: it shows the accepted policy reached before the disagreeing record, from which the new acceptance applies".to_owned(),
+        );
+    } else if frontier.is_err() {
+        facts.push(
+            "to settle it, a person deals with the ledger: moved aside together with the policy record, the project is recorded and bound again from its next session's start, and its acceptances are made again with agent policy-accept".to_owned(),
+        );
     }
     let holds = match &projected.record {
         Ok(None) => "it does not exist".to_owned(),
@@ -17159,5 +17339,59 @@ mod tests {
             format!("removed: {b}; added: none")
         );
         assert!(pins_change(None, one.as_bytes()).ends_with("(there is no accepted policy now)"));
+        // forms the judge reads and the line reader would misread are not summarised (F7)
+        for form in [
+            format!("[producer]\nsha256 = ['{a}']\n"),
+            format!("[producer]\nsha256 = ['{b}', \"{a}\"]\n"),
+            format!("[ producer ]\nsha256 = [\"{a}\"]\n"),
+            format!("producer.sha256 = [\"{a}\"]\n"),
+            format!("producer = {{ sha256 = [\"{a}\"] }}\n"),
+        ] {
+            assert!(
+                pins_change(Some(one.as_bytes()), form.as_bytes()).starts_with("not summarised"),
+                "{form}"
+            );
+        }
+    }
+
+    /// Ruling 10: a commit the ledger records as waiting is not recorded again while it still
+    /// waits; one whose state changed (a verdict, another cause) is, and so is one never recorded.
+    #[test]
+    fn a_waiting_commit_is_recorded_once_while_it_waits() {
+        use crate::ledger::{Frontier, Name, Unit};
+        let (waits, new, decided) = ("1".repeat(40), "2".repeat(40), "3".repeat(40));
+        let frontier = Frontier {
+            waiting: BTreeSet::from([waits.clone(), decided.clone()]),
+            ..Frontier::default()
+        };
+        let unit = |id: &str, outcome: &'static str, class| Unit {
+            name: Name::Commit(id.to_owned()),
+            outcome,
+            class,
+            seals: None,
+            blocked: false,
+        };
+        let mut records = vec![
+            unit(&waits, "unjudged", ReasonClass::TimeNotAsked),
+            unit(&new, "unjudged", ReasonClass::TimeNotAsked),
+            unit(&decided, "fail", ReasonClass::FailNew),
+            unit(&waits, "unjudged", ReasonClass::ChainJudgeExit),
+        ];
+        unrecord_waiting(&mut records, &frontier);
+        let kept: Vec<(String, &str)> = records
+            .iter()
+            .map(|u| match &u.name {
+                Name::Commit(id) => (id[..1].to_owned(), u.class.as_str()),
+                _ => (String::new(), ""),
+            })
+            .collect();
+        assert_eq!(
+            kept,
+            vec![
+                ("2".to_owned(), "time.not_asked"),
+                ("3".to_owned(), "fail.new"),
+                ("1".to_owned(), "chain.judge_exit"),
+            ]
+        );
     }
 }
