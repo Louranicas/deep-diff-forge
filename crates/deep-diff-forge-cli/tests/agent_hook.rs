@@ -4480,11 +4480,18 @@ fn a_state_that_cannot_be_kept_is_said_once_by_advice_and_always_by_a_stop() {
     assert_eq!(git(&root, &["status", "--porcelain=v1"]), " M a.rs\n");
 }
 
-/// The files (anything that is not a directory) under `dir`, as paths.
+/// The files (anything that is not a directory) under `dir`, as paths; none when `dir` is not
+/// there. A directory that cannot be read fails here: an assertion that nothing is left must
+/// not pass on a listing it could not make.
 fn files_left_under(dir: &Path) -> Vec<PathBuf> {
     let mut found = Vec::new();
-    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-        let path = entry.path();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return found,
+        Err(error) => panic!("{}: {error}", dir.display()),
+    };
+    for entry in entries {
+        let path = entry.unwrap().path();
         if path.symlink_metadata().is_ok_and(|kind| kind.is_dir()) {
             found.extend(files_left_under(&path));
         } else {
@@ -15330,6 +15337,23 @@ enum Above {
     GitFile,
 }
 
+/// Whether the row `above` of a test is no control under `scratch`: [`Above::Nothing`] is a
+/// control only where no `.git` stands above the temporary directory (review of P5c, L4). Such
+/// a row is said and left out, not passed.
+fn not_a_control(scratch: &Scratch, above: Above) -> bool {
+    let Above::Nothing = above else {
+        return false;
+    };
+    let Some(git) = git_above(&scratch.join("control")) else {
+        return false;
+    };
+    eprintln!(
+        "note: the control row (nothing above the state directory) is left out: a .git stands at {} above the temporary directory",
+        git.display()
+    );
+    true
+}
+
 /// Make `home` the home of this thread's hooks.
 fn home_is(home: &Path) {
     HOME.with(|slot| *slot.borrow_mut() = Some(home.to_path_buf()));
@@ -15446,6 +15470,9 @@ fn a_git_directory_above_the_state_directory_changes_nothing_of_the_lock() {
         Above::GitFile,
     ] {
         let scratch = Scratch::new(&format!("hook-git-above-{above:?}"));
+        if not_a_control(&scratch, above) {
+            continue;
+        }
         let root = repository(&scratch);
         let (script, log) = reading_judge(&scratch);
         // the account's first hook is a start: it leaves its lock file beside the state
@@ -15588,6 +15615,9 @@ fn wherever_a_hook_writes_the_state_it_holds_the_lock() {
         ("g", Above::Repository, true),
     ];
     for (name, above, outside) in layouts {
+        if not_a_control(&scratch, above) {
+            continue;
+        }
         let home = fresh_home(&scratch, &format!("home-{name}"), above);
         let xdg = scratch.join(format!("state-{name}"));
         let dir = if outside {
@@ -15761,4 +15791,102 @@ fn a_session_start_under_a_held_lock_records_nothing_and_says_so() {
     // the lock let go, a start records the session
     start(&root, "s");
     assert!(sessions().join(format!("{}.json", stem("s"))).is_file());
+}
+
+/// Review of P5c, V1: while a stop holds the session's lock and its judge runs, another process
+/// moves the state directory away and puts a fresh directory of mode 0700 at its name. The stop
+/// writes nothing into the fresh directory (its writes went by the directory's name, so its
+/// state went there while its lock stayed in the one moved away), and says that its state could
+/// not be saved and why. First, the positive control: a stop alone writes the session's state at
+/// its name.
+#[test]
+fn a_state_directory_replaced_while_a_stop_holds_the_lock_gets_nothing_written() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let scratch = Scratch::new("hook-state-dir-replaced");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    start(&root, "s");
+    secret(&root, "k.rs");
+    let state = sessions().join(format!("{}.json", stem("s")));
+    let before = std::fs::read(&state).unwrap();
+    blocked(&stop_from(&root, "s", &script));
+    assert_ne!(
+        std::fs::read(&state).unwrap(),
+        before,
+        "(control) a stop alone wrote no state at its name"
+    );
+    // (a commit, so that the next stop has its verdict to write)
+    secret(&root, "k2.rs");
+    commit_all(&root, "a commit of this session");
+    std::fs::write(scratch.join("judge.sleep"), "2\n").unwrap();
+    let (dir, held) = (sessions(), sessions().with_file_name("hooks-held"));
+    let judged = runs(&log);
+    let stop_home = home();
+    let said = std::thread::scope(|scope| {
+        let stop = scope.spawn(|| {
+            home_is(&stop_home);
+            stop_from(&root, "s", &script)
+        });
+        wait_until("the stop's judging", || runs(&log) > judged);
+        std::fs::rename(&dir, &held).unwrap();
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        stop.join().unwrap()
+    });
+    std::fs::remove_file(scratch.join("judge.sleep")).unwrap();
+    assert_eq!(
+        names_in(&dir),
+        Vec::<String>::new(),
+        "the stop wrote into the directory put at the state directory's name while it held the lock in the one moved away: {said}"
+    );
+    assert!(
+        stop_words(&said).contains("is no longer the directory the session's lock was taken in (another process moved it away or put another in its place while this hook ran)"),
+        "{said}"
+    );
+    assert!(names_in(&held).contains(&format!("{}.lock", stem("s"))));
+}
+
+/// Review of P5c, L1 and L2: where the session's lock file cannot be opened (a directory stands
+/// at its name), no hook writes the session's state without the lock (0.11.0 wrote it), the
+/// start says why it recorded nothing, and a stop says the cause first, with how to read what
+/// follows it, and not that the session-start hook must be installed (it is, and it ran).
+#[test]
+fn a_lock_that_cannot_be_taken_keeps_no_state_and_a_stop_says_its_cause_first() {
+    let scratch = Scratch::new("hook-lock-unopenable");
+    let root = repository(&scratch);
+    let (script, _log) = reading_judge(&scratch);
+    let lock = format!("{}.lock", stem("s"));
+    std::fs::create_dir_all(sessions().join(&lock)).unwrap();
+    let (code, started, stderr) = hook(
+        "session-start",
+        &[],
+        &input("SessionStart", &root, "s", false),
+    );
+    assert_eq!((code, stderr.as_str()), (0, ""), "{started}");
+    let unlocked = |hook: &str| {
+        assert_eq!(
+            names_in(&sessions()),
+            std::slice::from_ref(&lock),
+            "{hook} wrote a state without the session's lock"
+        );
+    };
+    unlocked("the start");
+    assert!(
+        started.contains("- The start of this session could not be recorded (its state could not be saved: the session's lock file "),
+        "{started}"
+    );
+    secret(&root, "k.rs");
+    let said = stop_from(&root, "s", &script);
+    unlocked("the stop");
+    let reason = blocked(&said);
+    assert!(
+        reason.starts_with("deep-diff-forge: this session's lock cannot be taken where its state is kept (the session's lock file ")
+            && reason.contains("Read what follows with that: \"when this session's hooks first ran\" means this stop; a commit marked \"not this session's\" may be this session's own work"),
+        "{reason}"
+    );
+    assert!(
+        !reason.contains("the session-start hook must be installed")
+            && !reason.contains("The hook could not keep its state ("),
+        "{reason}"
+    );
 }
