@@ -4541,12 +4541,15 @@ fn states_in(dir: &Path) -> Vec<PathBuf> {
 /// `SECRET` in it and passes every other. It logs the files each patch names (`PATCH-NAMES`),
 /// and first sleeps for the seconds written in `judge.sleep` when that file is there. While
 /// `judge.flaky` is there it gives no verdict on a patch with `SECRET`: as many times as the
-/// file says (once when it is empty), then the file is gone. The
+/// file says (once when it is empty), then the file is gone. While `judge.hold` is there, the
+/// first call that finds it moves it to `judge.held` and waits (at most 120 s) until the test
+/// takes that away; the other calls do not wait ([`two_first_stops`]). The
 /// other stand-in gives one answer whatever it is shown, so it cannot tell a stop that judged
 /// the right commit from one that judged another.
 fn reading_judge(scratch: &Scratch) -> (PathBuf, PathBuf) {
     const READ: &str = r#"printf 'PATCH-NAMES %s\n' "$(grep '^diff --git' "$patch" | tr '\n' ' ')" >> '@LOG@'
 if [ -f '@SLEEP@' ]; then sleep "$(cat '@SLEEP@')"; fi
+if mv '@HOLD@' '@HELD@' 2>/dev/null; then n=0; while [ -e '@HELD@' ] && [ "$n" -lt 1200 ]; do sleep 0.1; n=$((n+1)); done; fi
 if [ -f '@FLAKY@' ] && grep -q '^+.*SECRET' "$patch"; then left="$(cat '@FLAKY@')"; left=$((${left:-1} - 1)); if [ "$left" -le 0 ]; then rm -f '@FLAKY@'; else echo "$left" > '@FLAKY@'; fi; echo '{"exit":3,"name":"io","message":"the ranker did not answer in time","next":"retry"}' >&2; exit 3; fi
 if grep -q '^+.*NOVERDICT' "$patch"; then echo '{"exit":3,"name":"io","message":"patch parse failed","next":"fix_input"}' >&2; exit 3; fi
 if grep -q '^+.*SECRET' "$patch"; then code=7; elif grep -q '^+.*HOLDME' "$patch"; then code=8; else code=0; fi"#;
@@ -4571,7 +4574,9 @@ if grep -q '^+.*SECRET' "$patch"; then code=7; elif grep -q '^+.*HOLDME' "$patch
         .replace(
             "@FLAKY@",
             &scratch.join("judge.flaky").display().to_string(),
-        );
+        )
+        .replace("@HOLD@", &scratch.join("judge.hold").display().to_string())
+        .replace("@HELD@", &scratch.join("judge.held").display().to_string());
     write_program(&script, &body.replace(&told, &read));
     (script, log)
 }
@@ -12089,6 +12094,38 @@ fn a_stashed_change_blocks_as_a_commit_and_again_when_it_is_back() {
     );
 }
 
+/// Two first stops of `session` from `root` at once, each with `home` the home of its hooks,
+/// judged by the reading judge of `scratch` (`script`): what each said, in the order they
+/// ended. The judge's first call waits until one of the stops has ended (`judge.hold`), so the
+/// stop that holds the session's lock still holds it for all of the other's wait, however slow
+/// the host: before, the first judge slept 5 s against the other's 3 s wait, and on a loaded
+/// runner (macOS, `cargo test --workspace`) the other came to the lock after the first had
+/// ended and rightly took it (review of P5c round 3, M1).
+fn two_first_stops(
+    scratch: &Scratch,
+    root: &Path,
+    script: &Path,
+    session: &str,
+    home: impl Fn() + Sync,
+) -> Vec<Value> {
+    std::fs::write(scratch.join("judge.hold"), "").unwrap();
+    let both = std::thread::scope(|scope| {
+        let (done, ended) = std::sync::mpsc::channel();
+        for _ in 0..2 {
+            let (done, home) = (done.clone(), &home);
+            scope.spawn(move || {
+                home();
+                done.send(stop_from(root, session, script)).unwrap();
+            });
+        }
+        let first = ended.recv().unwrap();
+        let _ = std::fs::remove_file(scratch.join("judge.held"));
+        vec![first, ended.recv().unwrap()]
+    });
+    let _ = std::fs::remove_file(scratch.join("judge.hold"));
+    both
+}
+
 /// Review V4 round 15, VD4R15-M-3. Two stops that were both their session's first hook took
 /// no lock, because there was no state yet: both judged, both blocked for the same failure,
 /// both wrote. Every stop takes the session's lock, which is named from the session's id.
@@ -12098,17 +12135,8 @@ fn two_first_stops_of_a_session_do_not_run_at_once() {
     let root = repository(&scratch);
     let (script, log) = reading_judge(&scratch);
     secret(&root, "k.rs");
-    std::fs::write(scratch.join("judge.sleep"), "5\n").unwrap();
-    let both: Vec<Value> = std::thread::scope(|scope| {
-        let stops: Vec<_> = (0..2)
-            .map(|_| {
-                scope.spawn(|| {
-                    home_in(&scratch);
-                    stop_from(&root, "first", &script)
-                })
-            })
-            .collect();
-        stops.into_iter().map(|stop| stop.join().unwrap()).collect()
+    let both = two_first_stops(&scratch, &root, &script, "first", || {
+        home_in(&scratch);
     });
     let blocks = both
         .iter()
@@ -15648,20 +15676,8 @@ fn a_git_directory_above_the_state_directory_changes_nothing_of_the_lock() {
 /// (test T1, [`a_git_directory_above_the_state_directory_changes_nothing_of_the_lock`]).
 fn two_first_stops_take_turns(scratch: &Scratch, root: &Path, script: &Path, above: Above) {
     fresh_home(scratch, "race-home", above);
-    std::fs::write(scratch.join("judge.sleep"), "5\n").unwrap();
     let race_home = home();
-    let both: Vec<Value> = std::thread::scope(|scope| {
-        let stops: Vec<_> = (0..2)
-            .map(|_| {
-                scope.spawn(|| {
-                    home_is(&race_home);
-                    stop_from(root, "first", script)
-                })
-            })
-            .collect();
-        stops.into_iter().map(|stop| stop.join().unwrap()).collect()
-    });
-    std::fs::remove_file(scratch.join("judge.sleep")).unwrap();
+    let both = two_first_stops(scratch, root, script, "first", || home_is(&race_home));
     let blocks = both
         .iter()
         .filter(|said| said["decision"] == "block")

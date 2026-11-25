@@ -20,7 +20,8 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   session's lock (or where `flock` fails for another cause than another holder, such as a file
   system with no locks); a lock file or state directory that is not there for a moment when it
   is opened (two first stops making it at once, as seen on macOS) is looked for again while the
-  wait lasts; a hook whose lock file cannot be opened says that its state could not
+  wait lasts, and one that stays gone ends the wait with that cause, not as another hook's lock;
+  a hook whose lock file cannot be opened says that its state could not
   be saved, and a stop then says that cause first, before the sentences it says of a session
   with no record of its start (which name this stop as where the session's hooks first ran,
   may call the session's own commit "not this session's", and no longer tell it to install
