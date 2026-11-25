@@ -800,7 +800,17 @@ bounded form.** What it holds to:
   length is never read as another list: the stop is UNJUDGED with the reason and nothing is
   recorded over either. Before, a block with thousands of violations wrote a state the next
   hook would not read, and the session forgot its base. A state directory inside the
-  project's working tree is refused the same way. Every hook that writes a session's state
+  project's working tree is refused the same way. The state directory also holds a
+  `.gitignore` that ignores everything in it, written by the first hook that keeps a state
+  there (made new, never written over, never through a link). Where the directory lies inside
+  a working tree of any repository (a home directory that is a dotfiles repository, or another
+  working tree of the session's own project), Git leaves the hooks' files out of `git status`
+  and `git add --all`, and a stop that judges that tree does not judge them as the agent's
+  change. Before 0.11.1 such a stop judged the hooks' key, states and lists as the agent's
+  change (with no change of the agent's, the first stop blocked in 72 of 80 measured runs and
+  held in the others) and gave the key to the judge, and a dotfiles repository's
+  `git add --all` committed the key beside the states it keys. Files a repository already
+  tracks are not ignored: untrack them (`git rm -r --cached` of the directory). Every hook that writes a session's state
   holds that session's lock, the first hook of an account too, whatever repository stands
   above the state directory (before 0.11.1 a hook that found no state directory under a `.git`
   took no lock while it made one). It writes through the directory it took the lock in, held
@@ -885,12 +895,18 @@ bounded form.** What it holds to:
   `--submodule=short`, `--ignore-submodules=none`, the store's commit-graph and multi-pack
   index not read), held byte for byte by a test that runs a recorded copy of `make_patch.sh`.
 - **Not a boundary: work hidden with Git's own rules.** A judged agent can hide work from the
-  hooks with a directory of mode 000, an untracked `.gitignore` that ignores itself, a
-  directory named `.git` below the top, or a plain directory at a path the base records as a
+  hooks with a directory of mode 000, an untracked `.gitignore` that ignores itself, a file
+  put into the hooks' state directory where that lies inside a working tree (the hooks'
+  `.gitignore` there ignores it; staged, it is judged), a directory named `.git` below the top, or a plain directory at a path the base records as a
   submodule, whose content Git never lists (the stop is then silent), or make staging run
   out of time with a very large sparse file (UNJUDGED, with no run of the judge). These are
   stated limits, measured again on the 0.11.0 candidate, where each still holds: the working
   tree and the merge request still show the work.
+- **A Git directory inside one of the project's working trees is not supported** (known issue
+  of 0.11.1). Where it lies there (`git init --separate-git-dir` into the tree), Git lists its
+  own files as untracked, and every stop judges them, with the hooks' records and scratch, as
+  the agent's change, and blocks at every stop. Keep the Git directory outside the working
+  trees.
 - **`agent doctor --gate` reads a registered stop hook only in the form `agent setup --hooks`
   prints.** One program and its arguments, written with plain characters and single quotes:
   no comment, second command, pipe, redirection or substitution. The program word must be

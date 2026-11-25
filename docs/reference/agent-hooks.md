@@ -1371,17 +1371,19 @@ Stated limits, which the judge on the pull request covers:
   repository (a home directory that is a dotfiles repository): the hooks keep their state and
   take the session's lock there as anywhere else, and write the state through the directory
   they took the lock in (one moved away or replaced while a hook holds the lock gets nothing
-  written into its replacement). That repository's `git clean -x` removes the
-  sessions' state, and its `git status` lists the files unless they are ignored. Only a state
+  written into its replacement). That repository's `git status` does not list the files (the
+  directory holds a `.gitignore` that ignores everything in it), and its `git clean -x` removes
+  them. Only a state
   directory inside the working tree of the session's project is refused: no stop of that
   session is judged, and the hooks say so. Hooks for Codex are not designed.
 - **The state's schema** (from 0.11.0; the hook-state version policy):
   - Names. The files are `session-<the first 32 hex digits of the SHA-256 of the session's
     id>` with `.json` (the state), `.tips` (the commits there when the session began, one id
     a line), `.judged` (the commits that have their answer) and `.lock` (an exclusive
-    `flock`), and one file `key` for all of the user's sessions (since v12). Names and the
-    lock do not change from one schema to the next: two builds of different versions share
-    them.
+    `flock`), and one file `key` for all of the user's sessions (since v12), and the directory's
+    `.gitignore` (since 0.11.1: `*`, made by the first hook that keeps a state there, never
+    written over). Names and the lock do not change from one schema to the next: two builds of
+    different versions share them.
   - The schema. The state's member `schema` is exactly `deep-diff-forge.hook-state.v<N>`,
     `N` in one to six decimal digits with no leading zero, read byte by byte; any other
     text is a damaged state. Any change to the state's members, to a member's type, grammar
