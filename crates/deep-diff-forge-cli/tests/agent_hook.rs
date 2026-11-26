@@ -5929,7 +5929,13 @@ fn a_failing_commit_does_not_block_for_ever_when_the_state_cannot_be_kept() {
             );
         }
         // a new turn (the client is not continuing after a block): it blocks again, said
-        blocked(&stop_active(&root, "s", &script, false));
+        // (U1 row S169, lane T3a of 0.11.1: and why, at that block too)
+        let again = blocked(&stop_active(&root, "s", &script, false)).to_owned();
+        assert!(
+            again.contains(&format!("Commit {key}: FAIL\n"))
+                && again.contains("The hook could not keep its state ("),
+            "the next turn's block does not say why it blocks again: {again}"
+        );
     }
     std::fs::set_permissions(&sessions, std::fs::Permissions::from_mode(0o700)).unwrap();
     // with a state that can be kept, `stop_hook_active` decides nothing
