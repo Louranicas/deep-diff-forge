@@ -1403,6 +1403,38 @@ fn an_unwritable_error_stream_keeps_the_exit_code() {
     }
 }
 
+/// `SECURITY.md` ("Untrusted input and output"): stdin is bounded before unbounded allocation.
+/// Its reader refuses a patch over `DEFAULT_BYTE_BUDGET` itself, by its own message (the parser's
+/// budget would refuse the same input with the same exit 4 and another message, so the exit code
+/// cannot tell the two apart), and stops reading one byte past the budget: the writer of a longer
+/// stdin finds the pipe closed. The 8 MiB past the budget is more than a pipe buffers, so a
+/// reader that read on would take it all.
+#[test]
+fn stdin_is_bounded_by_its_own_reader() {
+    let budget = deep_diff_forge_patch::DEFAULT_BYTE_BUDGET;
+    let stdin = vec![b'x'; budget + 1 + (8 << 20)];
+    let mut child = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .arg("--stdin-patch")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let written = child.stdin.take().unwrap().write_all(&stdin);
+    let out = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(4), "{stderr}");
+    assert!(
+        stderr.contains(&format!("stdin exceeds the {budget}-byte input budget")),
+        "stdin over the budget was not refused by its reader: {stderr}"
+    );
+    assert!(
+        written.is_err(),
+        "all {} bytes of stdin were read: the reader did not stop past the budget",
+        stdin.len()
+    );
+}
+
 /// Run the binary with stdout on a pipe whose reader has already gone; its exit code and stderr.
 fn run_with_stdout_closed(args: &[&str], stdin: &[u8]) -> (Option<i32>, String) {
     let (reader, writer) = std::io::pipe().unwrap();
