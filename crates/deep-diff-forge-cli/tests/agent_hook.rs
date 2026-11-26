@@ -9417,7 +9417,7 @@ fn a_project_moved_behind_a_link_at_its_path_is_not_judged_there() {
     std::fs::rename(&root, &moved).unwrap();
     std::os::unix::fs::symlink(&moved, &root).unwrap();
     for cwd in [&root, &moved] {
-        let said = allowed(&stop_from(cwd, "s", &script)).to_owned();
+        let said = stop_words(&stop_from(cwd, "s", &script)).to_owned();
         assert!(
             said.starts_with("deep-diff-forge: UNJUDGED. ")
                 && said.contains("is not the one this session started in"),
