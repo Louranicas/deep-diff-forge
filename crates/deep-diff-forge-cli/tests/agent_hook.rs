@@ -9402,6 +9402,29 @@ fn a_path_git_names_as_another_tree_is_not_read_as_the_tree_listed_there() {
     assert!(said.contains("/first\""), "{said}");
 }
 
+/// U1 row S238 (lane T3a of 0.11.1): the project is the repository at the top level it was
+/// recorded at. Moved away with a link left at its path, Git finds the same repository through
+/// the link at another top level: that is not the project, and the stop is UNJUDGED, from the
+/// link and from where the project is now, and runs no judge.
+#[test]
+fn a_project_moved_behind_a_link_at_its_path_is_not_judged_there() {
+    let scratch = Scratch::new("hook-moved-behind-link");
+    let root = repository(&scratch);
+    let (script, log, _) = failing_judge(&scratch);
+    start(&root, "s");
+    silence_a_lint(&root);
+    let moved = scratch.join("moved");
+    std::fs::rename(&root, &moved).unwrap();
+    std::os::unix::fs::symlink(&moved, &root).unwrap();
+    for cwd in [&root, &moved] {
+        let said = allowed(&stop_from(cwd, "s", &script)).to_owned();
+        assert!(
+            said.starts_with("deep-diff-forge: UNJUDGED. ")
+                && said.contains("is not the one this session started in"),
+            "the project moved behind a link at its path was taken for the project: {said}"
+        );
+    }
+    assert_eq!(runs(&log), 0, "a judge was run for the moved project");
 }
 
 // --- The hook-state version policy (F7.e; rules V1 to V10 of the model design) ------------
