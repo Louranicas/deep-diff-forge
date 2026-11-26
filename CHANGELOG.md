@@ -164,6 +164,16 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   request's connection closing; and the daemon's 30 s write timeouts. The CI wrapper
   `scripts/security/review_policy_check.py` now also fails unless `fuzz/Cargo.toml` forbids
   `unsafe_code` (an `allow` there passed); the checker the review crate embeds is unchanged.
+- Tests only: no product change. Agent-hook sentences of `SECURITY.md` whose cited tests stayed
+  green when their code went (security mapping U1, lane T3a) now have a test that a plant of that
+  code turns red by a named assertion: each carrier of the commits a session's start records; each
+  seal of a verdict; no configuration of the system, of a parent Git or of the user's attributes
+  file shaping the judge's patch, and only an absolute ignore file of the user's; a hook's command
+  named by its own path quoted for the shell; a stop silent only for Git's own C-locale words with
+  no project known; a rule's name escaped where rules are named alone; the advice for a gone tree;
+  a tree listed again forgotten from inside it; a path Git names as another tree; a project moved
+  behind a link; and the waits `SECURITY.md` names (3 s for the session's lock, 8 s for the helper
+  that hashes the rankers).
 - What an agent or a person is told keeps its meaning under a long path: where a message is bounded, the
   paths the hook quoted give way in their middle, never the words that say what happened. Under a
   repository path of about 100 characters or more (any macOS temp directory) the line that counts what a

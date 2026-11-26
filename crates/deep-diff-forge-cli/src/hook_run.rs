@@ -17584,6 +17584,26 @@ mod tests {
         );
     }
 
+    /// U1 rows S233 and S321 (lane T3a of 0.11.1): the waits SECURITY.md names are the ones the
+    /// hooks use. A second stop of a session waits three seconds for the session's lock, and
+    /// the helper that hashes the rankers is ended when eight seconds have passed. What each
+    /// does when its wait ends is held by the end-to-end test of the session's lock
+    /// (`a_stop_waits_for_the_session_s_lock_and_takes_only_the_one_that_is_there`) and by
+    /// `the_helper_that_hashes_rankers_is_ended_at_the_deadline`.
+    #[test]
+    fn the_waits_security_md_names_are_the_ones_the_hooks_use() {
+        assert_eq!(
+            LOCK_WAIT,
+            Duration::from_secs(3),
+            "a stop's wait for its session's lock"
+        );
+        assert_eq!(
+            RANKER_SEAL_LIMIT,
+            Duration::from_secs(8),
+            "the limit of the helper that hashes the rankers"
+        );
+    }
+
     /// Review V4 round 4, VD4R4-M-2: a ranker is hashed in pieces, and one that is too large,
     /// not a regular file, or too slow to hash is refused with its reason instead of being
     /// read whole.

@@ -2837,6 +2837,187 @@ fn a_failure_to_find_the_repository_is_said_and_never_silent() {
     );
 }
 
+/// U1 rows S243, S252 and S282 (lane T3a of 0.11.1). A stop is silent only where no project
+/// can be found at all: Git says, in its own words in the `C` locale, that there is no
+/// repository around the session's directory, the client names no project, and none is
+/// recorded. A stand-in Git answers in English only when it is run with `LC_ALL=C` (and in
+/// another language otherwise), so a hook that read its answer in the user's locale says
+/// UNJUDGED here; a wording that only resembles Git's is a failure and is said, by a stop and
+/// by the advice after a tool call; and a project the client names, or one the session
+/// recorded, is judged from a directory that is in no repository.
+#[test]
+fn only_gits_own_words_for_no_repository_with_no_project_known_make_a_silent_stop() {
+    let scratch = Scratch::new("hook-no-repository-words");
+    let root = repository(&scratch);
+    let (script, log, _) = failing_judge(&scratch);
+    silence_a_lint(&root);
+    let outside = scratch.join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    let outside = std::fs::canonicalize(&outside).unwrap();
+    let real = String::from_utf8(
+        Command::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    // Git as it is everywhere but in `outside`, where it answers `words` (`@C@` for the
+    // English answer under `LC_ALL=C` and a translated one otherwise)
+    let stand_in = |name: &str, words: &str| -> String {
+        let dir = scratch.join(name);
+        std::fs::create_dir(&dir).unwrap();
+        let answer = if words == "@C@" {
+            "if [ \"$LC_ALL\" = C ]; then echo 'fatal: not a git repository (or any of the parent directories): .git' >&2; else echo 'fatal: kein Git-Repository (oder irgendeines der Elternverzeichnisse): .git' >&2; fi".to_owned()
+        } else {
+            format!("echo '{words}' >&2")
+        };
+        write_program(
+            &dir.join("git"),
+            &format!(
+                "#!/bin/sh\ncase \"$(pwd -P)\" in\n'{outside}'|'{outside}'/*) {answer}; exit 128;;\nesac\nexec '{real}' \"$@\"\n",
+                outside = outside.display(),
+                real = real.trim()
+            ),
+        );
+        format!("{}:{}", dir.display(), std::env::var("PATH").unwrap())
+    };
+    let judge_arg = ["--judge", script.to_str().unwrap()];
+    let run = |event: &str, session: &str, path: Option<&str>, project: Option<&Path>| {
+        let (code, stdout, stderr) = hook_in(
+            event,
+            &judge_arg[..if event == "stop" { 2 } else { 0 }],
+            &input(
+                if event == "stop" {
+                    "Stop"
+                } else {
+                    "PostToolUse"
+                },
+                &outside,
+                session,
+                false,
+            ),
+            |command| {
+                // with the stand-in: a user's locale that is not English
+                if let Some(path) = path {
+                    command
+                        .env("PATH", path)
+                        .env("LC_ALL", "de_DE.UTF-8")
+                        .env("LANG", "de_DE.UTF-8");
+                }
+                if let Some(project) = project {
+                    command.env("CLAUDE_PROJECT_DIR", project);
+                }
+            },
+        );
+        assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
+        stdout
+    };
+
+    // Git's own words, which it writes in English only under `LC_ALL=C`: silent
+    let in_c = stand_in("git-in-c", "@C@");
+    assert_eq!(
+        run("stop", "c", Some(&in_c), None),
+        "",
+        "a stop where Git found no repository, read in the C locale, was not silent"
+    );
+    assert_eq!(run("post-tool", "c", Some(&in_c), None), "");
+    // words that only resemble them: a failure, said by the stop every time and by advice once
+    let near = stand_in("git-near", "fatal: not a git repository: '.git'");
+    for _ in 0..2 {
+        let said = run("stop", "near", Some(&near), None);
+        assert!(
+            !said.is_empty() && system_message(&said).starts_with("deep-diff-forge: UNJUDGED. "),
+            "words that only resemble Git's \"no repository\" were taken for it: {said:?}"
+        );
+    }
+    let said = run("post-tool", "near-advice", Some(&near), None);
+    assert!(
+        !said.is_empty() && system_message(&said).contains("the hook did not run"),
+        "advice took words that only resemble Git's for \"no repository\": {said:?}"
+    );
+    assert!(
+        !log.exists(),
+        "the judge was run although nothing was found"
+    );
+
+    // the client names the project: it is judged, from a directory in no repository
+    let said = run("stop", "named", None, Some(&root));
+    assert!(
+        !said.is_empty()
+            && blocked(&serde_json::from_str(&said).unwrap())
+                .contains("check_suppressed in \"a.rs\""),
+        "a project the client names was not judged: {said:?}"
+    );
+    // the session recorded the project: it is judged, from a directory in no repository
+    start(&root, "recorded");
+    let said = run("stop", "recorded", None, None);
+    assert!(
+        !said.is_empty()
+            && blocked(&serde_json::from_str(&said).unwrap())
+                .contains("check_suppressed in \"a.rs\""),
+        "a project the session recorded was not judged: {said:?}"
+    );
+}
+
+/// U1 row S300 (lane T3a of 0.11.1): every command a hook names is this binary's own absolute
+/// path, quoted for the shell. The binary is run from a directory whose name a shell splits at
+/// its space and ends a quote at: the command the start of a session names is that path in
+/// single quotes, its own quote written the way a shell reads one inside them.
+#[test]
+fn a_command_the_hooks_name_is_their_own_path_quoted_for_the_shell() {
+    let scratch = Scratch::new("hook-binary-quoted");
+    let root = repository(&scratch);
+    let dir = scratch.join("a dir's name");
+    std::fs::create_dir(&dir).unwrap();
+    let copy = dir.join("deep-diff-forge");
+    // (copied by a child process: an executable this process wrote can be busy at exec)
+    assert!(
+        Command::new("cp")
+            .arg(env!("CARGO_BIN_EXE_deep-diff-forge"))
+            .arg(&copy)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let copy = std::fs::canonicalize(&copy).unwrap();
+    let mut child = Command::new(&copy)
+        .envs(ISOLATE)
+        .env("HOME", home())
+        .env_remove("XDG_STATE_HOME")
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("CLAUDE_PROJECT_DIR")
+        .args(["agent", "hook", "session-start", "--client", "claude"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            input("SessionStart", &root, "s", false)
+                .to_string()
+                .as_bytes(),
+        )
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let said = String::from_utf8(out.stdout).unwrap();
+    let path = copy.to_str().unwrap();
+    let quoted = format!("'{}'", path.replace('\'', r"'\''"));
+    assert!(
+        said.contains(&format!("`{quoted} agent doctor --gate`")),
+        "the command is not this binary's path quoted for the shell ({quoted}): {said}"
+    );
+    assert!(
+        !said.contains(&format!("`{path} agent")),
+        "the command names the path unquoted: {said}"
+    );
+}
+
 /// Independent review of the hooks, "weak tests": the rule that a patch which cannot be made
 /// is UNJUDGED lived in the hook and no test of the hook made one fail. A path marked
 /// skip-worktree and an untracked file that cannot be read are both: a stop says UNJUDGED with
@@ -5929,7 +6110,13 @@ fn a_failing_commit_does_not_block_for_ever_when_the_state_cannot_be_kept() {
             );
         }
         // a new turn (the client is not continuing after a block): it blocks again, said
-        blocked(&stop_active(&root, "s", &script, false));
+        // (U1 row S169, lane T3a of 0.11.1: and why, at that block too)
+        let again = blocked(&stop_active(&root, "s", &script, false)).to_owned();
+        assert!(
+            again.contains(&format!("Commit {key}: FAIL\n"))
+                && again.contains("The hook could not keep its state ("),
+            "the next turn's block does not say why it blocks again: {again}"
+        );
     }
     std::fs::set_permissions(&sessions, std::fs::Permissions::from_mode(0o700)).unwrap();
     // with a state that can be kept, `stop_hook_active` decides nothing
@@ -9182,6 +9369,95 @@ fn a_tree_no_longer_listed_stands_while_its_directory_does() {
     let _ = stop_from(&root, "s", &script);
     assert_eq!(remembered_lines(), Vec::<String>::new());
     assert_eq!(the_state()["trees"], json!({}));
+
+    // U1 row S224 (lane T3a of 0.11.1): the same, with the stop that finds it clean made from
+    // inside the tree that is listed again (the stop judges it there, and forgets the old one)
+    secret(&pruned, "third.rs");
+    blocked(&stop_from(&pruned, "s", &script));
+    assert_ne!(
+        remembered_lines(),
+        Vec::<String>::new(),
+        "the new failure was not remembered"
+    );
+    std::fs::remove_file(pruned.join(".git")).unwrap();
+    git(&root, &["worktree", "prune"]);
+    for entry in std::fs::read_dir(&pruned).unwrap() {
+        std::fs::remove_file(entry.unwrap().path()).unwrap();
+    }
+    linked_tree(&root, &pruned, "once-more");
+    let _ = stop_from(&pruned, "s", &script);
+    assert_eq!(
+        remembered_lines(),
+        Vec::<String>::new(),
+        "a tree listed again and found clean by a stop made from inside it was not forgotten"
+    );
+}
+
+/// U1 row S215 (lane T3a of 0.11.1): what is read at a tree's path counts as that tree's only
+/// when Git names that tree there. A linked tree something blocked in stays listed at its own
+/// path, while its `.git` file and another tree's records are edited to name each other: Git
+/// names the other tree at that path. A stop from the project must not read the path as the
+/// first tree, whose failure stands, and the reading there (clean) forgets nothing of it.
+#[test]
+fn a_path_git_names_as_another_tree_is_not_read_as_the_tree_listed_there() {
+    let scratch = Scratch::new("hook-path-named-another");
+    let root = repository(&scratch);
+    let (script, _) = reading_judge(&scratch);
+    let (first, other) = (scratch.join("first"), scratch.join("other"));
+    linked_tree(&root, &first, "first");
+    linked_tree(&root, &other, "other");
+    start(&root, "s");
+    secret(&first, "first.rs");
+    blocked(&stop_from(&first, "s", &script));
+    let before = remembered_lines();
+    // the key is taken out again: what stands at `first` now is the base, clean
+    std::fs::remove_file(first.join("first.rs")).unwrap();
+    let admin = std::fs::canonicalize(root.join(".git/worktrees/other")).unwrap();
+    std::fs::write(first.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
+    std::fs::write(
+        admin.join("gitdir"),
+        format!(
+            "{}\n",
+            std::fs::canonicalize(&first)
+                .unwrap()
+                .join(".git")
+                .display()
+        ),
+    )
+    .unwrap();
+    let decision = stop_from(&root, "s", &script);
+    assert_eq!(
+        remembered_lines(),
+        before,
+        "a path Git names as another tree was read as the tree listed there: {decision}"
+    );
+    let said = stop_words(&decision);
+    assert!(said.contains("/first\""), "{said}");
+}
+
+/// U1 row S238 (lane T3a of 0.11.1): the project is the repository at the top level it was
+/// recorded at. Moved away with a link left at its path, Git finds the same repository through
+/// the link at another top level: that is not the project, and the stop is UNJUDGED, from the
+/// link and from where the project is now, and runs no judge.
+#[test]
+fn a_project_moved_behind_a_link_at_its_path_is_not_judged_there() {
+    let scratch = Scratch::new("hook-moved-behind-link");
+    let root = repository(&scratch);
+    let (script, log, _) = failing_judge(&scratch);
+    start(&root, "s");
+    silence_a_lint(&root);
+    let moved = scratch.join("moved");
+    std::fs::rename(&root, &moved).unwrap();
+    std::os::unix::fs::symlink(&moved, &root).unwrap();
+    for cwd in [&root, &moved] {
+        let said = stop_words(&stop_from(cwd, "s", &script)).to_owned();
+        assert!(
+            said.starts_with("deep-diff-forge: UNJUDGED. ")
+                && said.contains("is not the one this session started in"),
+            "the project moved behind a link at its path was taken for the project: {said}"
+        );
+    }
+    assert_eq!(runs(&log), 0, "a judge was run for the moved project");
 }
 
 // --- The hook-state version policy (F7.e; rules V1 to V10 of the model design) ------------
@@ -10325,11 +10601,30 @@ fn a_tree_moved_by_hand_is_unjudged_until_repaired_and_then_stands() {
     let (script, _) = reading_judge(&scratch);
     let (linked, moved) = (scratch.join("linked"), scratch.join("moved"));
     linked_tree(&root, &linked, "side");
+    let clean = scratch.join("clean");
+    linked_tree(&root, &clean, "clean-side");
     start(&root, "s");
     secret(&linked, "first.rs");
     blocked(&stop_from(&linked, "s", &script));
     let before = remembered_lines();
     std::fs::rename(&linked, &moved).unwrap();
+    // U1 row S218 (lane T3a of 0.11.1): from the project, the tree whose directory is gone and
+    // where a failure stands is advised `git worktree repair`, and not prune; a tree gone with
+    // nothing standing there is the one prune is said for
+    std::fs::remove_dir_all(&clean).unwrap();
+    let from_project = stop_words(&stop_from(&root, "s", &script)).to_owned();
+    let gone = "\" of this project is gone or is no working tree any more: what only its own history names is not judged (";
+    assert!(
+        from_project.contains(&format!("/linked{gone}if it was moved with `mv`, `git worktree repair` run where it is now records it; `git worktree prune` would forget what blocked there)")),
+        "the gone tree where a failure stands is not advised repair: {from_project}"
+    );
+    assert!(
+        from_project.contains(&format!(
+            "/clean{gone}`git worktree prune` forgets a linked tree that is gone;"
+        )),
+        "the gone tree where nothing stands is not advised prune: {from_project}"
+    );
+    assert_eq!(remembered_lines(), before);
     let said = allowed(&stop_from(&moved, "s", &script)).to_owned();
     assert!(
         said.starts_with("deep-diff-forge: UNJUDGED. ")
@@ -10958,7 +11253,13 @@ fn a_stop_waits_for_the_session_s_lock_and_takes_only_the_one_that_is_there() {
         stop.join().unwrap()
     });
     assert!(holder.wait().unwrap().success());
-    blocked(&reason);
+    // U1 row S233 (lane T3a of 0.11.1): it judged with the session's state after its wait, and
+    // is not the stateless stop of a busy lock (which blocks for the credential too)
+    let first = blocked(&reason).to_owned();
+    assert!(
+        !first.starts_with(&stateless("state.lock_busy")),
+        "a stop did not wait half a second for its session's lock: {first}"
+    );
 
     // The stop opens the lock file while another hook holds it. Then that file is taken
     // away, a new one is made at its path and held by a third hook, and the first lets go:
