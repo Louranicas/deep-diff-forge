@@ -233,16 +233,35 @@ mod tests {
         assert_eq!(req.params, Value::Null);
     }
 
+    /// SECURITY.md (daemon): "JSON-RPC envelopes are shape-checked, including protocol version,
+    /// method, identifier, and parameter types." Each malformed envelope below is refused
+    /// `INVALID_REQUEST` by its own rule, named in the message: the code alone is shared by every
+    /// rule, so a check that is gone could hide behind a later one. Asserted on the result, not
+    /// unwrapped, so an envelope that is accepted fails by name (U1, lane T3b).
+    fn refused_by(line: &str) -> Result<String, String> {
+        match parse_request(line) {
+            Ok(request) => Err(format!("accepted as method {:?}", request.method)),
+            Err(err) if err.code == INVALID_REQUEST => Ok(err.message),
+            Err(err) => Err(format!("refused {} ({})", err.code, err.message)),
+        }
+    }
+
     #[test]
     fn missing_method_is_invalid_request() {
-        let err = parse_request(r#"{"id":1}"#).unwrap_err();
-        assert_eq!(err.code, INVALID_REQUEST);
+        assert_eq!(
+            refused_by(r#"{"id":1}"#),
+            Ok("method must be a non-empty string of at most 256 bytes".to_owned()),
+            "an envelope without a method"
+        );
     }
 
     #[test]
     fn empty_method_is_invalid_request() {
-        let err = parse_request(r#"{"method":""}"#).unwrap_err();
-        assert_eq!(err.code, INVALID_REQUEST);
+        assert_eq!(
+            refused_by(r#"{"method":""}"#),
+            Ok("method must be a non-empty string of at most 256 bytes".to_owned()),
+            "an envelope with an empty method"
+        );
     }
 
     #[test]
@@ -273,26 +292,51 @@ mod tests {
 
     #[test]
     fn rejects_wrong_protocol_version() {
-        let err = parse_request(r#"{"jsonrpc":"1.0","method":"m"}"#).unwrap_err();
-        assert_eq!(err.code, INVALID_REQUEST);
+        for line in [
+            r#"{"jsonrpc":"1.0","method":"m"}"#,
+            r#"{"jsonrpc":2.0,"method":"m"}"#,
+        ] {
+            assert_eq!(
+                refused_by(line),
+                Ok("jsonrpc must be exactly \"2.0\"".to_owned()),
+                "an envelope of another protocol version: {line}"
+            );
+        }
     }
 
     #[test]
     fn rejects_non_object_request() {
-        let err = parse_request(r"[1,2,3]").unwrap_err();
-        assert_eq!(err.code, INVALID_REQUEST);
+        assert_eq!(
+            refused_by(r#"[{"method":"m"}]"#),
+            Ok("request must be a JSON object".to_owned()),
+            "an envelope that is not an object"
+        );
     }
 
     #[test]
     fn rejects_structured_id() {
-        let err = parse_request(r#"{"id":{},"method":"m"}"#).unwrap_err();
-        assert_eq!(err.code, INVALID_REQUEST);
+        for line in [r#"{"id":{},"method":"m"}"#, r#"{"id":[1],"method":"m"}"#] {
+            assert_eq!(
+                refused_by(line),
+                Ok("id must be a string, number, or null".to_owned()),
+                "an envelope with a structured identifier: {line}"
+            );
+        }
     }
 
     #[test]
     fn rejects_scalar_params() {
-        let err = parse_request(r#"{"method":"m","params":true}"#).unwrap_err();
-        assert_eq!(err.code, INVALID_REQUEST);
+        for line in [
+            r#"{"method":"m","params":true}"#,
+            r#"{"method":"m","params":1}"#,
+            r#"{"method":"m","params":"x"}"#,
+        ] {
+            assert_eq!(
+                refused_by(line),
+                Ok("params must be an object, array, or null".to_owned()),
+                "an envelope with scalar parameters: {line}"
+            );
+        }
     }
 
     #[test]

@@ -643,6 +643,20 @@ mod tests {
         assert_eq!(MAX_READ_BYTES, 160 * 1024 * 1024);
     }
 
+    /// SECURITY.md (daemon): "Request lines being read and answered are capped across
+    /// connections at 160 MiB (`MAX_READ_BYTES`)". Across connections: the daemon's engine, which
+    /// every connection shares, carries the one budget, at that limit. (Its use by each
+    /// connection is held by `serve::tests::request_lines_being_read_share_one_byte_budget`.)
+    #[test]
+    fn the_engine_every_connection_shares_carries_the_160_mib_read_budget() {
+        let engine = crate::handler::Engine::new();
+        assert_eq!(
+            engine.read_budget().limit,
+            160 * 1024 * 1024,
+            "the daemon's engine does not cap the bytes being read at 160 MiB"
+        );
+    }
+
     #[test]
     fn concurrent_readers_never_hold_more_than_the_budget() {
         let budget = ReadBudget::new(1000);

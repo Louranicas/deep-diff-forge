@@ -1263,6 +1263,73 @@ mod tests {
         dispatch(&req, engine)
     }
 
+    /// SECURITY.md (daemon): "Only the session table is locked, and only for bookkeeping;
+    /// parsing, ranking and Git run outside it." Read from this file's source, as no seam can
+    /// stop a request inside its parse or its ranking: the engine has one lock, the session
+    /// table's; every place it is taken is one of the six below, each a single statement whose
+    /// guard ends at its `;` or a block of table bookkeeping that names no parse, rank, Git or
+    /// review work; and `session.open` parses before it takes the table. A new place that takes
+    /// the table fails here until it is added, so it is read once. That requests run in parallel
+    /// is held by `serve::tests::a_running_request_does_not_block_another`.
+    #[test]
+    fn the_session_table_is_the_one_lock_and_is_held_for_bookkeeping_only() {
+        let source = include_str!("handler.rs");
+        let production = &source[..source
+            .find("\n#[cfg(test)]\nmod tests {")
+            .expect("the test module")];
+        assert_eq!(
+            (
+                production.matches("Mutex<").count(),
+                production.matches("RwLock").count(),
+                production.matches("sessions.lock()").count()
+            ),
+            (1, 0, 1),
+            "the engine has a lock other than the session table's"
+        );
+        let sites: Vec<&str> = production
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.contains(".sessions()"))
+            .collect();
+        assert_eq!(
+            sites,
+            [
+                "self.sessions().entries.len()",
+                "let _table = self.sessions();",
+                "let files = engine.sessions().snapshot_files(&id);",
+                "let closed = engine.sessions().close_session(&id);",
+                "let mut table = engine.sessions();",
+                "let table = engine.sessions();",
+            ],
+            "the session table is taken somewhere new, or held past one statement"
+        );
+        for site in [
+            "let mut table = engine.sessions();",
+            "let table = engine.sessions();",
+        ] {
+            let from = production.find(site).expect("a block site");
+            let block = &production[from..];
+            let block = &block[..block.find("\n    };").expect("the block's end")];
+            for work in [
+                "parse", "rank", "git", "Git", "review", "sealed", "deadline",
+            ] {
+                assert!(
+                    !block.contains(work),
+                    "the session table is held across `{work}`:\n{block}"
+                );
+            }
+        }
+        let open = &production[production.find("fn session_open(").expect("session_open")..];
+        let open = &open[..open.find("\n}\n").expect("its end")];
+        assert!(
+            matches!(
+                (open.find("parse_patch_param("), open.find("engine.sessions()")),
+                (Some(parse), Some(table)) if parse < table
+            ),
+            "session.open takes the session table before it parses:\n{open}"
+        );
+    }
+
     /// Production readiness 2026-11-04: past its deadline, `review.change` starts no acquisition
     /// after the foreign-Git-directory check, which is a Git stage of its own, so one request
     /// overruns its deadline by one stage at most. The range names no commit: an acquisition that
