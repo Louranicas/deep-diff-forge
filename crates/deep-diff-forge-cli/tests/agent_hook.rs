@@ -2837,6 +2837,129 @@ fn a_failure_to_find_the_repository_is_said_and_never_silent() {
     );
 }
 
+/// U1 rows S243, S252 and S282 (lane T3a of 0.11.1). A stop is silent only where no project
+/// can be found at all: Git says, in its own words in the `C` locale, that there is no
+/// repository around the session's directory, the client names no project, and none is
+/// recorded. A stand-in Git answers in English only when it is run with `LC_ALL=C` (and in
+/// another language otherwise), so a hook that read its answer in the user's locale says
+/// UNJUDGED here; a wording that only resembles Git's is a failure and is said, by a stop and
+/// by the advice after a tool call; and a project the client names, or one the session
+/// recorded, is judged from a directory that is in no repository.
+#[test]
+fn only_gits_own_words_for_no_repository_with_no_project_known_make_a_silent_stop() {
+    let scratch = Scratch::new("hook-no-repository-words");
+    let root = repository(&scratch);
+    let (script, log, _) = failing_judge(&scratch);
+    silence_a_lint(&root);
+    let outside = scratch.join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    let outside = std::fs::canonicalize(&outside).unwrap();
+    let real = String::from_utf8(
+        Command::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    // Git as it is everywhere but in `outside`, where it answers `words` (`@C@` for the
+    // English answer under `LC_ALL=C` and a translated one otherwise)
+    let stand_in = |name: &str, words: &str| -> String {
+        let dir = scratch.join(name);
+        std::fs::create_dir(&dir).unwrap();
+        let answer = if words == "@C@" {
+            "if [ \"$LC_ALL\" = C ]; then echo 'fatal: not a git repository (or any of the parent directories): .git' >&2; else echo 'fatal: kein Git-Repository (oder irgendeines der Elternverzeichnisse): .git' >&2; fi".to_owned()
+        } else {
+            format!("echo '{words}' >&2")
+        };
+        write_program(
+            &dir.join("git"),
+            &format!(
+                "#!/bin/sh\ncase \"$(pwd -P)\" in\n'{outside}'|'{outside}'/*) {answer}; exit 128;;\nesac\nexec '{real}' \"$@\"\n",
+                outside = outside.display(),
+                real = real.trim()
+            ),
+        );
+        format!("{}:{}", dir.display(), std::env::var("PATH").unwrap())
+    };
+    let judge_arg = ["--judge", script.to_str().unwrap()];
+    let run = |event: &str, session: &str, path: Option<&str>, project: Option<&Path>| {
+        let (code, stdout, stderr) = hook_in(
+            event,
+            &judge_arg[..if event == "stop" { 2 } else { 0 }],
+            &input(
+                if event == "stop" {
+                    "Stop"
+                } else {
+                    "PostToolUse"
+                },
+                &outside,
+                session,
+                false,
+            ),
+            |command| {
+                // with the stand-in: a user's locale that is not English
+                if let Some(path) = path {
+                    command
+                        .env("PATH", path)
+                        .env("LC_ALL", "de_DE.UTF-8")
+                        .env("LANG", "de_DE.UTF-8");
+                }
+                if let Some(project) = project {
+                    command.env("CLAUDE_PROJECT_DIR", project);
+                }
+            },
+        );
+        assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
+        stdout
+    };
+
+    // Git's own words, which it writes in English only under `LC_ALL=C`: silent
+    let in_c = stand_in("git-in-c", "@C@");
+    assert_eq!(
+        run("stop", "c", Some(&in_c), None),
+        "",
+        "a stop where Git found no repository, read in the C locale, was not silent"
+    );
+    assert_eq!(run("post-tool", "c", Some(&in_c), None), "");
+    // words that only resemble them: a failure, said by the stop every time and by advice once
+    let near = stand_in("git-near", "fatal: not a git repository: '.git'");
+    for _ in 0..2 {
+        let said = run("stop", "near", Some(&near), None);
+        assert!(
+            !said.is_empty() && system_message(&said).starts_with("deep-diff-forge: UNJUDGED. "),
+            "words that only resemble Git's \"no repository\" were taken for it: {said:?}"
+        );
+    }
+    let said = run("post-tool", "near-advice", Some(&near), None);
+    assert!(
+        !said.is_empty() && system_message(&said).contains("the hook did not run"),
+        "advice took words that only resemble Git's for \"no repository\": {said:?}"
+    );
+    assert!(
+        !log.exists(),
+        "the judge was run although nothing was found"
+    );
+
+    // the client names the project: it is judged, from a directory in no repository
+    let said = run("stop", "named", None, Some(&root));
+    assert!(
+        !said.is_empty()
+            && blocked(&serde_json::from_str(&said).unwrap())
+                .contains("check_suppressed in \"a.rs\""),
+        "a project the client names was not judged: {said:?}"
+    );
+    // the session recorded the project: it is judged, from a directory in no repository
+    start(&root, "recorded");
+    let said = run("stop", "recorded", None, None);
+    assert!(
+        !said.is_empty()
+            && blocked(&serde_json::from_str(&said).unwrap())
+                .contains("check_suppressed in \"a.rs\""),
+        "a project the session recorded was not judged: {said:?}"
+    );
+}
+
 /// Independent review of the hooks, "weak tests": the rule that a patch which cannot be made
 /// is UNJUDGED lived in the hook and no test of the hook made one fail. A path marked
 /// skip-worktree and an untracked file that cannot be read are both: a stop says UNJUDGED with
