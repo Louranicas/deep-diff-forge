@@ -2909,6 +2909,14 @@ mod tests {
         assert_ne!(mark, format!("all{}", &plain(&all.join("\n"))[..21]));
         // what was said once
         assert_ne!(keyed_hex("noticed", b"a note"), plain("a note"));
+        // the digest is the HMAC under this process's key, never a plain SHA-256 of what it
+        // keeps, tagged or not (U1 S337, lane T3d)
+        assert_eq!(
+            keyed_hex("line", b"x"),
+            deep_diff_forge_core::hmac_sha256_hex(key(), b"line\0x"),
+            "a kept digest is not the HMAC under the hooks' key"
+        );
+        assert_ne!(keyed_hex("line", b"x"), plain("line\0x"));
         // one key, one digest; the tag keeps one use apart from another
         assert_eq!(keyed_hex("line", b"x"), keyed_hex("line", b"x"));
         assert_ne!(keyed_hex("line", b"x"), keyed_hex("noticed", b"x"));
@@ -3204,7 +3212,7 @@ mod tests {
                 "{}: FAIL\n",
                 commit_label(&format!("{:012x}", 559))
             ))
-            .unwrap();
+            .unwrap_or_else(|| panic!("the newest commit that blocks is not shown: {reason}"));
         assert!(newest < 1_500, "{newest}");
         assert!(
             reason.contains("- rule tests-travel-with-the-code-they-pin-down-0559")
@@ -3254,6 +3262,35 @@ mod tests {
             10,
             "{reason}"
         );
+    }
+
+    /// U1 row S141 (lane T3d of 0.11.1): the last two parts of a stop's message give way first
+    /// when it is full, and the line that counts them says how many. With three failures that
+    /// stand, each would be shown with its rules while there is room; behind sixty commits that
+    /// block there is none, and they are on their counting line, nothing cut. (The holds give
+    /// way in the test above: it has five that are new.)
+    #[test]
+    fn failures_that_stand_give_way_to_what_blocks_and_are_counted() {
+        let standing: Vec<String> = (103..110)
+            .map(|n| commit_label(&format!("{n:012x}")))
+            .collect();
+        let units: Vec<TreeJudged> = crowded_units()
+            .into_iter()
+            .filter(|unit| !standing.contains(&unit.what))
+            .collect();
+        let StopDecision::Block { reason } = decide_stop_trees(&units, &[], RANGE) else {
+            panic!("sixty commits fail now")
+        };
+        assert!(
+            reason.contains("3 earlier failures stand: Commit 000000000064 ("),
+            "three failures that stand did not give way to what blocks: {reason}"
+        );
+        assert_eq!(
+            reason.matches(": FAIL, which stands\n").count(),
+            0,
+            "{reason}"
+        );
+        assert!(!reason.contains(DETAIL_CUT.trim_end()), "{reason}");
     }
 
     /// A mutant the mutation run of round 15 could not be trusted on (its test process was

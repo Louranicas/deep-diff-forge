@@ -185,6 +185,12 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   what each answers; one engine across connections; the session table as the one lock, held for
   bookkeeping (read from the source); and a panic answered on a connection that keeps serving.
   Tests that unwrapped a result before asserting it now assert it.
+- Tests only: no product change. The agent-hook sentences of `SECURITY.md` that cited no test (U1,
+  lane T3d) are each mapped to a test that a plant of the code they describe turns red by a named
+  assertion, most of them tests that were there; new or strengthened: a stop from a submodule's Git
+  directory, failures that stand giving way in a full message, a commit only a branch past 5,000
+  others names, a commit after one whose patch is refused, a link at the policy's name, keyed
+  digests, and stops that must not be silent asserted so first.
 - What an agent or a person is told keeps its meaning under a long path: where a message is bounded, the
   paths the hook quoted give way in their middle, never the words that say what happened. Under a
   repository path of about 100 characters or more (any macOS temp directory) the line that counts what a
