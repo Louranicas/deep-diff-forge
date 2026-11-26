@@ -147,6 +147,50 @@ mod tests {
         assert_eq!(redacted_id("a/b/c.rs"), redacted_id("a/b/c.rs"));
     }
 
+    /// `SECURITY.md` ("Local learning store"): the stable identifier is pseudonymous and
+    /// dictionary-guessable. It is FNV-1a 64 of the path with no key, so anyone holding a receipt
+    /// recomputes it for each path of a guess list and finds the path. The vectors are the
+    /// published FNV-1a 64-bit ones; the identifier is checked against the 16 hex digits of a
+    /// computation written here, not against `fnv1a`. A keyed or salted identifier would make
+    /// the sentence false, and this test red.
+    #[test]
+    fn the_identifier_is_unkeyed_fnv1a_so_a_guess_list_finds_the_path() {
+        for (input, hash) in [
+            ("", 0xcbf2_9ce4_8422_2325_u64),
+            ("a", 0xaf63_dc4c_8601_ec8c),
+            ("foobar", 0x8594_4171_f739_67e8),
+        ] {
+            assert_eq!(fnv1a(input.as_bytes()), hash, "FNV-1a 64 of {input:?}");
+        }
+        let stored = redacted_id("src/payments/ledger.rs");
+        assert_eq!(
+            stored.as_str(),
+            "272ca9da8877826c",
+            "the identifier of a known path"
+        );
+        let recompute = |path: &str| {
+            let hash = path.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+                (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+            });
+            format!("{hash:016x}")
+        };
+        let guesses = [
+            "README.md",
+            "src/lib.rs",
+            "src/payments/ledger.rs",
+            "src/main.rs",
+        ];
+        let found: Vec<&str> = guesses
+            .into_iter()
+            .filter(|path| recompute(path) == stored.as_str())
+            .collect();
+        assert_eq!(
+            found,
+            ["src/payments/ledger.rs"],
+            "a guess list did not find the path from its identifier"
+        );
+    }
+
     #[test]
     fn redacted_id_does_not_contain_the_path() {
         let path = "secret/internal/path.rs";

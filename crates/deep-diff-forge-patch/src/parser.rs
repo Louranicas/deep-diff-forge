@@ -2876,6 +2876,42 @@ McmZQzOv=my00M6TI{*Lx
         assert_eq!(files[1].patch_twin.hunks.len(), 1);
     }
 
+    /// `SECURITY.md` ("Untrusted input and output"): what Git's `parse_binary` skips after the
+    /// hunks of a `GIT binary patch` body is admitted, as before 0.10.0: after the two hunks a
+    /// third hunk, empty lines or a stray data line, even one whose group does not decode; after
+    /// the forward hunk alone (the reverse one is optional) the same, once a line that is no
+    /// `literal`/`delta` header ends the hunks. Each is read as a binary change, not refused.
+    /// (`row_git_binary_patch_corrupt_bodies` in `tests/conformance.rs` checks such bodies against
+    /// a real `git apply`.)
+    #[test]
+    fn lines_git_skips_after_the_binary_hunks_are_admitted() {
+        let hunk = "literal 0\nHcmV?d00001\n\n";
+        let undecodable = "literal 0\nD~~~~~\n\n";
+        let two = format!("{hunk}{hunk}");
+        let two = two.as_str();
+        let cases = [
+            ("two hunks", two, hunk),
+            ("two hunks", two, "\n"),
+            ("two hunks", two, "\n\n"),
+            ("two hunks", two, "HcmV?d00001\n"),
+            ("two hunks", two, undecodable),
+            ("the forward hunk", hunk, "\n"),
+            ("the forward hunk", hunk, "HcmV?d00001\n"),
+            ("the forward hunk", hunk, "\nliteral 0\nD~~~~~\n\n"),
+        ];
+        for (hunks, body, skipped) in cases {
+            let input = format!(
+                "diff --git a/b.bin b/b.bin\nindex 1111111..2222222 100644\nGIT binary patch\n{body}{skipped}"
+            );
+            let read = parse(&input);
+            assert!(
+                matches!(read.as_deref(), Ok([file]) if file.status == FileStatus::BinaryChanged),
+                "{skipped:?} after {hunks}, which Git skips, was not admitted: {:?}",
+                read.map(|files| files.len())
+            );
+        }
+    }
+
     /// The body grammar `git apply` reads, and the lines it does not.
     #[test]
     fn the_binary_body_grammar_is_git_s() {
@@ -3559,20 +3595,49 @@ diff --git a/x b/x
         assert!(matches!(err, PatchParseError::BudgetExceeded { .. }));
     }
 
+    /// `SECURITY.md` ("Untrusted input and output"): `parse` reads one million physical lines and
+    /// refuses more, at the first line past the budget, before that line or any after it is
+    /// parsed (the error names line 1,000,001 of a longer input, not its length). The numbers are
+    /// the sentence's, not the constant's, so a changed budget is seen too.
     #[test]
     fn structural_line_budget_is_enforced_before_model_amplification() {
-        let input = "preamble\n".repeat(DEFAULT_LINE_BUDGET + 1);
-        let options = ParseOptions {
-            byte_budget: input.len(),
-        };
-        let err = parse_with(&input, options).unwrap_err();
-        assert!(matches!(
-            err,
-            PatchParseError::LineBudgetExceeded {
-                limit_lines: DEFAULT_LINE_BUDGET,
-                actual_lines
-            } if actual_lines == DEFAULT_LINE_BUDGET + 1
-        ));
+        let lines = |count: usize| "preamble\n".repeat(count);
+        let at = parse(&lines(1_000_000));
+        assert!(
+            at.is_ok(),
+            "one million physical lines must be read: {:?}",
+            at.err()
+        );
+        let over = parse(&lines(1_000_005));
+        assert!(
+            matches!(
+                over,
+                Err(PatchParseError::LineBudgetExceeded {
+                    limit_lines: 1_000_000,
+                    actual_lines: 1_000_001,
+                })
+            ),
+            "more than one million lines must be refused at line 1,000,001: {:?}",
+            over.map(|files| files.len())
+        );
+    }
+
+    /// `SECURITY.md`: `parse` refuses more than 64 MiB of input before it reads a line of it; the
+    /// sizes are the sentence's, not the constant's.
+    #[test]
+    fn parse_refuses_more_than_64_mib_of_input() {
+        let refused = parse(&"x".repeat(64 * 1024 * 1024 + 1));
+        assert!(
+            matches!(
+                refused,
+                Err(PatchParseError::BudgetExceeded {
+                    limit_bytes: 67_108_864,
+                    actual_bytes: 67_108_865,
+                })
+            ),
+            "more than 64 MiB of input must be refused by the byte budget: {:?}",
+            refused.map(|files| files.len())
+        );
     }
 
     #[test]
