@@ -212,6 +212,16 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   timeout is twice the baseline, at least 2400 s. Stated limit: a shard's 300 minutes hold the
   baseline and about seven mutants that run the whole suite, so a change of hundreds of mutants a
   shard (PR #131: 214 to 223) still does not finish.
+- CI only: no product change (PR #131's runs again). The required check `review controller
+  mutation and fuzz evidence` mutates the review crate's `identifier` and `check_execution` with
+  `--test-workspace false` and `--file` for their two files, instead of `--test-workspace true
+  --timeout 300`. cargo-mutants times its baseline on the mutated package's tests alone, so each
+  mutant ran the whole workspace (25 to 37 minutes on CI's runner since 2026-11-24) against a
+  timeout that baseline never measured: every mutant timed out and the job was cancelled at its 75
+  minutes. Its 22 mutants are now judged by the crate's own tests (all caught, 3 minutes locally).
+  Stated: the 24 struct-field mutants of `journal.rs` that cargo-mutants' `--re` let into the job
+  are no longer in it; 22 of them are not caught by the review crate's own tests. The `deploy
+  gate-feature` job's limit is 60 minutes instead of 45 (its runs took 38.5 and 37.3).
 
 ## [0.11.0] - 2026-11-25
 

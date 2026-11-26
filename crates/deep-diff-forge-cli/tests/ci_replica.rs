@@ -396,9 +396,127 @@ fn the_replica_s_test_step_runs_under_a_long_linked_tmpdir() {
     );
 }
 
+/// The `timeout-minutes:` of `job` itself in a workflow (four spaces in; a step's own limit, eight
+/// spaces in, is not the job's). `None` when the job has none.
+fn ci_timeout_minutes(workflow: &str, job: &str) -> Option<u32> {
+    let mut in_job = false;
+    for line in workflow.lines().skip_while(|line| *line != "jobs:") {
+        if let Some(key) = line
+            .strip_prefix("  ")
+            .and_then(|rest| rest.strip_suffix(':'))
+            && !key.starts_with(' ')
+            && !key.contains(' ')
+        {
+            in_job = key == job;
+            continue;
+        }
+        if in_job && let Some(value) = line.strip_prefix("    timeout-minutes: ") {
+            return value.trim().parse().ok();
+        }
+    }
+    None
+}
+
+/// C2 of 0.11.1: the review controller's mutation is judged by the review crate's own tests, the
+/// ones its baseline times. cargo-mutants 27.1.0 runs the baseline as `cargo test
+/// --package=<the mutated package>` whatever `--test-workspace` says (measured on a scratch
+/// workspace of two packages), so with `--test-workspace true` each mutant ran the whole
+/// workspace against a timeout that baseline never measured: in PR #131's runs (45670721783,
+/// 45701563166) every mutant logged "TIMEOUT … 300s test" and the job was cancelled at 75
+/// minutes. The scope is the two functions the step names, by file too, since `--re` does not
+/// filter struct-field mutants (journal.rs's 24 entered the job). And the job ends inside its
+/// limit even if every mutant hangs.
+#[test]
+fn the_review_controller_mutation_runs_what_its_baseline_measured() {
+    // Measured at 0.11.1 (lane C2): 22 mutants, each built in at most 8 s and tested in at most
+    // 19 s locally; a mutant build of the whole workspace took 23 s on the runner; every other
+    // step of the job took at most 10.9 minutes in its last three green runs.
+    const MUTANTS: u32 = 22;
+    const SLOWEST_TEST_S: u32 = 19;
+    const BUILD_S: u32 = 30;
+    const OTHER_STEPS_S: u32 = 11 * 60;
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    let workflow = std::fs::read_to_string(format!("{root}/.github/workflows/ci.yml")).unwrap();
+    let run = ci_run(
+        &workflow,
+        "review-controller-evidence",
+        "scoped mutation of admission and receipt qualification",
+    )
+    .expect("the mutation step has a one-line run");
+    let args: Vec<&str> = run.split_whitespace().collect();
+    let after = |flag: &str| -> Vec<&str> {
+        args.windows(2)
+            .filter(|pair| pair[0] == flag)
+            .map(|pair| pair[1])
+            .collect()
+    };
+    assert_eq!(
+        args[..4],
+        ["cargo", "mutants", "--package", "deep-diff-forge-review"],
+        "{args:?}"
+    );
+    assert_eq!(after("--re"), ["'identifier|check_execution'"], "{args:?}");
+    assert_eq!(
+        after("--test-workspace"),
+        ["false"],
+        "each mutant runs the mutated package's tests, the ones its baseline timed: {args:?}"
+    );
+    assert!(
+        !args
+            .iter()
+            .any(|arg| arg.starts_with("--test-workspace=") || arg.starts_with("--test-package")),
+        "each mutant runs the mutated package's tests, the ones its baseline timed: {args:?}"
+    );
+    assert_eq!(
+        after("--file"),
+        [
+            "crates/deep-diff-forge-review/src/lib.rs",
+            "crates/deep-diff-forge-review/src/policy.rs"
+        ],
+        "--re does not filter struct-field mutants: the files of the two functions bound the scope: {args:?}"
+    );
+    assert!(
+        !args
+            .iter()
+            .any(|arg| ["--timeout", "-t"].contains(arg) || arg.starts_with("--timeout=")),
+        "a fixed --timeout also bounds the baseline: {args:?}"
+    );
+    let floor: u32 = after("--minimum-test-timeout")
+        .first()
+        .and_then(|value| value.parse().ok())
+        .expect("a floor under the timeout cargo-mutants sets from the baseline");
+    assert!(
+        floor >= 3 * SLOWEST_TEST_S,
+        "the floor is at least three times the slowest mutant's tests: {floor}"
+    );
+    let limit = ci_timeout_minutes(&workflow, "review-controller-evidence").expect("a job limit");
+    assert!(
+        MUTANTS * (floor + BUILD_S) + OTHER_STEPS_S <= limit * 60,
+        "the job must end inside its {limit} minutes even if every mutant hangs (floor {floor} s)"
+    );
+}
+
+/// C2 of 0.11.1: the gate job's limit holds its measured runs with room. PR #131's took 38.5 and
+/// 37.3 minutes (runs 45670721783 and 45701563166; the test step 2,200 s and 2,131 s), and the
+/// old 45 left 17% over the slower; the limit is at least one and a half times the slower run.
+#[test]
+fn the_gate_job_s_limit_holds_its_measured_runs() {
+    const SLOWER_RUN_S: u32 = 2_310;
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    let workflow = std::fs::read_to_string(format!("{root}/.github/workflows/ci.yml")).unwrap();
+    let limit = ci_timeout_minutes(&workflow, "gate").expect("the gate job has a limit");
+    assert!(
+        2 * limit * 60 >= 3 * SLOWER_RUN_S,
+        "the gate job's {limit} minutes are under one and a half times its slower measured run (38.5 minutes)"
+    );
+}
+
 #[test]
 fn the_run_reader_reads_one_line_runs() {
-    let workflow = "on:\njobs:\n  a:\n    steps:\n      - name: test\n        run: one\n      - name: block\n        run: |\n          x\n  b:\n    steps:\n      - name: test\n        run: two\n";
+    let workflow = "on:\njobs:\n  a:\n    timeout-minutes: 7\n    steps:\n      - name: test\n        run: one\n      - name: block\n        run: |\n          x\n  b:\n    steps:\n      - name: test\n        timeout-minutes: 5\n        run: two\n";
+    assert_eq!(ci_timeout_minutes(workflow, "a"), Some(7));
+    assert_eq!(ci_timeout_minutes(workflow, "b"), None);
+    assert_eq!(ci_timeout_minutes(workflow, "c"), None);
     assert_eq!(ci_run(workflow, "a", "test").as_deref(), Some("one"));
     assert_eq!(ci_run(workflow, "b", "test").as_deref(), Some("two"));
     assert_eq!(ci_run(workflow, "a", "block"), None);

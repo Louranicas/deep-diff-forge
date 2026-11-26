@@ -163,7 +163,13 @@ jobs:
   gate:
     name: deploy gate-feature
     runs-on: ubuntu-26.04
-    timeout-minutes: 45
+    # Raised from 45: PR #131's runs took 38.5 and 37.3 minutes (runs 45670721783 and
+    # 45701563166), of which the test step 2,200 s and 2,131 s; no other step took over 22 s.
+    # 45 left 17% over the slower run. 60 leaves 21.5 minutes (56%), eighteen times the 1.2
+    # minutes by which the two runs differed. What used the old margin is the suite's growth, not
+    # runner noise: the test step took 98 s on 2026-11-21 (run 44953015980) and 1,526 s on
+    # 2026-11-24 (run 45449170576).
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (node24)
         with:
@@ -237,7 +243,10 @@ jobs:
     name: review controller mutation and fuzz evidence
     runs-on: ubuntu-26.04
     # Raised from 30: the gate image build installs two Rust toolchains and compiles
-    # cargo-mutants and cargo-fuzz inside the image.
+    # cargo-mutants and cargo-fuzz inside the image. What it holds (0.11.1): every step but the
+    # mutation took 8.6 to 10.9 minutes in the last three green runs (44953015980, 43870688071,
+    # 43087441253); the mutation's 22 mutants took 3 minutes locally, and at most 22 x (120 s
+    # floor + 30 s build) = 55 minutes if every one of them hung, so 66 in the worst case.
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (node24)
@@ -252,9 +261,19 @@ jobs:
           cargo install cargo-fuzz --version 0.13.2 --locked
           rustup toolchain install nightly-2026-10-25 --profile minimal
       - name: scoped mutation of admission and receipt qualification
+        # The review crate's admission (`identifier`, lib.rs) and receipt qualification
+        # (`check_execution`, policy.rs), judged by that crate's own tests. cargo-mutants 27.1.0
+        # times its baseline on the mutated package's tests alone (1 to 3 s here) whatever
+        # --test-workspace says, so with `--test-workspace true` every mutant ran the whole
+        # workspace (25 to 37 minutes on this runner since 2026-11-24) against a timeout set from
+        # that baseline or a fixed 300 s: PR #131's runs logged TIMEOUT for each mutant and were
+        # cancelled at 75 minutes. With `false` the mutants run what the baseline measured (all 22
+        # caught locally, 3 minutes, slowest mutant's tests 19 s). `--file` keeps the scope to the
+        # two functions: `--re` does not filter struct-field mutants, and without it the 24 of
+        # journal.rs ran too (22 of them are not caught by the crate's own tests).
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/ddf-review-mutation-target
-        run: cargo mutants --package deep-diff-forge-review --re 'identifier|check_execution' --test-workspace true --timeout 300
+        run: cargo mutants --package deep-diff-forge-review --file crates/deep-diff-forge-review/src/lib.rs --file crates/deep-diff-forge-review/src/policy.rs --re 'identifier|check_execution' --test-workspace false --timeout-multiplier 5 --minimum-test-timeout 120
       - name: instrumented fuzz smoke for every target
         # Every target in fuzz/Cargo.toml runs here for 10 s (anchor B-06); before, four only ever
         # compiled. The list comes from the manifest (scripts/fuzz_target.sh --list), so a new
