@@ -1,20 +1,22 @@
 # Tests that fail for a cause outside the code under test, each with its cause written above it
 # (the file keeps its name of 0.11.1: the first cause looked for was the host's load). A name
-# whose cause is not measured is marked so. One test function name a line, as it is written after
-# `fn` in a file of this directory; `#` starts a comment, and blank lines are skipped.
+# whose cause is not measured is marked so. One test a line, by the name its test binary prints
+# and `--exact` matches: a test of this directory by its function name, as it is written after
+# `fn`; a unit test of a library by its path in that library (`module::tests::name`). `#` starts a
+# comment, and blank lines are skipped.
 #
 # Who reads it: the gate's test step, scripts/test_step.sh (the step `test` of ci.yml's job `gate`
-# and of scripts/ci_local.sh). It runs the workspace's tests with these names skipped, then these
-# names alone, one at a time (`--test-threads=1`): every name here runs in every gate. The mutation
-# driver does not read it yet (it is to pass them as `--skip` filters and to rerun alone a mutant
-# that only they caught).
+# and of scripts/ci_local.sh, and the step `test on macOS` of the job `macos`). It runs the
+# workspace's tests with these names skipped, then these names alone, one at a time
+# (`--test-threads=1`): every name here runs in every gate. The mutation driver does not read it
+# yet (it is to pass them as `--skip` filters and to rerun alone a mutant that only they caught).
 #
 # How a name gets on it: a failure of the test that is not of the code, recorded with the run that
 # showed it (a command and its log) and its cause, while the test passes on the same tree
 # otherwise; it comes off by a measurement that the cause is gone. A name that is here because
 # the code is slow is a finding about the code, not an entry. The test
 # `the_load_sensitive_list_names_tests_that_exist` (in agent_hook.rs) fails when a name here is
-# no test function of this directory, or is here twice.
+# no test function of this directory or of the library its path names, or is here twice.
 #
 # Five names (a `.git` above the hooks' state directory, lane P5b's M7) came off with package P5c of 0.11.1 by its measurement M-LS: 5 of 5 pass alone, one thread, with an empty `.git`, a repository, a linked tree's `.git` file above TMPDIR and at the default; 0 of 5 with P5c undone (lane logs ~/.cache/ddf-t/w111P5c/logs/mls-*.log, 2026-11-25).
 
@@ -27,3 +29,20 @@
 # and the second test prints the start's words.
 a_repository_with_more_working_trees_than_are_read_says_so
 session_start_states_the_contract_and_whether_a_stop_can_be_judged
+
+# Cause not measured alone. The graph crate's timing tests, which fail when the cost of a scan
+# grows 3 or more times as the input doubles (wall time, the least of 1 to 3 rounds), failed on
+# GitHub's macos-26 runner only while the whole suite ran at once, three in each of PR #131's two
+# runs and not the same three; on the same trees they passed in both runs on ubuntu-26.04 (the
+# gate job) and on ubuntu-22.04-arm (Linux arm64), all at once there too. The failing ratio of
+# each, by run (45670721783 is run 1, 45701563166 is run 2); whether they pass alone on that
+# runner is measured by the next macOS run's second pass:
+# run 1: "Array.from(x)," 3.03 (45.9 ms at size 4480, 139.2 ms at 8960)
+evidence::tests::the_import_rule_is_linear_on_long_lines
+# run 1: "/*" repeated on one line 3.29; run 2: "'" repeated on one line 3.42
+lexical::tests::hostile_rust_lines_scan_in_linear_time
+# run 1: eight of 431 cases 3.00 to 3.24 ("test(" ending a word 3.24); run 2: fourteen, 3.01 to
+# 4.53 (">" ending a word in x.ts, 10.9 ms at size 8192, 49.4 ms at 16384)
+evidence::tests::long_lines_of_every_trigger_rank_in_bounded_time
+# run 2: one JavaScript word 3.15 (74.6 ms at size 160000, 235.0 ms at 320000)
+lexical::tests::a_long_javascript_word_scans_in_linear_time

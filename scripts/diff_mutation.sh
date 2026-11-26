@@ -31,5 +31,11 @@ if [ "$rust_changed" = false ]; then
   echo "diff mutation: no Rust changes under crates/ since ${base}; no mutants to test"
   exit 0
 fi
-cargo mutants --no-config --in-diff "$out/pr.diff" --test-workspace true --timeout 300 \
+# The timeout comes from the baseline: twice the unmutated suite's time, at least 2400 s. A fixed
+# `--timeout` also bounds the baseline (measured, cargo-mutants 27.1.0), and the whole workspace's
+# tests take about 35 minutes on CI's ubuntu-26.04 runner (the gate job's first pass took 2,043 s
+# and 2,106 s in runs 45701563166 and 45670721783), so `--timeout 300` failed every shard on its
+# baseline. The floor of 2400 s is above both and binds only on a baseline measured shorter.
+cargo mutants --no-config --in-diff "$out/pr.diff" --test-workspace true \
+  --timeout-multiplier 2 --minimum-test-timeout 2400 \
   --shard "$shard" --output "$out"

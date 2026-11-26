@@ -20,13 +20,15 @@ era) no longer holds. How the standard is enforced today:
   `-D warnings`, rustdoc `-D warnings`, contract probes, the soak and
   bench-comparison regression tests, a 10 s hostile daemon soak, privacy probes
   and the Python SDK against the built binary (`deploy gate-feature`); the
-  workspace tests on macOS (`macos`); the declared-MSRV check on Rust 1.88.0;
-  and supply-chain checks.
+  workspace tests on macOS by the same script (`macos`); the declared-MSRV
+  check on Rust 1.88.0; and supply-chain checks.
 - **Diff-scoped mutation** is a required check: `diff-mutation`, four shards,
   runs [`scripts/diff_mutation.sh`](../scripts/diff_mutation.sh), which mutates
   only the Rust lines under `crates/` changed since the merge base
-  (`cargo mutants --no-config --in-diff`, 300 s timeout) and fails on any missed
-  mutant or timeout. `--no-config` ignores a candidate's own mutants config.
+  (`cargo mutants --no-config --in-diff`; each mutant's timeout twice the
+  unmutated suite's time, at least 2400 s, since the suite takes about 35
+  minutes on the runner) and fails on any missed mutant or timeout.
+  `--no-config` ignores a candidate's own mutants config.
 - **Fuzz smoke:** every target in `fuzz/Cargo.toml`
   (`patch_parser`, `review_json`, `daemon_protocol`, `agent_annotation`,
   `council_report`, `stdio_mcp`, `stdio_rpc`, `structural_soundness`,

@@ -231,6 +231,44 @@ fn diff_mutation_tests_rust_files_whose_names_git_quotes_or_tabs() {
     assert!(diff.contains("\n+++ b/crates/x/src/é.rs\n"), "{diff}");
 }
 
+/// C1 of 0.11.1: the mutants' timeout comes from the baseline, not a fixed `--timeout`, which
+/// bounds the unmutated baseline too (measured, cargo-mutants 27.1.0: "TIMEOUT Unmutated
+/// baseline", exit 4) while the whole workspace's tests take about 35 minutes on CI's runner
+/// (2,043 s and 2,106 s, the gate job of runs 45701563166 and 45670721783): `--timeout 300`
+/// failed every shard before a mutant was tested. The floor is not under that baseline.
+#[test]
+fn diff_mutation_derives_the_timeout_from_the_baseline() {
+    let s = scratch("mutation-timeout");
+    let (repo, path) = mutation_repo(&s);
+    commit(&repo, "crates/x/src/lib.rs", "fn a() -> i32 { 1 }\n");
+    diff_mutation(&repo, &path, &s.0.join("out"));
+    let log = std::fs::read_to_string(s.0.join("cargo.log")).unwrap();
+    let args: Vec<&str> = log
+        .lines()
+        .find(|line| line.starts_with("mutants --no-config --in-diff "))
+        .expect("cargo mutants was not run")
+        .split_whitespace()
+        .collect();
+    let value = |flag: &str| -> Option<f64> {
+        let at = args.iter().position(|arg| *arg == flag)?;
+        args.get(at + 1)?.parse().ok()
+    };
+    assert!(
+        !args
+            .iter()
+            .any(|arg| ["--timeout", "-t"].contains(arg) || arg.starts_with("--timeout=")),
+        "a fixed --timeout also cuts the baseline: {args:?}"
+    );
+    assert!(
+        value("--timeout-multiplier").is_some_and(|multiplier| multiplier >= 1.0),
+        "{args:?}"
+    );
+    assert!(
+        value("--minimum-test-timeout").is_some_and(|floor| floor >= 2106.0),
+        "the floor must not be under the baseline measured on CI's runner: {args:?}"
+    );
+}
+
 #[test]
 fn diff_mutation_gives_the_same_answer_from_a_subdirectory() {
     let s = scratch("mutation-subdir");
