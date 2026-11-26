@@ -2960,6 +2960,64 @@ fn only_gits_own_words_for_no_repository_with_no_project_known_make_a_silent_sto
     );
 }
 
+/// U1 row S300 (lane T3a of 0.11.1): every command a hook names is this binary's own absolute
+/// path, quoted for the shell. The binary is run from a directory whose name a shell splits at
+/// its space and ends a quote at: the command the start of a session names is that path in
+/// single quotes, its own quote written the way a shell reads one inside them.
+#[test]
+fn a_command_the_hooks_name_is_their_own_path_quoted_for_the_shell() {
+    let scratch = Scratch::new("hook-binary-quoted");
+    let root = repository(&scratch);
+    let dir = scratch.join("a dir's name");
+    std::fs::create_dir(&dir).unwrap();
+    let copy = dir.join("deep-diff-forge");
+    // (copied by a child process: an executable this process wrote can be busy at exec)
+    assert!(
+        Command::new("cp")
+            .arg(env!("CARGO_BIN_EXE_deep-diff-forge"))
+            .arg(&copy)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let copy = std::fs::canonicalize(&copy).unwrap();
+    let mut child = Command::new(&copy)
+        .envs(ISOLATE)
+        .env("HOME", home())
+        .env_remove("XDG_STATE_HOME")
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("CLAUDE_PROJECT_DIR")
+        .args(["agent", "hook", "session-start", "--client", "claude"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            input("SessionStart", &root, "s", false)
+                .to_string()
+                .as_bytes(),
+        )
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let said = String::from_utf8(out.stdout).unwrap();
+    let path = copy.to_str().unwrap();
+    let quoted = format!("'{}'", path.replace('\'', r"'\''"));
+    assert!(
+        said.contains(&format!("`{quoted} agent doctor --gate`")),
+        "the command is not this binary's path quoted for the shell ({quoted}): {said}"
+    );
+    assert!(
+        !said.contains(&format!("`{path} agent")),
+        "the command names the path unquoted: {said}"
+    );
+}
+
 /// Independent review of the hooks, "weak tests": the rule that a patch which cannot be made
 /// is UNJUDGED lived in the hook and no test of the hook made one fail. A path marked
 /// skip-worktree and an untracked file that cannot be read are both: a stop says UNJUDGED with
