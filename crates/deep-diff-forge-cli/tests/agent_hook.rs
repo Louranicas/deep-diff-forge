@@ -9351,7 +9351,11 @@ fn a_tree_no_longer_listed_stands_while_its_directory_does() {
     // inside the tree that is listed again (the stop judges it there, and forgets the old one)
     secret(&pruned, "third.rs");
     blocked(&stop_from(&pruned, "s", &script));
-    assert!(!remembered_lines().is_empty());
+    assert_ne!(
+        remembered_lines(),
+        Vec::<String>::new(),
+        "the new failure was not remembered"
+    );
     std::fs::remove_file(pruned.join(".git")).unwrap();
     git(&root, &["worktree", "prune"]);
     for entry in std::fs::read_dir(&pruned).unwrap() {
@@ -9389,7 +9393,13 @@ fn a_path_git_names_as_another_tree_is_not_read_as_the_tree_listed_there() {
     std::fs::write(first.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
     std::fs::write(
         admin.join("gitdir"),
-        format!("{}\n", std::fs::canonicalize(&first).unwrap().join(".git").display()),
+        format!(
+            "{}\n",
+            std::fs::canonicalize(&first)
+                .unwrap()
+                .join(".git")
+                .display()
+        ),
     )
     .unwrap();
     let decision = stop_from(&root, "s", &script);
@@ -10586,7 +10596,9 @@ fn a_tree_moved_by_hand_is_unjudged_until_repaired_and_then_stands() {
         "the gone tree where a failure stands is not advised repair: {from_project}"
     );
     assert!(
-        from_project.contains(&format!("/clean{gone}`git worktree prune` forgets a linked tree that is gone;")),
+        from_project.contains(&format!(
+            "/clean{gone}`git worktree prune` forgets a linked tree that is gone;"
+        )),
         "the gone tree where nothing stands is not advised prune: {from_project}"
     );
     assert_eq!(remembered_lines(), before);
