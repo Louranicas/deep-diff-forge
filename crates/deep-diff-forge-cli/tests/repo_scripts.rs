@@ -1582,3 +1582,184 @@ fn an_open_crates_io_gate_without_a_token_fails_before_publishing() {
         "{called}"
     );
 }
+
+// --- scripts/release_local.sh: built and smoked as release.yml, signed by the owner only
+// (lane T3e of 0.11.1) --------------------------------------------------------------------
+
+/// The lines of the shell function `name` of a script, from `name() {` to the first line `}`,
+/// without comment lines.
+fn shell_function<'a>(script: &'a str, name: &str) -> Vec<&'a str> {
+    let head = format!("{name}() {{");
+    let lines: Vec<&str> = script
+        .lines()
+        .skip_while(|line| *line != head)
+        .skip(1)
+        .take_while(|line| *line != "}")
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect();
+    assert!(!lines.is_empty(), "no shell function {name}");
+    lines
+}
+
+/// The words of a `cargo build` command, up to and including `--target`.
+fn build_command(line: &str) -> Vec<&str> {
+    let words: Vec<&str> = line[line.find("cargo build").expect("a cargo build")..]
+        .split_whitespace()
+        .collect();
+    let end = words
+        .iter()
+        .position(|word| *word == "--target")
+        .map_or(words.len(), |at| at + 1);
+    words[..end].to_vec()
+}
+
+/// SECURITY.md: "`scripts/release_local.sh build` … builds the commit twice from fresh exports
+/// with `release.yml`'s cargo command and stops unless both binaries have one SHA-256, then runs
+/// the same smoke and glibc check, writes the SBOM, archive, receipt and `SHA256SUMS`, and signs
+/// nothing." The two builds and the one SHA-256, and what is written, are held by the gate's
+/// "release-script self-test" (`scripts/test_release_local.sh`, cases 6 and 1); this holds the
+/// command, the smoke and the signing. That `release.yml` is not used, and where the owner
+/// builds, are the owner's practice, not the repository's.
+#[test]
+fn the_local_release_builds_and_smokes_as_release_yml_and_signs_nothing() {
+    let workflow = read(".github/workflows/release.yml");
+    let script = read("scripts/release_local.sh");
+    let ci = run_of(&workflow_step(&workflow, "build", "build release binary"));
+    let local = shell_function(&script, "build_at");
+    let local = local
+        .iter()
+        .find(|line| line.contains("cargo build"))
+        .expect("build_at runs cargo build");
+    assert_eq!(
+        build_command(local),
+        build_command(&ci),
+        "scripts/release_local.sh builds with another command than release.yml's"
+    );
+    let smoke = run_of(&workflow_step(
+        &workflow,
+        "build",
+        "smoke the release binary",
+    ));
+    let build = shell_function(&script, "do_build");
+    for part in [
+        "--version",
+        "--stdin-patch --json --require-files",
+        "fixtures/patch/basic.patch",
+        "grep -q '\"schema\": \"deep-diff-forge.review.v0\"'",
+        "scripts/check_glibc_floor.sh",
+    ] {
+        assert!(
+            smoke.contains(part),
+            "release.yml's smoke no longer runs {part:?}: hold this check to what it runs now"
+        );
+        assert!(
+            build.iter().any(|line| line.contains(part)),
+            "scripts/release_local.sh's build does not run release.yml's smoke part {part:?}"
+        );
+    }
+    let signing: Vec<&str> = script
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .filter(|line| {
+            [
+                "-Y sign", "git tag", "gpg ", "minisign", "cosign", "signify",
+            ]
+            .iter()
+            .any(|command| line.contains(command))
+        })
+        .filter(|line| {
+            let rest = line.trim_start();
+            !(rest.starts_with("printf ") || rest.starts_with("echo "))
+        })
+        .collect();
+    assert!(
+        signing.is_empty(),
+        "scripts/release_local.sh signs (it only prints the owner's commands): {signing:#?}"
+    );
+}
+
+#[test]
+fn the_release_script_readers_read_functions_and_commands() {
+    let script = "a() {\n  # cargo build x\n  one\n}\nb() {\n  cargo_env cargo build --release -p x --target \"$t\") \\\n}\n";
+    assert_eq!(shell_function(script, "a"), ["  one"]);
+    let b = shell_function(script, "b");
+    assert_eq!(
+        build_command(b[0]),
+        ["cargo", "build", "--release", "-p", "x", "--target"]
+    );
+    assert_eq!(
+        build_command("run: cargo build --locked"),
+        ["cargo", "build", "--locked"]
+    );
+}
+
+/// SECURITY.md: "The owner signs `SHA256SUMS` with the release key in the namespace
+/// `deep-diff-forge-release-sha256sums` and publishes the signed tag and the files on GitLab,
+/// Gitea and Forgejo." The signing and the release pages are the owner's acts. What the
+/// repository holds of them: the namespace is the one `scripts/release_local.sh verify` checks
+/// (the self-test's case 1b fails under another) and one every release key may sign in, and
+/// `just release-tag` pushes the signed tag to those three remotes and no other.
+#[test]
+fn the_release_namespace_and_remotes_are_the_ones_security_md_names() {
+    const NAMESPACE: &str = "deep-diff-forge-release-sha256sums";
+    let words = read("SECURITY.md")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let sentence = format!(
+        "The owner signs `SHA256SUMS` with the release key in the namespace `{NAMESPACE}` and publishes the signed tag and the files on GitLab, Gitea and Forgejo."
+    );
+    assert!(
+        words.contains(&sentence),
+        "SECURITY.md no longer says {sentence:?}: hold this check to what it says now"
+    );
+    let script = read("scripts/release_local.sh");
+    assert!(
+        script.lines().any(|line| line == format!("ns={NAMESPACE}")),
+        "scripts/release_local.sh checks SHA256SUMS.sig in another namespace than {NAMESPACE}"
+    );
+    let signers = read(".github/release_allowed_signers");
+    let keys: Vec<&str> = signers
+        .lines()
+        .filter(|line| !line.trim().is_empty() && !line.starts_with('#'))
+        .collect();
+    assert!(!keys.is_empty(), "no release key");
+    for key in keys {
+        let namespaces = key
+            .split_whitespace()
+            .nth(1)
+            .and_then(|field| field.strip_prefix("namespaces=\""))
+            .and_then(|field| field.strip_suffix('"'))
+            .unwrap_or_default();
+        assert!(
+            namespaces
+                .split(',')
+                .any(|namespace| namespace == NAMESPACE),
+            "a release key may not sign in {NAMESPACE}: namespaces {namespaces:?}"
+        );
+    }
+    let justfile = read("justfile");
+    let recipe = justfile
+        .split("\nrelease-tag version:\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n\n").next())
+        .expect("the release-tag recipe");
+    let lines: Vec<&str> = recipe.lines().map(str::trim).collect();
+    let loops: Vec<&&str> = lines
+        .iter()
+        .filter(|line| line.starts_with("for remote in "))
+        .collect();
+    assert_eq!(
+        loops, [&"for remote in gitlab gitea forgejo; do"; 2],
+        "the recipe checks and pushes to GitLab, Gitea and Forgejo, and to no other remote"
+    );
+    let pushes: Vec<&&str> = lines
+        .iter()
+        .filter(|line| line.contains("git push"))
+        .collect();
+    assert_eq!(
+        pushes,
+        [&"git push \"${remote}\" \"v${want}\""],
+        "the signed tag is pushed only inside the loop over the three remotes"
+    );
+}
