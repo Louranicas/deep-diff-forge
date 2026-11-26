@@ -1980,8 +1980,18 @@ mod tests {
             .unwrap()
             .permissions()
             .mode();
-        assert_eq!(sock_mode & 0o777, SECURE_SOCKET_MODE);
-        assert_eq!(dir_mode & 0o777, crate::security::SECURE_DIR_MODE);
+        // The documented numbers (SECURITY.md), not the constants: a constant changed to another
+        // owner-only mode would pass a comparison with itself.
+        assert_eq!(
+            sock_mode & 0o777,
+            0o600,
+            "the bound socket is not mode 0600"
+        );
+        assert_eq!(
+            dir_mode & 0o777,
+            0o700,
+            "the managed directory is not mode 0700"
+        );
         let lock = std::fs::symlink_metadata(sock.with_file_name("deep-diff-forge.sock.lock"))
             .expect("the start lock sits beside the socket");
         assert!(lock.is_file());
@@ -2020,10 +2030,15 @@ mod tests {
         std::fs::write(&sock, b"important").unwrap();
         let metadata = std::fs::metadata(&sock).unwrap();
         cleanup_owned_socket(&sock, (metadata.dev(), metadata.ino()));
-        assert_eq!(std::fs::read(&sock).unwrap(), b"important");
+        assert_eq!(
+            std::fs::read(&sock).ok().as_deref(),
+            Some(&b"important"[..]),
+            "cleanup removed a regular file that had the identity it was given"
+        );
     }
 
-    /// The socket this server bound is removed on shutdown (legitimate nearby case).
+    /// SECURITY.md (daemon): "Shutdown removes only the socket inode that server created
+    /// (`cleanup_owned_socket`)." The positive half: the socket this server bound is removed.
     #[test]
     fn cleanup_removes_the_socket_it_bound() {
         let (_scratch, sock) = scratch_socket("cl-own");
@@ -2031,12 +2046,17 @@ mod tests {
         let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
         let metadata = std::fs::symlink_metadata(&sock).unwrap();
         cleanup_owned_socket(&sock, (metadata.dev(), metadata.ino()));
-        assert!(std::fs::symlink_metadata(&sock).is_err());
+        assert!(
+            std::fs::symlink_metadata(&sock).is_err(),
+            "cleanup left the socket this server bound"
+        );
         drop(listener);
     }
 
-    /// A socket swapped in at the same path after bind is someone else's: shutdown leaves it.
-    /// Before this test the identity comparison had no test (Remaining Work 2.6).
+    /// The negative half: a socket swapped in at the same path after bind is someone else's, and
+    /// shutdown leaves that inode in place. Before this test the identity comparison had no test
+    /// (Remaining Work 2.6); before lane T3b its last check unwrapped the path's metadata, so a
+    /// cleanup that removed the replacement failed on the unwrap, not on an assertion.
     #[test]
     fn cleanup_never_removes_a_socket_swapped_in_after_bind() {
         let (_scratch, sock) = scratch_socket("cl-swap");
@@ -2047,31 +2067,152 @@ mod tests {
         std::fs::remove_file(&sock).unwrap();
         let theirs = std::os::unix::net::UnixListener::bind(&sock).unwrap();
         let swapped = std::fs::symlink_metadata(&sock).unwrap();
-        assert_ne!((swapped.dev(), swapped.ino()), identity);
+        let replacement = (swapped.dev(), swapped.ino());
+        assert_ne!(replacement, identity);
         cleanup_owned_socket(&sock, identity);
-        assert!(
-            std::fs::symlink_metadata(&sock)
-                .unwrap()
-                .file_type()
-                .is_socket()
+        let after = std::fs::symlink_metadata(&sock)
+            .ok()
+            .map(|m| (m.file_type().is_socket(), (m.dev(), m.ino())));
+        assert_eq!(
+            after,
+            Some((true, replacement)),
+            "cleanup removed a socket that was swapped in after bind"
         );
         drop((ours, theirs));
     }
 
+    /// SECURITY.md (daemon): "At most eight connections are served at once (`MAX_CONNECTIONS`)."
+    /// The number itself, then eight slots taken, the ninth refused, one given back by its guard's
+    /// drop, and one taken again.
     #[test]
     fn connection_slots_are_hard_bounded_and_released() {
+        assert_eq!(
+            MAX_CONNECTIONS, 8,
+            "SECURITY.md documents eight connections"
+        );
         let active = Arc::new(AtomicUsize::new(0));
         let mut guards = Vec::new();
-        for _ in 0..MAX_CONNECTIONS {
-            assert!(try_acquire_connection(&active, MAX_CONNECTIONS));
+        for slot in 0..8 {
+            assert!(
+                try_acquire_connection(&active, MAX_CONNECTIONS),
+                "slot {slot} of eight was refused"
+            );
             guards.push(ActiveConnection(Arc::clone(&active)));
         }
-        assert!(!try_acquire_connection(&active, MAX_CONNECTIONS));
+        assert!(
+            !try_acquire_connection(&active, MAX_CONNECTIONS),
+            "a ninth connection got a slot"
+        );
         guards.pop();
-        assert!(try_acquire_connection(&active, MAX_CONNECTIONS));
+        assert!(
+            try_acquire_connection(&active, MAX_CONNECTIONS),
+            "a slot given back was not taken again"
+        );
         // Balance the final successful acquisition; the remaining guards clean
         // up their own slots on drop.
         active.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    /// SECURITY.md (daemon): "The trust boundary is the OS account." The accept loop's own check:
+    /// a client whose peer uid is not the daemon's (`me`) is refused before it takes any slot,
+    /// counted, and closed; a client of the daemon's own user is admitted. A second account cannot
+    /// be had in a test, so the daemon's `me` is moved instead of the client's uid (the same
+    /// comparison, from the other side).
+    #[test]
+    fn the_accept_loop_admits_only_the_daemons_own_user() {
+        use std::io::Read as _;
+        let engine = Arc::new(engine());
+        let (wake, _woken) = Wake::pair().expect("wake pair");
+        let active = Arc::new(AtomicUsize::new(0));
+        let control = Arc::new(AtomicUsize::new(0));
+        let me = rustix::process::geteuid().as_raw();
+        let (client, server) = UnixStream::pair().expect("socketpair");
+        admit(
+            server,
+            &engine,
+            me.wrapping_add(1),
+            (&active, &control),
+            &wake,
+        );
+        let held = (
+            active.load(Ordering::Acquire),
+            control.load(Ordering::Acquire),
+        );
+        let refused =
+            engine.metrics().document(Duration::ZERO, "0")["connections"]["refused_peer"].as_u64();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut byte = [0_u8; 1];
+        let closed = (&client).read(&mut byte);
+        drop(client);
+        assert_eq!(
+            held,
+            (0, 0),
+            "a client of uid {me} took a slot of a daemon running as uid {}",
+            me.wrapping_add(1)
+        );
+        assert_eq!(refused, Some(1), "the refused peer was not counted");
+        assert!(
+            closed.as_ref().is_ok_and(|read| *read == 0),
+            "the refused connection was not closed: {closed:?}"
+        );
+        // Legitimate nearby case: the daemon's own user is admitted and served.
+        let (client, server) = UnixStream::pair().expect("socketpair");
+        admit(server, &engine, me, (&active, &control), &wake);
+        assert_eq!(
+            active.load(Ordering::Acquire),
+            1,
+            "a client of the daemon's own user was not admitted"
+        );
+        writeln!(&client, r#"{{"id":1,"method":"daemon.health"}}"#).unwrap();
+        let mut answer = String::new();
+        BufReader::new(&client).read_line(&mut answer).unwrap();
+        assert!(answer.contains("\"status\":\"ok\""), "{answer}");
+    }
+
+    /// SECURITY.md (daemon): "The daemon is Unix-only and listens on a filesystem Unix-domain
+    /// socket." Read from the crate's source: nothing in it names a network listener or socket,
+    /// and the crate refuses to build off Unix. What this does not prove: a dependency's own code,
+    /// which the crate's `Cargo.toml` and `cargo deny` bound. The filesystem socket itself is held
+    /// by `run_server_full_round_trip_then_shutdown`.
+    #[test]
+    fn the_daemon_has_no_listener_but_a_unix_socket() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut named = Vec::new();
+        let mut files = 0;
+        for entry in std::fs::read_dir(&src).expect("the crate's src") {
+            let path = entry.expect("an entry").path();
+            if path.extension().is_none_or(|extension| extension != "rs") {
+                continue;
+            }
+            files += 1;
+            let text = std::fs::read_to_string(&path).expect("a source file");
+            // Product code only: this test's own word list sits in a test module.
+            let text = text
+                .find("\n#[cfg(test)]\nmod tests {")
+                .map_or(text.as_str(), |tests| &text[..tests]);
+            for word in [
+                "TcpListener",
+                "TcpStream",
+                "UdpSocket",
+                "ToSocketAddrs",
+                "named_pipe",
+                "cfg(windows)",
+                "target_os = \"windows\"",
+            ] {
+                if text.contains(word) {
+                    named.push(format!("{} names `{word}`", path.display()));
+                }
+            }
+        }
+        assert!(files >= 10, "only {files} source files were read");
+        assert!(named.is_empty(), "{named:#?}");
+        let lib = include_str!("lib.rs");
+        assert!(
+            lib.contains("#[cfg(not(unix))]\ncompile_error!("),
+            "the crate no longer refuses to build off Unix"
+        );
     }
 
     #[expect(
@@ -2105,6 +2246,12 @@ mod tests {
         wait_for_socket(&sock);
         let client = SocketLocation::at(sock.clone());
 
+        // SECURITY.md: the daemon "listens on a filesystem Unix-domain socket": at its path.
+        assert!(
+            std::fs::symlink_metadata(&sock).is_ok_and(|m| m.file_type().is_socket()),
+            "no Unix-domain socket in the filesystem at {}",
+            sock.display()
+        );
         let health = request(&client, r#"{"id":1,"method":"daemon.health"}"#).expect("health");
         assert!(health.contains("\"status\":\"ok\""));
 
@@ -2113,7 +2260,7 @@ mod tests {
 
         assert!(joined(server).is_ok(), "the thread did not finish");
         // Socket is cleaned up on shutdown.
-        assert!(!sock.exists());
+        assert!(!sock.exists(), "shutdown left the socket it bound");
     }
 
     /// A `daemon.health` request padded with spaces to `bytes` bytes, newline excluded.
@@ -2769,7 +2916,11 @@ mod tests {
         let target = parent.join("elsewhere");
         std::fs::write(&target, b"keep").unwrap();
         std::os::unix::fs::symlink(&target, parent.join("test.sock.lock")).unwrap();
-        bind_explicit(&sock).expect_err("a symlinked start lock is refused");
+        let bound = bind_explicit(&sock);
+        assert!(
+            bound.is_err(),
+            "a start lock planted as a symlink was followed and the socket bound"
+        );
         assert_eq!(std::fs::read(&target).unwrap(), b"keep");
         assert!(
             std::fs::symlink_metadata(&sock).is_err(),
@@ -2926,15 +3077,52 @@ mod tests {
         let parent = scratch.join("absent");
         assert!(!parent.exists(), "precondition: parent must be absent");
         let sock = parent.join("test.sock");
-        let listener = bind_explicit(&sock).expect("bind_explicit must create the missing parent");
+        let listener = bind_explicit(&sock);
+        // Asserted, not unwrapped: a parent created at the umask's mode is refused by the
+        // validation that follows, and that must fail here by name (U1, lane T3b). Under a umask
+        // of 077 a missing chmod would not show; the usual 022 shows it.
+        assert!(
+            listener.is_ok(),
+            "bind_explicit did not create a usable missing parent: {listener:?}"
+        );
         assert!(sock.exists(), "socket must be created");
         let mode = std::fs::metadata(&parent).unwrap().permissions().mode();
         assert_eq!(
             mode & 0o777,
-            crate::security::SECURE_DIR_MODE,
+            0o700,
             "freshly created parent must be owner-private (0700)"
         );
         drop(listener);
+    }
+
+    /// SECURITY.md (daemon): "an existing parent is validated and never chmodded". A parent at
+    /// `0300` is owner-private (it passes the validation) and not `0700`, so a chmod to `0700`
+    /// before or after the validation shows; a `0700` parent cannot show one. Its mode is put back
+    /// before the scratch directory is removed, also when an assertion fails.
+    #[test]
+    fn explicit_bind_never_chmods_an_existing_owner_private_parent() {
+        struct Restore<'a>(&'a Path);
+        impl Drop for Restore<'_> {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(self.0, std::fs::Permissions::from_mode(0o700));
+            }
+        }
+        let (parent, sock) = explicit_scratch("nochmod-300", 0o300);
+        let _restore = Restore(parent.path());
+        let bound = bind_explicit(&sock);
+        let mode = std::fs::symlink_metadata(parent.path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert!(
+            bound.is_ok(),
+            "an owner-private 0300 parent was refused: {bound:?}"
+        );
+        assert_eq!(
+            mode, 0o300,
+            "bind_explicit chmodded the caller's existing parent"
+        );
     }
 
     // F2-T5: SocketLocation::at() produces an Explicit provenance location.

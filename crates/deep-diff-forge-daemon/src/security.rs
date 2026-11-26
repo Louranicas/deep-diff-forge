@@ -255,25 +255,41 @@ mod tests {
         dir
     }
 
+    /// SECURITY.md (daemon): "The trust boundary is the OS account." The positive half: a peer
+    /// of the same effective user is admitted. The outcome is asserted, not unwrapped, so a
+    /// comparison that refuses everyone fails here by name (U1, lane T3b).
     #[test]
     fn a_peer_is_the_user_that_connected() {
         let me = rustix::process::geteuid().as_raw();
         let (ours, theirs) = UnixStream::pair().expect("socket pair");
         assert_eq!(peer_euid(&ours).expect("peer credentials"), me);
         assert_eq!(peer_euid(&theirs).expect("peer credentials"), me);
-        require_peer_user(&ours, me).expect("the same user is admitted");
+        let admitted = require_peer_user(&ours, me);
+        assert!(
+            admitted.is_ok(),
+            "a peer of the daemon's own user was refused: {admitted:?}"
+        );
     }
 
+    /// The negative half: a peer whose kernel-reported uid is not the expected one is refused
+    /// with `PermissionDenied` naming both. Another real user cannot be had in a test, so the
+    /// expected uid is moved instead; that `peer_euid` reads the peer's credentials, not this
+    /// process's, is not held here (it needs a second account: a stated limit).
     #[test]
     fn a_peer_of_another_user_is_refused() {
         let me = rustix::process::geteuid().as_raw();
         let (ours, _theirs) = UnixStream::pair().expect("socket pair");
         let other = me.wrapping_add(1);
-        let err = require_peer_user(&ours, other).expect_err("another user is refused");
-        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+        let refused = require_peer_user(&ours, other);
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|err| err.kind() == std::io::ErrorKind::PermissionDenied),
+            "a peer of uid {me} was admitted where uid {other} was expected: {refused:?}"
+        );
         assert_eq!(
-            err.to_string(),
-            format!("the peer runs as uid {me}, not uid {other}")
+            refused.map_err(|err| err.to_string()),
+            Err(format!("the peer runs as uid {me}, not uid {other}"))
         );
     }
 
@@ -368,8 +384,13 @@ mod tests {
         let link = links.join("link");
         std::os::unix::fs::symlink(target.path(), &link).expect("symlink");
 
-        let err = ensure_runtime_dir(&link).expect_err("symlink must be rejected");
-        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+        let refused = ensure_runtime_dir(&link);
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|err| err.kind() == std::io::ErrorKind::PermissionDenied),
+            "a symlinked runtime directory was not refused: {refused:?}"
+        );
         let mode = std::fs::metadata(target.path())
             .unwrap()
             .permissions()
@@ -411,6 +432,125 @@ mod tests {
     fn secure_modes_are_owner_only() {
         assert_eq!(SECURE_DIR_MODE & 0o077, 0);
         assert_eq!(SECURE_SOCKET_MODE & 0o077, 0);
+    }
+
+    /// SECURITY.md (daemon): "Its managed runtime directory ... is owned by the effective user
+    /// with mode `0700`; its socket is mode `0600`". The numbers themselves, not only "owner
+    /// only": `0o600` for the directory or `0o700` for the socket would pass the test above.
+    #[test]
+    fn the_documented_modes_are_0700_and_0600() {
+        assert_eq!(
+            (SECURE_DIR_MODE, SECURE_SOCKET_MODE),
+            (0o700, 0o600),
+            "SECURITY.md documents the runtime directory at 0700 and the socket at 0600"
+        );
+    }
+
+    /// The managed runtime directory is the daemon's own: one that exists with a looser mode is
+    /// made `0700` on the opened directory, and ends owned by the effective user. Before lane
+    /// T3b only a freshly created directory was checked, against the constant itself.
+    #[test]
+    fn an_existing_managed_directory_is_made_0700_and_owned_by_the_effective_user() {
+        let scratch = Scratch::new("sec-managed");
+        let dir = scratch.join("deep-diff-forge");
+        std::fs::create_dir(&dir).expect("mkdir");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let ensured = ensure_runtime_dir(&dir);
+        assert!(
+            ensured.is_ok(),
+            "the managed runtime directory at 0755 was not secured: {ensured:?}"
+        );
+        let metadata = std::fs::symlink_metadata(&dir).expect("lstat");
+        assert_eq!(
+            (
+                metadata.permissions().mode() & 0o777,
+                metadata.uid() == rustix::process::geteuid().as_raw()
+            ),
+            (0o700, true),
+            "the managed runtime directory is not 0700 and owned by the effective user"
+        );
+    }
+
+    /// SECURITY.md (daemon): "Symlinks, wrong-owner directories, permissive directories and
+    /// inode swaps fail closed." Wrong owner: `/` belongs to root on Linux and macOS, and the
+    /// owner is checked before the mode, so another user's directory is refused as such (with the
+    /// owner check gone it would read as merely too permissive). As root, or where `/` is this
+    /// user's, there is no other user's directory to hand: the test says so and checks nothing.
+    #[test]
+    fn a_directory_of_another_user_is_refused_as_wrong_owner() {
+        let root = std::fs::symlink_metadata("/").expect("lstat /");
+        if root.uid() == rustix::process::geteuid().as_raw() {
+            eprintln!("skipped: `/` is owned by this test's own user (root?); no other owner here");
+            return;
+        }
+        assert_eq!(
+            validate_private_dir(Path::new("/")),
+            Err(SocketError::WrongOwner),
+            "a directory owned by another user was not refused as wrong-owner"
+        );
+    }
+
+    /// Inode swaps: `ensure_runtime_dir` chmods the directory it opened, and only after checking
+    /// that it is the one the path named at its `lstat`. The path `flip/deep-diff-forge` is reached
+    /// through a link that a second thread flips, by `rename`, between `real/` (where it is a
+    /// directory) and `trap/` (where it is a link to `victim`, mode 0755). However the race falls,
+    /// on correct code `victim` is never chmodded: a link seen by the first `lstat` is refused,
+    /// and one that appears after it is caught by the identity check. Counted, not timed: the
+    /// rounds and the refusals are printed, and red is the victim's mode, named.
+    #[test]
+    fn a_runtime_directory_swapped_after_its_check_is_never_secured_through_the_swap() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let scratch = Scratch::new("sec-swap");
+        let victim = scratch.join("victim");
+        std::fs::create_dir(&victim).expect("mkdir victim");
+        std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        for side in ["real", "trap"] {
+            std::fs::create_dir(scratch.join(side)).expect("mkdir side");
+        }
+        std::fs::create_dir(scratch.join("real").join("deep-diff-forge")).expect("mkdir real");
+        std::os::unix::fs::symlink(&victim, scratch.join("trap").join("deep-diff-forge"))
+            .expect("link trap");
+        let flip = scratch.join("flip");
+        std::os::unix::fs::symlink(scratch.join("real"), &flip).expect("link flip");
+        let target = flip.join("deep-diff-forge");
+        let stop = AtomicBool::new(false);
+        let (rounds, refused, victim_mode) = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let staged = scratch.join("flip.next");
+                let mut to_trap = true;
+                while !stop.load(Ordering::Acquire) {
+                    let side = scratch.join(if to_trap { "trap" } else { "real" });
+                    let _ = std::fs::remove_file(&staged);
+                    std::os::unix::fs::symlink(&side, &staged).expect("stage link");
+                    std::fs::rename(&staged, &flip).expect("flip link");
+                    to_trap = !to_trap;
+                }
+            });
+            let mut refused = 0_u32;
+            let mut rounds = 0_u32;
+            let mut victim_mode = 0o755;
+            while rounds < 20_000 {
+                rounds += 1;
+                if ensure_runtime_dir(&target).is_err() {
+                    refused += 1;
+                }
+                victim_mode = std::fs::metadata(&victim)
+                    .expect("stat victim")
+                    .permissions()
+                    .mode()
+                    & 0o777;
+                if victim_mode != 0o755 {
+                    break;
+                }
+            }
+            stop.store(true, Ordering::Release);
+            (rounds, refused, victim_mode)
+        });
+        eprintln!("swap race: {rounds} rounds, {refused} refused");
+        assert_eq!(
+            victim_mode, 0o755,
+            "a directory swapped in after the check was chmodded through the swap (round {rounds})"
+        );
     }
 
     #[test]
