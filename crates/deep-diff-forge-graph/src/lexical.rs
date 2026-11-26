@@ -2549,7 +2549,7 @@ mod rust {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scan_cost::doubling;
+    use crate::scan_cost::growth;
 
     /// F2b: the strings of a TOML line, with their escapes read, a comment and a string that
     /// does not close ending the reading.
@@ -2855,17 +2855,18 @@ mod tests {
 
     /// A line that defeats every probe stays linear: one failed regex probe ends probing, and
     /// whitespace before a shell word is trimmed only at `case` and `esac` (3fb88568: both were
-    /// quadratic). The cost bound is the ratio of each line's time at `n` and `2n` repeats
-    /// ([`doubling`]); the deadline of [`within_deadline`] only guards against a hang.
+    /// quadratic). The cost bound is the ratio of each line's time at two numbers of repeats
+    /// sixteen times apart ([`growth`]); the deadline of [`within_deadline`] only guards against
+    /// a hang.
     #[test]
     fn hostile_lines_scan_in_linear_time() {
         let [regexes, spaces] = within_deadline(|| {
             [
-                doubling(400_000, |n| {
+                growth(400_000, |n| {
                     let line = "x = [/".repeat(n);
                     move || assert_eq!(view(Language::JavaScript, &line).len(), line.len())
                 }),
-                doubling(2_560_000, |n| {
+                growth(2_560_000, |n| {
                     let line = format!("V=\"$({}curl x)\"", " ".repeat(n));
                     move || assert!(view(Language::Shell, &line).ends_with("curl x)\""))
                 }),
@@ -2958,16 +2959,16 @@ mod tests {
 
     /// One JavaScript word scans in linear time, alone and before a keyword (FINDING-5: the
     /// released scan walked back over the word at each of its bytes). The cost bound is the
-    /// ratio of each line's time at `n` and `2n` letters ([`doubling`]).
+    /// ratio of each line's time at two numbers of letters sixteen times apart ([`growth`]).
     #[test]
     fn a_long_javascript_word_scans_in_linear_time() {
         let [word, keyword_after] = within_deadline(|| {
             [
-                doubling(640_000, |n| {
+                growth(640_000, |n| {
                     let word = "a".repeat(n);
                     move || assert_eq!(view(Language::JavaScript, &word), word)
                 }),
-                doubling(640_000, |n| {
+                growth(640_000, |n| {
                     let line = format!("{}return\"x\"", "a".repeat(n));
                     move || assert_eq!(view(Language::JavaScript, &line), line)
                 }),
@@ -2980,7 +2981,7 @@ mod tests {
     /// Run `work` on its own thread and fail if it takes more than two minutes of wall time.
     /// This bound only keeps a hang from stalling the suite, so a diff-mutation run reports a
     /// looping mutant as caught rather than as a timeout; the cost of a scan is bounded by
-    /// [`doubling`] inside the work (a bound of ten seconds failed on a busy host). A panic of
+    /// [`growth`] inside the work (a bound of ten seconds failed on a busy host). A panic of
     /// the work is raised again here, with its own message.
     fn within_deadline<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
         let (done, wait) = std::sync::mpsc::channel();
@@ -4055,7 +4056,7 @@ mod tests {
 
     /// Each opener the Rust scanner knows, repeated on one line (up to 18 MiB) and one to a line
     /// (up to 819,200 lines), scans in time linear in its length: the cost bound is the ratio of
-    /// the times at sizes that double ([`doubling`]); each opener has the deadline of
+    /// the times at two sizes sixteen times apart ([`growth`]); each opener has the deadline of
     /// [`within_deadline`], a guard against a hang, to itself.
     #[test]
     fn hostile_rust_lines_scan_in_linear_time() {
@@ -4064,11 +4065,11 @@ mod tests {
         ] {
             let [line, lines] = within_deadline(move || {
                 [
-                    doubling(9 * 1024 * 1024, |bytes| {
+                    growth(9 * 1024 * 1024, |bytes| {
                         let line = unit.repeat(bytes / unit.len());
                         move || assert!(lexer_view(&line).len() <= line.len(), "{unit}")
                     }),
-                    doubling(409_600, |count| {
+                    growth(409_600, |count| {
                         move || {
                             let mut state = RustLexerState::default();
                             for _ in 0..count {

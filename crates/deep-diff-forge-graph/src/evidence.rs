@@ -4154,7 +4154,7 @@ pub fn signal_sides(signal: EvidenceSignal) -> Vec<Side> {
 mod tests {
     use super::*;
     use crate::lexical::{ScanState, code_view, code_views};
-    use crate::scan_cost::{Doubling, RATIO_BOUND, ScanClock, doubling};
+    use crate::scan_cost::{Growth, ScanClock, growth};
     use crate::unplaced::unplaced;
     use deep_diff_forge_patch::parse;
     use std::fmt::Write as _;
@@ -4695,13 +4695,13 @@ mod tests {
     /// The import rule reads a long minified line in time linear in its length (eee2b4c: the
     /// rule took each keyword's statement from the start of the line, about 66 s for 200,000
     /// repeats of these units in a debug build against about 2 s for the linear one). The cost
-    /// bound is the ratio of each line's time at `n` and `2n` repeats ([`doubling`]), each line
-    /// on its own so that a cheap line turned quadratic is not hidden by a dear one; the
-    /// deadline of [`within_deadline`] only guards against a hang.
+    /// bound is the ratio of each line's time at two numbers of repeats sixteen times apart
+    /// ([`growth`]), each line on its own so that a cheap line turned quadratic is not hidden by
+    /// a dear one; the deadline of [`within_deadline`] only guards against a hang.
     #[test]
     fn the_import_rule_is_linear_on_long_lines() {
         let costs = within_deadline(|| {
-            let mut costs: Vec<(&str, Doubling)> = [
+            let mut costs: Vec<(&str, Growth)> = [
                 "Array.from(x),",
                 "from ",
                 "require ",
@@ -4710,14 +4710,14 @@ mod tests {
             ]
             .into_iter()
             .map(|unit| {
-                let cost = doubling(72_000, |n| {
+                let cost = growth(72_000, |n| {
                     let file = added("a.js", &[&unit.repeat(n)]);
                     move || assert_eq!(signals(&file), [], "{unit}")
                 });
                 (unit, cost)
             })
             .collect();
-            let spaced = doubling(1_024_000, |n| {
+            let spaced = growth(1_024_000, |n| {
                 let file = added(
                     "a.js",
                     &[&format!(";{}from 'child_process'", " ".repeat(n))],
@@ -4738,8 +4738,8 @@ mod tests {
     /// readings of 0.9.0), and the credential prefixes that repeat inside their own run, which
     /// the secret rule walked to the run's end at each repeat; and lines of `catch` heads, whose
     /// handler or binding each `catch` read to the end of the line (the empty-handler rule until
-    /// 2026-11-18). The cost bound is the ratio of each line's time at `n` and `2n` bytes
-    /// ([`doubling`]); the deadline of [`within_deadline`] only guards against a hang. Named
+    /// 2026-11-18). The cost bound is the ratio of each line's time at two sizes sixteen times
+    /// apart ([`growth`]); the deadline of [`within_deadline`] only guards against a hang. Named
     /// "in under a second" until 0.11.0, when the bound was one second of CPU time at 200,000
     /// bytes. The long-line tests hold every trigger.
     #[test]
@@ -4755,7 +4755,7 @@ mod tests {
                 ("src/a.ts", "", "catch (", 448_000),
             ]
             .map(|(path, lead, unit, n)| {
-                let cost = doubling(n, |bytes| {
+                let cost = growth(n, |bytes| {
                     let line = format!("{lead}{}", unit.repeat(bytes / unit.len()));
                     // A blank line of context on each side, as Git writes it (0.10.0: the parser
                     // refuses a hunk with no context past line 1; was `@@ -2,0 +3,1 @@`).
@@ -5302,11 +5302,11 @@ mod tests {
     }
 
     /// Rank, on as many threads as the host has, two lines for each case at sizes that double
-    /// up to 1 MiB ([`doubling`], on the worker's thread; the last step 512 KiB to 1 MiB): its
+    /// up to 1 MiB ([`growth`], on the worker's thread; the last pair 64 KiB and 1 MiB): its
     /// trigger repeated, and one word that ends in it. What each costs is the thread CPU time of
-    /// its ranking. Returns the lines whose cost grew [`RATIO_BOUND`] times or more, and a
-    /// summary that names the slowest line at its largest size and the line whose cost grew
-    /// most; fails when no line answers within [`LONG_LINE_HANG`] of wall time.
+    /// its ranking. Returns the lines whose cost grew by [`crate::scan_cost::EXPONENT_BOUND`] or
+    /// more, and a summary that names the slowest line at its largest size and the line whose
+    /// cost grew most; fails when no line answers within [`LONG_LINE_HANG`] of wall time.
     fn long_lines_over(cases: Vec<(&'static str, String)>) -> (Vec<String>, String) {
         use std::sync::{Arc, Mutex, mpsc};
         const SIZE: usize = 1024 * 1024;
@@ -5317,7 +5317,7 @@ mod tests {
             .collect();
         let total = items.len();
         let queue = Arc::new(Mutex::new(items));
-        let (said, heard) = mpsc::channel::<(Item, Option<Doubling>)>();
+        let (said, heard) = mpsc::channel::<(Item, Option<Growth>)>();
         let workers = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
         for _ in 0..workers {
             let (queue, said) = (Arc::clone(&queue), said.clone());
@@ -5328,7 +5328,7 @@ mod tests {
                     };
                     let _ = said.send((item.clone(), None));
                     let (name, trigger, repeated) = &item;
-                    let cost = doubling(SIZE / 2, |size| {
+                    let cost = growth(SIZE / 2, |size| {
                         let line = if *repeated {
                             let mut line = trigger.repeat(size / trigger.len() + 1);
                             line.truncate(size);
@@ -5368,13 +5368,13 @@ mod tests {
                     done += 1;
                     started.retain(|other| *other != item);
                     let said = format!("{}: {}", name(&item), cost.times());
-                    if cost.at_twice > slowest.0 {
-                        slowest = (cost.at_twice, said.clone());
+                    if cost.at_high > slowest.0 {
+                        slowest = (cost.at_high, said.clone());
                     }
-                    if cost.ratio() > steepest.0 {
-                        steepest = (cost.ratio(), said.clone());
+                    if cost.exponent() > steepest.0 {
+                        steepest = (cost.exponent(), said.clone());
                     }
-                    if cost.ratio() >= RATIO_BOUND {
+                    if cost.over() {
                         over.push(said);
                     }
                 }
@@ -5392,18 +5392,22 @@ mod tests {
 
     /// The guard of the long-line tests against a hang, in wall time between two answers: far
     /// above what a linear ranking of a line costs on a slow, loaded host, so only a hang or a
-    /// runaway reaches it. It bounds no cost; [`RATIO_BOUND`] does.
+    /// runaway reaches it. It bounds no cost; [`crate::scan_cost::EXPONENT_BOUND`] does.
     const LONG_LINE_HANG: std::time::Duration = std::time::Duration::from_secs(120);
 
     /// Every long-line case ([`long_line_cases`]: 397 triggers on 2026-11-18, two lines each)
     /// ranks in time linear in the line's length, and so in bounded time: each line's cost grows
-    /// under [`RATIO_BOUND`] times at each doubling of its size up to 1 MiB
-    /// ([`long_lines_over`]), and no line goes without an answer for [`LONG_LINE_HANG`]. Until
-    /// 0.11.0 the bound was 10 s of thread CPU time per line of 2 MiB in a debug build (2 s in a
-    /// release build), which a slow runner fails on a linear scan; the sizes up to 1 MiB cost
-    /// what the one size of 2 MiB cost. The lines are ranked on as many threads as the host has
-    /// (2026-11-18, 16 threads, one size of 2 MiB: 6 s for all of them in a release build, the
-    /// slowest 0.22 s; 67 s in a debug build, the slowest 3.2 s).
+    /// under 64 times while its size grows sixteen times (an exponent under
+    /// [`crate::scan_cost::EXPONENT_BOUND`]), at sizes up to 1 MiB ([`long_lines_over`]), and no
+    /// line goes without an answer for [`LONG_LINE_HANG`]. Earlier in 0.11.1 (lane P5) the bound
+    /// was 3 times at each doubling, which a linear ranking crossed on GitHub's macos-26 runner
+    /// in every run of PR #131 (3.00 to 4.53, wall time) and here with sixteen workers at once
+    /// (3.53, 2026-11-27: a descheduled thread); the scans measured linear (lane Q3:
+    /// `crate::scan_cost`). Until 0.11.0 the bound was 10 s of thread CPU time per line of 2 MiB
+    /// in a debug build (2 s in a release build), which a slow runner fails on a linear scan; the
+    /// sizes up to 1 MiB cost what the one size of 2 MiB cost. The lines are ranked on as many
+    /// threads as the host has (2026-11-18, 16 threads, one size of 2 MiB: 6 s for all of them in
+    /// a release build, the slowest 0.22 s; 67 s in a debug build, the slowest 3.2 s).
     #[test]
     fn long_lines_of_every_trigger_rank_in_bounded_time() {
         let cases = long_line_cases();
@@ -5416,7 +5420,7 @@ mod tests {
     /// Run `work` on its own thread and fail if it takes more than two minutes of wall time.
     /// This bound only keeps a hang from stalling the suite, so a diff-mutation run reports a
     /// looping mutant as caught rather than as a timeout; the scan's cost is bounded by
-    /// [`ScanClock`] or [`doubling`] inside the work. A panic of the work is raised again here,
+    /// [`ScanClock`] or [`growth`] inside the work. A panic of the work is raised again here,
     /// with its own message.
     fn within_deadline<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
         let (done, wait) = std::sync::mpsc::channel();
