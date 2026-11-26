@@ -1973,6 +1973,12 @@ mod tests {
                 answered.send(health).unwrap();
             });
             let health = rx.recv_timeout(Duration::from_secs(10));
+            // Read before the hold is released: `daemon.health` gives its admission back before it
+            // answers, so 1 is the held request, still running when the answer came. Requests run
+            // one at a time answer it only once the hold has given up (after the hook's own 10 s)
+            // and ended: 0, whatever the timing. Before lane T3b this test only waited for the
+            // answer, and that 10 s wait outlasted the hook's, so a serialized engine passed.
+            let running_when_answered = e.admission().running();
             // Released before any assertion, so a failing assertion cannot leave it waiting.
             test_hooks::release("test.hold");
             assert!(holding, "the held request was never admitted");
@@ -1981,6 +1987,10 @@ mod tests {
             assert!(
                 health.is_ok(),
                 "daemon.health waited for a request that was still running"
+            );
+            assert_eq!(
+                running_when_answered, 1,
+                "daemon.health was answered only after the running request had ended: requests ran one at a time"
             );
             let health: Value = serde_json::from_str(&health.unwrap()).unwrap();
             assert_eq!(health["result"]["status"], "ok");
