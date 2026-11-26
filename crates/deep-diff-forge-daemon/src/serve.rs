@@ -2655,8 +2655,13 @@ mod tests {
             &SocketLocation::at(sock.clone()),
             r#"{"id":1,"method":"daemon.shutdown"}"#,
         );
-        let stop = stop.expect("the stop is answered with every slot held");
-        assert!(stop.contains("\"stopping\":true"), "{stop}");
+        // Asserted, not unwrapped (U1, lane T3b): a stop closed unanswered beyond every slot fails
+        // here by name.
+        assert!(
+            stop.as_ref()
+                .is_ok_and(|stop| stop.contains("\"stopping\":true")),
+            "daemon.shutdown was not answered with every slot held: {stop:?}"
+        );
         assert!(joined(server).is_ok(), "the daemon did not stop");
         let took = started.elapsed();
         assert!(took < Duration::from_secs(1), "the stop took {took:?}");
@@ -2685,6 +2690,115 @@ mod tests {
             "{response}"
         );
         assert!(joined(connection).is_ok_and(|served| served.is_ok()));
+    }
+
+    /// SECURITY.md (daemon): "two control slots (`CONTROL_CONNECTIONS`) take one request each, of
+    /// at most 4 KiB read within 5 s", and "A connection beyond those has 250 ms
+    /// (`FULL_READ_TIMEOUT`) to send `daemon.shutdown`". The documented numbers. What is not held
+    /// here: that the control slot's read is given `CONTROL_READ_TIMEOUT` and the overflow's
+    /// `FULL_READ_TIMEOUT` (each would need its wait sat out; the overflow's bound is the
+    /// one-second stop of `ten_idle_connections_do_not_delay_a_stop_past_one_second`).
+    #[test]
+    fn the_control_limits_are_the_documented_ones() {
+        assert_eq!(
+            (
+                CONTROL_CONNECTIONS,
+                CONTROL_REQUEST_BYTES,
+                CONTROL_READ_TIMEOUT,
+                FULL_READ_TIMEOUT
+            ),
+            (2, 4096, Duration::from_secs(5), Duration::from_millis(250)),
+            "SECURITY.md documents two control slots, 4 KiB in 5 s, and 250 ms beyond them"
+        );
+    }
+
+    /// Serve `line` on a control connection and return its one answer.
+    fn control_answer(line: &str) -> Value {
+        let (client, server) = UnixStream::pair().expect("socketpair");
+        // Armed before the server can answer and close (macOS, as above).
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let connection = thread::spawn(move || handle_control_connection(server, &engine()));
+        writeln!(&client, "{line}").unwrap();
+        let mut response = String::new();
+        BufReader::new(&client).read_line(&mut response).unwrap();
+        assert!(joined(connection).is_ok_and(|served| served.is_ok()));
+        serde_json::from_str(&response).unwrap_or(Value::Null)
+    }
+
+    /// A control slot answers `daemon.health`, `daemon.status`, `daemon.metrics` and
+    /// `daemon.shutdown`, and refuses anything else `RESOURCE_EXHAUSTED`, naming the four.
+    #[test]
+    fn a_control_slot_answers_the_four_control_methods_and_refuses_other_work() {
+        for method in [
+            "daemon.health",
+            "daemon.status",
+            "daemon.metrics",
+            "daemon.shutdown",
+        ] {
+            let answer = control_answer(&format!(r#"{{"id":1,"method":"{method}"}}"#));
+            assert!(
+                answer["result"].is_object(),
+                "{method} was not answered on a control slot: {answer}"
+            );
+        }
+        for method in ["diff.plan", "session.open", "daemon.nonesuch"] {
+            let answer =
+                control_answer(&format!(r#"{{"id":1,"method":"{method}","params":{{}}}}"#));
+            assert!(
+                answer["error"]["code"] == RESOURCE_EXHAUSTED
+                    && answer["error"]["message"]
+                        .as_str()
+                        .is_some_and(|message| message.contains("connection limit")),
+                "{method} on a control slot was not refused as busy: {answer}"
+            );
+        }
+    }
+
+    /// A control request may be 4 KiB with its newline: one of exactly 4096 bytes is answered,
+    /// one of 4097 is refused.
+    #[test]
+    fn a_control_request_may_be_4_kib_with_its_newline() {
+        let at_cap = control_answer(&padded_health(1, 4095));
+        assert_eq!(
+            at_cap["result"]["status"], "ok",
+            "a control request of exactly 4096 bytes was not answered: {at_cap}"
+        );
+        let over = control_answer(&padded_health(2, 4096));
+        assert_eq!(
+            over["error"]["code"], RESOURCE_EXHAUSTED,
+            "a control request of 4097 bytes was answered: {over}"
+        );
+    }
+
+    /// Two control slots, no more: with eight idle clients on the data slots and two on the control
+    /// slots, a `daemon.health` is closed unanswered (beyond every slot only `daemon.shutdown` is
+    /// answered), and the stop still is.
+    #[test]
+    fn beyond_the_two_control_slots_only_a_stop_is_answered() {
+        let (_scratch, sock) = scratch_socket_with_parent("full-ctl", 0o700);
+        let server_loc = SocketLocation::at(sock.clone());
+        let server = thread::spawn(move || run_server(&server_loc));
+        wait_for_socket(&sock);
+        // Accepted in order, so they hold every slot before the requests below are accepted.
+        let idle: Vec<UnixStream> = (0..10)
+            .map(|_| UnixStream::connect(&sock).expect("idle connection"))
+            .collect();
+        let client = SocketLocation::at(sock.clone());
+        let health = request(&client, r#"{"id":1,"method":"daemon.health"}"#);
+        assert!(
+            health.is_err(),
+            "daemon.health was answered with eight data and two control slots held: {health:?}"
+        );
+        let stop = request(&client, r#"{"id":2,"method":"daemon.shutdown"}"#);
+        assert!(
+            stop.as_ref()
+                .is_ok_and(|stop| stop.contains("\"stopping\":true")),
+            "{stop:?}"
+        );
+        assert!(joined(server).is_ok(), "the daemon did not stop");
+        drop(idle);
     }
 
     /// A connection answers its request and ends at end of file, both within a deadline, so a
