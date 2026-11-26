@@ -736,7 +736,7 @@ fn dependabot(config: &str) -> (Vec<(String, String)>, Vec<String>) {
         } else if let Some(directory) = code.strip_prefix("    directory: ")
             && let Some(entry) = entries.last_mut()
         {
-            entry.1 = directory.trim().trim_matches('"').to_owned();
+            directory.trim().trim_matches('"').clone_into(&mut entry.1);
         } else if let Some(name) = code.trim_start().strip_prefix("- dependency-name: ") {
             ignored.push(name.trim().trim_matches('"').to_owned());
         }

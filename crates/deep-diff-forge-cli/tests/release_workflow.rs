@@ -529,7 +529,7 @@ fn conditional(step: &[&str]) -> bool {
 }
 
 /// SECURITY.md: "Both runs repeat the full `ci.yml` quality workflow and a supply-chain gate,
-/// build four targets, run every binary (the x86_64 macOS one under Rosetta 2), hold the Linux
+/// build four targets, run every binary (the `x86_64` macOS one under Rosetta 2), hold the Linux
 /// ones to the glibc floor, and verify every archive's SHA-256." The call of ci.yml, the four
 /// targets, the unconditional smoke and the glibc floor are held by `crate_edges.rs`
 /// (`a_release_runs_every_ci_job_but_the_launchd_smoke`,

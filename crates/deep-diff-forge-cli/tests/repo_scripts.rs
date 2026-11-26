@@ -1586,17 +1586,31 @@ fn an_open_crates_io_gate_without_a_token_fails_before_publishing() {
 // --- scripts/release_local.sh: built and smoked as release.yml, signed by the owner only
 // (lane T3e of 0.11.1) --------------------------------------------------------------------
 
-/// The lines of the shell function `name` of a script, from `name() {` to the first line `}`,
-/// without comment lines.
+/// The lines of the shell function `name` of a script, from `name() {` to the line `}`, without
+/// comment lines and without the bodies of its quoted here-documents (`<<'EOF'`): the
+/// receipt's Python names the checks the build ran, which is not running them.
 fn shell_function<'a>(script: &'a str, name: &str) -> Vec<&'a str> {
     let head = format!("{name}() {{");
-    let lines: Vec<&str> = script
-        .lines()
-        .skip_while(|line| *line != head)
-        .skip(1)
-        .take_while(|line| *line != "}")
-        .filter(|line| !line.trim_start().starts_with('#'))
-        .collect();
+    let mut lines = Vec::new();
+    let mut heredoc: Option<&str> = None;
+    for line in script.lines().skip_while(|line| *line != head).skip(1) {
+        if let Some(end) = heredoc {
+            if line.trim() == end {
+                heredoc = None;
+            }
+            continue;
+        }
+        if line == "}" {
+            break;
+        }
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
+        if let Some((_, rest)) = line.split_once("<<'") {
+            heredoc = rest.split('\'').next();
+        }
+        lines.push(line);
+    }
     assert!(!lines.is_empty(), "no shell function {name}");
     lines
 }
@@ -1680,8 +1694,11 @@ fn the_local_release_builds_and_smokes_as_release_yml_and_signs_nothing() {
 
 #[test]
 fn the_release_script_readers_read_functions_and_commands() {
-    let script = "a() {\n  # cargo build x\n  one\n}\nb() {\n  cargo_env cargo build --release -p x --target \"$t\") \\\n}\n";
-    assert_eq!(shell_function(script, "a"), ["  one"]);
+    let script = "a() {\n  # cargo build x\n  one\n  python3 - <<'EOF'\nchecks = [\"scripts/check_glibc_floor.sh\"]\n}\nEOF\n  two\n}\nb() {\n  cargo_env cargo build --release -p x --target \"$t\") \\\n}\n";
+    assert_eq!(
+        shell_function(script, "a"),
+        ["  one", "  python3 - <<'EOF'", "  two"]
+    );
     let b = shell_function(script, "b");
     assert_eq!(
         build_command(b[0]),
