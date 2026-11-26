@@ -1812,7 +1812,11 @@ mod tests {
             serde_json::from_str(&process_line(r#"{"id":2,"method":"test.panic"}"#, &e)).unwrap();
         assert_eq!(crashed["error"]["code"], crate::protocol::INTERNAL_ERROR);
         assert_eq!(crashed["id"], 2);
-        assert_eq!((e.session_count(), e.is_running()), (0, true));
+        assert_eq!(
+            (e.session_count(), e.is_running()),
+            (0, true),
+            "a panic while the session table was held did not empty it"
+        );
         let health: Value =
             serde_json::from_str(&process_line(r#"{"id":3,"method":"daemon.health"}"#, &e))
                 .unwrap();
@@ -1822,7 +1826,11 @@ mod tests {
             reopened["result"]["session"], opened["result"]["session"],
             "a session id was reused after the reset"
         );
-        assert_eq!(e.session_count(), 1);
+        assert_eq!(
+            e.session_count(),
+            1,
+            "the table's poison was not cleared: the next use emptied it again"
+        );
     }
 
     /// A panic that held nothing leaves every other client's session in place: only a panic
@@ -1837,7 +1845,11 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(crashed["error"]["code"], crate::protocol::INTERNAL_ERROR);
-        assert_eq!(e.session_count(), 1);
+        assert_eq!(
+            e.session_count(),
+            1,
+            "a panic that did not hold the session table removed the sessions"
+        );
         assert_eq!((e.admission().running(), e.admission().in_flight()), (0, 0));
     }
 
@@ -1964,10 +1976,13 @@ mod tests {
             // Released before any assertion, so a failing assertion cannot leave it waiting.
             test_hooks::release("test.hold");
             assert!(holding, "the held request was never admitted");
-            let health: Value = serde_json::from_str(
-                &health.expect("daemon.health waited for a request that was still running"),
-            )
-            .unwrap();
+            // Asserted, not unwrapped (U1, lane T3b): requests serialized behind one lock fail
+            // here by name.
+            assert!(
+                health.is_ok(),
+                "daemon.health waited for a request that was still running"
+            );
+            let health: Value = serde_json::from_str(&health.unwrap()).unwrap();
             assert_eq!(health["result"]["status"], "ok");
             let held: Value = serde_json::from_str(&held.join().unwrap()).unwrap();
             assert_eq!(held["error"]["code"], crate::protocol::METHOD_NOT_FOUND);
@@ -1975,7 +1990,10 @@ mod tests {
         assert_eq!(e.admission().running(), 0);
     }
 
-    /// The connection that saw the panic keeps being served (before, its loop ended).
+    /// SECURITY.md (daemon): "A dispatch panic is caught per request." The connection that saw
+    /// the panic answers it `INTERNAL_ERROR` and keeps being served (before, its loop ended). The
+    /// answers are asserted before the connection's thread is joined, so a panic that is not
+    /// caught fails on them by name rather than on the join (U1, lane T3b).
     #[test]
     fn a_connection_keeps_serving_after_a_contained_panic() {
         let (client, server) = UnixStream::pair().expect("socketpair");
@@ -1988,13 +2006,62 @@ mod tests {
         writeln!(writer, r#"{{"id":2,"method":"daemon.health"}}"#).unwrap();
         writer.flush().unwrap();
         writer.shutdown(std::net::Shutdown::Write).unwrap();
+        // A connection that ended early may end in a reset (Linux): what was read stands.
         let lines: Vec<Value> = BufReader::new(client)
             .lines()
-            .map(|l| serde_json::from_str(&l.unwrap()).unwrap())
+            .map_while(Result::ok)
+            .map(|l| serde_json::from_str(&l).unwrap_or(Value::Null))
             .collect();
-        joined(handle).unwrap().unwrap();
-        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert_eq!(
+            lines
+                .iter()
+                .map(|line| (line["id"].clone(), line["error"]["code"].clone()))
+                .collect::<Vec<_>>(),
+            [
+                (Value::from(1), Value::from(crate::protocol::INTERNAL_ERROR)),
+                (Value::from(2), Value::Null)
+            ],
+            "the panic was not answered and the connection not kept: {lines:?}"
+        );
         assert_eq!(lines[1]["result"]["status"], "ok");
+        assert!(
+            joined(handle).is_ok_and(|served| served.is_ok()),
+            "the connection's thread did not end cleanly"
+        );
+    }
+
+    /// SECURITY.md (daemon): "Workers share one engine and their requests run in parallel." One
+    /// engine: a session opened over one connection is seen over another, and a stop sent over a
+    /// third stops the daemon.
+    #[test]
+    fn a_session_opened_on_one_connection_is_seen_on_another() {
+        let (_scratch, sock) = scratch_socket_with_parent("one-engine", 0o700);
+        let server_loc = SocketLocation::at(sock.clone());
+        let server = thread::spawn(move || run_server(&server_loc));
+        wait_for_socket(&sock);
+        let client = SocketLocation::at(sock.clone());
+        let opened: Value =
+            serde_json::from_str(&request(&client, OPEN_X).expect("session.open")).unwrap();
+        let session = opened["result"]["session"].as_str().unwrap_or_default();
+        let seen: Value = serde_json::from_str(
+            &request(
+                &client,
+                &format!(
+                    r#"{{"id":2,"method":"session.snapshot","params":{{"session":"{session}"}}}}"#
+                ),
+            )
+            .expect("session.snapshot"),
+        )
+        .unwrap();
+        assert!(
+            seen["error"].is_null() && !seen["result"].is_null(),
+            "a session opened over one connection was not found over another: {seen}"
+        );
+        let _ = request(&client, r#"{"id":3,"method":"daemon.shutdown"}"#);
+        assert!(
+            joined(server).is_ok(),
+            "a stop over another connection did not stop it"
+        );
     }
 
     /// Bug hunt 2026-10-28, H4-06: a response carrying U+2028/U+2029 leaves the socket as one
