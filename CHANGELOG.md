@@ -212,6 +212,15 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   timeout is twice the baseline, at least 2400 s. Stated limit: a shard's 300 minutes hold the
   baseline and about seven mutants that run the whole suite, so a change of hundreds of mutants a
   shard (PR #131: 214 to 223) still does not finish.
+- Tests only: no product change (PR #131's fourth macOS run, 45792873322). The hook test
+  `a_repository_with_more_working_trees_than_are_read_says_so` failed on the macos-26 runner also
+  alone: its first session start read the reflogs of 256 linked working trees and ran past a
+  start's 8 s (2.6 s on Linux). Its 255 trees are now Git's administrative entries with no
+  directory at that start, and then get the directories and `.git` files that `git worktree add
+  --no-checkout` makes; every start and stop of the test says what it said before, word for word,
+  and the test takes about 7 s instead of 12 on Linux. It is off `LOAD_SENSITIVE`. Stated: that a
+  start reads the history of 256 trees within its time is not tested, and on that runner it does
+  not; that the test passes there is shown only by the next macOS run.
 - CI only: no product change (PR #131's runs again). The required check `review controller
   mutation and fuzz evidence` mutates the review crate's `identifier` and `check_execution` with
   `--test-workspace false` and `--file` for their two files, instead of `--test-workspace true
