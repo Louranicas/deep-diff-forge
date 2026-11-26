@@ -9346,6 +9346,26 @@ fn a_tree_no_longer_listed_stands_while_its_directory_does() {
     let _ = stop_from(&root, "s", &script);
     assert_eq!(remembered_lines(), Vec::<String>::new());
     assert_eq!(the_state()["trees"], json!({}));
+
+    // U1 row S224 (lane T3a of 0.11.1): the same, with the stop that finds it clean made from
+    // inside the tree that is listed again (the stop judges it there, and forgets the old one)
+    secret(&pruned, "third.rs");
+    blocked(&stop_from(&pruned, "s", &script));
+    assert!(!remembered_lines().is_empty());
+    std::fs::remove_file(pruned.join(".git")).unwrap();
+    git(&root, &["worktree", "prune"]);
+    for entry in std::fs::read_dir(&pruned).unwrap() {
+        std::fs::remove_file(entry.unwrap().path()).unwrap();
+    }
+    linked_tree(&root, &pruned, "once-more");
+    let _ = stop_from(&pruned, "s", &script);
+    assert_eq!(
+        remembered_lines(),
+        Vec::<String>::new(),
+        "a tree listed again and found clean by a stop made from inside it was not forgotten"
+    );
+}
+
 }
 
 // --- The hook-state version policy (F7.e; rules V1 to V10 of the model design) ------------
