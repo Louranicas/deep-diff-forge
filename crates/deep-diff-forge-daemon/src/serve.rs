@@ -1545,6 +1545,112 @@ mod tests {
         joined(drip).unwrap();
     }
 
+    /// A reader that hands out one byte per read and records each read deadline it is armed
+    /// with. Each read first lets the clock move past the moment it was armed (a spin on the
+    /// clock, not a sleep), so the time left must shrink between reads; before byte `stall.0` it
+    /// also lets the clock pass `stall.1` after the first read, so a test can put a deadline
+    /// behind a byte without waiting on a scheduler.
+    struct Drip {
+        bytes: Vec<u8>,
+        given: usize,
+        armed: std::cell::RefCell<Vec<Duration>>,
+        armed_at: std::cell::Cell<Option<Instant>>,
+        first: Option<Instant>,
+        stall: Option<(usize, Duration)>,
+    }
+
+    impl Drip {
+        fn new(bytes: &[u8], stall: Option<(usize, Duration)>) -> Self {
+            Self {
+                bytes: bytes.to_vec(),
+                given: 0,
+                armed: std::cell::RefCell::new(Vec::new()),
+                armed_at: std::cell::Cell::new(None),
+                first: None,
+                stall,
+            }
+        }
+    }
+
+    impl std::io::Read for Drip {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "test: moves the clock past each arming instead of sleeping"
+        )]
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let Some(&byte) = self.bytes.get(self.given) else {
+                return Ok(0);
+            };
+            if let Some(armed_at) = self.armed_at.get() {
+                while Instant::now() <= armed_at {}
+            }
+            if let (Some((at, after)), Some(first)) = (self.stall, self.first)
+                && at == self.given
+            {
+                while Instant::now() < first + after {}
+            }
+            self.first.get_or_insert_with(Instant::now);
+            buf[0] = byte;
+            self.given += 1;
+            Ok(1)
+        }
+    }
+
+    impl ReadDeadline for Drip {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "test: notes when the reader was armed"
+        )]
+        fn set_read_deadline(&self, timeout: Duration) -> std::io::Result<()> {
+            self.armed.borrow_mut().push(timeout);
+            self.armed_at.set(Some(Instant::now()));
+            Ok(())
+        }
+    }
+
+    /// SECURITY.md (daemon): "Each line read has a 30-second absolute deadline (`READ_TIMEOUT`),
+    /// applied as the remaining time before every read, so slow byte-drip traffic cannot renew
+    /// it." The number, and the remaining time: every read after the first is armed with less
+    /// than the one before, never the whole timeout again. What is not held: that
+    /// `handle_connection` passes `READ_TIMEOUT` and not another value (no seam reaches its
+    /// socket without waiting the 30 s out).
+    #[test]
+    fn each_read_is_armed_with_the_time_left_not_the_whole_timeout() {
+        assert_eq!(
+            READ_TIMEOUT,
+            Duration::from_secs(30),
+            "SECURITY.md documents a 30-second line deadline"
+        );
+        let mut reader = BufReader::new(Drip::new(b"ab\n", None));
+        let mut line = Vec::new();
+        let read = read_capped_line_deadline(&mut reader, &mut line, 1024, READ_TIMEOUT);
+        assert_eq!(read.map_err(|err| err.kind()), Ok(3));
+        let armed = reader.get_ref().armed.borrow().clone();
+        assert_eq!(armed.len(), 3, "one deadline per read: {armed:?}");
+        assert!(armed[0] <= READ_TIMEOUT, "{armed:?}");
+        assert!(
+            armed.windows(2).all(|pair| pair[1] < pair[0]),
+            "a read was armed with the whole timeout again instead of the time left: {armed:?}"
+        );
+    }
+
+    /// The deadline is one for the whole line: bytes that keep coming, each well inside the
+    /// timeout of the one before, do not move it. The second byte arrives only after the deadline
+    /// (counted from the first read, so after it however the reader measures), and the line is cut
+    /// off there, never completed.
+    #[test]
+    fn a_line_still_arriving_at_its_deadline_is_cut_off_there() {
+        let timeout = Duration::from_millis(5);
+        let mut reader = BufReader::new(Drip::new(b"ab\n", Some((1, timeout))));
+        let mut line = Vec::new();
+        let read = read_capped_line_deadline(&mut reader, &mut line, 1024, timeout);
+        assert_eq!(
+            (read.map_err(|err| err.kind()), line.as_slice()),
+            (Err(std::io::ErrorKind::TimedOut), &b"ab"[..]),
+            "a byte that arrived after the line's deadline renewed it"
+        );
+    }
+
     /// SECURITY.md (daemon): "An oversized request gets one `INVALID_REQUEST` error and the
     /// connection closes." Over a real connection: a line one byte over the cap gets one
     /// `INVALID_REQUEST` answer with a null id; a valid request sent after it is never answered,
@@ -3518,8 +3624,13 @@ mod tests {
         let mut response = vec![b'x'; MAX_RESPONSE_BYTES - 1];
         response.push(b'\n');
         let (_parent, location, daemon) = fake_daemon("resp-at-cap", response);
-        let got = request(&location, r#"{"method":"daemon.health"}"#).expect("at-cap response");
-        assert_eq!(got.len(), MAX_RESPONSE_BYTES - 1);
+        let got = request(&location, r#"{"method":"daemon.health"}"#);
+        // The length, not the bytes: a failure must not print 80 MiB.
+        assert_eq!(
+            got.as_ref().map(String::len).map_err(std::io::Error::kind),
+            Ok(MAX_RESPONSE_BYTES - 1),
+            "a response of exactly the cap, its newline counted, was not accepted"
+        );
         joined(daemon).unwrap();
     }
 
@@ -3529,10 +3640,17 @@ mod tests {
         // docs/reference/mcp-sdk-daemon.md), and a line with no newline at all.
         let mut framed = vec![b'x'; MAX_RESPONSE_BYTES];
         framed.push(b'\n');
-        for response in [framed, vec![b'x'; MAX_RESPONSE_BYTES + 1]] {
+        for (case, response) in [
+            ("one byte over with its newline", framed),
+            ("no newline", vec![b'x'; MAX_RESPONSE_BYTES + 1]),
+        ] {
             let (_parent, location, daemon) = fake_daemon("resp-over", response);
-            let err = request(&location, r#"{"method":"daemon.health"}"#).unwrap_err();
-            assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+            let got = request(&location, r#"{"method":"daemon.health"}"#);
+            assert_eq!(
+                got.as_ref().map(String::len).map_err(std::io::Error::kind),
+                Err(std::io::ErrorKind::InvalidData),
+                "a response over the cap ({case}) was not refused"
+            );
             joined(daemon).unwrap();
         }
     }
