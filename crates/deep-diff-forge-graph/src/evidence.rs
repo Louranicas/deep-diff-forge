@@ -5401,13 +5401,14 @@ mod tests {
     /// [`crate::scan_cost::EXPONENT_BOUND`]), at sizes up to 1 MiB ([`long_lines_over`]), and no
     /// line goes without an answer for [`LONG_LINE_HANG`]. Earlier in 0.11.1 (lane P5) the bound
     /// was 3 times at each doubling, which a linear ranking crossed on GitHub's macos-26 runner
-    /// in every run of PR #131 (3.00 to 4.53, wall time) and here with sixteen workers at once
-    /// (3.53, 2026-11-27: a descheduled thread); the scans measured linear (lane Q3:
-    /// `crate::scan_cost`). Until 0.11.0 the bound was 10 s of thread CPU time per line of 2 MiB
-    /// in a debug build (2 s in a release build), which a slow runner fails on a linear scan; the
-    /// sizes up to 1 MiB cost what the one size of 2 MiB cost. The lines are ranked on as many
-    /// threads as the host has (2026-11-18, 16 threads, one size of 2 MiB: 6 s for all of them in
-    /// a release build, the slowest 0.22 s; 67 s in a debug build, the slowest 3.2 s).
+    /// in three of PR #131's five runs (3.00 to 4.53, wall time; once alone) and here with
+    /// sixteen workers at once (3.53, 2026-11-27: a descheduled thread); the scans measured
+    /// linear (lane Q3: `crate::scan_cost`). Until 0.11.0 the bound was 10 s of thread CPU time
+    /// per line of 2 MiB in a debug build (2 s in a release build), which a slow runner fails on
+    /// a linear scan; the sizes up to 1 MiB cost what the one size of 2 MiB cost. The lines are
+    /// ranked on as many threads as the host has (2026-11-18, 16 threads, one size of 2 MiB: 6 s
+    /// for all of them in a release build, the slowest 0.22 s; 67 s in a debug build, the slowest
+    /// 3.2 s).
     #[test]
     fn long_lines_of_every_trigger_rank_in_bounded_time() {
         let cases = long_line_cases();

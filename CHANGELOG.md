@@ -231,6 +231,11 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   Stated: the 24 struct-field mutants of `journal.rs` that cargo-mutants' `--re` let into the job
   are no longer in it; 22 of them are not caught by the review crate's own tests. The `deploy
   gate-feature` job's limit is 60 minutes instead of 45 (its runs took 38.5 and 37.3).
+- Tests only: the scans measured linear from 1 KiB to 16 MiB, so the four linear-time tests that
+  failed on macOS (3.00 to 4.53 at one doubling, wall time) now bound the cost's growth between
+  sizes 16 times apart by an exponent of 1.5; a quadratic plant in each scanner still fails them,
+  and they failed 0 of 596 runs alone and under load where the old ones failed 10 (on wall time,
+  as on macOS).
 
 ## [0.11.0] - 2026-11-25
 
