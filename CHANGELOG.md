@@ -222,6 +222,14 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   Stated: the 24 struct-field mutants of `journal.rs` that cargo-mutants' `--re` let into the job
   are no longer in it; 22 of them are not caught by the review crate's own tests. The `deploy
   gate-feature` job's limit is 60 minutes instead of 45 (its runs took 38.5 and 37.3).
+- Tests only: no workflow, script or manifest changed. SECURITY.md's supply-chain sentences that no test
+  held now have one that turns red when their file changes: no advisory waiver; the tree-sitter pins and
+  the TUI's ratatui features; every workflow's grants, checkout credentials, job time limits and
+  toolchains; what Dependabot watches; both release runs' gates, the Rosetta and checksum steps; what a
+  tag run attests; the `release` environment's one job; release.yml's tag check and crates.io token
+  guard, run for real (an open gate without a token that exited 0 passed every test); the local
+  release's command, smoke and signing; the release namespace and the three remotes; the pre-push hook
+  without gitleaks; CI's full-history scan; and the SBOM's `created` (the gate ignores it).
 
 ## [0.11.0] - 2026-11-25
 
