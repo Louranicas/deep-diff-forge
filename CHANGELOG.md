@@ -261,6 +261,14 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   and refuses more, by the sentence's numbers, at the first line past the budget; lines Git skips
   after a binary body's hunks are read; and stdin over the budget is refused by its own reader,
   which stops reading one byte past it.
+- Tests only: no workflow, script or manifest changed. SECURITY.md's supply-chain sentences that no test
+  held now have one that turns red when their file changes: no advisory waiver; the tree-sitter pins and
+  the TUI's ratatui features; every workflow's grants, checkout credentials, job time limits and
+  toolchains; what Dependabot watches; both release runs' gates, the Rosetta and checksum steps; what a
+  tag run attests; the `release` environment's one job; release.yml's tag check and crates.io token
+  guard, run for real (an open gate without a token that exited 0 passed every test); the local
+  release's command, smoke and signing; the release namespace and the three remotes; the pre-push hook
+  without gitleaks; CI's full-history scan; and the SBOM's `created` (the gate ignores it).
 
 ## [0.11.0] - 2026-11-25
 

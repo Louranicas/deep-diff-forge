@@ -1333,3 +1333,655 @@ fn the_test_step_runs_every_load_sensitive_test_alone_after_the_others() {
     let (out, calls) = test_step(&s, &checkout, 0, "");
     assert!(!out.status.success() && calls.is_empty(), "{out:?}");
 }
+
+// --- release.yml's own checks, run for real (lane T3e of 0.11.1) ----------------------------
+
+fn read(path: &str) -> String {
+    std::fs::read_to_string(format!("{ROOT}/{path}")).unwrap_or_else(|e| panic!("{path}: {e}"))
+}
+
+/// The lines of job `job` of a workflow (fixed two-space layout), without comment lines.
+fn workflow_job(workflow: &str, job: &str) -> Vec<String> {
+    let mut inside = false;
+    let mut lines = Vec::new();
+    for line in workflow.lines().skip_while(|line| *line != "jobs:").skip(1) {
+        if let Some(key) = line
+            .strip_prefix("  ")
+            .and_then(|rest| rest.strip_suffix(':'))
+            .filter(|key| !key.starts_with(' ') && !key.contains(' '))
+        {
+            inside = key == job;
+            continue;
+        }
+        if inside && !line.trim_start().starts_with('#') {
+            lines.push(line.to_owned());
+        }
+    }
+    assert!(!lines.is_empty(), "the workflow has no job `{job}`");
+    lines
+}
+
+/// The steps of a job's lines, each as its lines (a step starts at `      - `; a job-level key
+/// ends the step before it).
+fn workflow_steps(job: &[String]) -> Vec<Vec<String>> {
+    let mut steps: Vec<Vec<String>> = Vec::new();
+    let mut open = false;
+    for line in job {
+        if line.starts_with("      - ") {
+            steps.push(Vec::new());
+            open = true;
+        } else if line.starts_with("    ") && !line.starts_with("     ") {
+            open = false;
+        }
+        if open && let Some(step) = steps.last_mut() {
+            step.push(line.clone());
+        }
+    }
+    steps
+}
+
+/// The step named `name` of job `job`.
+fn workflow_step(workflow: &str, job: &str, name: &str) -> Vec<String> {
+    workflow_steps(&workflow_job(workflow, job))
+        .into_iter()
+        .find(|step| step[0].trim_start() == format!("- name: {name}"))
+        .unwrap_or_else(|| panic!("job `{job}` has no step `{name}`"))
+}
+
+/// A step's `run:`: its one line, or its `|` block without the block's indentation.
+fn run_of(step: &[String]) -> String {
+    let at = step
+        .iter()
+        .position(|line| {
+            let rest = line.trim_start();
+            rest.strip_prefix("- ").unwrap_or(rest).starts_with("run:")
+        })
+        .unwrap_or_else(|| panic!("the step has no run: {step:#?}"));
+    let column = step[at].find("run:").unwrap();
+    let value = step[at][column + "run:".len()..].trim();
+    if value != "|" {
+        return format!("{value}\n");
+    }
+    let indent = column + 2;
+    let mut script = String::new();
+    for line in step[at + 1..]
+        .iter()
+        .take_while(|line| line.trim().is_empty() || line.len() - line.trim_start().len() >= indent)
+    {
+        script.push_str(line.get(indent..).unwrap_or_default());
+        script.push('\n');
+    }
+    script
+}
+
+#[test]
+fn the_workflow_step_reader_reads_jobs_steps_and_runs() {
+    let workflow = "on:\njobs:\n  a:\n    steps:\n      - name: one\n        run: echo one\n      - run: |\n          two\n  b:\n    name: bee\n    steps:\n      # - name: one\n      - name: one\n        env:\n          X: y\n        run: |\n          set -e\n\n            indented\n      - uses: x\n    timeout-minutes: 3\n";
+    assert_eq!(run_of(&workflow_step(workflow, "a", "one")), "echo one\n");
+    let a = workflow_steps(&workflow_job(workflow, "a"));
+    assert_eq!(run_of(&a[1]), "two\n");
+    assert_eq!(
+        run_of(&workflow_step(workflow, "b", "one")),
+        "set -e\n\n  indented\n"
+    );
+    let b = workflow_job(workflow, "b");
+    assert_eq!(b[0], "    name: bee");
+    let steps = workflow_steps(&b);
+    assert_eq!(steps.len(), 2);
+    assert_eq!(steps[1], ["      - uses: x"]);
+}
+
+/// A scratch directory with release.yml's step `step` of job `job` as `step.sh` and a copy of
+/// the workspace manifest, which the step reads its version from.
+fn release_step(s: &Scratch, job: &str, step: &str) -> (Vec<String>, String) {
+    let workflow = read(".github/workflows/release.yml");
+    let lines = workflow_step(&workflow, job, step);
+    let script = run_of(&lines);
+    assert!(
+        !script.contains("${{"),
+        "the step's script must read only its environment: {script}"
+    );
+    std::fs::write(s.0.join("step.sh"), &script).unwrap();
+    std::fs::copy(format!("{ROOT}/Cargo.toml"), s.0.join("Cargo.toml")).unwrap();
+    let manifest = read("Cargo.toml");
+    let version = manifest
+        .split("[workspace.package]")
+        .nth(1)
+        .and_then(|rest| {
+            rest.lines()
+                .find_map(|line| line.strip_prefix("version = \""))
+        })
+        .and_then(|rest| rest.strip_suffix('"'))
+        .expect("the workspace version")
+        .to_owned();
+    (lines, version)
+}
+
+/// SECURITY.md: "A tag must exactly match the workspace version." release.yml's supply-chain
+/// job checks it on every tag run, and the build (so the release and publication after it)
+/// waits for that job (`release_workflow.rs`,
+/// `both_release_runs_gate_build_run_and_check_every_target`). The check's own script is run
+/// here, as the runner runs it (`bash -e`), with the pushed tag's name in `RELEASE_TAG`.
+#[test]
+fn a_release_tag_that_is_not_the_workspace_version_stops_the_release() {
+    let s = scratch("release-tag-version");
+    let (lines, version) = release_step(
+        &s,
+        "supply-chain",
+        "verify release tag matches workspace version",
+    );
+    let has = |want: &str| lines.iter().any(|line| line.trim() == want);
+    assert!(
+        has("if: startsWith(github.ref, 'refs/tags/v')"),
+        "the check runs on every run of a `v*` tag: {lines:#?}"
+    );
+    assert!(
+        has("RELEASE_TAG: ${{ github.ref_name }}"),
+        "the check reads the pushed tag's name: {lines:#?}"
+    );
+    let check = |tag: &str| {
+        run(Command::new("bash")
+            .args(["-e", "step.sh"])
+            .current_dir(&s.0)
+            .env("RELEASE_TAG", tag))
+    };
+    let good = check(&format!("v{version}"));
+    assert!(
+        good.status.success(),
+        "the tag of the workspace version must pass: {good:?}"
+    );
+    for tag in [
+        format!("v{version}.1"),
+        format!("v{version}-rc.1"),
+        version.clone(),
+        format!("V{version}"),
+        "v0.0.1".to_owned(),
+    ] {
+        let out = check(&tag);
+        assert!(
+            !out.status.success(),
+            "the tag {tag} of a {version} workspace passed the check: {out:?}"
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains(&format!(
+                "::error::release tag {tag} does not match workspace version v{version}"
+            )),
+            "the refusal names the tag and the version: {out:?}"
+        );
+    }
+}
+
+/// SECURITY.md: "… an open gate without a token fails the job instead of passing without
+/// publishing." The publish job's script runs here as the runner runs it, with stand-ins for
+/// `curl` (crates.io's answer), `cargo` (publication) and `sleep`, each recording its call.
+/// That the job runs only on a tag with `DDF_CRATES_IO` open, in the `release` environment, is
+/// `crate_edges.rs` (`release_publication_is_owner_gated_and_the_dry_run_publishes_nothing`).
+#[test]
+fn an_open_crates_io_gate_without_a_token_fails_before_publishing() {
+    let s = scratch("publish-gate");
+    let (lines, version) = release_step(&s, "publish", "publish crates in dependency order");
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.trim() == "CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}"),
+        "the step takes the token from the environment's secret: {lines:#?}"
+    );
+    let bin = s.0.join("bin");
+    tool(
+        &bin.join("curl"),
+        "printf 'curl %s\\n' \"$*\" >>\"$CALLS\"\nexit \"$CURL_EXIT\"\n",
+    );
+    tool(
+        &bin.join("cargo"),
+        "printf 'cargo %s\\n' \"$*\" >>\"$CALLS\"\n",
+    );
+    tool(&bin.join("sleep"), "exit 0\n");
+    let path = path_with(&bin);
+    let calls = s.0.join("calls");
+    let publish = |token: Option<&str>, curl_exit: &str| {
+        std::fs::write(&calls, "").unwrap();
+        let mut cmd = Command::new("bash");
+        cmd.args(["-e", "step.sh"])
+            .current_dir(&s.0)
+            .env("PATH", &path)
+            .env("CALLS", &calls)
+            .env("CURL_EXIT", curl_exit)
+            .env("GITHUB_REF_NAME", format!("v{version}"));
+        match token {
+            Some(token) => cmd.env("CARGO_REGISTRY_TOKEN", token),
+            None => cmd.env_remove("CARGO_REGISTRY_TOKEN"),
+        };
+        let out = run(&mut cmd);
+        (out, std::fs::read_to_string(&calls).unwrap())
+    };
+    // No token (a secret that is not set expands to nothing), while crates.io has none of the
+    // crates yet: the job fails at once, and crates.io is not even asked.
+    for token in [None, Some("")] {
+        let (out, called) = publish(token, "22");
+        assert!(
+            !out.status.success(),
+            "an open gate without a token passed (token {token:?}): {out:?}"
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains(
+                "::error::DDF_CRATES_IO is open but CARGO_REGISTRY_TOKEN is not set in the release environment"
+            ),
+            "the failure says why (token {token:?}): {out:?}"
+        );
+        assert_eq!(
+            called, "",
+            "crates.io was asked or published to without a token ({token:?})"
+        );
+    }
+    // Control: with a token, and every crate already published, the script runs to its end and
+    // publishes nothing.
+    let (out, called) = publish(Some("token"), "0");
+    assert!(out.status.success(), "{out:?}");
+    assert!(
+        called.lines().count() >= 10 && called.lines().all(|line| line.starts_with("curl ")),
+        "{called}"
+    );
+}
+
+// --- scripts/release_local.sh: built and smoked as release.yml, signed by the owner only
+// (lane T3e of 0.11.1) --------------------------------------------------------------------
+
+/// The lines of the shell function `name` of a script, from `name() {` to the line `}`, without
+/// comment lines and without the bodies of its quoted here-documents (`<<'EOF'`): the
+/// receipt's Python names the checks the build ran, which is not running them.
+fn shell_function<'a>(script: &'a str, name: &str) -> Vec<&'a str> {
+    let head = format!("{name}() {{");
+    let mut lines = Vec::new();
+    let mut heredoc: Option<&str> = None;
+    for line in script.lines().skip_while(|line| *line != head).skip(1) {
+        if let Some(end) = heredoc {
+            if line.trim() == end {
+                heredoc = None;
+            }
+            continue;
+        }
+        if line == "}" {
+            break;
+        }
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
+        if let Some((_, rest)) = line.split_once("<<'") {
+            heredoc = rest.split('\'').next();
+        }
+        lines.push(line);
+    }
+    assert!(!lines.is_empty(), "no shell function {name}");
+    lines
+}
+
+/// The words of a `cargo build` command, up to and including `--target`.
+fn build_command(line: &str) -> Vec<&str> {
+    let words: Vec<&str> = line[line.find("cargo build").expect("a cargo build")..]
+        .split_whitespace()
+        .collect();
+    let end = words
+        .iter()
+        .position(|word| *word == "--target")
+        .map_or(words.len(), |at| at + 1);
+    words[..end].to_vec()
+}
+
+/// SECURITY.md: "`scripts/release_local.sh build` … builds the commit twice from fresh exports
+/// with `release.yml`'s cargo command and stops unless both binaries have one SHA-256, then runs
+/// the same smoke and glibc check, writes the SBOM, archive, receipt and `SHA256SUMS`, and signs
+/// nothing." The two builds and the one SHA-256, and what is written, are held by the gate's
+/// "release-script self-test" (`scripts/test_release_local.sh`, cases 6 and 1); this holds the
+/// command, the smoke and the signing. That `release.yml` is not used, and where the owner
+/// builds, are the owner's practice, not the repository's.
+#[test]
+fn the_local_release_builds_and_smokes_as_release_yml_and_signs_nothing() {
+    let workflow = read(".github/workflows/release.yml");
+    let script = read("scripts/release_local.sh");
+    let ci = run_of(&workflow_step(&workflow, "build", "build release binary"));
+    let local = shell_function(&script, "build_at");
+    let local = local
+        .iter()
+        .find(|line| line.contains("cargo build"))
+        .expect("build_at runs cargo build");
+    assert_eq!(
+        build_command(local),
+        build_command(&ci),
+        "scripts/release_local.sh builds with another command than release.yml's"
+    );
+    let smoke = run_of(&workflow_step(
+        &workflow,
+        "build",
+        "smoke the release binary",
+    ));
+    let build = shell_function(&script, "do_build");
+    for part in [
+        "--version",
+        "--stdin-patch --json --require-files",
+        "fixtures/patch/basic.patch",
+        "grep -q '\"schema\": \"deep-diff-forge.review.v0\"'",
+        "scripts/check_glibc_floor.sh",
+    ] {
+        assert!(
+            smoke.contains(part),
+            "release.yml's smoke no longer runs {part:?}: hold this check to what it runs now"
+        );
+        assert!(
+            build.iter().any(|line| line.contains(part)),
+            "scripts/release_local.sh's build does not run release.yml's smoke part {part:?}"
+        );
+    }
+    let signing: Vec<&str> = script
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .filter(|line| {
+            [
+                "-Y sign", "git tag", "gpg ", "minisign", "cosign", "signify",
+            ]
+            .iter()
+            .any(|command| line.contains(command))
+        })
+        .filter(|line| {
+            let rest = line.trim_start();
+            !(rest.starts_with("printf ") || rest.starts_with("echo "))
+        })
+        .collect();
+    assert!(
+        signing.is_empty(),
+        "scripts/release_local.sh signs (it only prints the owner's commands): {signing:#?}"
+    );
+}
+
+#[test]
+fn the_release_script_readers_read_functions_and_commands() {
+    let script = "a() {\n  # cargo build x\n  one\n  python3 - <<'EOF'\nchecks = [\"scripts/check_glibc_floor.sh\"]\n}\nEOF\n  two\n}\nb() {\n  cargo_env cargo build --release -p x --target \"$t\") \\\n}\n";
+    assert_eq!(
+        shell_function(script, "a"),
+        ["  one", "  python3 - <<'EOF'", "  two"]
+    );
+    let b = shell_function(script, "b");
+    assert_eq!(
+        build_command(b[0]),
+        ["cargo", "build", "--release", "-p", "x", "--target"]
+    );
+    assert_eq!(
+        build_command("run: cargo build --locked"),
+        ["cargo", "build", "--locked"]
+    );
+}
+
+/// SECURITY.md: "The owner signs `SHA256SUMS` with the release key in the namespace
+/// `deep-diff-forge-release-sha256sums` and publishes the signed tag and the files on GitLab,
+/// Gitea and Forgejo." The signing and the release pages are the owner's acts. What the
+/// repository holds of them: the namespace is the one `scripts/release_local.sh verify` checks
+/// (the self-test's case 1b fails under another) and one every release key may sign in, and
+/// `just release-tag` pushes the signed tag to those three remotes and no other.
+#[test]
+fn the_release_namespace_and_remotes_are_the_ones_security_md_names() {
+    const NAMESPACE: &str = "deep-diff-forge-release-sha256sums";
+    let words = read("SECURITY.md")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let sentence = format!(
+        "The owner signs `SHA256SUMS` with the release key in the namespace `{NAMESPACE}` and publishes the signed tag and the files on GitLab, Gitea and Forgejo."
+    );
+    assert!(
+        words.contains(&sentence),
+        "SECURITY.md no longer says {sentence:?}: hold this check to what it says now"
+    );
+    let script = read("scripts/release_local.sh");
+    assert!(
+        script.lines().any(|line| line == format!("ns={NAMESPACE}")),
+        "scripts/release_local.sh checks SHA256SUMS.sig in another namespace than {NAMESPACE}"
+    );
+    let signers = read(".github/release_allowed_signers");
+    let keys: Vec<&str> = signers
+        .lines()
+        .filter(|line| !line.trim().is_empty() && !line.starts_with('#'))
+        .collect();
+    assert!(!keys.is_empty(), "no release key");
+    for key in keys {
+        let namespaces = key
+            .split_whitespace()
+            .nth(1)
+            .and_then(|field| field.strip_prefix("namespaces=\""))
+            .and_then(|field| field.strip_suffix('"'))
+            .unwrap_or_default();
+        assert!(
+            namespaces
+                .split(',')
+                .any(|namespace| namespace == NAMESPACE),
+            "a release key may not sign in {NAMESPACE}: namespaces {namespaces:?}"
+        );
+    }
+    let justfile = read("justfile");
+    let recipe = justfile
+        .split("\nrelease-tag version:\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n\n").next())
+        .expect("the release-tag recipe");
+    let lines: Vec<&str> = recipe.lines().map(str::trim).collect();
+    let loops: Vec<&&str> = lines
+        .iter()
+        .filter(|line| line.starts_with("for remote in "))
+        .collect();
+    assert_eq!(
+        loops, [&"for remote in gitlab gitea forgejo; do"; 2],
+        "the recipe checks and pushes to GitLab, Gitea and Forgejo, and to no other remote"
+    );
+    let pushes: Vec<&&str> = lines
+        .iter()
+        .filter(|line| line.contains("git push"))
+        .collect();
+    assert_eq!(
+        pushes,
+        [&"git push \"${remote}\" \"v${want}\""],
+        "the signed tag is pushed only inside the loop over the three remotes"
+    );
+}
+
+// --- gitleaks: the hook without its scanner, and CI's full-history scan (lane T3e of 0.11.1) --
+
+/// `PATH` without any directory that holds an executable `name`. Should that leave no `git` or
+/// `bash` (the hook's interpreter, found through `env`), they are linked into `keep`, first.
+fn path_without(name: &str, keep: &Path) -> String {
+    let path = std::env::var("PATH").unwrap_or_default();
+    let holds = |dir: &str, tool: &str| {
+        Path::new(dir)
+            .join(tool)
+            .metadata()
+            .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+    };
+    let dirs: Vec<&str> = path
+        .split(':')
+        .filter(|dir| !dir.is_empty() && !holds(dir, name))
+        .collect();
+    std::fs::create_dir_all(keep).unwrap();
+    for tool in ["git", "bash"] {
+        if !dirs.iter().any(|dir| holds(dir, tool)) {
+            let found = path
+                .split(':')
+                .find(|dir| holds(dir, tool))
+                .unwrap_or_else(|| panic!("no {tool} on PATH"));
+            std::os::unix::fs::symlink(Path::new(found).join(tool), keep.join(tool)).unwrap();
+        }
+    }
+    format!("{}:{}", keep.display(), dirs.join(":"))
+}
+
+/// SECURITY.md: the pre-push hook "refuses a push when gitleaks finds a secret or is missing".
+/// A find is `the_pre_push_hook_scans_a_force_push_over_a_remote_tip_never_fetched`, the clean
+/// push its control; this is the missing scanner: neither on `PATH` nor in `~/.local/bin`.
+#[test]
+fn the_pre_push_hook_refuses_a_push_when_gitleaks_is_missing() {
+    let s = scratch("prepush-missing");
+    let (a, _) = diverged_remote(&s);
+    commit(&a, "clean.txt", "nothing secret\n");
+    let path = path_without("gitleaks", &s.0.join("keep"));
+    let home = s.0.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    // Positive control: the hook's two places hold no gitleaks.
+    let found = run(Command::new("bash")
+        .args([
+            "-c",
+            "command -v gitleaks || test -e \"$HOME/.local/bin/gitleaks\"",
+        ])
+        .env("PATH", &path)
+        .env("HOME", &home));
+    assert!(
+        !found.status.success(),
+        "gitleaks is still found: {}",
+        String::from_utf8_lossy(&found.stdout)
+    );
+    let pushed = run(Command::new("git")
+        .current_dir(&a)
+        .env("PATH", &path)
+        .env("HOME", &home)
+        .args(["push", "origin", "HEAD:refs/heads/unscanned"]));
+    let stderr = String::from_utf8_lossy(&pushed.stderr);
+    assert!(
+        !pushed.status.success(),
+        "a push without gitleaks was accepted: {stderr}"
+    );
+    assert!(
+        stderr.contains("pre-push: gitleaks not found; refusing push"),
+        "the refusal says the scanner is missing: {stderr}"
+    );
+    assert_eq!(
+        git(&s.0.join("remote.git"), &["branch", "--list", "unscanned"]),
+        "",
+        "the unscanned commits reached the remote"
+    );
+}
+
+/// SECURITY.md: "the required `secrets` CI job (`secret scan (gitleaks)`, full history) and the
+/// versioned pre-push hook `scripts/hooks/pre-push` (`just install-hooks`)". That the job is
+/// required is a ruleset of the GitHub repository, not a file of this one.
+#[test]
+fn ci_scans_the_whole_history_for_secrets_and_installs_the_versioned_hook() {
+    let workflow = read(".github/workflows/ci.yml");
+    let job = workflow_job(&workflow, "secrets");
+    assert_eq!(job[0], "    name: secret scan (gitleaks)");
+    let steps = workflow_steps(&job);
+    let checkout = steps
+        .iter()
+        .find(|step| step[0].contains("uses: actions/checkout@"))
+        .expect("the secret scan checks out");
+    assert!(
+        checkout.iter().any(|line| line.trim() == "fetch-depth: 0"),
+        "the secret scan's checkout is shallow, so it scans only part of the history: {checkout:#?}"
+    );
+    let scan = run_of(&workflow_step(
+        &workflow,
+        "secrets",
+        "gitleaks (pinned release, checksum-verified)",
+    ));
+    let command = scan
+        .lines()
+        .find(|line| line.contains("gitleaks git "))
+        .expect("the job runs gitleaks over the repository");
+    assert!(
+        command.contains("--exit-code 1") && !command.contains("--log-opts"),
+        "the scan must fail on a find and cover every commit: {command}"
+    );
+    assert!(
+        read("justfile").contains(
+            "\ninstall-hooks:\n    install -m 0755 scripts/hooks/pre-push \"$(git rev-parse --git-common-dir)/hooks/pre-push\"\n"
+        ),
+        "`just install-hooks` installs the versioned hook"
+    );
+}
+
+// --- scripts/security/generate_spdx_sbom.py: reproducible (lane T3e of 0.11.1) -------------
+
+/// Runs the generator three times on a stand-in graph (cargo is not run: `_run_metadata` and
+/// `_lock_checksums` are replaced), the second the same as the first, the third with one version
+/// changed; prints, per run, the file, its `created`, its namespace and the SHA-256 of what the
+/// namespace is to address (its packages and relationships, as the generator serialises them).
+const SBOM_DRIVER: &str = r#"import contextlib, hashlib, importlib.util, io, json, sys
+spec = importlib.util.spec_from_file_location("gen", sys.argv[1])
+gen = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gen)
+def graph(version):
+    return {"packages": [
+                {"id": "app", "name": "app", "version": "1.0.0", "source": None, "license": "MIT"},
+                {"id": "dep", "name": "dep", "version": version,
+                 "source": "registry+https://example.invalid/index", "license": "MIT"}],
+            "workspace_members": ["app"],
+            "resolve": {"nodes": [{"id": "app", "deps": [{"pkg": "dep"}]}]}}
+gen._lock_checksums = lambda: {}
+runs = []
+for version in ["2.0.0", "2.0.0", "2.0.1"]:
+    gen._run_metadata = lambda version=version: graph(version)
+    with contextlib.redirect_stdout(io.StringIO()):
+        gen.main()
+    text = gen.OUTPUT.read_text()
+    doc = json.loads(text)
+    content = json.dumps({"packages": doc["packages"], "relationships": doc["relationships"]}, sort_keys=True)
+    runs.append({"text": text, "created": doc["creationInfo"]["created"],
+                 "namespace": doc["documentNamespace"],
+                 "content": hashlib.sha256(content.encode()).hexdigest()})
+print(json.dumps(runs))
+"#;
+
+/// SECURITY.md: "The committed SBOM is reproducible: its namespace is content-addressed and
+/// `created` comes from the last `Cargo.lock` commit." The gate's SBOM step compares a
+/// regenerated SBOM with the committed one but ignores `created`; this runs the generator in a
+/// scratch repository whose last commit is not the last commit to `Cargo.lock`.
+#[test]
+fn the_sbom_namespace_is_its_content_s_hash_and_created_the_last_cargo_lock_commit() {
+    let s = scratch("sbom-created");
+    let repo = s.0.join("repo");
+    let generator = repo.join("scripts/security/generate_spdx_sbom.py");
+    std::fs::create_dir_all(generator.parent().unwrap()).unwrap();
+    std::fs::copy(
+        format!("{ROOT}/scripts/security/generate_spdx_sbom.py"),
+        &generator,
+    )
+    .unwrap();
+    git(&repo, &["init", "-q"]);
+    for (file, epoch) in [("Cargo.lock", "1700000000"), ("other.txt", "1800000000")] {
+        std::fs::write(repo.join(file), format!("{file}\n")).unwrap();
+        git(&repo, &["add", file]);
+        let date = format!("@{epoch} +0000");
+        let done = run(Command::new("git")
+            .current_dir(&repo)
+            .args(["-c", "commit.gpgSign=false", "commit", "-qm", file])
+            .env("GIT_AUTHOR_DATE", &date)
+            .env("GIT_COMMITTER_DATE", &date));
+        assert!(done.status.success(), "{done:?}");
+    }
+    let out = run(Command::new("python3")
+        .arg("-I")
+        .arg("-c")
+        .arg(SBOM_DRIVER)
+        .arg(&generator)
+        .env_remove("SOURCE_DATE_EPOCH"));
+    assert!(out.status.success(), "{out:?}");
+    let runs: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    let field = |at: usize, key: &str| runs[at][key].as_str().unwrap().to_owned();
+    assert_eq!(
+        field(0, "created"),
+        "2023-11-14T22:13:20Z",
+        "`created` is the time of the last commit to Cargo.lock (1700000000), not of HEAD's or the clock's"
+    );
+    assert_eq!(
+        field(0, "text"),
+        field(1, "text"),
+        "the same graph gives the same SBOM, byte for byte"
+    );
+    for at in 0..3 {
+        let content = field(at, "content");
+        assert!(
+            field(at, "namespace").ends_with(&format!("/sbom/{}", &content[..32])),
+            "the namespace is not addressed by the SBOM's content: {} for {content}",
+            field(at, "namespace")
+        );
+    }
+    assert_ne!(
+        field(0, "namespace"),
+        field(2, "namespace"),
+        "another graph has another namespace"
+    );
+}
