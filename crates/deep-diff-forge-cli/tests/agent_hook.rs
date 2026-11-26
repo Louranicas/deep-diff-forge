@@ -9366,6 +9366,42 @@ fn a_tree_no_longer_listed_stands_while_its_directory_does() {
     );
 }
 
+/// U1 row S215 (lane T3a of 0.11.1): what is read at a tree's path counts as that tree's only
+/// when Git names that tree there. A linked tree something blocked in stays listed at its own
+/// path, while its `.git` file and another tree's records are edited to name each other: Git
+/// names the other tree at that path. A stop from the project must not read the path as the
+/// first tree, whose failure stands, and the reading there (clean) forgets nothing of it.
+#[test]
+fn a_path_git_names_as_another_tree_is_not_read_as_the_tree_listed_there() {
+    let scratch = Scratch::new("hook-path-named-another");
+    let root = repository(&scratch);
+    let (script, _) = reading_judge(&scratch);
+    let (first, other) = (scratch.join("first"), scratch.join("other"));
+    linked_tree(&root, &first, "first");
+    linked_tree(&root, &other, "other");
+    start(&root, "s");
+    secret(&first, "first.rs");
+    blocked(&stop_from(&first, "s", &script));
+    let before = remembered_lines();
+    // the key is taken out again: what stands at `first` now is the base, clean
+    std::fs::remove_file(first.join("first.rs")).unwrap();
+    let admin = std::fs::canonicalize(root.join(".git/worktrees/other")).unwrap();
+    std::fs::write(first.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
+    std::fs::write(
+        admin.join("gitdir"),
+        format!("{}\n", std::fs::canonicalize(&first).unwrap().join(".git").display()),
+    )
+    .unwrap();
+    let decision = stop_from(&root, "s", &script);
+    assert_eq!(
+        remembered_lines(),
+        before,
+        "a path Git names as another tree was read as the tree listed there: {decision}"
+    );
+    let said = stop_words(&decision);
+    assert!(said.contains("/first\""), "{said}");
+}
+
 }
 
 // --- The hook-state version policy (F7.e; rules V1 to V10 of the model design) ------------
