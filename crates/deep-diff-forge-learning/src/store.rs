@@ -453,36 +453,108 @@ mod tests {
         assert_eq!(loaded, vec![r]);
     }
 
+    /// `SECURITY.md` ("Local learning store"): the store's directories are `0700` and its file
+    /// `0600`. Both for a store made by the append and for one whose directories were made `0755`
+    /// before it (so a directory left as it was is seen whatever the umask). The file's mode is
+    /// the one it is created with: made with the usual umask (`022`) and without `0600`, it is
+    /// `0644` and the store's own check refuses it, which the first assertion names.
     #[cfg(unix)]
     #[test]
     fn store_is_owner_private() {
         use std::os::unix::fs::PermissionsExt as _;
         let scratch = Scratch::new("learn-store");
-        let dir = scratch.join("store");
-        append_receipt(&dir, &receipt(Strategy::Patch, ReviewOutcome::Accepted)).expect("append");
-        let file_mode = fs::metadata(receipts_path(&dir))
-            .unwrap()
-            .permissions()
-            .mode();
-        let dir_mode = fs::metadata(&dir).unwrap().permissions().mode();
-        let receipts_dir_mode = fs::metadata(receipts_path(&dir).parent().unwrap())
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(
-            file_mode & 0o777,
-            0o600,
-            "JSONL must be owner read/write only"
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        for (name, made_open) in [("fresh", false), ("made-0755", true)] {
+            let dir = scratch.join(name);
+            let receipts_dir = receipts_path(&dir).parent().unwrap().to_path_buf();
+            if made_open {
+                fs::create_dir_all(&receipts_dir).unwrap();
+                for made in [&dir, &receipts_dir] {
+                    fs::set_permissions(made, fs::Permissions::from_mode(0o755)).unwrap();
+                }
+            }
+            let appended = append_receipt(&dir, &receipt(Strategy::Patch, ReviewOutcome::Accepted));
+            assert!(
+                appended.is_ok(),
+                "{name}: the first append must make an owner-private store: {appended:?}"
+            );
+            assert_eq!(
+                mode(&receipts_path(&dir)),
+                0o600,
+                "{name}: JSONL must be owner read/write only"
+            );
+            assert_eq!(mode(&dir), 0o700, "{name}: learning dir must be 0700");
+            assert_eq!(
+                mode(&receipts_dir),
+                0o700,
+                "{name}: receipts dir must be 0700"
+            );
+        }
+    }
+
+    /// `SECURITY.md`: store directories must be owned by the effective user. A directory of
+    /// another user (`/`, root's) is refused by its owner, before anything is opened or changed in
+    /// it. Skipped where `/` is the effective user's (as root, or in a sandbox that owns it): there
+    /// the check passes and the store would set the directory's mode.
+    #[cfg(unix)]
+    #[test]
+    fn a_store_directory_of_another_user_is_refused() {
+        use std::os::unix::fs::MetadataExt as _;
+        let root = Path::new("/");
+        let euid = rustix::process::geteuid();
+        if euid.is_root() || fs::metadata(root).unwrap().uid() == euid.as_raw() {
+            eprintln!("skipped: `/` is the effective user's here");
+            return;
+        }
+        let refused = ensure_secure_dir(root).map_err(|error| error.to_string());
+        assert!(
+            matches!(&refused, Err(error) if error.contains("not owned by the effective user")),
+            "a directory of another user was not refused by its owner: {refused:?}"
         );
-        assert_eq!(
-            dir_mode & 0o077,
-            0,
-            "learning dir must not be group/world accessible"
-        );
-        assert_eq!(
-            receipts_dir_mode & 0o077,
-            0,
-            "receipts dir must be owner-only"
+    }
+
+    /// `SECURITY.md`: store files must be owned by the effective user. A regular file of another
+    /// user that is owner-private (so the mode check lets it through) is refused by its owner at
+    /// [`validate_receipts_file`], the one check every store door makes. Such a file cannot be
+    /// opened for reading, so it is opened with `O_PATH` (Linux only), which is enough for its
+    /// metadata: `/proc/1/environ`, root's and `0400`. Skipped where it is not such a file.
+    #[cfg(all(
+        target_os = "linux",
+        any(
+            target_arch = "x86_64",
+            target_arch = "aarch64",
+            target_arch = "riscv64"
+        )
+    ))]
+    #[test]
+    fn a_store_file_of_another_user_is_refused() {
+        use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
+        /// `O_PATH` on these architectures (`asm-generic/fcntl.h`).
+        const O_PATH: i32 = 0o10_000_000;
+        let path = Path::new("/proc/1/environ");
+        let Ok(file) = OpenOptions::new()
+            .read(true)
+            .custom_flags(O_PATH)
+            .open(path)
+        else {
+            eprintln!("skipped: {} cannot be reached", path.display());
+            return;
+        };
+        // Taken after the open, which holds the file, so both name one inode.
+        let path_metadata = fs::symlink_metadata(path).unwrap();
+        let foreign = path_metadata.uid() != rustix::process::geteuid().as_raw();
+        let shared = path_metadata.mode() & 0o077 != 0;
+        if !path_metadata.is_file() || shared || !foreign {
+            eprintln!(
+                "skipped: {} is no owner-private file of another user",
+                path.display()
+            );
+            return;
+        }
+        let refused = validate_receipts_file(&path_metadata, &file).map_err(|e| e.to_string());
+        assert!(
+            matches!(&refused, Err(error) if error.contains("not owned by the effective user")),
+            "a file of another user was not refused by its owner: {refused:?}"
         );
     }
 
@@ -537,8 +609,13 @@ mod tests {
         fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
         std::os::unix::fs::symlink(&target, &link).unwrap();
 
-        let result = append_receipt(&link, &receipt(Strategy::Patch, ReviewOutcome::Accepted));
-        assert!(result.is_err());
+        let result = append_receipt(&link, &receipt(Strategy::Patch, ReviewOutcome::Accepted))
+            .map_err(|error| error.to_string());
+        // Refused as a link, by its own check (the checks after it would refuse it too).
+        assert!(
+            matches!(&result, Err(error) if error.contains("must not be a symlink")),
+            "a linked store directory was not refused as a link: {result:?}"
+        );
         assert_eq!(
             fs::metadata(&target).unwrap().permissions().mode() & 0o777,
             0o755
@@ -570,7 +647,28 @@ mod tests {
         let path = receipts_path(&dir);
         write_private(&path, b"\n");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(load_receipts(&dir).is_err());
+        // Every door refuses it by its mode, and none tightens it or reads it.
+        for (door, result) in [
+            ("load", load_receipts(&dir).map(|_| ())),
+            ("count", count_receipts(&dir).map(|_| ())),
+            (
+                "append",
+                append_receipt(&dir, &receipt(Strategy::Patch, ReviewOutcome::Accepted)),
+            ),
+        ] {
+            let result = result.map_err(|error| error.to_string());
+            assert!(
+                matches!(&result, Err(error) if error.contains("accessible by group or others")),
+                "{door}: a store readable by others was not refused by its mode: {result:?}"
+            );
+        }
+        let after = fs::metadata(&path).unwrap();
+        assert_eq!(
+            after.permissions().mode() & 0o777,
+            0o644,
+            "the store was tightened"
+        );
+        assert_eq!(after.len(), 1, "the store was written");
     }
 
     #[test]
@@ -611,9 +709,10 @@ mod tests {
         assert_eq!(count_receipts(&dir).unwrap(), 1);
         line.insert(0, b'x');
         write_private(&path, &line);
+        // The results as text either way, so a line that is let through fails the assertion.
         for error in [
-            count_receipts(&dir).unwrap_err().to_string(),
-            load_receipts(&dir).unwrap_err().to_string(),
+            format!("{:?}", count_receipts(&dir)),
+            format!("{:?}", load_receipts(&dir).map(|loaded| loaded.len())),
         ] {
             assert!(error.contains("per-record budget"), "{error}");
         }
@@ -638,8 +737,8 @@ mod tests {
         body.push_str(&one);
         write_private(&path, body.as_bytes());
         for error in [
-            count_receipts(&dir).unwrap_err().to_string(),
-            load_receipts(&dir).unwrap_err().to_string(),
+            format!("{:?}", count_receipts(&dir)),
+            format!("{:?}", load_receipts(&dir).map(|loaded| loaded.len())),
         ] {
             assert!(error.contains("record-count budget"), "{error}");
         }
@@ -659,11 +758,32 @@ mod tests {
             .unwrap()
             .set_len(MAX_RECEIPTS_BYTES)
             .unwrap();
-        let error = append_receipt(&dir, &receipt(Strategy::Patch, ReviewOutcome::Accepted))
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("on-disk size budget"), "{error}");
+        let result = append_receipt(&dir, &receipt(Strategy::Patch, ReviewOutcome::Accepted))
+            .map_err(|error| error.to_string());
+        assert!(
+            matches!(&result, Err(error) if error.contains("on-disk size budget")),
+            "an append past the size budget was not refused by it: {result:?}"
+        );
         assert_eq!(fs::metadata(&path).unwrap().len(), MAX_RECEIPTS_BYTES);
+    }
+
+    /// One byte over the on-disk budget, in lines each within the per-record budget, is refused
+    /// on both read paths by the size budget. (The sparse store of
+    /// `read_rejects_oversized_sparse_store` is refused by the per-record budget too, so it does
+    /// not show the size budget alone.)
+    #[test]
+    fn a_store_one_byte_over_the_size_budget_is_refused_on_read() {
+        let scratch = Scratch::new("learn-store");
+        let dir = scratch.join("store");
+        let path = receipts_path(&dir);
+        let size = usize::try_from(MAX_RECEIPTS_BYTES).unwrap() + 1;
+        write_private(&path, &blank_padding(size));
+        for error in [
+            format!("{:?}", count_receipts(&dir)),
+            format!("{:?}", load_receipts(&dir).map(|loaded| loaded.len())),
+        ] {
+            assert!(error.contains("on-disk size budget"), "{error}");
+        }
     }
 
     /// Blank padding: `bytes` bytes of whitespace lines, each within the per-record budget.
