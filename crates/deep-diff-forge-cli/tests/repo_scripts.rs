@@ -1763,3 +1763,208 @@ fn the_release_namespace_and_remotes_are_the_ones_security_md_names() {
         "the signed tag is pushed only inside the loop over the three remotes"
     );
 }
+
+// --- gitleaks: the hook without its scanner, and CI's full-history scan (lane T3e of 0.11.1) --
+
+/// `PATH` without any directory that holds an executable `name`. Should that leave no `git` or
+/// `bash` (the hook's interpreter, found through `env`), they are linked into `keep`, first.
+fn path_without(name: &str, keep: &Path) -> String {
+    let path = std::env::var("PATH").unwrap_or_default();
+    let holds = |dir: &str, tool: &str| {
+        Path::new(dir)
+            .join(tool)
+            .metadata()
+            .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+    };
+    let dirs: Vec<&str> = path
+        .split(':')
+        .filter(|dir| !dir.is_empty() && !holds(dir, name))
+        .collect();
+    std::fs::create_dir_all(keep).unwrap();
+    for tool in ["git", "bash"] {
+        if !dirs.iter().any(|dir| holds(dir, tool)) {
+            let found = path
+                .split(':')
+                .find(|dir| holds(dir, tool))
+                .unwrap_or_else(|| panic!("no {tool} on PATH"));
+            std::os::unix::fs::symlink(Path::new(found).join(tool), keep.join(tool)).unwrap();
+        }
+    }
+    format!("{}:{}", keep.display(), dirs.join(":"))
+}
+
+/// SECURITY.md: the pre-push hook "refuses a push when gitleaks finds a secret or is missing".
+/// A find is `the_pre_push_hook_scans_a_force_push_over_a_remote_tip_never_fetched`, the clean
+/// push its control; this is the missing scanner: neither on `PATH` nor in `~/.local/bin`.
+#[test]
+fn the_pre_push_hook_refuses_a_push_when_gitleaks_is_missing() {
+    let s = scratch("prepush-missing");
+    let (a, _) = diverged_remote(&s);
+    commit(&a, "clean.txt", "nothing secret\n");
+    let path = path_without("gitleaks", &s.0.join("keep"));
+    let home = s.0.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    // Positive control: the hook's two places hold no gitleaks.
+    let found = run(Command::new("bash")
+        .args([
+            "-c",
+            "command -v gitleaks || test -e \"$HOME/.local/bin/gitleaks\"",
+        ])
+        .env("PATH", &path)
+        .env("HOME", &home));
+    assert!(
+        !found.status.success(),
+        "gitleaks is still found: {}",
+        String::from_utf8_lossy(&found.stdout)
+    );
+    let pushed = run(Command::new("git")
+        .current_dir(&a)
+        .env("PATH", &path)
+        .env("HOME", &home)
+        .args(["push", "origin", "HEAD:refs/heads/unscanned"]));
+    let stderr = String::from_utf8_lossy(&pushed.stderr);
+    assert!(
+        !pushed.status.success(),
+        "a push without gitleaks was accepted: {stderr}"
+    );
+    assert!(
+        stderr.contains("pre-push: gitleaks not found; refusing push"),
+        "the refusal says the scanner is missing: {stderr}"
+    );
+    assert_eq!(
+        git(&s.0.join("remote.git"), &["branch", "--list", "unscanned"]),
+        "",
+        "the unscanned commits reached the remote"
+    );
+}
+
+/// SECURITY.md: "the required `secrets` CI job (`secret scan (gitleaks)`, full history) and the
+/// versioned pre-push hook `scripts/hooks/pre-push` (`just install-hooks`)". That the job is
+/// required is a ruleset of the GitHub repository, not a file of this one.
+#[test]
+fn ci_scans_the_whole_history_for_secrets_and_installs_the_versioned_hook() {
+    let workflow = read(".github/workflows/ci.yml");
+    let job = workflow_job(&workflow, "secrets");
+    assert_eq!(job[0], "    name: secret scan (gitleaks)");
+    let steps = workflow_steps(&job);
+    let checkout = steps
+        .iter()
+        .find(|step| step[0].contains("uses: actions/checkout@"))
+        .expect("the secret scan checks out");
+    assert!(
+        checkout.iter().any(|line| line.trim() == "fetch-depth: 0"),
+        "the secret scan's checkout is shallow, so it scans only part of the history: {checkout:#?}"
+    );
+    let scan = run_of(&workflow_step(
+        &workflow,
+        "secrets",
+        "gitleaks (pinned release, checksum-verified)",
+    ));
+    let command = scan
+        .lines()
+        .find(|line| line.contains("gitleaks git "))
+        .expect("the job runs gitleaks over the repository");
+    assert!(
+        command.contains("--exit-code 1") && !command.contains("--log-opts"),
+        "the scan must fail on a find and cover every commit: {command}"
+    );
+    assert!(
+        read("justfile").contains(
+            "\ninstall-hooks:\n    install -m 0755 scripts/hooks/pre-push \"$(git rev-parse --git-common-dir)/hooks/pre-push\"\n"
+        ),
+        "`just install-hooks` installs the versioned hook"
+    );
+}
+
+// --- scripts/security/generate_spdx_sbom.py: reproducible (lane T3e of 0.11.1) -------------
+
+/// Runs the generator three times on a stand-in graph (cargo is not run: `_run_metadata` and
+/// `_lock_checksums` are replaced), the second the same as the first, the third with one version
+/// changed; prints, per run, the file, its `created`, its namespace and the SHA-256 of what the
+/// namespace is to address (its packages and relationships, as the generator serialises them).
+const SBOM_DRIVER: &str = r#"import contextlib, hashlib, importlib.util, io, json, sys
+spec = importlib.util.spec_from_file_location("gen", sys.argv[1])
+gen = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gen)
+def graph(version):
+    return {"packages": [
+                {"id": "app", "name": "app", "version": "1.0.0", "source": None, "license": "MIT"},
+                {"id": "dep", "name": "dep", "version": version,
+                 "source": "registry+https://example.invalid/index", "license": "MIT"}],
+            "workspace_members": ["app"],
+            "resolve": {"nodes": [{"id": "app", "deps": [{"pkg": "dep"}]}]}}
+gen._lock_checksums = lambda: {}
+runs = []
+for version in ["2.0.0", "2.0.0", "2.0.1"]:
+    gen._run_metadata = lambda version=version: graph(version)
+    with contextlib.redirect_stdout(io.StringIO()):
+        gen.main()
+    text = gen.OUTPUT.read_text()
+    doc = json.loads(text)
+    content = json.dumps({"packages": doc["packages"], "relationships": doc["relationships"]}, sort_keys=True)
+    runs.append({"text": text, "created": doc["creationInfo"]["created"],
+                 "namespace": doc["documentNamespace"],
+                 "content": hashlib.sha256(content.encode()).hexdigest()})
+print(json.dumps(runs))
+"#;
+
+/// SECURITY.md: "The committed SBOM is reproducible: its namespace is content-addressed and
+/// `created` comes from the last `Cargo.lock` commit." The gate's SBOM step compares a
+/// regenerated SBOM with the committed one but ignores `created`; this runs the generator in a
+/// scratch repository whose last commit is not the last commit to `Cargo.lock`.
+#[test]
+fn the_sbom_namespace_is_its_content_s_hash_and_created_the_last_cargo_lock_commit() {
+    let s = scratch("sbom-created");
+    let repo = s.0.join("repo");
+    let generator = repo.join("scripts/security/generate_spdx_sbom.py");
+    std::fs::create_dir_all(generator.parent().unwrap()).unwrap();
+    std::fs::copy(
+        format!("{ROOT}/scripts/security/generate_spdx_sbom.py"),
+        &generator,
+    )
+    .unwrap();
+    git(&repo, &["init", "-q"]);
+    for (file, epoch) in [("Cargo.lock", "1700000000"), ("other.txt", "1800000000")] {
+        std::fs::write(repo.join(file), format!("{file}\n")).unwrap();
+        git(&repo, &["add", file]);
+        let date = format!("@{epoch} +0000");
+        let done = run(Command::new("git")
+            .current_dir(&repo)
+            .args(["-c", "commit.gpgSign=false", "commit", "-qm", file])
+            .env("GIT_AUTHOR_DATE", &date)
+            .env("GIT_COMMITTER_DATE", &date));
+        assert!(done.status.success(), "{done:?}");
+    }
+    let out = run(Command::new("python3")
+        .arg("-I")
+        .arg("-c")
+        .arg(SBOM_DRIVER)
+        .arg(&generator)
+        .env_remove("SOURCE_DATE_EPOCH"));
+    assert!(out.status.success(), "{out:?}");
+    let runs: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    let field = |at: usize, key: &str| runs[at][key].as_str().unwrap().to_owned();
+    assert_eq!(
+        field(0, "created"),
+        "2023-11-14T22:13:20Z",
+        "`created` is the time of the last commit to Cargo.lock (1700000000), not of HEAD's or the clock's"
+    );
+    assert_eq!(
+        field(0, "text"),
+        field(1, "text"),
+        "the same graph gives the same SBOM, byte for byte"
+    );
+    for at in 0..3 {
+        let content = field(at, "content");
+        assert!(
+            field(at, "namespace").ends_with(&format!("/sbom/{}", &content[..32])),
+            "the namespace is not addressed by the SBOM's content: {} for {content}",
+            field(at, "namespace")
+        );
+    }
+    assert_ne!(
+        field(0, "namespace"),
+        field(2, "namespace"),
+        "another graph has another namespace"
+    );
+}
