@@ -809,7 +809,10 @@ bounded form.** What it holds to:
   files out of `git status` and `git add --all`, and a stop that judges that tree does not
   judge them as the agent's change. None is made where the state directory is itself the top
   of a working tree (a `.git` stands in it): there the `*` would hide every untracked file of
-  that tree. Before 0.11.1 such a stop judged the hooks' key, states and lists as the agent's
+  that tree. An agent that removes or replaces the file, or puts a `.git` entry in the
+  directory before the first state is kept, gets the hooks' files judged as before 0.11.1
+  (the key reaches the judge and its own stops block spuriously): it can read the key and
+  `git add -f` it, and staged files are judged, so this is no new capability. Before 0.11.1 such a stop judged the hooks' key, states and lists as the agent's
   change (with no change of the agent's, the first stop of 0.11.0 blocked in 37 of 40
   measured runs and held in the other 3) and gave the key to the judge, and a dotfiles
   repository's `git add --all` staged the key for the next commit beside the states it keys.

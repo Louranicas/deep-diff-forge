@@ -1493,7 +1493,8 @@ thread_local! {
 /// stands at the name already (a file of any content, a link, a directory) is left as it is;
 /// so is a directory that holds a `.git` (the top of a working tree: its `*` would hide every
 /// untracked file of that tree; review of P5d, L2). The partial file is removed on every exit,
-/// and partial files of hooks that were killed are removed once the name is published. A file
+/// and, when this hook publishes the name, partial files of hooks that were killed are removed (a hook killed
+/// after its link and before its unlink leaves its partial for good: it is ignored by the `*`). A file
 /// that cannot be made is not made: the state is kept as before, and nothing is said.
 fn publish_ignore(
     at: &At,
