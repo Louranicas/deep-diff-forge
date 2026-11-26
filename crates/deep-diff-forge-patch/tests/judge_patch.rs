@@ -773,9 +773,19 @@ fn configuration_of_the_system_a_parent_git_or_the_users_attributes_does_not_sha
     let scratch = Scratch::new("judge-patch-inherited-config");
     let root = changed_repository(&scratch);
     std::fs::write(root.join("crlf.txt"), "one\r\ntwo\r\n").unwrap();
+    // a change in the middle of a longer file: the diff's own configuration (its context) shows
+    let lines: String = (1..=9).map(|n| format!("line {n}\n")).collect();
+    std::fs::write(root.join("long.txt"), &lines).unwrap();
+    git(&root, &["add", "long.txt"]);
+    git(&root, &["commit", "--quiet", "-m", "long"]);
+    std::fs::write(root.join("long.txt"), lines.replace("line 5\n", "line five\n")).unwrap();
     let plain = judge_patch(&root, "HEAD", &fresh(&scratch, "plain"), &options()).unwrap();
     let shown = String::from_utf8_lossy(&plain.bytes).into_owned();
-    assert!(shown.contains("+one\r\n"), "{shown}");
+    assert!(
+        shown.contains("+one\r\n")
+            && shown.contains(" line 3\n line 4\n-line 5\n+line five\n line 6\n"),
+        "{shown}"
+    );
     let system = scratch.write(
         "system-gitconfig",
         "[core]\n\tautocrlf = true\n[diff]\n\tcontext = 0\n",
