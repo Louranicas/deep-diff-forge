@@ -572,6 +572,16 @@ fn a_file_is_read_from_the_commit_not_from_the_working_tree() {
         file_at_commit(&root, "no-such-rev", "src.rs", &options()),
         Err(GitAcquireError::InvalidSelection { .. })
     ));
+    // a symbolic link committed at the name is no policy, whatever it points at (U1 S280,
+    // lane T3d: Git stores a link as a blob of mode 120000)
+    std::os::unix::fs::symlink("src.rs", root.join("link.toml")).unwrap();
+    git(&root, &["add", "link.toml"]);
+    git(&root, &["commit", "--quiet", "-m", "a link"]);
+    assert_eq!(
+        file_at_commit(&root, "HEAD", "link.toml", &options()).unwrap(),
+        None,
+        "a link committed at the policy's name was read as a policy"
+    );
 }
 
 /// Independent review of the hooks, HR-M-2. The scratch index was filled with `git add --all`,
@@ -1283,6 +1293,17 @@ fn the_commits_that_something_names_are_listed_by_their_ids() {
             "{which:?}: a linked tree's HEAD, with no reflog of its own, is not listed: {now:?}"
         );
     }
+}
+
+/// U1 row S270 (lane T3d of 0.11.1): SECURITY.md says a session's list of the commits named
+/// when it began holds up to a million ids, and that a repository naming more cannot be
+/// recorded. A million refs is no test to run; the number is held here, beside the listing
+/// it bounds, so that a change of it is a change of this test (a definition check, as lane
+/// T3a's for the waits). That more is refused, and said, is held by the agent-hook test of a
+/// repository with more working trees than are read: one refusal, one path.
+#[test]
+fn the_named_commits_a_session_can_record_are_the_million_security_md_names() {
+    assert_eq!(deep_diff_forge_patch::NAMED_COMMITS_CAP, 1_000_000);
 }
 
 /// `commits_beyond` gives the commits that lead on from the known ones, parents before

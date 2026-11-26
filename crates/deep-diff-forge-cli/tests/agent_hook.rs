@@ -2677,7 +2677,13 @@ fn a_session_that_began_with_no_commit_is_never_judged_as_if_it_had_one() {
     // nothing to judge: there is no commit. That its files are not judged is said at every
     // stop, in full once and then in one line (round 14: what is known in the project and
     // not judged is never silence); a repository with no commit and no file says nothing.
-    let said = allowed(&stop_from(&root, "s", &script)).to_owned();
+    let decision = stop_from(&root, "s", &script);
+    assert_ne!(
+        decision,
+        Value::Null,
+        "a stop in a repository with files and no commit was silent"
+    );
+    let said = allowed(&decision).to_owned();
     assert!(
         said.starts_with("deep-diff-forge: The repository \"")
             && said.contains("has no commit yet, so there is no commit to measure this session's changes from: its files were not judged."),
@@ -2702,6 +2708,11 @@ fn a_session_that_began_with_no_commit_is_never_judged_as_if_it_had_one() {
     git(&root, &["add", "--all"]);
     git(&root, &["commit", "--quiet", "-m", "first"]);
     let decision = stop_from(&root, "s", &script);
+    assert_ne!(
+        decision,
+        Value::Null,
+        "the first commit of the repository, made after the session began, made a silent stop"
+    );
     let unjudged = allowed(&decision);
     assert!(
         unjudged.starts_with("deep-diff-forge: UNJUDGED. ")
@@ -2759,6 +2770,10 @@ fn a_failure_to_find_the_repository_is_said_and_never_silent() {
     // Git is not on the hook's PATH
     let (code, stdout, _) = no_git("stop", "Stop", "s");
     assert_eq!(code, 0);
+    assert!(
+        !stdout.is_empty(),
+        "a stop whose Git is not on the hook's PATH was silent"
+    );
     let said = system_message(&stdout);
     assert!(
         said.starts_with("deep-diff-forge: UNJUDGED. This stop was not judged: Git could not say which repository")
@@ -4087,6 +4102,11 @@ fn another_repository_and_a_submodule_with_changes_are_named_at_every_stop() {
     start(&root, "3a");
     silence_a_lint(&other);
     let decision = stop_from(&other, "3a", &script);
+    assert_ne!(
+        decision,
+        Value::Null,
+        "another repository the session's directory is in was not named: the stop was silent"
+    );
     let said = allowed(&decision);
     assert_eq!(
         said,
@@ -4128,6 +4148,11 @@ fn another_repository_and_a_submodule_with_changes_are_named_at_every_stop() {
     );
     // from the top of the project
     let decision = stop_from(&root, "3c", &script);
+    assert_ne!(
+        decision,
+        Value::Null,
+        "a submodule with changes that are not committed in it was not named: the stop was silent"
+    );
     assert_eq!(allowed(&decision), format!("deep-diff-forge: {submodule}"));
     assert_eq!(
         allowed(&stop_from(&root, "3c", &script)),
@@ -5159,7 +5184,27 @@ fn a_repository_with_five_thousand_branches_and_tags_is_recorded_whole() {
     secret(&root, "k.rs");
     let late = commit_all(&root, "work");
     git(&root, &["checkout", "--quiet", "main"]);
+    // and one that only a branch names, past every other name and in no reflog that is read
+    // (`HEAD`'s names the two above): no bound on the refs is made good by a reflog here
+    // (U1 S129, lane T3d)
+    let only = git(
+        &root,
+        &[
+            "commit-tree",
+            &format!("{late}^{{tree}}"),
+            "-p",
+            base,
+            "-m",
+            "only a ref names it",
+        ],
+    );
+    git(&root, &["update-ref", "refs/heads/zzz-only", only.trim()]);
+    let only = short(&root, "refs/heads/zzz-only");
     let decision = stop_from(&root, "s", &script);
+    assert!(
+        stop_words(&decision).contains(&format!("Commit {only}: FAIL\n")),
+        "a commit that only a branch past 5,000 others names was not judged: {decision}"
+    );
     let reason = blocked(&decision);
     assert!(
         reason.contains(&format!("Commit {late}: FAIL\n"))
@@ -5201,8 +5246,15 @@ fn the_sessions_commit_is_judged_whatever_its_branch_is_called() {
         "{reason}"
     );
     assert_eq!(runs(&log), 21);
-    // nothing is judged twice
-    assert!(allowed(&stop_from(&root, "s", &script)).starts_with("deep-diff-forge: FAIL STANDS. "));
+    // nothing is judged twice: the commit is known by its id, so the branch it is on and the
+    // twenty others neither make it block again nor let it be forgotten (U1 S171)
+    let again = stop_from(&root, "s", &script);
+    assert!(
+        again["systemMessage"]
+            .as_str()
+            .is_some_and(|said| said.starts_with("deep-diff-forge: FAIL STANDS. ")),
+        "the failing commit did not stand at the next stop: {again}"
+    );
     assert_eq!(runs(&log), 21);
 }
 
@@ -9453,8 +9505,10 @@ fn a_stop_from_a_submodules_git_directory_is_unjudged_and_says_why() {
             ),
         "a stop from a submodule's Git directory was not UNJUDGED for it: {said}"
     );
+    // (the reason is cut at its bound after its paths were cut to their floor: these words
+    // are inside it whatever the paths are)
     assert!(
-        said.contains(", which is inside the Git directory "),
+        said.contains(", which is inside the Git dir"),
         "the reason does not say that the directory lies inside the Git directory: {said}"
     );
 }
@@ -11114,13 +11168,27 @@ fn a_commit_over_the_patch_builders_size_is_final_at_once() {
     std::fs::write(root.join("big.txt"), "a\n".repeat(24 * 1024 * 1024)).unwrap();
     commit_all(&root, "big");
     let id = head_id(&root);
+    // A commit after it is asked about at the same stop: a refused patch is said and
+    // remembered, and ends no asking (U1 S164, lane T3d).
+    secret(&root, "k.rs");
+    let key = commit_all(&root, "a key after it");
+    let decision = stop_from(&root, "s", &script);
+    assert!(
+        stop_words(&decision).contains(&format!("Commit {key}: FAIL\n")),
+        "the commit after one whose patch was refused was not judged at that stop: {decision}"
+    );
+    assert_eq!(decision["decision"], "block", "{decision}");
     for _ in 0..2 {
         let said = allowed(&stop_from(&root, "s", &script)).to_owned();
         assert!(said.contains(&id[..12]), "{said}");
         let written = judged_lines();
         assert!(written[&id].starts_with("x:"), "{written:?}");
     }
-    assert_eq!(shown(&log), Vec::<String>::new(), "the judge was asked");
+    assert!(
+        !shown(&log).iter().any(|names| names.contains("big.txt")),
+        "the judge was asked about the commit over the size: {:?}",
+        shown(&log)
+    );
 }
 
 /// Mutation run on `07df120`, `judge_commits`: a commit whose patch Git cannot make (here
