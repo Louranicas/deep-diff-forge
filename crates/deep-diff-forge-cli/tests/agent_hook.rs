@@ -10308,11 +10308,29 @@ fn a_tree_moved_by_hand_is_unjudged_until_repaired_and_then_stands() {
     let (script, _) = reading_judge(&scratch);
     let (linked, moved) = (scratch.join("linked"), scratch.join("moved"));
     linked_tree(&root, &linked, "side");
+    let clean = scratch.join("clean");
+    linked_tree(&root, &clean, "clean-side");
     start(&root, "s");
     secret(&linked, "first.rs");
     blocked(&stop_from(&linked, "s", &script));
     let before = remembered_lines();
     std::fs::rename(&linked, &moved).unwrap();
+    // U1 row S218 (lane T3a of 0.11.1): from the project, the tree whose directory is gone and
+    // where a failure stands is advised `git worktree repair`, and not prune; a tree gone with
+    // nothing standing there is the one prune is said for
+    std::fs::remove_dir_all(&clean).unwrap();
+    let from_project = stop_words(&stop_from(&root, "s", &script)).to_owned();
+    assert!(
+        from_project.contains("/linked\" of this project is gone")
+            && from_project.contains("(if it was moved with `mv`, `git worktree repair` run where it is now records it; `git worktree prune` would forget what blocked there)"),
+        "the gone tree where a failure stands is not advised repair: {from_project}"
+    );
+    assert!(
+        from_project.contains("/clean\" of this project is gone")
+            && from_project.contains("(`git worktree prune` forgets a linked tree that is gone;"),
+        "the gone tree where nothing stands is not advised prune: {from_project}"
+    );
+    assert_eq!(remembered_lines(), before);
     let said = allowed(&stop_from(&moved, "s", &script)).to_owned();
     assert!(
         said.starts_with("deep-diff-forge: UNJUDGED. ")
