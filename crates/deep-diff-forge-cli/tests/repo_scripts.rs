@@ -1333,3 +1333,252 @@ fn the_test_step_runs_every_load_sensitive_test_alone_after_the_others() {
     let (out, calls) = test_step(&s, &checkout, 0, "");
     assert!(!out.status.success() && calls.is_empty(), "{out:?}");
 }
+
+// --- release.yml's own checks, run for real (lane T3e of 0.11.1) ----------------------------
+
+fn read(path: &str) -> String {
+    std::fs::read_to_string(format!("{ROOT}/{path}")).unwrap_or_else(|e| panic!("{path}: {e}"))
+}
+
+/// The lines of job `job` of a workflow (fixed two-space layout), without comment lines.
+fn workflow_job(workflow: &str, job: &str) -> Vec<String> {
+    let mut inside = false;
+    let mut lines = Vec::new();
+    for line in workflow.lines().skip_while(|line| *line != "jobs:").skip(1) {
+        if let Some(key) = line
+            .strip_prefix("  ")
+            .and_then(|rest| rest.strip_suffix(':'))
+            .filter(|key| !key.starts_with(' ') && !key.contains(' '))
+        {
+            inside = key == job;
+            continue;
+        }
+        if inside && !line.trim_start().starts_with('#') {
+            lines.push(line.to_owned());
+        }
+    }
+    assert!(!lines.is_empty(), "the workflow has no job `{job}`");
+    lines
+}
+
+/// The steps of a job's lines, each as its lines (a step starts at `      - `; a job-level key
+/// ends the step before it).
+fn workflow_steps(job: &[String]) -> Vec<Vec<String>> {
+    let mut steps: Vec<Vec<String>> = Vec::new();
+    let mut open = false;
+    for line in job {
+        if line.starts_with("      - ") {
+            steps.push(Vec::new());
+            open = true;
+        } else if line.starts_with("    ") && !line.starts_with("     ") {
+            open = false;
+        }
+        if open && let Some(step) = steps.last_mut() {
+            step.push(line.clone());
+        }
+    }
+    steps
+}
+
+/// The step named `name` of job `job`.
+fn workflow_step(workflow: &str, job: &str, name: &str) -> Vec<String> {
+    workflow_steps(&workflow_job(workflow, job))
+        .into_iter()
+        .find(|step| step[0].trim_start() == format!("- name: {name}"))
+        .unwrap_or_else(|| panic!("job `{job}` has no step `{name}`"))
+}
+
+/// A step's `run:`: its one line, or its `|` block without the block's indentation.
+fn run_of(step: &[String]) -> String {
+    let at = step
+        .iter()
+        .position(|line| {
+            let rest = line.trim_start();
+            rest.strip_prefix("- ").unwrap_or(rest).starts_with("run:")
+        })
+        .unwrap_or_else(|| panic!("the step has no run: {step:#?}"));
+    let column = step[at].find("run:").unwrap();
+    let value = step[at][column + "run:".len()..].trim();
+    if value != "|" {
+        return format!("{value}\n");
+    }
+    let indent = column + 2;
+    let mut script = String::new();
+    for line in step[at + 1..]
+        .iter()
+        .take_while(|line| line.trim().is_empty() || line.len() - line.trim_start().len() >= indent)
+    {
+        script.push_str(line.get(indent..).unwrap_or_default());
+        script.push('\n');
+    }
+    script
+}
+
+#[test]
+fn the_workflow_step_reader_reads_jobs_steps_and_runs() {
+    let workflow = "on:\njobs:\n  a:\n    steps:\n      - name: one\n        run: echo one\n      - run: |\n          two\n  b:\n    name: bee\n    steps:\n      # - name: one\n      - name: one\n        env:\n          X: y\n        run: |\n          set -e\n\n            indented\n      - uses: x\n    timeout-minutes: 3\n";
+    assert_eq!(run_of(&workflow_step(workflow, "a", "one")), "echo one\n");
+    let a = workflow_steps(&workflow_job(workflow, "a"));
+    assert_eq!(run_of(&a[1]), "two\n");
+    assert_eq!(
+        run_of(&workflow_step(workflow, "b", "one")),
+        "set -e\n\n  indented\n"
+    );
+    let b = workflow_job(workflow, "b");
+    assert_eq!(b[0], "    name: bee");
+    let steps = workflow_steps(&b);
+    assert_eq!(steps.len(), 2);
+    assert_eq!(steps[1], ["      - uses: x"]);
+}
+
+/// A scratch directory with release.yml's step `step` of job `job` as `step.sh` and a copy of
+/// the workspace manifest, which the step reads its version from.
+fn release_step(s: &Scratch, job: &str, step: &str) -> (Vec<String>, String) {
+    let workflow = read(".github/workflows/release.yml");
+    let lines = workflow_step(&workflow, job, step);
+    let script = run_of(&lines);
+    assert!(
+        !script.contains("${{"),
+        "the step's script must read only its environment: {script}"
+    );
+    std::fs::write(s.0.join("step.sh"), &script).unwrap();
+    std::fs::copy(format!("{ROOT}/Cargo.toml"), s.0.join("Cargo.toml")).unwrap();
+    let manifest = read("Cargo.toml");
+    let version = manifest
+        .split("[workspace.package]")
+        .nth(1)
+        .and_then(|rest| {
+            rest.lines()
+                .find_map(|line| line.strip_prefix("version = \""))
+        })
+        .and_then(|rest| rest.strip_suffix('"'))
+        .expect("the workspace version")
+        .to_owned();
+    (lines, version)
+}
+
+/// SECURITY.md: "A tag must exactly match the workspace version." release.yml's supply-chain
+/// job checks it on every tag run, and the build (so the release and publication after it)
+/// waits for that job (`release_workflow.rs`,
+/// `both_release_runs_gate_build_run_and_check_every_target`). The check's own script is run
+/// here, as the runner runs it (`bash -e`), with the pushed tag's name in `RELEASE_TAG`.
+#[test]
+fn a_release_tag_that_is_not_the_workspace_version_stops_the_release() {
+    let s = scratch("release-tag-version");
+    let (lines, version) = release_step(
+        &s,
+        "supply-chain",
+        "verify release tag matches workspace version",
+    );
+    let has = |want: &str| lines.iter().any(|line| line.trim() == want);
+    assert!(
+        has("if: startsWith(github.ref, 'refs/tags/v')"),
+        "the check runs on every run of a `v*` tag: {lines:#?}"
+    );
+    assert!(
+        has("RELEASE_TAG: ${{ github.ref_name }}"),
+        "the check reads the pushed tag's name: {lines:#?}"
+    );
+    let check = |tag: &str| {
+        run(Command::new("bash")
+            .args(["-e", "step.sh"])
+            .current_dir(&s.0)
+            .env("RELEASE_TAG", tag))
+    };
+    let good = check(&format!("v{version}"));
+    assert!(
+        good.status.success(),
+        "the tag of the workspace version must pass: {good:?}"
+    );
+    for tag in [
+        format!("v{version}.1"),
+        format!("v{version}-rc.1"),
+        version.clone(),
+        format!("V{version}"),
+        "v0.0.1".to_owned(),
+    ] {
+        let out = check(&tag);
+        assert!(
+            !out.status.success(),
+            "the tag {tag} of a {version} workspace passed the check: {out:?}"
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains(&format!(
+                "::error::release tag {tag} does not match workspace version v{version}"
+            )),
+            "the refusal names the tag and the version: {out:?}"
+        );
+    }
+}
+
+/// SECURITY.md: "… an open gate without a token fails the job instead of passing without
+/// publishing." The publish job's script runs here as the runner runs it, with stand-ins for
+/// `curl` (crates.io's answer), `cargo` (publication) and `sleep`, each recording its call.
+/// That the job runs only on a tag with `DDF_CRATES_IO` open, in the `release` environment, is
+/// `crate_edges.rs` (`release_publication_is_owner_gated_and_the_dry_run_publishes_nothing`).
+#[test]
+fn an_open_crates_io_gate_without_a_token_fails_before_publishing() {
+    let s = scratch("publish-gate");
+    let (lines, version) = release_step(&s, "publish", "publish crates in dependency order");
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.trim() == "CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}"),
+        "the step takes the token from the environment's secret: {lines:#?}"
+    );
+    let bin = s.0.join("bin");
+    tool(
+        &bin.join("curl"),
+        "printf 'curl %s\\n' \"$*\" >>\"$CALLS\"\nexit \"$CURL_EXIT\"\n",
+    );
+    tool(
+        &bin.join("cargo"),
+        "printf 'cargo %s\\n' \"$*\" >>\"$CALLS\"\n",
+    );
+    tool(&bin.join("sleep"), "exit 0\n");
+    let path = path_with(&bin);
+    let calls = s.0.join("calls");
+    let publish = |token: Option<&str>, curl_exit: &str| {
+        std::fs::write(&calls, "").unwrap();
+        let mut cmd = Command::new("bash");
+        cmd.args(["-e", "step.sh"])
+            .current_dir(&s.0)
+            .env("PATH", &path)
+            .env("CALLS", &calls)
+            .env("CURL_EXIT", curl_exit)
+            .env("GITHUB_REF_NAME", format!("v{version}"));
+        match token {
+            Some(token) => cmd.env("CARGO_REGISTRY_TOKEN", token),
+            None => cmd.env_remove("CARGO_REGISTRY_TOKEN"),
+        };
+        let out = run(&mut cmd);
+        (out, std::fs::read_to_string(&calls).unwrap())
+    };
+    // No token (a secret that is not set expands to nothing), while crates.io has none of the
+    // crates yet: the job fails at once, and crates.io is not even asked.
+    for token in [None, Some("")] {
+        let (out, called) = publish(token, "22");
+        assert!(
+            !out.status.success(),
+            "an open gate without a token passed (token {token:?}): {out:?}"
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains(
+                "::error::DDF_CRATES_IO is open but CARGO_REGISTRY_TOKEN is not set in the release environment"
+            ),
+            "the failure says why (token {token:?}): {out:?}"
+        );
+        assert_eq!(
+            called, "",
+            "crates.io was asked or published to without a token ({token:?})"
+        );
+    }
+    // Control: with a token, and every crate already published, the script runs to its end and
+    // publishes nothing.
+    let (out, called) = publish(Some("token"), "0");
+    assert!(out.status.success(), "{out:?}");
+    assert!(
+        called.lines().count() >= 10 && called.lines().all(|line| line.starts_with("curl ")),
+        "{called}"
+    );
+}
