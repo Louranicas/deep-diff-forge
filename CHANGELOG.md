@@ -164,6 +164,17 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   request's connection closing; and the daemon's 30 s write timeouts. The CI wrapper
   `scripts/security/review_policy_check.py` now also fails unless `fuzz/Cargo.toml` forbids
   `unsafe_code` (an `allow` there passed); the checker the review crate embeds is unchanged.
+- Tests only: no product change. The daemon's security sentences whose cited tests did not turn
+  red when their code was mutated now have tests that do, each on a named assertion: the accept
+  loop's peer check; the documented `0700` and `0600` as numbers, an existing managed directory
+  made `0700`, another user's directory refused as such, and a runtime directory swapped after
+  its check never secured through the swap (a real race, counted); an existing `--socket` parent
+  never chmodded; shutdown removing its own socket and no other; each JSON-RPC envelope rule by
+  its own message; the 80 MiB caps with the newline counted; each line read armed with the time
+  left of one deadline that a late byte does not renew; the eight data and two control slots and
+  what each answers; one engine across connections; the session table as the one lock, held for
+  bookkeeping (read from the source); and a panic answered on a connection that keeps serving.
+  Tests that unwrapped a result before asserting it now assert it.
 - What an agent or a person is told keeps its meaning under a long path: where a message is bounded, the
   paths the hook quoted give way in their middle, never the words that say what happened. Under a
   repository path of about 100 characters or more (any macOS temp directory) the line that counts what a
