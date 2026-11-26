@@ -1156,6 +1156,27 @@ fn the_commits_that_something_names_are_listed_by_their_ids() {
     assert_eq!(named(Named::Everything), everything);
     everything.retain(|id| *id != made.fetched);
     assert_eq!(named(Named::Own), everything);
+    // U1 row S124 (lane T3a of 0.11.1): each carrier on its own. A second stash leaves the first
+    // named by the stash's reflog alone, and a tree whose `HEAD` reflog is gone names its commit
+    // by its `HEAD` alone (each was also named another way above, so neither was held).
+    std::fs::write(made.root.join("src.rs"), "fn stashed_again() {}\n").unwrap();
+    git(&made.root, &["stash", "--quiet"]);
+    let admin = text(git(
+        &scratch.join("linked"),
+        &["rev-parse", "--path-format=absolute", "--git-dir"],
+    ));
+    std::fs::remove_file(Path::new(&admin).join("logs/HEAD")).unwrap();
+    for which in [Named::Everything, Named::Own] {
+        let now = named(which);
+        assert!(
+            now.contains(&made.stash[0]),
+            "{which:?}: the older stash, named by the stash's reflog alone, is not listed: {now:?}"
+        );
+        assert!(
+            now.contains(&made.there),
+            "{which:?}: a linked tree's HEAD, with no reflog of its own, is not listed: {now:?}"
+        );
+    }
 }
 
 /// `commits_beyond` gives the commits that lead on from the known ones, parents before
