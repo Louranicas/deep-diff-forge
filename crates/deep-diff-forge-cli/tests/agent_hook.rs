@@ -6693,7 +6693,14 @@ fn what_is_staged_blocks_for_itself_after_the_working_tree_was_repaired() {
     blocked(&stop_from(&root, "s", &script));
     // repaired in the working tree, not staged again: the index still holds the credential
     std::fs::write(root.join("a.rs"), "fn a() {}\nfn b() {}\nfn c() {}\n").unwrap();
-    let reason = blocked(&stop_from(&root, "s", &script)).to_owned();
+    let decision = stop_from(&root, "s", &script);
+    assert!(
+        decision["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains(&format!("{staged}: FAIL\n"))),
+        "what is staged did not block for itself after the tree was repaired: {decision}"
+    );
+    let reason = blocked(&decision).to_owned();
     assert!(
         reason.contains(&format!("{staged}: FAIL\n- rule no-secrets: "))
             && reason.contains("stage the repaired file (`git add`) or take the old content out of the index (`git restore --staged`)"),
@@ -10459,7 +10466,13 @@ fn a_copy_of_a_linked_tree_inside_the_project_is_named_as_left_out() {
     assert!(copied.success());
     secret(&copy, "incopy.rs");
     for _ in 0..3 {
-        let said = allowed(&stop_from(&root, "s", &script)).to_owned();
+        let decision = stop_from(&root, "s", &script);
+        assert_ne!(
+            decision,
+            Value::Null,
+            "a copy of a linked tree inside the project was not named: the stop was silent"
+        );
+        let said = allowed(&decision).to_owned();
         assert!(
             said.contains("The directory \"feature-copy\" in \"")
                 && said.contains(
