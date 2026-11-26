@@ -36,13 +36,31 @@
 # so many trees runs out of its time on that runner is a finding about the code, reported.
 session_start_states_the_contract_and_whether_a_stop_can_be_judged
 
-# Cause not measured alone. The graph crate's timing tests, which fail when the cost of a scan
-# grows 3 or more times as the input doubles (wall time, the least of 1 to 3 rounds), failed on
-# GitHub's macos-26 runner only while the whole suite ran at once, three in each of PR #131's two
-# runs and not the same three; on the same trees they passed in both runs on ubuntu-26.04 (the
-# gate job) and on ubuntu-22.04-arm (Linux arm64), all at once there too. The failing ratio of
-# each, by run (45670721783 is run 1, 45701563166 is run 2); whether they pass alone on that
-# runner is measured by the next macOS run's second pass:
+# Cause measured (lane Q3 of 0.11.1, 2026-11-27, logs ~/.cache/ddf-t/w111Q3/): the test, not
+# the code. The graph crate's timing tests failed when the cost of a scan grew 3 or more times as
+# the input doubled (on macOS wall time, the least of 1 to 3 rounds): on GitHub's macos-26 runner
+# in three of PR #131's five runs (three of them in each of the first two, while the whole suite
+# ran at once, not the same three; the long-line test alone in the fifth, run 45827122353, at
+# 3.00 to 4.27; all four passed alone in the third and fourth), and once here (3.10, "{"
+# repeated in x.yml). Every scan they hold measured linear from 1 KiB to
+# 16 MiB (debug build, one at a time: fitted exponents 0.99 to 1.01, the worst doubling 2.05;
+# seven long-line cases that failed, 1.99 to 2.01 up to 16 MiB). The ratios over 3 were the clock:
+# macOS has no thread CPU time, and a descheduled thread measured 52 ms of CPU in 104 ms of wall
+# time here (sixteen workers ranking at once, all three rounds); Linux's thread CPU time is read
+# as of the last scheduler tick. A bound on one doubling tolerated a slowdown of 1.5 times at
+# one size. Since lane Q3 they bound the growth between sizes 16 times apart by an exponent of
+# 1.5 (crate::scan_cost; a quadratic plant in each scanner fails them) and failed 0 of 596 runs
+# here, each test alone in its process: alone and beside 8 busy loops, on thread CPU time and on
+# wall time as on macOS, and on wall time beside 6 bursty loops pinned with it to 3 CPUs. The old
+# tests failed 10 of the same 596, all on wall time: the long-line test 5 of 5 beside the busy
+# loops and 1 of 5 alone (3.02 to 4.63), the other three 4 of 64 under the bursty loops (3.02 to
+# 3.42), none on thread CPU time. They stay listed, for
+# two reasons: whether they pass on the macos-26 runner is shown only by its next run (the
+# second pass, where listed names run alone, shows the alone case); and they are the only
+# `module::tests::name` entries here, the one positive input the existence test
+# (the_load_sensitive_list_names_tests_that_exist) gives its reader of unit-test paths, which
+# would pass a reader that finds nothing once they are gone. The failing ratio of each under the
+# old bound, by run (45670721783 is run 1, 45701563166 is run 2):
 # run 1: "Array.from(x)," 3.03 (45.9 ms at size 4480, 139.2 ms at 8960)
 evidence::tests::the_import_rule_is_linear_on_long_lines
 # run 1: "/*" repeated on one line 3.29; run 2: "'" repeated on one line 3.42

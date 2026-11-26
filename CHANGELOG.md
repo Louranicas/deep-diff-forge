@@ -275,6 +275,11 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   guard, run for real (an open gate without a token that exited 0 passed every test); the local
   release's command, smoke and signing; the release namespace and the three remotes; the pre-push hook
   without gitleaks; CI's full-history scan; and the SBOM's `created` (the gate ignores it).
+- Tests only: the scans measured linear from 1 KiB to 16 MiB, so the four linear-time tests that
+  failed on macOS (3.00 to 4.53 at one doubling, wall time) now bound the cost's growth between
+  sizes 16 times apart by an exponent of 1.5; a quadratic plant in each scanner still fails them,
+  and they failed 0 of 596 runs alone and under load where the old ones failed 10 (on wall time,
+  as on macOS).
 
 ## [0.11.0] - 2026-11-25
 
