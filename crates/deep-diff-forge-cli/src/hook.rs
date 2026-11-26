@@ -3285,7 +3285,11 @@ mod tests {
             reason.contains("3 earlier failures stand: Commit 000000000064 ("),
             "three failures that stand did not give way to what blocks: {reason}"
         );
-        assert_eq!(reason.matches(": FAIL, which stands\n").count(), 0, "{reason}");
+        assert_eq!(
+            reason.matches(": FAIL, which stands\n").count(),
+            0,
+            "{reason}"
+        );
         assert!(!reason.contains(DETAIL_CUT.trim_end()), "{reason}");
     }
 
