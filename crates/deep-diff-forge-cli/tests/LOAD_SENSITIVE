@@ -27,7 +27,13 @@
 # the loads above (and both pass alone, on one thread, with a `.git` above TMPDIR). Their failures
 # say so: the start helper fails at a start that recorded nothing, with its words and seconds,
 # and the second test prints the start's words.
-a_repository_with_more_working_trees_than_are_read_says_so
+# The first, a_repository_with_more_working_trees_than_are_read_says_so, came off with lane C3 of
+# 0.11.1 by a measurement of its cause, which was the test's own work and not the host's load: its
+# first start read the reflogs of 256 linked trees, 2.6 s alone on Linux and past its 8 s alone
+# (one thread) on GitHub's macos-26 runner (PR #131, run 45792873322). Its 255 trees now have no
+# directory at that start, which takes 0.13 s on Linux, and every later start and stop says what
+# it said before, word for word (lane logs ~/.cache/ddf-t/w111C3/, 2026-11-26). That a start among
+# so many trees runs out of its time on that runner is a finding about the code, reported.
 session_start_states_the_contract_and_whether_a_stop_can_be_judged
 
 # Cause not measured alone. The graph crate's timing tests, which fail when the cost of a scan

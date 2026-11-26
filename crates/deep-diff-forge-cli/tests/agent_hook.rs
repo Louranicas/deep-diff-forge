@@ -8208,19 +8208,42 @@ fn a_repository_with_more_working_trees_than_are_read_says_so() {
             ],
         );
     };
-    // 256 working trees with the project's own: as many as are read
+    // 256 working trees with the project's own: as many as are read. The 255 linked ones are
+    // written as `git worktree add --detach --no-checkout` leaves them (`.git/worktrees/t<n>`
+    // with `HEAD`, `commondir` and `gitdir`), first without their directories: Git lists such
+    // an entry until `git worktree prune` and the hook counts it, and a start reads the history
+    // of no tree whose directory is not there. A start that read the reflogs of 256 trees took
+    // 2.6 s alone on Linux and more than its 8 s alone on GitHub's macos-26 runner (PR #131,
+    // run 45792873322: "`git rev-list` did not finish in the time a hook has"); how long that
+    // walk takes is not what this test is about (lane C3 of 0.11.1).
+    let head = git(&root, &["rev-parse", "HEAD"]);
+    let admin = |n: usize| root.join(format!(".git/worktrees/t{n}"));
     for n in 0..255 {
-        add(n);
+        std::fs::create_dir_all(admin(n)).unwrap();
+        std::fs::write(admin(n).join("HEAD"), &head).unwrap();
+        std::fs::write(admin(n).join("commondir"), "../..\n").unwrap();
+        let gitdir = trees.join(format!("t{n}/.git"));
+        std::fs::write(admin(n).join("gitdir"), format!("{}\n", gitdir.display())).unwrap();
     }
-    // Its start lists the commits of 256 trees: one past its time limit (8 s) records nothing,
-    // and the next hook starts again as the first, by then among 257. That is the probable
-    // cause of this test's failure on the 0.11.0 macOS runner: here it is named when it recurs.
+    let listed = git(&root, &["worktree", "list", "--porcelain"]);
+    let entries = listed.lines().filter(|line| line.starts_with("worktree "));
+    assert_eq!(entries.count(), 256, "{listed}");
     let before = start(&root, "before");
     assert!(
         before.contains("deep-diff-forge is watching the changes of this session")
             && !before.contains(WHY),
         "the \"before\" start did not record its list: {before}"
     );
+    // Then their directories, each with the `.git` file that names its entry: from here on
+    // they are the trees `git worktree add --no-checkout` makes, and every start and stop below
+    // said, word for word, what it said when they were made with it (lane C3, compared with
+    // paths, ids and times set aside).
+    for n in 0..255 {
+        let tree = trees.join(format!("t{n}"));
+        std::fs::create_dir(&tree).unwrap();
+        let gitdir = format!("gitdir: {}\n", admin(n).display());
+        std::fs::write(tree.join(".git"), gitdir).unwrap();
+    }
     add(255);
     let started = start(&root, "after");
     assert!(
