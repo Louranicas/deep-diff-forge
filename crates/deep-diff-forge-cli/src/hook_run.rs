@@ -1443,6 +1443,116 @@ fn keep_key_at(at: &At, key: &[u8; 32]) -> Result<[u8; 32], String> {
     }
 }
 
+/// The name of the file that keeps the hooks' state directory out of every Git working tree it
+/// lies in ([`ignore_everything_at`]).
+const IGNORE_FILE: &str = ".gitignore";
+
+/// What that file holds: every name in the directory is ignored, the file's own included.
+const IGNORE_TEXT: &[u8] =
+    b"# deep-diff-forge: the hooks' state of this user's sessions; no part of any commit.\n*\n";
+
+/// Make the hooks' `.gitignore` ([`IGNORE_TEXT`]) in the open state directory `at` when none is
+/// there (release 0.11.1, P5d). Where the directory lies inside a Git working tree (a home
+/// directory that is a dotfiles repository, or another working tree of the session's own
+/// project), Git then leaves the hooks' key, states and lists out of `git status` and
+/// `git add --all`, and a stop that judges that tree no longer judges them as the agent's
+/// change: before, it gave the judge the key and blocked on its random bytes with no change of
+/// the agent's. Files the tree's index lists are judged whatever it says
+/// ([`judge_patch_probed`]). Only [`Session::keep`] calls it, through the directory the
+/// session's lock was taken in, before it writes the key and the state ([`publish_ignore`]).
+fn ignore_everything_at(at: &At) {
+    use std::io::Write as _;
+    let _ = publish_ignore(
+        at,
+        || {},
+        |file, bytes| {
+            #[cfg(test)]
+            if IGNORE_WRITE_FAILS.get() {
+                return Err(std::io::Error::other("a write of the test that fails"));
+            }
+            file.write_all(bytes)
+        },
+    );
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Whether the write of [`ignore_everything_at`] fails on this thread (for the tests of
+    /// [`Session::keep`] with a `.gitignore` that cannot be written).
+    static IGNORE_WRITE_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// [`ignore_everything_at`], with `write` writing the bytes and `between` run before they are
+/// published (for the tests). The name `.gitignore` is only ever given to a whole file: the
+/// bytes go into a partial file of this hook's own (`.gitignore.<16 hex digits>.partial`, made
+/// new, mode 0600, no link followed), whose length is checked, and that file is then linked as
+/// `.gitignore`, which refuses a name that is there. So another hook that finds the name finds
+/// the whole file (review of P5d, M1: the name was made empty and then written, so a second
+/// session's hook took an empty file for the hooks' and wrote its key beside it, and a hook
+/// killed or refused in the middle left a part of the file that no later hook made whole). What
+/// stands at the name already (a file of any content, a link, a directory) is left as it is;
+/// so is a directory that holds a `.git` (the top of a working tree: its `*` would hide every
+/// untracked file of that tree; review of P5d, L2). The partial file is removed on every exit,
+/// and partial files of hooks that were killed are removed once the name is published. A file
+/// that cannot be made is not made: the state is kept as before, and nothing is said.
+fn publish_ignore(
+    at: &At,
+    between: impl FnOnce(),
+    write: impl FnOnce(&mut std::fs::File, &[u8]) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let name = Path::new(IGNORE_FILE);
+    if at.has(name) || at.has(Path::new(".git")) {
+        return Ok(());
+    }
+    let partial = PathBuf::from(format!("{IGNORE_FILE}.{}.partial", random_hex()));
+    let published = at
+        .file(&partial, At::NEW)
+        .and_then(|mut file| {
+            write(&mut file, IGNORE_TEXT)?;
+            let written = file.metadata()?.len();
+            if u64::try_from(IGNORE_TEXT.len()).ok() == Some(written) {
+                Ok(())
+            } else {
+                Err(std::io::Error::other(format!(
+                    "{written} bytes were written"
+                )))
+            }
+        })
+        .and_then(|()| {
+            between();
+            at.link(&partial, name)
+        });
+    let _ = at.remove(&partial);
+    if published.is_ok() {
+        clear_stale_ignores(at);
+    }
+    published
+}
+
+/// Remove from `at` the partial files of [`publish_ignore`] that hooks which were killed left
+/// (directly in it, by their name only; at most [`STALE_LOOKED_AT`] entries looked at). One of a
+/// hook still at work is removed too: its link then fails, and the name it would have made is
+/// there already. The directory is listed by its name, which the caller found still names it;
+/// what is removed is removed through `at`.
+fn clear_stale_ignores(at: &At) {
+    let Ok(entries) = std::fs::read_dir(at.path(Path::new("."))) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok).take(STALE_LOOKED_AT) {
+        let name = entry.file_name();
+        let stale = name
+            .to_str()
+            .and_then(|name| name.strip_prefix(".gitignore."))
+            .and_then(|rest| rest.strip_suffix(".partial"))
+            .is_some_and(|hex| {
+                hex.len() == 16 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+            });
+        if stale {
+            let _ = at.remove(Path::new(&name));
+        }
+    }
+}
+
 /// An open directory of the hooks (release 0.11.1, review of P5c, V1): what is made, moved,
 /// linked and removed through it is made, moved, linked and removed in that directory,
 /// whatever its name names by then. The session's lock is taken through one and keeps it
@@ -1973,6 +2083,8 @@ impl Session {
     /// (another process moved it away, or put another in its place, while this hook held the
     /// lock: review of P5c, V1). Nothing is written then. What a moved directory is sent after
     /// the last look goes into the directory the lock was taken in, never into the other.
+    /// Before the key and the state it makes the directory's `.gitignore` when none is there
+    /// ([`ignore_everything_at`], P5d).
     fn keep(&mut self, writable: &Writable<'_>) -> Result<(), String> {
         if self.nothing_to_keep() {
             return Ok(());
@@ -2007,6 +2119,7 @@ impl Session {
         if let Some(number) = newer_there_at(at, &state) {
             return Err(saved(newer_written(&self.file, number)));
         }
+        ignore_everything_at(at);
         if let Some(key) = self.new_key.take() {
             keep_key_at(at, &key).map_err(saved)?;
         }
@@ -17914,6 +18027,311 @@ mod tests {
             "a state was kept through a link at the state directory: {said:?}"
         );
         assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0);
+    }
+
+    /// A write of a state of session `s` in the directory `dir` (a fresh `stops`, with a new key
+    /// or none), through that directory held open; the state is kept (tests of P5d).
+    fn keep_a_state(row: &str, dir: &Path, stops: u64, new_key: Option<[u8; 32]>) {
+        let file = state_file(dir, "s");
+        let mut session = Session {
+            dir: dir.to_path_buf(),
+            file: file.clone(),
+            state: State {
+                stops,
+                ..State::default()
+            },
+            kept: None,
+            upgrade: false,
+            new_key,
+            tips: None,
+            judged: None,
+        };
+        let at = At::open(dir, false).unwrap();
+        let said = session.keep(&Writable::for_test(&at, &file));
+        assert!(
+            said.is_ok() && load(&file).is_ok_and(|kept| kept == Some(session.state.clone())),
+            "{row}: the state was not kept: {said:?}"
+        );
+    }
+
+    /// The bytes of the hooks' `.gitignore` (P5d, row R1), written out here so that a change of
+    /// them is seen.
+    const IGNORE_WRITTEN: &[u8] =
+        b"# deep-diff-forge: the hooks' state of this user's sessions; no part of any commit.\n*\n";
+
+    /// Release 0.11.1, P5d (rows R1, R2; test T2, first half): the writer of a session's state
+    /// makes the state directory's `.gitignore`, holding exactly [`IGNORE_WRITTEN`], a regular
+    /// file of mode 0600, beside the key and the state; and in a directory an earlier build made
+    /// (a key and a state, no such file) at its next write.
+    #[test]
+    fn the_state_directory_ignores_everything_in_it() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-state-ignore");
+        let dir = scratch.join("new");
+        std::fs::create_dir(&dir).unwrap();
+        keep_a_state("new", &dir, 1, Some([7; 32]));
+        let state = state_file(&dir, "s");
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                ".gitignore".to_owned(),
+                "key".to_owned(),
+                state.file_name().unwrap().to_string_lossy().into_owned()
+            ],
+            "new: the directory holds other files"
+        );
+        assert_eq!(
+            std::fs::read(dir.join(".gitignore")).unwrap(),
+            IGNORE_WRITTEN,
+            "new: the .gitignore does not hold the hooks' text"
+        );
+        let made = std::fs::symlink_metadata(dir.join(".gitignore")).unwrap();
+        assert!(
+            made.is_file() && (made.permissions().mode() & 0o777) == 0o600,
+            "new: the .gitignore is not a regular file of mode 0600: {made:?}"
+        );
+        // a directory an earlier build made, with a key and a state and no such file
+        let dir = scratch.join("earlier");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("key"), [7; 32]).unwrap();
+        std::fs::write(state_file(&dir, "s"), b"{}").unwrap();
+        keep_a_state("earlier", &dir, 2, None);
+        assert_eq!(
+            std::fs::read(dir.join(".gitignore")).ok().as_deref(),
+            Some(IGNORE_WRITTEN),
+            "earlier: a directory without the file did not get it at the next write"
+        );
+    }
+
+    /// Release 0.11.1, P5d (row R3; test T2, second half): what stands at the name `.gitignore`
+    /// in the state directory is left as it is, and the state is kept all the same: a link to a
+    /// file (the link and its target unchanged), a link to nothing (no target made), a file of
+    /// other bytes, a directory.
+    #[test]
+    fn what_stands_at_the_state_directorys_gitignore_is_kept() {
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-state-ignore-kept");
+        let fresh = |name: &str| {
+            let dir = scratch.join(name);
+            std::fs::create_dir(&dir).unwrap();
+            dir
+        };
+        let target = scratch.join("target");
+        std::fs::write(&target, b"x\n").unwrap();
+        for (row, to) in [
+            ("a link", target.clone()),
+            ("a dangling link", scratch.join("nothing")),
+        ] {
+            let dir = fresh(&row.replace(' ', "-"));
+            std::os::unix::fs::symlink(&to, dir.join(".gitignore")).unwrap();
+            keep_a_state(row, &dir, 1, None);
+            assert_eq!(
+                (
+                    std::fs::read_link(dir.join(".gitignore")).ok(),
+                    std::fs::read(&target).unwrap(),
+                    scratch.join("nothing").symlink_metadata().is_ok()
+                ),
+                (Some(to), b"x\n".to_vec(), false),
+                "{row}: a link at .gitignore was written through or replaced"
+            );
+        }
+        let dir = fresh("other-bytes");
+        std::fs::write(dir.join(".gitignore"), b"mine\n").unwrap();
+        keep_a_state("other bytes", &dir, 1, None);
+        assert_eq!(
+            std::fs::read(dir.join(".gitignore")).unwrap(),
+            b"mine\n",
+            "other bytes: an existing .gitignore was written over"
+        );
+        let dir = fresh("a-directory");
+        std::fs::create_dir(dir.join(".gitignore")).unwrap();
+        keep_a_state("a directory", &dir, 1, None);
+        assert!(
+            dir.join(".gitignore").symlink_metadata().unwrap().is_dir()
+                && std::fs::read_dir(dir.join(".gitignore")).unwrap().count() == 0,
+            "a directory: the directory at .gitignore was changed"
+        );
+    }
+
+    /// The names in `dir`, sorted (tests of P5d).
+    fn names_of(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// The bytes written whole, as the product writes them.
+    fn write_whole(file: &mut std::fs::File, bytes: &[u8]) -> std::io::Result<()> {
+        use std::io::Write as _;
+        file.write_all(bytes)
+    }
+
+    /// Review of P5d, M1 (a): while a hook's `.gitignore` is not yet published, another
+    /// session's write (another lock, the same directory) finds no file at that name, never an
+    /// empty or partial one, and makes the whole file itself; what the first hook does after
+    /// that leaves the whole file and no partial file. A file another put at the name in that
+    /// moment is left as it is (the name is never written over).
+    #[test]
+    fn another_hook_finds_the_whole_gitignore_or_none() {
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-ignore-race");
+        let dir = scratch.join("race");
+        std::fs::create_dir(&dir).unwrap();
+        let at = At::open(&dir, false).unwrap();
+        let seen = std::cell::RefCell::new(None);
+        let _ = publish_ignore(
+            &at,
+            || {
+                *seen.borrow_mut() = Some(std::fs::read(dir.join(".gitignore")).ok());
+                keep_a_state("the second hook", &dir, 1, Some([7; 32]));
+            },
+            write_whole,
+        );
+        assert_eq!(
+            seen.into_inner(),
+            Some(None),
+            "the second hook found a .gitignore whose bytes were not yet all published"
+        );
+        assert_eq!(
+            std::fs::read(dir.join(".gitignore")).ok().as_deref(),
+            Some(IGNORE_WRITTEN),
+            "the .gitignore is not whole after both hooks"
+        );
+        let state = state_file(&dir, "s");
+        let state = state.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(
+            names_of(&dir),
+            [".gitignore".to_owned(), "key".to_owned(), state],
+            "a partial file or another name was left"
+        );
+        let dir = scratch.join("foreign");
+        std::fs::create_dir(&dir).unwrap();
+        let at = At::open(&dir, false).unwrap();
+        let _ = publish_ignore(
+            &at,
+            || std::fs::write(dir.join(".gitignore"), b"mine\n").unwrap(),
+            write_whole,
+        );
+        assert_eq!(
+            (
+                std::fs::read(dir.join(".gitignore")).unwrap(),
+                names_of(&dir)
+            ),
+            (b"mine\n".to_vec(), vec![".gitignore".to_owned()]),
+            "a file put at the name while the bytes were written was written over, or a partial file was left"
+        );
+    }
+
+    /// Review of P5d, M1 (b): a write of the bytes that fails part way (an error after 8 bytes),
+    /// or that ends short as if it were done, publishes nothing and leaves no partial file; the
+    /// next write of a state makes the whole file. Through [`Session::keep`]: a write of the file
+    /// that fails keeps the state all the same, and the next keep makes the whole file.
+    #[test]
+    fn a_gitignore_that_could_not_be_written_whole_is_not_published() {
+        use std::io::Write as _;
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-ignore-short");
+        for (row, fails) in [("a failed write", true), ("a short write", false)] {
+            let dir = scratch.join(row.replace(' ', "-"));
+            std::fs::create_dir(&dir).unwrap();
+            let at = At::open(&dir, false).unwrap();
+            let said = publish_ignore(
+                &at,
+                || {},
+                |file, bytes| {
+                    file.write_all(&bytes[..8])?;
+                    if fails {
+                        Err(std::io::Error::other("no room"))
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
+            assert!(
+                said.is_err() && names_of(&dir).is_empty(),
+                "{row}: a .gitignore or a partial file was left: {:?} ({said:?})",
+                names_of(&dir)
+            );
+            keep_a_state(row, &dir, 1, None);
+            assert_eq!(
+                std::fs::read(dir.join(".gitignore")).ok().as_deref(),
+                Some(IGNORE_WRITTEN),
+                "{row}: the next write did not make the whole file"
+            );
+        }
+        let dir = scratch.join("in-keep");
+        std::fs::create_dir(&dir).unwrap();
+        IGNORE_WRITE_FAILS.set(true);
+        keep_a_state("a failing write in keep", &dir, 1, None);
+        IGNORE_WRITE_FAILS.set(false);
+        assert!(
+            !names_of(&dir)
+                .iter()
+                .any(|name| name.starts_with(".gitignore")),
+            "a failing write in keep left {:?}",
+            names_of(&dir)
+        );
+        keep_a_state("the next keep", &dir, 2, None);
+        assert_eq!(
+            std::fs::read(dir.join(".gitignore")).ok().as_deref(),
+            Some(IGNORE_WRITTEN),
+            "the next keep did not make the whole file"
+        );
+    }
+
+    /// Review of P5d, M1: a partial file that a killed hook left (`.gitignore.<16 hex
+    /// digits>.partial`) is removed once a later write publishes the whole file; a name of
+    /// another form is left.
+    #[test]
+    fn partial_files_of_killed_hooks_are_removed_once_the_gitignore_is_published() {
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-ignore-stale");
+        let dir = scratch.join("hooks");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join(".gitignore.0123456789abcdef.partial"), b"# deep-d").unwrap();
+        std::fs::write(dir.join(".gitignore.other.partial"), b"x").unwrap();
+        keep_a_state("stale", &dir, 1, None);
+        let state = state_file(&dir, "s");
+        let state = state.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(
+            names_of(&dir),
+            [
+                ".gitignore".to_owned(),
+                ".gitignore.other.partial".to_owned(),
+                state
+            ],
+            "the partial file a killed hook left was not removed, or another name was"
+        );
+        assert_eq!(
+            std::fs::read(dir.join(".gitignore")).unwrap(),
+            IGNORE_WRITTEN
+        );
+    }
+
+    /// Review of P5d, L2: a state directory that is itself the top of a working tree (a `.git`
+    /// file or directory stands in it) gets no `.gitignore`: its `*` would hide every untracked
+    /// file of that tree. The state is kept as before.
+    #[test]
+    fn a_state_directory_that_is_the_top_of_a_working_tree_gets_no_gitignore() {
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-ignore-top");
+        for (row, directory) in [("a .git file", false), ("a .git directory", true)] {
+            let dir = scratch.join(row.replace(' ', "-"));
+            std::fs::create_dir(&dir).unwrap();
+            if directory {
+                std::fs::create_dir(dir.join(".git")).unwrap();
+            } else {
+                std::fs::write(dir.join(".git"), "gitdir: /nowhere\n").unwrap();
+            }
+            keep_a_state(row, &dir, 1, None);
+            assert!(
+                dir.join(".gitignore").symlink_metadata().is_err(),
+                "{row}: a .gitignore was made where a .git stands"
+            );
+        }
     }
 
     /// Independent review of the hooks, HR-L-2: a reason an advice hook has for not running is

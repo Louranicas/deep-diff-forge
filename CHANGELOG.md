@@ -40,6 +40,22 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   state directory inside the session's project is refused as before; the hooks may now leave empty directories there, which Git does not record.
   The five hook tests that `crates/deep-diff-forge-cli/tests/LOAD_SENSITIVE` named for this cause
   are off it: they pass alone with a `.git` above the temporary directory.
+- Hooks: where the hooks' state directory lies inside a Git working tree (a home directory that
+  is a dotfiles repository, or another working tree of the project), a `.gitignore` in it keeps
+  the hooks' key and session files out of that repository's `git status` and `git add --all`,
+  and a stop no longer judges them as the agent's change (0.11.0 blocked on the key's random
+  bytes, or held, with no change of the agent's, and gave the key to the judge). The file holds
+  `*`; any hook that keeps a state in the directory while none is there makes it, written whole
+  under a name of its own and then linked, so that no hook finds it part-written, and it is
+  never written over or through a link; none is made where the directory is itself the top of a
+  working tree. Where it cannot be made, the state is kept as before. Files a repository already
+  tracks are still judged (untrack them). Stated:
+  a file the agent puts into the hooks' state directory there is not judged while it is not
+  staged, as under any `.gitignore` that ignores itself (a limit SECURITY.md already states);
+  staged, it is judged. Known issue: a Git directory inside one of the project's working trees
+  (`git init --separate-git-dir` into the tree) puts Git's own files, with the hooks' records
+  and scratch, into every stop's patch, and every stop blocks; keep it outside the working
+  trees.
 - `agent doctor --gate` and a session's start: the link `policy_protects_itself` is ready only
   when a rule of the judge's verdict holds or fails the probe (a one-line edit of the policy
   file). In 0.11.0 any verdict that did not pass made the link ready, so a policy that does not
