@@ -451,3 +451,275 @@ fn the_profile_reader_finds_only_the_release_setting() {
         None
     );
 }
+
+// --- what both runs do, what a tag run attests, who waits for the `release` environment
+// (SECURITY.md's paragraphs on release.yml; lane T3e of 0.11.1) ---------------------------
+
+fn release_jobs() -> Vec<Job> {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../.github/workflows/release.yml"
+    );
+    jobs(&std::fs::read_to_string(path).unwrap())
+}
+
+/// The job named `name`.
+fn job<'a>(jobs: &'a [Job], name: &str) -> &'a Job {
+    jobs.iter()
+        .find(|job| job.name == name)
+        .unwrap_or_else(|| panic!("release.yml has no job `{name}`"))
+}
+
+/// The steps of a job, each as its lines without comment lines (a step starts at `      - `).
+fn steps(job: &Job) -> Vec<Vec<&str>> {
+    let mut steps: Vec<Vec<&str>> = Vec::new();
+    for line in &job.lines {
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
+        if line.starts_with("      - ") {
+            steps.push(Vec::new());
+        }
+        if let Some(step) = steps.last_mut() {
+            step.push(line);
+        }
+    }
+    steps
+}
+
+/// The step whose `name:` is `name`.
+fn step<'a>(job: &'a Job, name: &str) -> Vec<&'a str> {
+    steps(job)
+        .into_iter()
+        .find(|lines| {
+            lines.iter().any(|line| {
+                let rest = line.trim_start();
+                rest.strip_prefix("- ").unwrap_or(rest) == format!("name: {name}")
+            })
+        })
+        .unwrap_or_else(|| panic!("job `{}` has no step `{name}`", job.name))
+}
+
+/// The values of `key` in a step: its inline value, or the lines of its `|` block.
+fn values(step: &[&str], key: &str) -> Vec<String> {
+    let head = format!("{key}:");
+    let Some(at) = step.iter().position(|line| {
+        line.trim_start() == head || line.trim_start().starts_with(&format!("{head} "))
+    }) else {
+        return Vec::new();
+    };
+    let value = step[at].trim_start()[head.len()..].trim();
+    if value != "|" {
+        return vec![value.to_owned()];
+    }
+    let indent = step[at].len() - step[at].trim_start().len();
+    step[at + 1..]
+        .iter()
+        .take_while(|line| line.len() - line.trim_start().len() > indent)
+        .map(|line| line.trim().to_owned())
+        .collect()
+}
+
+/// Whether a step carries its own `if:`.
+fn conditional(step: &[&str]) -> bool {
+    step.iter().any(|line| {
+        let rest = line.trim_start();
+        rest.strip_prefix("- ").unwrap_or(rest).starts_with("if:")
+    })
+}
+
+/// SECURITY.md: "Both runs repeat the full `ci.yml` quality workflow and a supply-chain gate,
+/// build four targets, run every binary (the x86_64 macOS one under Rosetta 2), hold the Linux
+/// ones to the glibc floor, and verify every archive's SHA-256." The call of ci.yml, the four
+/// targets, the unconditional smoke and the glibc floor are held by `crate_edges.rs`
+/// (`a_release_runs_every_ci_job_but_the_launchd_smoke`,
+/// `release_publication_is_owner_gated_and_the_dry_run_publishes_nothing`); this holds the rest:
+/// both runs run the gates and the build, the build waits for both gates, what the supply-chain
+/// gate runs, the Rosetta row, and both checksum tools of the package step.
+#[test]
+fn both_release_runs_gate_build_run_and_check_every_target() {
+    let jobs = release_jobs();
+    for name in ["quality", "supply-chain", "build"] {
+        assert_eq!(
+            job(&jobs, name).condition,
+            None,
+            "job `{name}` has a job-level `if:`: a tag run and a dispatched run must both run it"
+        );
+    }
+    assert_eq!(
+        job(&jobs, "build").needs,
+        ["quality", "supply-chain"],
+        "the build waits for the quality workflow and the supply-chain gate"
+    );
+    let gate = job(&jobs, "supply-chain");
+    let gate_steps = steps(gate);
+    for command in [
+        "cargo deny --manifest-path fuzz/Cargo.toml --locked check",
+        "cargo audit --deny warnings",
+        "cargo audit --deny warnings --file fuzz/Cargo.lock",
+    ] {
+        assert!(
+            gate_steps
+                .iter()
+                .any(|lines| !conditional(lines) && values(lines, "run") == [command]),
+            "the supply-chain gate does not run `{command}` in every run"
+        );
+    }
+    assert!(
+        gate_steps.iter().any(|lines| !conditional(lines)
+            && lines
+                .iter()
+                .any(|l| l.contains("uses: EmbarkStudios/cargo-deny-action@"))
+            && values(lines, "command") == ["check"]),
+        "the supply-chain gate does not run cargo-deny's check on the workspace in every run"
+    );
+    let build = job(&jobs, "build");
+    let rosetta: Vec<&String> = build
+        .lines
+        .iter()
+        .filter(|line| line.contains("target: x86_64-apple-darwin,"))
+        .collect();
+    assert!(
+        rosetta.len() == 1
+            && rosetta[0].contains("{ os: macos-")
+            && rosetta[0].contains("run_under: \"arch -x86_64\""),
+        "the x86_64 macOS binary is run under Rosetta 2 on a macOS runner: {rosetta:?}"
+    );
+    let smoke = step(build, "smoke the release binary");
+    let runs: Vec<&&str> = smoke
+        .iter()
+        .filter(|line| line.contains("\"${bin}\" --"))
+        .collect();
+    assert!(
+        runs.len() >= 2
+            && runs
+                .iter()
+                .all(|line| line.contains("${RUN_UNDER} \"${bin}\" --")),
+        "every run of the binary goes through RUN_UNDER: {runs:#?}"
+    );
+    let package = step(build, "package");
+    for check in [
+        "sha256sum -c \"${dist}.tar.gz.sha256\"",
+        "shasum -a 256 -c \"${dist}.tar.gz.sha256\"",
+    ] {
+        assert!(
+            package.iter().any(|line| line.trim() == check),
+            "the package step does not verify the archive with `{check}` (Linux runners have \
+             sha256sum, macOS ones shasum)"
+        );
+    }
+}
+
+/// SECURITY.md: "Release archives, checksums, and the generated SPDX SBOM receive GitHub build
+/// provenance attestations on tag runs." (Before this, deleting both attestation steps left
+/// every test green: audit 2 of U1.)
+#[test]
+fn a_tag_run_attests_every_archive_checksum_and_the_sbom_it_publishes() {
+    let jobs = release_jobs();
+    let release = job(&jobs, "release");
+    assert!(
+        release
+            .condition
+            .as_deref()
+            .is_some_and(|c| c.contains(TAG_ONLY)),
+        "the attesting job runs on a pushed `v*` tag"
+    );
+    let mut attested = Vec::new();
+    let mut uploaded = Vec::new();
+    for lines in steps(release) {
+        if lines
+            .iter()
+            .any(|l| l.contains("uses: actions/attest-build-provenance@"))
+        {
+            assert!(
+                !conditional(&lines),
+                "an attestation step has its own `if:`: {lines:#?}"
+            );
+            attested.extend(values(&lines, "subject-path"));
+        }
+        if lines
+            .iter()
+            .any(|l| l.contains("uses: softprops/action-gh-release@"))
+        {
+            uploaded.extend(values(&lines, "files"));
+        }
+    }
+    attested.sort();
+    uploaded.sort();
+    let published = [
+        "dist/deep-diff-forge-*.tar.gz",
+        "dist/deep-diff-forge-*.tar.gz.sha256",
+        "dist/sbom.spdx.json",
+    ];
+    assert_eq!(uploaded, published, "what the GitHub Release publishes");
+    assert_eq!(
+        attested, published,
+        "every published file (archives, checksums, the SBOM) is attested, and nothing else"
+    );
+    // The SBOM is the one the build generated and handed over.
+    let build = job(&jobs, "build");
+    let generate = step(
+        build,
+        "generate SPDX SBOM (single canonical release artifact)",
+    );
+    assert_eq!(
+        values(&generate, "run"),
+        ["python3 scripts/security/generate_spdx_sbom.py"]
+    );
+    assert_eq!(
+        values(&step(build, "keep the SBOM for the release job"), "name"),
+        ["sbom"]
+    );
+    assert_eq!(values(&step(release, "fetch the SBOM"), "name"), ["sbom"]);
+}
+
+/// SECURITY.md: "Only the `publish` job uses that environment; the build, attestation and
+/// GitHub Release upload do not wait for it." That `publish` runs in it, and fails an open gate
+/// without a token, is `crate_edges.rs` and `repo_scripts.rs`
+/// (`an_open_crates_io_gate_without_a_token_fails_before_publishing`).
+#[test]
+fn only_the_publish_job_waits_for_the_release_environment() {
+    let jobs = release_jobs();
+    let in_environment: Vec<&str> = jobs
+        .iter()
+        .filter(|job| {
+            job.lines
+                .iter()
+                .any(|line| line.starts_with("    environment:"))
+        })
+        .map(|job| job.name.as_str())
+        .collect();
+    assert_eq!(
+        in_environment,
+        ["publish"],
+        "only the publish job may wait for an environment's approval"
+    );
+    for job in &jobs {
+        assert!(
+            !job.needs.iter().any(|need| need == "publish"),
+            "job `{}` waits for the publish job",
+            job.name
+        );
+    }
+    let needs_read = jobs.iter().filter(|job| !job.needs.is_empty()).count();
+    assert!(
+        needs_read >= 3,
+        "only {needs_read} `needs:` read: the reader is broken"
+    );
+}
+
+#[test]
+fn the_step_readers_read_names_values_and_conditions() {
+    let workflow = "jobs:\n  a:\n    steps:\n      # - name: commented\n      - name: one\n        if: x\n        with:\n          subject-path: |\n            p/a\n            p/b\n          name: sbom\n      - name: two\n        run: cargo x\n";
+    let jobs = jobs(workflow);
+    let one = step(&jobs[0], "one");
+    assert!(conditional(&one));
+    assert_eq!(values(&one, "subject-path"), ["p/a", "p/b"]);
+    // A step's own `- name:` is not a value of the step: `name:` under `with:` is.
+    assert_eq!(values(&one, "name"), ["sbom"]);
+    let two = step(&jobs[0], "two");
+    assert!(!conditional(&two));
+    assert_eq!(values(&two, "run"), ["cargo x"]);
+    assert_eq!(values(&two, "with"), Vec::<String>::new());
+    assert_eq!(steps(&jobs[0]).len(), 2);
+}
