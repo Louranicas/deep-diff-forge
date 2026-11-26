@@ -15441,11 +15441,40 @@ fn a_key_file_that_is_no_key_judges_nothing_and_says_no_key() {
     assert_eq!(std::fs::read(&state).unwrap(), before);
 }
 
-/// The list of load-sensitive tests (`tests/LOAD_SENSITIVE`) names test functions of this
-/// directory that exist, each once, so a renamed or removed test leaves no stale name for a
-/// run that skips the list.
+/// Whether a unit test that its library's test binary names `path::function` (as
+/// `module::tests::name`) is in some crate of the workspace: the longest leading part of `path`
+/// that is a source file of a crate (`src/a/b.rs` or `src/a/b/mod.rs`; `src/lib.rs` or
+/// `src/main.rs` for none) holds `mod <m> {` for each module of `path` left and `fn <function>()`.
+fn a_unit_test_exists(crates: &Path, path: &str, function: &str) -> bool {
+    let modules: Vec<&str> = path.split("::").collect();
+    std::fs::read_dir(crates).unwrap().any(|entry| {
+        let src = entry.unwrap().path().join("src");
+        (0..=modules.len()).rev().any(|file_part| {
+            let stem = modules[..file_part].join("/");
+            let files = if file_part == 0 {
+                ["lib.rs".to_owned(), "main.rs".to_owned()]
+            } else {
+                [format!("{stem}.rs"), format!("{stem}/mod.rs")]
+            };
+            files.iter().any(|file| {
+                std::fs::read_to_string(src.join(file)).is_ok_and(|text| {
+                    modules[file_part..]
+                        .iter()
+                        .all(|module| text.contains(&format!("mod {module} {{")))
+                        && text.contains(&format!("fn {function}()"))
+                })
+            })
+        })
+    })
+}
+
+/// The list of load-sensitive tests (`tests/LOAD_SENSITIVE`) names tests that exist, each once,
+/// so a renamed or removed test leaves no stale name for a run that skips the list: a test
+/// function of this directory by its name, a unit test of a library by its path in it
+/// (`module::tests::name`).
 #[test]
 fn the_load_sensitive_list_names_tests_that_exist() {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
     let list = std::fs::read_to_string(tests.join("LOAD_SENSITIVE")).unwrap();
     let mut sources = String::new();
@@ -15463,12 +15492,27 @@ fn the_load_sensitive_list_names_tests_that_exist() {
     assert!(!names.is_empty(), "LOAD_SENSITIVE names no test");
     let unknown: Vec<&&str> = names
         .iter()
-        .filter(|name| !sources.contains(&format!("fn {name}()")))
+        .filter(|name| match name.rsplit_once("::") {
+            None => !sources.contains(&format!("fn {name}()")),
+            Some((path, function)) => !a_unit_test_exists(&crates, path, function),
+        })
         .collect();
     assert!(
         unknown.is_empty(),
         "LOAD_SENSITIVE names tests that are not here: {unknown:?}"
     );
+    // the reader of unit tests' paths, on names that are not there
+    for planted in [
+        "evidence::tests::no_such_test",
+        "no_such_module::tests::the_import_rule_is_linear_on_long_lines",
+        "evidence::no_such_tests::the_import_rule_is_linear_on_long_lines",
+    ] {
+        let (path, function) = planted.rsplit_once("::").unwrap();
+        assert!(
+            !a_unit_test_exists(&crates, path, function),
+            "{planted} was read as a test"
+        );
+    }
     let mut once = names.clone();
     once.sort_unstable();
     once.dedup();

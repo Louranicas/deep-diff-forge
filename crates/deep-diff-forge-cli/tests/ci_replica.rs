@@ -307,9 +307,10 @@ fn replica_command<'a>(script: &'a str, label: &str) -> Option<&'a str> {
 
 /// P5b: the gate's test step is one script, `scripts/test_step.sh`, which CI's job `gate` and
 /// the replica both run (its behaviour: `repo_scripts.rs`,
-/// `the_test_step_runs_every_load_sensitive_test_alone_after_the_others`). And no run of the
-/// workspace's tests in ci.yml, the replica or that script stops at the first failing test
-/// binary: each has `--no-fail-fast`.
+/// `the_test_step_runs_every_load_sensitive_test_alone_after_the_others`), and so does CI's job
+/// `macos` (C1 of 0.11.1: in PR #131's two macOS runs, tests of `LOAD_SENSITIVE` failed there
+/// while the whole suite ran at once). And no run of the workspace's tests in ci.yml, the
+/// replica or that script stops at the first failing test binary: each has `--no-fail-fast`.
 #[test]
 fn the_test_step_is_one_script_and_never_stops_at_the_first_failing_binary() {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
@@ -322,6 +323,11 @@ fn the_test_step_is_one_script_and_never_stops_at_the_first_failing_binary() {
     assert_eq!(
         ci_run(&workflow, "gate", "test").as_deref(),
         Some("scripts/test_step.sh")
+    );
+    assert_eq!(
+        ci_run(&workflow, "macos", "test on macOS").as_deref(),
+        Some("scripts/test_step.sh"),
+        "the macOS job runs the gate's test step, so the tests LOAD_SENSITIVE names run alone there"
     );
     assert_eq!(
         replica_command(&script, "test"),

@@ -199,6 +199,19 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   `SECURITY.md`'s table of what changes `git apply`'s writes has the platform's row. The local gate's
   test step runs under a temp directory as long and as indirect as macOS's (`scripts/long_tmpdir.sh`).
   What is judged and decided is unchanged.
+- CI only: no product change (the first macOS runs of the 0.11.1 branch, PR #131). The `macOS
+  tests` job runs the gate's test step, `scripts/test_step.sh`, instead of one plain
+  `cargo test --workspace --locked --no-fail-fast`, and its limit is 90 minutes instead of 60 (the
+  runs took 39 and 45 minutes in one pass; the second pass, measured from the runs' logs, adds at
+  most 17). `crates/deep-diff-forge-cli/tests/LOAD_SENSITIVE` names four timing tests of the graph
+  crate that failed there only while the whole suite ran at once, each with its failing ratio and
+  run, and so names unit tests of a library by their path (`evidence::tests::…`); the test that
+  holds the list reads those paths. `scripts/diff_mutation.sh` no longer passes `--timeout 300`,
+  which also bounds cargo-mutants' unmutated baseline: the workspace's tests take about 35 minutes
+  on CI's runner, so every diff-mutation shard failed on its baseline before testing a mutant. The
+  timeout is twice the baseline, at least 2400 s. Stated limit: a shard's 300 minutes hold the
+  baseline and about seven mutants that run the whole suite, so a change of hundreds of mutants a
+  shard (PR #131: 214 to 223) still does not finish.
 
 ## [0.11.0] - 2026-11-25
 
