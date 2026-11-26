@@ -378,15 +378,17 @@ fn post_tool_says_a_new_finding_once_and_changes_nothing_in_the_work_tree() {
     let advice = out["hookSpecificOutput"]["additionalContext"]
         .as_str()
         .unwrap();
+    // (first: a message never repeats the text of a changed line, whichever part of the
+    // item would carry it; U1 S116)
+    assert!(
+        !advice.contains("dead_code"),
+        "the line's text was repeated: {advice}"
+    );
     assert!(
         advice.contains(
             "- \"a.rs\":2: check_suppressed@line (integrity, new side, read as lexical); repairs: check_suppressed:a1, check_suppressed:a2.\n"
         ),
         "{advice}"
-    );
-    assert!(
-        !advice.contains("dead_code"),
-        "the line's text was repeated: {advice}"
     );
     assert!(out.get("decision").is_none(), "advice must not block");
     // the hook left the working tree and the index as they were
@@ -9410,6 +9412,51 @@ fn a_path_git_names_as_another_tree_is_not_read_as_the_tree_listed_there() {
     );
     let said = stop_words(&decision);
     assert!(said.contains("/first\""), "{said}");
+}
+
+/// U1 row S219 (lane T3d of 0.11.1): a stop made from a submodule's Git directory
+/// (`.git/modules/<name>`) is UNJUDGED. Git names the submodule's working tree there, which
+/// does not contain the session's directory; the reason says so, and that the directory lies
+/// inside the project's Git directory. Taken for "another repository", that stop judged the
+/// project and named a repository the session was not in.
+#[test]
+fn a_stop_from_a_submodules_git_directory_is_unjudged_and_says_why() {
+    let scratch = Scratch::new("hook-submodule-git-dir");
+    let root = repository(&scratch);
+    let (script, _) = reading_judge(&scratch);
+    let other = scratch.join("other");
+    std::fs::create_dir(&other).unwrap();
+    git(&other, &["init", "--quiet"]);
+    std::fs::write(other.join("a.rs"), "fn a() {}\n").unwrap();
+    git(&other, &["add", "--all"]);
+    git(&other, &["commit", "--quiet", "-m", "base"]);
+    git(
+        &root,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "--quiet",
+            "add",
+            other.to_str().unwrap(),
+            "sub",
+        ],
+    );
+    git(&root, &["commit", "--quiet", "-m", "add a submodule"]);
+    start(&root, "s");
+    let modules = std::fs::canonicalize(root.join(".git/modules/sub")).unwrap();
+    let said = stop_words(&stop_from(&modules, "s", &script)).to_owned();
+    assert!(
+        said.starts_with("deep-diff-forge: UNJUDGED. ")
+            && said.contains(
+                "Git names as the working tree a directory that does not contain the session's directory"
+            ),
+        "a stop from a submodule's Git directory was not UNJUDGED for it: {said}"
+    );
+    assert!(
+        said.contains(", which is inside the Git directory "),
+        "the reason does not say that the directory lies inside the Git directory: {said}"
+    );
 }
 
 /// U1 row S238 (lane T3a of 0.11.1): the project is the repository at the top level it was
