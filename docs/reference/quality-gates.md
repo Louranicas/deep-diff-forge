@@ -13,7 +13,7 @@ CodeQL checks below do not run for it.
 | --- | --- |
 | `deploy gate-feature` | fmt, check, clippy `-D warnings`, pedantic, all tests, docs, contract probes, fuzz-harness compile, hostile-daemon soak, learning-privacy probes, Python SDK against the built binary |
 | `diff mutation` × 4 shards | `cargo-mutants` on the lines the PR changes; one surviving mutant fails it |
-| `review controller mutation and fuzz evidence` | scoped mutation of the council's admission code; a fuzz smoke for every target; 12 planted-breach probes against the rootless Podman sandbox |
+| `review controller mutation and fuzz evidence` | scoped mutation of the council's admission and receipt-qualification code, judged by the review crate's own tests; a fuzz smoke for every target; 12 planted-breach probes against the rootless Podman sandbox |
 | `supply chain audit` | `cargo-deny` (bans, licences, sources, advisories), strict `cargo-audit`, and the committed SPDX SBOM regenerated and compared |
 | `declared Rust 1.88 compatibility` | the MSRV still builds |
 | `macOS tests` | the whole suite on macOS |
