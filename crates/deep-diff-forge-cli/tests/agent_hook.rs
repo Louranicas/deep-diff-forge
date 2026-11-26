@@ -10935,7 +10935,13 @@ fn a_stop_waits_for_the_session_s_lock_and_takes_only_the_one_that_is_there() {
         stop.join().unwrap()
     });
     assert!(holder.wait().unwrap().success());
-    blocked(&reason);
+    // U1 row S233 (lane T3a of 0.11.1): it judged with the session's state after its wait, and
+    // is not the stateless stop of a busy lock (which blocks for the credential too)
+    let first = blocked(&reason).to_owned();
+    assert!(
+        !first.starts_with(&stateless("state.lock_busy")),
+        "a stop did not wait half a second for its session's lock: {first}"
+    );
 
     // The stop opens the lock file while another hook holds it. Then that file is taken
     // away, a new one is made at its path and held by a third hook, and the first lets go:
