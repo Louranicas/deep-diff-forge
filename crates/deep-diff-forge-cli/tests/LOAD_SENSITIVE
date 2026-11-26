@@ -46,3 +46,13 @@ lexical::tests::hostile_rust_lines_scan_in_linear_time
 evidence::tests::long_lines_of_every_trigger_rank_in_bounded_time
 # run 2: one JavaScript word 3.15 (74.6 ms at size 160000, 235.0 ms at 320000)
 lexical::tests::a_long_javascript_word_scans_in_linear_time
+
+# Cause not measured alone. A stop's six-second look at the project's other working trees: the
+# test expects the sixth of six trees to be looked at with what is left of the time and so
+# "5 working trees … were not reached in that time"; on GitHub's macos-26 runner, in the third
+# macOS run (PR #131, run 45778782579, job 139768857754, agent_hook.rs:11030), while the whole
+# suite ran at once, the stop said "6 working trees of this project were not reached": the time
+# was spent before the sixth tree. Its first pass was the only failure of that run (218 of 219
+# passed), and the second pass of the listed tests alone passed (rc 0). The same test passed in
+# the two earlier macOS runs and on ubuntu-26.04 and ubuntu-22.04-arm.
+trees_not_looked_at_for_lack_of_time_are_counted_with_what_stands_in_them
