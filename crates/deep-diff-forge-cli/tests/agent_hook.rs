@@ -10501,14 +10501,13 @@ fn a_tree_moved_by_hand_is_unjudged_until_repaired_and_then_stands() {
     // nothing standing there is the one prune is said for
     std::fs::remove_dir_all(&clean).unwrap();
     let from_project = stop_words(&stop_from(&root, "s", &script)).to_owned();
+    let gone = "\" of this project is gone or is no working tree any more: what only its own history names is not judged (";
     assert!(
-        from_project.contains("/linked\" of this project is gone")
-            && from_project.contains("(if it was moved with `mv`, `git worktree repair` run where it is now records it; `git worktree prune` would forget what blocked there)"),
+        from_project.contains(&format!("/linked{gone}if it was moved with `mv`, `git worktree repair` run where it is now records it; `git worktree prune` would forget what blocked there)")),
         "the gone tree where a failure stands is not advised repair: {from_project}"
     );
     assert!(
-        from_project.contains("/clean\" of this project is gone")
-            && from_project.contains("(`git worktree prune` forgets a linked tree that is gone;"),
+        from_project.contains(&format!("/clean{gone}`git worktree prune` forgets a linked tree that is gone;")),
         "the gone tree where nothing stands is not advised prune: {from_project}"
     );
     assert_eq!(remembered_lines(), before);
