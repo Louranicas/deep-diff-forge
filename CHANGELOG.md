@@ -222,6 +222,15 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
   Stated: the 24 struct-field mutants of `journal.rs` that cargo-mutants' `--re` let into the job
   are no longer in it; 22 of them are not caught by the review crate's own tests. The `deploy
   gate-feature` job's limit is 60 minutes instead of 45 (its runs took 38.5 and 37.3).
+- Tests only: no product change. More sentences of `SECURITY.md` whose tests stayed green when
+  their code went now have tests that turn red: the learning store refuses a directory or a file
+  of another user by its owner, makes a directory left `0755` into `0700`, refuses a store others
+  can read at every door and leaves it as it was, refuses a linked directory as a link, and holds
+  each of its three budgets at its own check; its identifier is FNV-1a with no key (published
+  vectors, and a guess list finds the path); the patch parser reads one million lines and 64 MiB
+  and refuses more, by the sentence's numbers, at the first line past the budget; lines Git skips
+  after a binary body's hunks are read; and stdin over the budget is refused by its own reader,
+  which stops reading one byte past it.
 
 ## [0.11.0] - 2026-11-25
 
