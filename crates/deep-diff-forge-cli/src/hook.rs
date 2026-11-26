@@ -5439,6 +5439,18 @@ mod tests {
         assert!(!message.contains("t0\n.rs"));
         assert!(message.contains("and 40 more, not listed."), "{message}");
         assert!(message.chars().count() <= MESSAGE_CAP + 300);
+        // U1 row S118 (lane T3a of 0.11.1): escaped the same way where a stop names rules by
+        // their names alone (a unit with no room for its rules, a commit from an earlier stop)
+        let Judged::Hold { rules, .. } = &hostile else {
+            unreachable!()
+        };
+        for failed in [false, true] {
+            let named = rule_names(rules, failed);
+            assert!(
+                !named.contains('\u{1b}') && named.contains("r\\x1b[31m"),
+                "a rule's name is not escaped where rules are named alone: {named:?}"
+            );
+        }
         // HR3-L-5: a commit is named by hex digits of its id and nothing else, so nothing a
         // ref is called, and nothing that is not hex, reaches a message
         assert_eq!(
