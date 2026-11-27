@@ -2012,10 +2012,15 @@ mod tests {
             handle_connection(server, &e)
         });
         let mut writer = client.try_clone().unwrap();
-        writeln!(writer, r#"{{"id":1,"method":"test.panic"}}"#).unwrap();
-        writeln!(writer, r#"{{"id":2,"method":"daemon.health"}}"#).unwrap();
-        writer.flush().unwrap();
-        writer.shutdown(std::net::Shutdown::Write).unwrap();
+        // Reported in the assertion below, not unwrapped: where the panic escapes and the server
+        // end is closed early, these fail differently by platform (macOS answers `shutdown` on a
+        // closed peer with EINVAL, as PR #131 run 46011325661 showed for `set_read_timeout`).
+        let sent = (
+            writeln!(writer, r#"{{"id":1,"method":"test.panic"}}"#),
+            writeln!(writer, r#"{{"id":2,"method":"daemon.health"}}"#),
+            writer.flush(),
+            writer.shutdown(std::net::Shutdown::Write),
+        );
         // A connection that ended early may end in a reset (Linux): what was read stands.
         let lines: Vec<Value> = BufReader::new(client)
             .lines()
@@ -2031,12 +2036,12 @@ mod tests {
                 (Value::from(1), Value::from(crate::protocol::INTERNAL_ERROR)),
                 (Value::from(2), Value::Null)
             ],
-            "the panic was not answered and the connection not kept: {lines:?}"
+            "the panic was not answered and the connection not kept: {lines:?} (sent: {sent:?})"
         );
         assert_eq!(lines[1]["result"]["status"], "ok");
         assert!(
             joined(handle).is_ok_and(|served| served.is_ok()),
-            "the connection's thread did not end cleanly"
+            "the connection's thread did not end cleanly (sent: {sent:?})"
         );
     }
 
@@ -2310,6 +2315,14 @@ mod tests {
         let control = Arc::new(AtomicUsize::new(0));
         let me = rustix::process::geteuid().as_raw();
         let (client, server) = UnixStream::pair().expect("socketpair");
+        // Armed before `admit` can refuse and close the server's end: macOS refuses
+        // SO_RCVTIMEO with EINVAL once the peer has closed (macOS CI, PR #131 run 46011325661,
+        // job log kept at /var/mnt/storage/ddf-tmp/macos131f.log: this test's own unwrap failed
+        // there after the daemon had refused uid 501 correctly). Reads still work: what is
+        // buffered, then end of file.
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         admit(
             server,
             &engine,
@@ -2323,9 +2336,6 @@ mod tests {
         );
         let refused =
             engine.metrics().document(Duration::ZERO, "0")["connections"]["refused_peer"].as_u64();
-        client
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
         let mut byte = [0_u8; 1];
         let closed = (&client).read(&mut byte);
         drop(client);
@@ -2342,16 +2352,26 @@ mod tests {
         );
         // Legitimate nearby case: the daemon's own user is admitted and served.
         let (client, server) = UnixStream::pair().expect("socketpair");
+        // Armed before `admit` too, so a daemon that closes this client (a plant refusing its own
+        // user) fails on the answer below, not on the arming, on every platform.
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         admit(server, &engine, me, (&active, &control), &wake);
         assert_eq!(
             active.load(Ordering::Acquire),
             1,
             "a client of the daemon's own user was not admitted"
         );
-        writeln!(&client, r#"{{"id":1,"method":"daemon.health"}}"#).unwrap();
+        // The write and the read are reported in the assertion, not unwrapped: a server end that
+        // was closed makes them fail differently by platform (a broken pipe, a reset, EINVAL).
+        let sent = writeln!(&client, r#"{{"id":1,"method":"daemon.health"}}"#);
         let mut answer = String::new();
-        BufReader::new(&client).read_line(&mut answer).unwrap();
-        assert!(answer.contains("\"status\":\"ok\""), "{answer}");
+        let read = BufReader::new(&client).read_line(&mut answer);
+        assert!(
+            answer.contains("\"status\":\"ok\""),
+            "the daemon's own user was not served: sent {sent:?}, read {read:?}, answer {answer:?}"
+        );
     }
 
     /// SECURITY.md (daemon): "The daemon is Unix-only and listens on a filesystem Unix-domain
