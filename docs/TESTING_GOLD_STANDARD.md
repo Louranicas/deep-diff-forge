@@ -192,8 +192,10 @@ era) no longer holds. How the standard is enforced today:
   the shell's list words, the empty-handler rule's head words, and every ASCII punctuation
   byte in every language; 397 triggers on 2026-11-18), and ranks two lines for each, the
   trigger repeated and one word ending in it, at sizes that double up to 1 MiB, and bounds
-  how each line's thread CPU time grows at each doubling (under 3 times: a linear scan gives
-  about 2, a quadratic one about 4); a deadline of 120 s of wall time between two answers
+  how each line's thread CPU time (wall time where the host reports none, as on macOS) grows
+  between two sizes 16 times apart: under 64 times, an exponent of 1.5, the middle of a linear
+  scan's 16 and a quadratic one's 256 (4 and 8 times apart at the smallest sizes, by the same
+  exponent); a deadline of 120 s of wall time between two answers
   guards only against a hang. Up to 0.11.0 the test ranked one size of 2 MiB inside 10 s of
   thread CPU time in a debug build (2 s in a release build), which a slow runner fails on a
   linear scan and a fast one passes on a scan three times slower. The gate runs all of them:

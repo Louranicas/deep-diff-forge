@@ -744,8 +744,11 @@ bounded form.** What it holds to:
   from every ref and from the reflogs that are read (those of each working tree's `HEAD`
   and of the stash); a commit that was in the repository when the session began;
   and work in a copy. An agent can make a stop UNJUDGED by breaking what the judge needs (an
-  unreadable file; a path marked skip-worktree): never a pass, always visible, and never a
-  block. Advice after a tool call covers the project's tree only. "No repository" is read
+  unreadable file; a path marked skip-worktree): never a pass and always visible. From
+  0.11.0 those two causes, which the hook finds in the working tree, hold the first stop of a
+  turn once ("If this session made it so, undo it; if not, tell a person") and are UNJUDGED
+  after it; the other causes (a Git that fails or is slow, a judge or policy that is missing)
+  never block. Advice after a tool call covers the project's tree only. "No repository" is read
   from Git's English message under `LC_ALL=C`; any other wording is a failure and is said.
   The cleanup of a killed hook's scratch directory needs `/proc`. The state file and the
   list of commits beside it are the agent's to edit, as below: whoever edits them can move

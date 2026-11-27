@@ -15953,6 +15953,16 @@ fn the_load_sensitive_list_names_tests_that_exist() {
         unknown.is_empty(),
         "LOAD_SENSITIVE names tests that are not here: {unknown:?}"
     );
+    // the reader of unit tests' paths, on a name that is there (a reader that always said no
+    // would pass this test once no listed name has a module path)
+    assert!(
+        a_unit_test_exists(
+            &crates,
+            "evidence::tests",
+            "the_import_rule_is_linear_on_long_lines"
+        ),
+        "the reader of unit tests' paths did not find a test that is there"
+    );
     // the reader of unit tests' paths, on names that are not there
     for planted in [
         "evidence::tests::no_such_test",
