@@ -263,3 +263,266 @@ fn the_toolchain_readers_read_pins() {
     assert_eq!(replica_toolchains(script), (Some("1.2.3"), Some("1.0.0")));
     assert_eq!(replica_toolchains("step \"x\" cargo check\n"), (None, None));
 }
+
+/// The one-line `run:` of the step named `name` in `job` of a workflow (`None` when the step is
+/// not there or its `run:` is a block).
+fn ci_run(workflow: &str, job: &str, name: &str) -> Option<String> {
+    let mut in_job = false;
+    let mut in_step = false;
+    for line in workflow.lines().skip_while(|line| *line != "jobs:") {
+        if let Some(key) = line
+            .strip_prefix("  ")
+            .and_then(|rest| rest.strip_suffix(':'))
+            && !key.starts_with(' ')
+            && !key.contains(' ')
+        {
+            in_job = key == job;
+            in_step = false;
+            continue;
+        }
+        if !in_job {
+            continue;
+        }
+        if let Some(body) = line.strip_prefix("      - ") {
+            in_step = body
+                .strip_prefix("name: ")
+                .map(|step| step.trim().trim_matches('"'))
+                == Some(name);
+        } else if in_step && let Some(run) = line.strip_prefix("        run: ") {
+            let run = run.trim();
+            return (run != "|" && run != ">").then(|| run.to_owned());
+        }
+    }
+    None
+}
+
+/// The command of the replica's `step "<label>" <command>` line.
+fn replica_command<'a>(script: &'a str, label: &str) -> Option<&'a str> {
+    let head = format!("step \"{label}\" ");
+    script
+        .lines()
+        .find_map(|line| line.strip_prefix(head.as_str()))
+        .map(str::trim)
+}
+
+/// P5b: the gate's test step is one script, `scripts/test_step.sh`, which CI's job `gate` and
+/// the replica both run (its behaviour: `repo_scripts.rs`,
+/// `the_test_step_runs_every_load_sensitive_test_alone_after_the_others`), and so does CI's job
+/// `macos` (C1 of 0.11.1: in PR #131's two macOS runs, tests of `LOAD_SENSITIVE` failed there
+/// while the whole suite ran at once). And no run of the workspace's tests in ci.yml, the
+/// replica or that script stops at the first failing test binary: each has `--no-fail-fast`.
+#[test]
+fn the_test_step_is_one_script_and_never_stops_at_the_first_failing_binary() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    let read = |path: &str| std::fs::read_to_string(format!("{root}/{path}")).unwrap();
+    let (workflow, script, step) = (
+        read(".github/workflows/ci.yml"),
+        read("scripts/ci_local.sh"),
+        read("scripts/test_step.sh"),
+    );
+    assert_eq!(
+        ci_run(&workflow, "gate", "test").as_deref(),
+        Some("scripts/test_step.sh")
+    );
+    assert_eq!(
+        ci_run(&workflow, "macos", "test on macOS").as_deref(),
+        Some("scripts/test_step.sh"),
+        "the macOS job runs the gate's test step, so the tests LOAD_SENSITIVE names run alone there"
+    );
+    assert_eq!(
+        replica_command(&script, "test"),
+        Some("scripts/test_step.sh")
+    );
+    let stops: Vec<(&str, &str)> = [
+        (".github/workflows/ci.yml", workflow.as_str()),
+        ("scripts/ci_local.sh", script.as_str()),
+        ("scripts/test_step.sh", step.as_str()),
+    ]
+    .into_iter()
+    .flat_map(|(file, text)| {
+        text.lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .filter(|line| line.contains("cargo test --workspace"))
+            .filter(|line| !line.contains("--no-fail-fast"))
+            .map(move |line| (file, line))
+    })
+    .collect();
+    assert!(
+        stops.is_empty(),
+        "these runs of the workspace's tests stop at the first failing test binary: {stops:?}"
+    );
+    assert_eq!(
+        step.lines()
+            .filter(|line| line.contains("cargo test --workspace"))
+            .count(),
+        2,
+        "scripts/test_step.sh runs the workspace's tests in two passes"
+    );
+}
+
+/// P3 of 0.11.1: the replica's test step runs under a temp directory as long and as indirect
+/// as macOS's, made by `scripts/long_tmpdir.sh` in the gate's scratch directory, and only that
+/// step: the gate's own `TMPDIR` comes back right after it. Under `/tmp` six tests that fail on
+/// macOS passed here (the product's bounds met no long path). CI's job is not changed: a
+/// runner's temp directory is its own.
+#[test]
+fn the_replica_s_test_step_runs_under_a_long_linked_tmpdir() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    let script = std::fs::read_to_string(format!("{root}/scripts/ci_local.sh")).unwrap();
+    let lines: Vec<&str> = script.lines().map(str::trim).collect();
+    let at = |wanted: &dyn Fn(&str) -> bool| lines.iter().position(|line| wanted(line));
+    let test = at(&|line| line == "step \"test\" scripts/test_step.sh").expect("the test step");
+    let made = at(&|line| {
+        line.contains("\"$here/long_tmpdir.sh\" \"$scratch\")") && !line.starts_with('#')
+    })
+    .expect("the long temp directory is made by scripts/long_tmpdir.sh in the scratch directory");
+    let set = at(&|line| line == "export TMPDIR=\"$long_tmp\"").expect("TMPDIR is set to it");
+    assert!(
+        made < set && set + 1 == test,
+        "the long TMPDIR is made, then set right before the test step"
+    );
+    assert!(
+        lines[test + 1].starts_with(
+            "if [ -n \"$gate_tmpdir\" ]; then export TMPDIR=\"$gate_tmpdir\"; else unset TMPDIR; fi"
+        ),
+        "the gate's TMPDIR comes back right after the test step: {}",
+        lines[test + 1]
+    );
+    assert!(
+        !lines[..set]
+            .iter()
+            .any(|line| line.starts_with("export TMPDIR")),
+        "no step before the test step runs under the long TMPDIR"
+    );
+}
+
+/// The `timeout-minutes:` of `job` itself in a workflow (four spaces in; a step's own limit, eight
+/// spaces in, is not the job's). `None` when the job has none.
+fn ci_timeout_minutes(workflow: &str, job: &str) -> Option<u32> {
+    let mut in_job = false;
+    for line in workflow.lines().skip_while(|line| *line != "jobs:") {
+        if let Some(key) = line
+            .strip_prefix("  ")
+            .and_then(|rest| rest.strip_suffix(':'))
+            && !key.starts_with(' ')
+            && !key.contains(' ')
+        {
+            in_job = key == job;
+            continue;
+        }
+        if in_job && let Some(value) = line.strip_prefix("    timeout-minutes: ") {
+            return value.trim().parse().ok();
+        }
+    }
+    None
+}
+
+/// C2 of 0.11.1: the review controller's mutation is judged by the review crate's own tests, the
+/// ones its baseline times. cargo-mutants 27.1.0 runs the baseline as `cargo test
+/// --package=<the mutated package>` whatever `--test-workspace` says (measured on a scratch
+/// workspace of two packages), so with `--test-workspace true` each mutant ran the whole
+/// workspace against a timeout that baseline never measured: in PR #131's runs (45670721783,
+/// 45701563166) every mutant logged "TIMEOUT … 300s test" and the job was cancelled at 75
+/// minutes. The scope is the two functions the step names, by file too, since `--re` does not
+/// filter struct-field mutants (journal.rs's 24 entered the job). And the job ends inside its
+/// limit even if every mutant hangs.
+#[test]
+fn the_review_controller_mutation_runs_what_its_baseline_measured() {
+    // Measured at 0.11.1 (lane C2): 22 mutants, each built in at most 8 s and tested in at most
+    // 19 s locally; a mutant build of the whole workspace took 23 s on the runner; every other
+    // step of the job took at most 10.9 minutes in its last three green runs.
+    const MUTANTS: u32 = 22;
+    const SLOWEST_TEST_S: u32 = 19;
+    const BUILD_S: u32 = 30;
+    const OTHER_STEPS_S: u32 = 11 * 60;
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    let workflow = std::fs::read_to_string(format!("{root}/.github/workflows/ci.yml")).unwrap();
+    let run = ci_run(
+        &workflow,
+        "review-controller-evidence",
+        "scoped mutation of admission and receipt qualification",
+    )
+    .expect("the mutation step has a one-line run");
+    let args: Vec<&str> = run.split_whitespace().collect();
+    let after = |flag: &str| -> Vec<&str> {
+        args.windows(2)
+            .filter(|pair| pair[0] == flag)
+            .map(|pair| pair[1])
+            .collect()
+    };
+    assert_eq!(
+        args[..4],
+        ["cargo", "mutants", "--package", "deep-diff-forge-review"],
+        "{args:?}"
+    );
+    assert_eq!(after("--re"), ["'identifier|check_execution'"], "{args:?}");
+    assert_eq!(
+        after("--test-workspace"),
+        ["false"],
+        "each mutant runs the mutated package's tests, the ones its baseline timed: {args:?}"
+    );
+    assert!(
+        !args
+            .iter()
+            .any(|arg| arg.starts_with("--test-workspace=") || arg.starts_with("--test-package")),
+        "each mutant runs the mutated package's tests, the ones its baseline timed: {args:?}"
+    );
+    assert_eq!(
+        after("--file"),
+        [
+            "crates/deep-diff-forge-review/src/lib.rs",
+            "crates/deep-diff-forge-review/src/policy.rs"
+        ],
+        "--re does not filter struct-field mutants: the files of the two functions bound the scope: {args:?}"
+    );
+    assert!(
+        !args
+            .iter()
+            .any(|arg| ["--timeout", "-t"].contains(arg) || arg.starts_with("--timeout=")),
+        "a fixed --timeout also bounds the baseline: {args:?}"
+    );
+    let floor: u32 = after("--minimum-test-timeout")
+        .first()
+        .and_then(|value| value.parse().ok())
+        .expect("a floor under the timeout cargo-mutants sets from the baseline");
+    assert!(
+        floor >= 3 * SLOWEST_TEST_S,
+        "the floor is at least three times the slowest mutant's tests: {floor}"
+    );
+    let limit = ci_timeout_minutes(&workflow, "review-controller-evidence").expect("a job limit");
+    assert!(
+        MUTANTS * (floor + BUILD_S) + OTHER_STEPS_S <= limit * 60,
+        "the job must end inside its {limit} minutes even if every mutant hangs (floor {floor} s)"
+    );
+}
+
+/// C2 of 0.11.1: the gate job's limit holds its measured runs with room. PR #131's took 38.5 and
+/// 37.3 minutes (runs 45670721783 and 45701563166; the test step 2,200 s and 2,131 s), and the
+/// old 45 left 17% over the slower; the limit is at least one and a half times the slower run.
+#[test]
+fn the_gate_job_s_limit_holds_its_measured_runs() {
+    const SLOWER_RUN_S: u32 = 2_310;
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    let workflow = std::fs::read_to_string(format!("{root}/.github/workflows/ci.yml")).unwrap();
+    let limit = ci_timeout_minutes(&workflow, "gate").expect("the gate job has a limit");
+    assert!(
+        2 * limit * 60 >= 3 * SLOWER_RUN_S,
+        "the gate job's {limit} minutes are under one and a half times its slower measured run (38.5 minutes)"
+    );
+}
+
+#[test]
+fn the_run_reader_reads_one_line_runs() {
+    let workflow = "on:\njobs:\n  a:\n    timeout-minutes: 7\n    steps:\n      - name: test\n        run: one\n      - name: block\n        run: |\n          x\n  b:\n    steps:\n      - name: test\n        timeout-minutes: 5\n        run: two\n";
+    assert_eq!(ci_timeout_minutes(workflow, "a"), Some(7));
+    assert_eq!(ci_timeout_minutes(workflow, "b"), None);
+    assert_eq!(ci_timeout_minutes(workflow, "c"), None);
+    assert_eq!(ci_run(workflow, "a", "test").as_deref(), Some("one"));
+    assert_eq!(ci_run(workflow, "b", "test").as_deref(), Some("two"));
+    assert_eq!(ci_run(workflow, "a", "block"), None);
+    assert_eq!(ci_run(workflow, "a", "none"), None);
+    assert_eq!(
+        replica_command("step \"test\" scripts/x.sh\nstep \"t\" y\n", "test"),
+        Some("scripts/x.sh")
+    );
+}

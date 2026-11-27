@@ -11,7 +11,9 @@
 )]
 
 use deep_diff_forge_review::Profile;
-use deep_diff_forge_testkit::Scratch;
+// `hold_lock`: an exclusive `flock(2)` held by another process until a file is removed, one
+// holder for Linux and macOS (also used by `tests/agent_hook.rs`): `flock(1)` is not on macOS.
+use deep_diff_forge_testkit::{Scratch, hold_lock};
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
 use std::{
@@ -1573,35 +1575,6 @@ fn real_tuicr_human_comment_is_imported_as_a_disposition() {
     println!("stale disposition: {}", stderr(&stale).trim());
 }
 
-/// Hold an exclusive `flock` on `path` from another process until `go` is removed; returns when
-/// it is held (as in the hook tests).
-fn hold_lock(path: &Path, go: &Path) -> std::process::Child {
-    fs::write(go, "").unwrap();
-    let held = go.with_extension("held");
-    let child = Command::new("flock")
-        .arg("-o")
-        .arg(path)
-        .args([
-            "sh",
-            "-c",
-            "touch \"$1\"; while [ -e \"$2\" ]; do sleep 0.02; done",
-            "sh",
-        ])
-        .arg(&held)
-        .arg(go)
-        .stdin(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
-    let asked = std::time::Instant::now();
-    while !held.exists() {
-        assert!(
-            asked.elapsed() < std::time::Duration::from_secs(20),
-            "no lock"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    child
-}
 /// Set the session's review-level human comments to `ids`, with `long` bytes of text on the last.
 fn decisions(session: &Path, ids: &[&str], long: usize) {
     edit_session(session, |s| {
@@ -1679,6 +1652,39 @@ fn an_unwritable_checkpoint_refuses_before_the_append() {
         "no temporary file is left"
     );
     cut_back_is_detected(&f, &session);
+}
+
+/// Package P3 of 0.11.1, row 17 of the reading of the macOS CI run of 0.11.0: the command
+/// line shows 200 bytes of a council error, and under a temp directory of macOS's length the
+/// refusal above lost its last words, the ones that say nothing was written. The run under a
+/// directory of 200 characters and more: the refusal is exit 4, the journal unchanged, and
+/// the error line keeps its first and its last words within its bound.
+#[test]
+fn an_unwritable_checkpoint_under_a_long_path_still_says_nothing_was_appended() {
+    let (mut f, session) = journaled();
+    let deep = f.root.join("d".repeat(180));
+    fs::create_dir(&deep).unwrap();
+    let run = deep.join("run");
+    fs::rename(&f.run, &run).unwrap();
+    f.run = run;
+    assert!(f.run.to_str().unwrap().len() >= 200);
+    let before = fs::read(f.journal()).unwrap();
+    decisions(&session, &["h-1", "h-2"], 0);
+    let dir = f.run.join("decisions.checkpoints");
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
+    let out = f.import(&session, &["--execute"]);
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(fs::read(f.journal()).unwrap(), before);
+    refused(&out, "nothing was appended");
+    let line = stderr(&out);
+    let line = line.lines().find(|l| l.starts_with("error: ")).unwrap();
+    assert!(
+        line.starts_with("error: tuicr import refused (journal): ")
+            && line.ends_with("; nothing was appended")
+            && line.contains(" bytes omitted] ...")
+            && line.len() <= "error: ".len() + 200 + "... [999 bytes omitted] ...".len(),
+        "{line}"
+    );
 }
 
 /// FINDINGS A.2 (every later import refused): a torn last record no checkpoint names, made by a

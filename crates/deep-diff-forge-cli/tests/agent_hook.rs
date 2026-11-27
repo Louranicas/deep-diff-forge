@@ -54,7 +54,89 @@ fn home_in(scratch: &Scratch) -> PathBuf {
     let home = scratch.join("home");
     std::fs::create_dir_all(&home).unwrap();
     HOME.with(|slot| *slot.borrow_mut() = Some(home.clone()));
+    name_what_the_hooks_met();
     home
+}
+
+/// What the hooks of a test met that is not of the code under test and that a later assertion
+/// cannot name (lane P5b, measurement M7 of 0.11.1: `tests/LOAD_SENSITIVE`), by the test's home.
+/// Until package P5c of 0.11.1 a session's first hook took no lock when a `.git` stood above
+/// the hooks' state directory, and wrote the state without it; a hook that leaves a state and
+/// no lock file now breaks the rule that a state is written only under the session's lock. A
+/// test of the session's lock or of what is in its directory then fails far from the hook, on
+/// a count: no lock file, one file short, two first stops at once, "the state directory was
+/// written". (Measured: an empty `.git` in the home directory stood for seconds at a time
+/// while another agent's sandboxed commands ran.)
+static MET: std::sync::Mutex<Vec<(PathBuf, String)>> = std::sync::Mutex::new(Vec::new());
+
+/// The first `.git` (a directory, a file or a link) in an ancestor of `dir`, the part of `dir`
+/// that exists taken through its links, as the hooks take it.
+fn git_above(dir: &Path) -> Option<PathBuf> {
+    let existing = dir.ancestors().find(|at| at.exists())?;
+    std::fs::canonicalize(existing)
+        .ok()?
+        .ancestors()
+        .map(|at| at.join(".git"))
+        .find(|git| git.symlink_metadata().is_ok())
+}
+
+/// Note for a failure of this test what a hook met ([`MET`]) that ran with no state directory
+/// `dir` yet: a `.git` above it before or after it ran, and whether it took no lock (it left a
+/// state and no lock file there).
+fn note_what_a_hook_met(event: &str, input: &Value, dir: &Path, above: Option<PathBuf>) {
+    let kinds: Vec<PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .collect();
+    let has = |kind: &str| {
+        kinds
+            .iter()
+            .any(|path| path.extension() == Some(std::ffi::OsStr::new(kind)))
+    };
+    let lockless = has("json") && !has("lock");
+    let hook = format!(
+        "the `{event}` hook of session {}, which made the hook state directory {},",
+        input["session_id"],
+        dir.display()
+    );
+    let note = match (above, lockless) {
+        (None, false) => return,
+        (None, true) => format!("{hook} took no lock: it left a state and no lock file there"),
+        (Some(git), _) => format!(
+            "{hook} {} while a .git stood at {} above that directory",
+            if lockless {
+                "took no lock: it left a state and no lock file there"
+            } else {
+                "ran"
+            },
+            git.display()
+        ),
+    };
+    if let Ok(mut met) = MET.lock() {
+        met.push((home(), note));
+    }
+}
+
+/// Once per test binary: the panic of a test whose hooks met what [`MET`] holds says it under
+/// the panic's own message.
+fn name_what_the_hooks_met() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let before = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            before(info);
+            let Some(home) = HOME.with(|slot| slot.borrow().clone()) else {
+                return;
+            };
+            if let Ok(met) = MET.try_lock() {
+                for (_, note) in met.iter().filter(|(at, _)| *at == home) {
+                    eprintln!("note (not of the code under test): {note}");
+                }
+            }
+        }));
+    });
 }
 
 fn home() -> PathBuf {
@@ -94,6 +176,24 @@ fn hook_in(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     shape(&mut command);
+    // Where the hook keeps the state (an absolute XDG_STATE_HOME, else HOME's), when it will
+    // make that directory: what it meets there is noted ([`note_what_a_hook_met`]).
+    let set = |key: &str| {
+        command
+            .get_envs()
+            .find(|(name, _)| *name == key)
+            .and_then(|(_, value)| value.map(PathBuf::from))
+    };
+    let made = match (set("XDG_STATE_HOME"), set("HOME")) {
+        (Some(xdg), _) if xdg.is_absolute() => Some(xdg.join("deep-diff-forge/hooks")),
+        (_, Some(home)) => Some(home.join(".local/state/deep-diff-forge/hooks")),
+        _ => None,
+    }
+    .filter(|dir| !dir.exists())
+    .map(|dir| {
+        let above = git_above(&dir);
+        (dir, above)
+    });
     let mut child = command.spawn().unwrap();
     child
         .stdin
@@ -102,6 +202,10 @@ fn hook_in(
         .write_all(input.to_string().as_bytes())
         .unwrap();
     let out = child.wait_with_output().unwrap();
+    if let Some((dir, above)) = made {
+        let above = above.or_else(|| git_above(&dir));
+        note_what_a_hook_met(event, input, &dir, above);
+    }
     (
         out.status.code().unwrap(),
         String::from_utf8(out.stdout).unwrap(),
@@ -274,15 +378,17 @@ fn post_tool_says_a_new_finding_once_and_changes_nothing_in_the_work_tree() {
     let advice = out["hookSpecificOutput"]["additionalContext"]
         .as_str()
         .unwrap();
+    // (first: a message never repeats the text of a changed line, whichever part of the
+    // item would carry it; U1 S116)
+    assert!(
+        !advice.contains("dead_code"),
+        "the line's text was repeated: {advice}"
+    );
     assert!(
         advice.contains(
             "- \"a.rs\":2: check_suppressed@line (integrity, new side, read as lexical); repairs: check_suppressed:a1, check_suppressed:a2.\n"
         ),
         "{advice}"
-    );
-    assert!(
-        !advice.contains("dead_code"),
-        "the line's text was repeated: {advice}"
     );
     assert!(out.get("decision").is_none(), "advice must not block");
     // the hook left the working tree and the index as they were
@@ -1407,15 +1513,115 @@ fn doctor_gate_names_the_link_that_is_missing() {
     );
 }
 
+/// The policy-protection link follows the rule outcomes, not merely the verdict's exit code.
+/// In particular, verified-claims mode and expired waivers can make a real forge-warden
+/// verdict non-pass without any rule protecting the policy file. A rule whose severity is
+/// `fail` protects it just as a holding rule does.
+#[test]
+fn doctor_gate_reads_policy_self_protection_from_rule_outcomes() {
+    let scratch = Scratch::new("doctor-gate-rule-protection");
+    let root = repository(&scratch);
+    let home = home();
+    std::fs::create_dir(root.join(".claude")).unwrap();
+
+    let non_rule_verdict = |require_verified: bool, expired: bool| {
+        json!({
+            "schema": "forge-warden.verdict.v2",
+            "tool": {"name": "forge-warden", "version": "0.2.0"},
+            "evaluated_on": "2026-11-25",
+            "seals": "@SEALS@",
+            "verdict": "@VERDICT@",
+            "exit": {"code": "@CODE@", "name": "@NAME@", "action": "@ACTION@"},
+            "summary": {"files": 1, "rules": 1, "passed": 1,
+                        "waived": 0, "held": 0, "failed": 0},
+            "rules": [{
+                "id": "unrelated", "kind": "forbid_signal", "severity": "hold",
+                "outcome": "pass",
+                "why": "This unrelated rule does not protect the policy file.",
+                "violations": []
+            }],
+            "expired_waivers": if expired {
+                json!([{"index": 0, "rule": "unrelated", "owner": "reviewer",
+                        "expires": "2020-01-01"}])
+            } else {
+                json!([])
+            },
+            "unused_waivers": [],
+            "notes": if require_verified {
+                json!([{"code": "claims_unverified",
+                        "detail": "the patch claims were not bound to a repository"}])
+            } else {
+                json!([])
+            },
+        })
+    };
+
+    let assert_non_rule = |name: &str, require_verified: bool, expired: bool, exit: &str| {
+        let judge_scratch = Scratch::new(name);
+        let (script, _, exit_file) =
+            judge(&judge_scratch, &non_rule_verdict(require_verified, expired));
+        std::fs::write(&exit_file, exit).unwrap();
+        std::fs::write(
+            root.join(".claude/settings.local.json"),
+            stop_hook_settings(&script),
+        )
+        .unwrap();
+        let (code, doc, _) = doctor_gate(&root, &home, &["--judge", script.to_str().unwrap()]);
+        assert_eq!(
+            (code, gate_checks(&doc)),
+            (7, gate_but(&["policy_protects_itself"])),
+            "{name}: {doc:#}"
+        );
+        assert!(
+            detail(&doc, "policy_protects_itself").contains("no rule holds or fails it"),
+            "{name}: {doc:#}"
+        );
+    };
+
+    // require_verified=true: the claims note holds the probe, but no rule protects the file.
+    assert_non_rule("doctor-gate-claims-only", true, false, "8");
+    // An expired waiver is not protection, whether verified claims are required or not.
+    assert_non_rule("doctor-gate-expired-verified", true, true, "7");
+    assert_non_rule("doctor-gate-expired-unverified", false, true, "7");
+
+    let fail_scratch = Scratch::new("doctor-gate-failing-protection");
+    let (fail_judge, _, fail_exit) = judge(
+        &fail_scratch,
+        &verdict(
+            "fail",
+            "policy-is-protected",
+            "protected_path",
+            "warden.toml",
+        ),
+    );
+    std::fs::write(&fail_exit, "7").unwrap();
+    std::fs::write(
+        root.join(".claude/settings.local.json"),
+        stop_hook_settings(&fail_judge),
+    )
+    .unwrap();
+    let (code, doc, _) = doctor_gate(&root, &home, &["--judge", fail_judge.to_str().unwrap()]);
+    assert_eq!((code, gate_checks(&doc)), (0, gate_but(&[])), "{doc:#}");
+    assert!(
+        detail(&doc, "policy_protects_itself").contains("held or fails under a rule"),
+        "{doc:#}"
+    );
+}
+
 /// Run a hook with `path` as the whole `PATH` (plus the system's, so `git` and `sh` are found).
 /// What every stop after the first says of a session that no session-start hook recorded.
 const START_NOT_RECORDED_AGAIN: &str = "deep-diff-forge: 1 thing in this project is not judged: what was committed before this session's first hook.";
 
 fn hook_on_path(event: &str, path: &[&Path], input: &Value) -> (i32, String, String) {
     let mut dirs: Vec<PathBuf> = path.iter().map(|dir| dir.to_path_buf()).collect();
-    dirs.extend(std::env::split_paths(
-        &std::env::var_os("PATH").unwrap_or_default(),
-    ));
+    // The host's own PATH follows, less any directory that holds a `forge-warden`: a test of the
+    // judge's discovery must not find the judge the host has installed (2026-11-28: once
+    // ~/.local/bin/forge-warden was installed, `a_judge_inside_the_repository_it_would_judge_is_not_run`
+    // found it where the test expects no judge).
+    dirs.extend(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+            .filter(|dir| !dir.join("forge-warden").exists()),
+    );
     hook_in(event, &[], input, |command| {
         command.env("PATH", std::env::join_paths(dirs).unwrap());
     })
@@ -1958,13 +2164,30 @@ fn silence_a_lint(root: &Path) {
 }
 
 /// Start `session` in `root`, as Claude Code does before anything else of a session.
+///
+/// A start that says it recorded nothing fails here, with its words and the seconds it took:
+/// it ran out of its time (8 s), another hook of the session held the session's lock, or its
+/// state could not be saved. Before, it passed this helper, and the test failed later on a
+/// state that was never written, with a message that named nothing (lane P5b, measurement M7
+/// of 0.11.1; `tests/LOAD_SENSITIVE`).
 fn start(root: &Path, session: &str) -> String {
+    let began = std::time::Instant::now();
     let (code, stdout, stderr) = hook(
         "session-start",
         &[],
         &input("SessionStart", root, session, false),
     );
+    let took = began.elapsed().as_secs_f64();
     assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
+    let recorded_nothing = if stdout.starts_with("deep-diff-forge is watching the changes") {
+        stdout.contains("- The start of this session could not be recorded (")
+    } else {
+        stdout.contains("in the time a hook has")
+    };
+    assert!(
+        !recorded_nothing,
+        "the start of session {session:?} recorded nothing (it took {took:.1} s; a start has 8 s): {stdout}"
+    );
     stdout
 }
 
@@ -2238,7 +2461,15 @@ fn a_linked_working_tree_the_session_entered_is_judged_too() {
             .unwrap()
             .filter(|entry| {
                 let name = entry.as_ref().unwrap().file_name();
-                name != "ledger.jsonl" && name != "ledger.salt"
+                // (and the policy record and the project lock: release 0.11.1, L1c)
+                ![
+                    "ledger.jsonl",
+                    "ledger.salt",
+                    "policy.jsonl",
+                    "project.lock",
+                ]
+                .iter()
+                .any(|kept| name == *kept)
             })
             .count(),
         0
@@ -2451,7 +2682,13 @@ fn a_session_that_began_with_no_commit_is_never_judged_as_if_it_had_one() {
     // nothing to judge: there is no commit. That its files are not judged is said at every
     // stop, in full once and then in one line (round 14: what is known in the project and
     // not judged is never silence); a repository with no commit and no file says nothing.
-    let said = allowed(&stop_from(&root, "s", &script)).to_owned();
+    let decision = stop_from(&root, "s", &script);
+    assert_ne!(
+        decision,
+        Value::Null,
+        "a stop in a repository with files and no commit was silent"
+    );
+    let said = allowed(&decision).to_owned();
     assert!(
         said.starts_with("deep-diff-forge: The repository \"")
             && said.contains("has no commit yet, so there is no commit to measure this session's changes from: its files were not judged."),
@@ -2476,6 +2713,11 @@ fn a_session_that_began_with_no_commit_is_never_judged_as_if_it_had_one() {
     git(&root, &["add", "--all"]);
     git(&root, &["commit", "--quiet", "-m", "first"]);
     let decision = stop_from(&root, "s", &script);
+    assert_ne!(
+        decision,
+        Value::Null,
+        "the first commit of the repository, made after the session began, made a silent stop"
+    );
     let unjudged = allowed(&decision);
     assert!(
         unjudged.starts_with("deep-diff-forge: UNJUDGED. ")
@@ -2533,6 +2775,10 @@ fn a_failure_to_find_the_repository_is_said_and_never_silent() {
     // Git is not on the hook's PATH
     let (code, stdout, _) = no_git("stop", "Stop", "s");
     assert_eq!(code, 0);
+    assert!(
+        !stdout.is_empty(),
+        "a stop whose Git is not on the hook's PATH was silent"
+    );
     let said = system_message(&stdout);
     assert!(
         said.starts_with("deep-diff-forge: UNJUDGED. This stop was not judged: Git could not say which repository")
@@ -2610,6 +2856,187 @@ fn a_failure_to_find_the_repository_is_said_and_never_silent() {
     assert!(
         !log.exists(),
         "the judge was run although nothing was found"
+    );
+}
+
+/// U1 rows S243, S252 and S282 (lane T3a of 0.11.1). A stop is silent only where no project
+/// can be found at all: Git says, in its own words in the `C` locale, that there is no
+/// repository around the session's directory, the client names no project, and none is
+/// recorded. A stand-in Git answers in English only when it is run with `LC_ALL=C` (and in
+/// another language otherwise), so a hook that read its answer in the user's locale says
+/// UNJUDGED here; a wording that only resembles Git's is a failure and is said, by a stop and
+/// by the advice after a tool call; and a project the client names, or one the session
+/// recorded, is judged from a directory that is in no repository.
+#[test]
+fn only_gits_own_words_for_no_repository_with_no_project_known_make_a_silent_stop() {
+    let scratch = Scratch::new("hook-no-repository-words");
+    let root = repository(&scratch);
+    let (script, log, _) = failing_judge(&scratch);
+    silence_a_lint(&root);
+    let outside = scratch.join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    let outside = std::fs::canonicalize(&outside).unwrap();
+    let real = String::from_utf8(
+        Command::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    // Git as it is everywhere but in `outside`, where it answers `words` (`@C@` for the
+    // English answer under `LC_ALL=C` and a translated one otherwise)
+    let stand_in = |name: &str, words: &str| -> String {
+        let dir = scratch.join(name);
+        std::fs::create_dir(&dir).unwrap();
+        let answer = if words == "@C@" {
+            "if [ \"$LC_ALL\" = C ]; then echo 'fatal: not a git repository (or any of the parent directories): .git' >&2; else echo 'fatal: kein Git-Repository (oder irgendeines der Elternverzeichnisse): .git' >&2; fi".to_owned()
+        } else {
+            format!("echo '{words}' >&2")
+        };
+        write_program(
+            &dir.join("git"),
+            &format!(
+                "#!/bin/sh\ncase \"$(pwd -P)\" in\n'{outside}'|'{outside}'/*) {answer}; exit 128;;\nesac\nexec '{real}' \"$@\"\n",
+                outside = outside.display(),
+                real = real.trim()
+            ),
+        );
+        format!("{}:{}", dir.display(), std::env::var("PATH").unwrap())
+    };
+    let judge_arg = ["--judge", script.to_str().unwrap()];
+    let run = |event: &str, session: &str, path: Option<&str>, project: Option<&Path>| {
+        let (code, stdout, stderr) = hook_in(
+            event,
+            &judge_arg[..if event == "stop" { 2 } else { 0 }],
+            &input(
+                if event == "stop" {
+                    "Stop"
+                } else {
+                    "PostToolUse"
+                },
+                &outside,
+                session,
+                false,
+            ),
+            |command| {
+                // with the stand-in: a user's locale that is not English
+                if let Some(path) = path {
+                    command
+                        .env("PATH", path)
+                        .env("LC_ALL", "de_DE.UTF-8")
+                        .env("LANG", "de_DE.UTF-8");
+                }
+                if let Some(project) = project {
+                    command.env("CLAUDE_PROJECT_DIR", project);
+                }
+            },
+        );
+        assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
+        stdout
+    };
+
+    // Git's own words, which it writes in English only under `LC_ALL=C`: silent
+    let in_c = stand_in("git-in-c", "@C@");
+    assert_eq!(
+        run("stop", "c", Some(&in_c), None),
+        "",
+        "a stop where Git found no repository, read in the C locale, was not silent"
+    );
+    assert_eq!(run("post-tool", "c", Some(&in_c), None), "");
+    // words that only resemble them: a failure, said by the stop every time and by advice once
+    let near = stand_in("git-near", "fatal: not a git repository: '.git'");
+    for _ in 0..2 {
+        let said = run("stop", "near", Some(&near), None);
+        assert!(
+            !said.is_empty() && system_message(&said).starts_with("deep-diff-forge: UNJUDGED. "),
+            "words that only resemble Git's \"no repository\" were taken for it: {said:?}"
+        );
+    }
+    let said = run("post-tool", "near-advice", Some(&near), None);
+    assert!(
+        !said.is_empty() && system_message(&said).contains("the hook did not run"),
+        "advice took words that only resemble Git's for \"no repository\": {said:?}"
+    );
+    assert!(
+        !log.exists(),
+        "the judge was run although nothing was found"
+    );
+
+    // the client names the project: it is judged, from a directory in no repository
+    let said = run("stop", "named", None, Some(&root));
+    assert!(
+        !said.is_empty()
+            && blocked(&serde_json::from_str(&said).unwrap())
+                .contains("check_suppressed in \"a.rs\""),
+        "a project the client names was not judged: {said:?}"
+    );
+    // the session recorded the project: it is judged, from a directory in no repository
+    start(&root, "recorded");
+    let said = run("stop", "recorded", None, None);
+    assert!(
+        !said.is_empty()
+            && blocked(&serde_json::from_str(&said).unwrap())
+                .contains("check_suppressed in \"a.rs\""),
+        "a project the session recorded was not judged: {said:?}"
+    );
+}
+
+/// U1 row S300 (lane T3a of 0.11.1): every command a hook names is this binary's own absolute
+/// path, quoted for the shell. The binary is run from a directory whose name a shell splits at
+/// its space and ends a quote at: the command the start of a session names is that path in
+/// single quotes, its own quote written the way a shell reads one inside them.
+#[test]
+fn a_command_the_hooks_name_is_their_own_path_quoted_for_the_shell() {
+    let scratch = Scratch::new("hook-binary-quoted");
+    let root = repository(&scratch);
+    let dir = scratch.join("a dir's name");
+    std::fs::create_dir(&dir).unwrap();
+    let copy = dir.join("deep-diff-forge");
+    // (copied by a child process: an executable this process wrote can be busy at exec)
+    assert!(
+        Command::new("cp")
+            .arg(env!("CARGO_BIN_EXE_deep-diff-forge"))
+            .arg(&copy)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let copy = std::fs::canonicalize(&copy).unwrap();
+    let mut child = Command::new(&copy)
+        .envs(ISOLATE)
+        .env("HOME", home())
+        .env_remove("XDG_STATE_HOME")
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("CLAUDE_PROJECT_DIR")
+        .args(["agent", "hook", "session-start", "--client", "claude"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            input("SessionStart", &root, "s", false)
+                .to_string()
+                .as_bytes(),
+        )
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let said = String::from_utf8(out.stdout).unwrap();
+    let path = copy.to_str().unwrap();
+    let quoted = format!("'{}'", path.replace('\'', r"'\''"));
+    assert!(
+        said.contains(&format!("`{quoted} agent doctor --gate`")),
+        "the command is not this binary's path quoted for the shell ({quoted}): {said}"
+    );
+    assert!(
+        !said.contains(&format!("`{path} agent")),
+        "the command names the path unquoted: {said}"
     );
 }
 
@@ -2756,10 +3183,14 @@ fn a_scratch_directory_a_killed_hook_left_is_removed_by_the_next_hook() {
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
-    // (and the project's ledger, which the first hook of a session writes: F13.b)
+    // (and the project's ledger, which the first hook of a session writes: F13.b; the policy
+    // record and the project lock, where the first hook binds the policy name: release 0.11.1)
     let mut names = names;
     names.sort();
-    assert_eq!(names, ["ledger.jsonl", "tmp-1"]);
+    assert_eq!(
+        names,
+        ["ledger.jsonl", "policy.jsonl", "project.lock", "tmp-1"]
+    );
 }
 
 /// Independent review of the hooks, HR-L-4. "FAIL STANDS" was decided by rule, signal and path:
@@ -2970,13 +3401,15 @@ fn a_session_that_starts_on_a_changed_tree_is_told_that_it_is_judged_with_it() {
         dirty.contains("- The working tree already differs from that commit: what was uncommitted when this session began is judged together with your changes.\n"),
         "{dirty}"
     );
-    // the start changed nothing and left nothing behind but the project's ledger (F13.b)
+    // the start changed nothing and left nothing behind but the project's ledger (F13.b), and
+    // the policy record with the project lock, where it bound the policy name (release 0.11.1)
     assert_eq!(git(&root, &["status", "--porcelain=v1"]), " M a.rs\n");
-    let left: Vec<String> = std::fs::read_dir(root.join(".git/deep-diff-forge"))
+    let mut left: Vec<String> = std::fs::read_dir(root.join(".git/deep-diff-forge"))
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
-    assert_eq!(left, ["ledger.jsonl"]);
+    left.sort();
+    assert_eq!(left, ["ledger.jsonl", "policy.jsonl", "project.lock"]);
 }
 
 /// Independent review of the hooks, HR-L-2, the input cap. A `PostToolUse` input carries the
@@ -3088,7 +3521,18 @@ fn the_state_of_a_session_is_in_the_users_state_directory_or_the_hook_says_it_ha
     let root = repository(&scratch);
     silence_a_lint(&root);
     let event = input("PostToolUse", &root, "s", false);
-    let files = |dir: &Path| std::fs::read_dir(dir).map_or(0, Iterator::count);
+    // (the directory's `.gitignore`, release 0.11.1 P5d, is no file of a session: left out by name)
+    let files = |dir: &Path| {
+        std::fs::read_dir(dir).map_or(0, |entries| {
+            entries
+                .filter(|entry| {
+                    !entry
+                        .as_ref()
+                        .is_ok_and(|entry| entry.file_name() == ".gitignore")
+                })
+                .count()
+        })
+    };
 
     // an absolute XDG_STATE_HOME wins over the home directory; a relative one is not used
     let xdg = scratch.join("xdg-state");
@@ -3110,9 +3554,11 @@ fn the_state_of_a_session_is_in_the_users_state_directory_or_the_hook_says_it_ha
     assert_eq!(files(&sessions()), 4);
     assert!(!root.join("relative").exists());
     // nothing of a session's state is kept in the repository: only the project's ledger
-    // (F13.b: its baseline and the start of each session)
-    assert_eq!(files(&root.join(".git/deep-diff-forge")), 1);
+    // (F13.b: its baseline and the start of each session), and the policy record with the
+    // project lock, where the advice hook bound the policy name on first use (release 0.11.1)
+    assert_eq!(files(&root.join(".git/deep-diff-forge")), 3);
     assert!(root.join(".git/deep-diff-forge/ledger.jsonl").is_file());
+    assert!(root.join(".git/deep-diff-forge/policy.jsonl").is_file());
 
     // neither: said, for a stop as UNJUDGED, and never a block
     for (word, name, starts) in [
@@ -3661,6 +4107,11 @@ fn another_repository_and_a_submodule_with_changes_are_named_at_every_stop() {
     start(&root, "3a");
     silence_a_lint(&other);
     let decision = stop_from(&other, "3a", &script);
+    assert_ne!(
+        decision,
+        Value::Null,
+        "another repository the session's directory is in was not named: the stop was silent"
+    );
     let said = allowed(&decision);
     assert_eq!(
         said,
@@ -3702,6 +4153,11 @@ fn another_repository_and_a_submodule_with_changes_are_named_at_every_stop() {
     );
     // from the top of the project
     let decision = stop_from(&root, "3c", &script);
+    assert_ne!(
+        decision,
+        Value::Null,
+        "a submodule with changes that are not committed in it was not named: the stop was silent"
+    );
     assert_eq!(allowed(&decision), format!("deep-diff-forge: {submodule}"));
     assert_eq!(
         allowed(&stop_from(&root, "3c", &script)),
@@ -4238,11 +4694,35 @@ fn a_state_that_cannot_be_kept_is_said_once_by_advice_and_always_by_a_stop() {
     );
     assert!(system_message(&run("post-tool", "PostToolUse", "in-tree", &inside)).contains(refused));
     assert_eq!(run("post-tool", "PostToolUse", "in-tree", &inside), "");
+    // (the session's lock may leave empty directories there, of which Git records none: P5c of
+    // release 0.11.1, row C6)
+    let left = files_left_under(&root.join(".state"));
     assert!(
-        !root.join(".state").exists(),
-        "a state was written into the working tree"
+        left.is_empty(),
+        "a state was written into the working tree: {left:?}"
     );
     assert_eq!(git(&root, &["status", "--porcelain=v1"]), " M a.rs\n");
+}
+
+/// The files (anything that is not a directory) under `dir`, as paths; none when `dir` is not
+/// there. A directory that cannot be read fails here: an assertion that nothing is left must
+/// not pass on a listing it could not make.
+fn files_left_under(dir: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return found,
+        Err(error) => panic!("{}: {error}", dir.display()),
+    };
+    for entry in entries {
+        let path = entry.unwrap().path();
+        if path.symlink_metadata().is_ok_and(|kind| kind.is_dir()) {
+            found.extend(files_left_under(&path));
+        } else {
+            found.push(path);
+        }
+    }
+    found
 }
 
 // ---- Round 11 of Vesper's review and the third independent review (2026-11-14, both NO-GO) ----
@@ -4253,14 +4733,21 @@ fn short(root: &Path, rev: &str) -> String {
 }
 
 /// The uncommitted change of the working tree at `top` as a stop names it: the path quoted,
-/// and cut at 120 characters as every path is.
+/// and past 120 characters cut in its middle (the first 60, `…`, the last 60) as `shown_path`
+/// cuts every path. (This cut its end, which no message shows: under a temp directory as long
+/// as macOS's, a test looked for words that were never there.)
 fn uncommitted_in(top: &Path) -> String {
-    let whole = top.display().to_string();
-    let mut cut: String = whole.chars().take(120).collect();
-    if cut.len() < whole.len() {
-        cut.push('…');
-    }
-    format!("Uncommitted changes in \"{cut}\"")
+    let whole: Vec<char> = top.display().to_string().chars().collect();
+    let shown: String = if whole.len() > 120 {
+        whole[..60]
+            .iter()
+            .chain(['…'].iter())
+            .chain(&whole[whole.len() - 60..])
+            .collect()
+    } else {
+        whole.into_iter().collect()
+    };
+    format!("Uncommitted changes in \"{shown}\"")
 }
 
 /// The state files in `dir`, without the lists of commits that are kept beside them.
@@ -4278,12 +4765,15 @@ fn states_in(dir: &Path) -> Vec<PathBuf> {
 /// `SECRET` in it and passes every other. It logs the files each patch names (`PATCH-NAMES`),
 /// and first sleeps for the seconds written in `judge.sleep` when that file is there. While
 /// `judge.flaky` is there it gives no verdict on a patch with `SECRET`: as many times as the
-/// file says (once when it is empty), then the file is gone. The
+/// file says (once when it is empty), then the file is gone. While `judge.hold` is there, the
+/// first call that finds it moves it to `judge.held` and waits (at most 120 s) until the test
+/// takes that away; the other calls do not wait ([`two_first_stops`]). The
 /// other stand-in gives one answer whatever it is shown, so it cannot tell a stop that judged
 /// the right commit from one that judged another.
 fn reading_judge(scratch: &Scratch) -> (PathBuf, PathBuf) {
     const READ: &str = r#"printf 'PATCH-NAMES %s\n' "$(grep '^diff --git' "$patch" | tr '\n' ' ')" >> '@LOG@'
 if [ -f '@SLEEP@' ]; then sleep "$(cat '@SLEEP@')"; fi
+if mv '@HOLD@' '@HELD@' 2>/dev/null; then n=0; while [ -e '@HELD@' ] && [ "$n" -lt 1200 ]; do sleep 0.1; n=$((n+1)); done; fi
 if [ -f '@FLAKY@' ] && grep -q '^+.*SECRET' "$patch"; then left="$(cat '@FLAKY@')"; left=$((${left:-1} - 1)); if [ "$left" -le 0 ]; then rm -f '@FLAKY@'; else echo "$left" > '@FLAKY@'; fi; echo '{"exit":3,"name":"io","message":"the ranker did not answer in time","next":"retry"}' >&2; exit 3; fi
 if grep -q '^+.*NOVERDICT' "$patch"; then echo '{"exit":3,"name":"io","message":"patch parse failed","next":"fix_input"}' >&2; exit 3; fi
 if grep -q '^+.*SECRET' "$patch"; then code=7; elif grep -q '^+.*HOLDME' "$patch"; then code=8; else code=0; fi"#;
@@ -4308,7 +4798,9 @@ if grep -q '^+.*SECRET' "$patch"; then code=7; elif grep -q '^+.*HOLDME' "$patch
         .replace(
             "@FLAKY@",
             &scratch.join("judge.flaky").display().to_string(),
-        );
+        )
+        .replace("@HOLD@", &scratch.join("judge.hold").display().to_string())
+        .replace("@HELD@", &scratch.join("judge.held").display().to_string());
     write_program(&script, &body.replace(&told, &read));
     (script, log)
 }
@@ -4697,7 +5189,27 @@ fn a_repository_with_five_thousand_branches_and_tags_is_recorded_whole() {
     secret(&root, "k.rs");
     let late = commit_all(&root, "work");
     git(&root, &["checkout", "--quiet", "main"]);
+    // and one that only a branch names, past every other name and in no reflog that is read
+    // (`HEAD`'s names the two above): no bound on the refs is made good by a reflog here
+    // (U1 S129, lane T3d)
+    let only = git(
+        &root,
+        &[
+            "commit-tree",
+            &format!("{late}^{{tree}}"),
+            "-p",
+            base,
+            "-m",
+            "only a ref names it",
+        ],
+    );
+    git(&root, &["update-ref", "refs/heads/zzz-only", only.trim()]);
+    let only = short(&root, "refs/heads/zzz-only");
     let decision = stop_from(&root, "s", &script);
+    assert!(
+        stop_words(&decision).contains(&format!("Commit {only}: FAIL\n")),
+        "a commit that only a branch past 5,000 others names was not judged: {decision}"
+    );
     let reason = blocked(&decision);
     assert!(
         reason.contains(&format!("Commit {late}: FAIL\n"))
@@ -4739,8 +5251,15 @@ fn the_sessions_commit_is_judged_whatever_its_branch_is_called() {
         "{reason}"
     );
     assert_eq!(runs(&log), 21);
-    // nothing is judged twice
-    assert!(allowed(&stop_from(&root, "s", &script)).starts_with("deep-diff-forge: FAIL STANDS. "));
+    // nothing is judged twice: the commit is known by its id, so the branch it is on and the
+    // twenty others neither make it block again nor let it be forgotten (U1 S171)
+    let again = stop_from(&root, "s", &script);
+    assert!(
+        again["systemMessage"]
+            .as_str()
+            .is_some_and(|said| said.starts_with("deep-diff-forge: FAIL STANDS. ")),
+        "the failing commit did not stand at the next stop: {again}"
+    );
     assert_eq!(runs(&log), 21);
 }
 
@@ -5650,7 +6169,13 @@ fn a_failing_commit_does_not_block_for_ever_when_the_state_cannot_be_kept() {
             );
         }
         // a new turn (the client is not continuing after a block): it blocks again, said
-        blocked(&stop_active(&root, "s", &script, false));
+        // (U1 row S169, lane T3a of 0.11.1: and why, at that block too)
+        let again = blocked(&stop_active(&root, "s", &script, false)).to_owned();
+        assert!(
+            again.contains(&format!("Commit {key}: FAIL\n"))
+                && again.contains("The hook could not keep its state ("),
+            "the next turn's block does not say why it blocks again: {again}"
+        );
     }
     std::fs::set_permissions(&sessions, std::fs::Permissions::from_mode(0o700)).unwrap();
     // with a state that can be kept, `stop_hook_active` decides nothing
@@ -6173,7 +6698,14 @@ fn what_is_staged_blocks_for_itself_after_the_working_tree_was_repaired() {
     blocked(&stop_from(&root, "s", &script));
     // repaired in the working tree, not staged again: the index still holds the credential
     std::fs::write(root.join("a.rs"), "fn a() {}\nfn b() {}\nfn c() {}\n").unwrap();
-    let reason = blocked(&stop_from(&root, "s", &script)).to_owned();
+    let decision = stop_from(&root, "s", &script);
+    assert!(
+        decision["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains(&format!("{staged}: FAIL\n"))),
+        "what is staged did not block for itself after the tree was repaired: {decision}"
+    );
+    let reason = blocked(&decision).to_owned();
     assert!(
         reason.contains(&format!("{staged}: FAIL\n- rule no-secrets: "))
             && reason.contains("stage the repaired file (`git add`) or take the old content out of the index (`git restore --staged`)"),
@@ -7929,11 +8461,42 @@ fn a_repository_with_more_working_trees_than_are_read_says_so() {
             ],
         );
     };
-    // 256 working trees with the project's own: as many as are read
+    // 256 working trees with the project's own: as many as are read. The 255 linked ones are
+    // written as `git worktree add --detach --no-checkout` leaves them (`.git/worktrees/t<n>`
+    // with `HEAD`, `commondir` and `gitdir`), first without their directories: Git lists such
+    // an entry until `git worktree prune` and the hook counts it, and a start reads the history
+    // of no tree whose directory is not there. A start that read the reflogs of 256 trees took
+    // 2.6 s alone on Linux and more than its 8 s alone on GitHub's macos-26 runner (PR #131,
+    // run 45792873322: "`git rev-list` did not finish in the time a hook has"); how long that
+    // walk takes is not what this test is about (lane C3 of 0.11.1).
+    let head = git(&root, &["rev-parse", "HEAD"]);
+    let admin = |n: usize| root.join(format!(".git/worktrees/t{n}"));
     for n in 0..255 {
-        add(n);
+        std::fs::create_dir_all(admin(n)).unwrap();
+        std::fs::write(admin(n).join("HEAD"), &head).unwrap();
+        std::fs::write(admin(n).join("commondir"), "../..\n").unwrap();
+        let gitdir = trees.join(format!("t{n}/.git"));
+        std::fs::write(admin(n).join("gitdir"), format!("{}\n", gitdir.display())).unwrap();
     }
-    start(&root, "before");
+    let listed = git(&root, &["worktree", "list", "--porcelain"]);
+    let entries = listed.lines().filter(|line| line.starts_with("worktree "));
+    assert_eq!(entries.count(), 256, "{listed}");
+    let before = start(&root, "before");
+    assert!(
+        before.contains("deep-diff-forge is watching the changes of this session")
+            && !before.contains(WHY),
+        "the \"before\" start did not record its list: {before}"
+    );
+    // Then their directories, each with the `.git` file that names its entry: from here on
+    // they are the trees `git worktree add --no-checkout` makes, and every start and stop below
+    // said, word for word, what it said when they were made with it (lane C3, compared with
+    // paths, ids and times set aside).
+    for n in 0..255 {
+        let tree = trees.join(format!("t{n}"));
+        std::fs::create_dir(&tree).unwrap();
+        let gitdir = format!("gitdir: {}\n", admin(n).display());
+        std::fs::write(tree.join(".git"), gitdir).unwrap();
+    }
     add(255);
     let started = start(&root, "after");
     assert!(
@@ -8872,6 +9435,142 @@ fn a_tree_no_longer_listed_stands_while_its_directory_does() {
     let _ = stop_from(&root, "s", &script);
     assert_eq!(remembered_lines(), Vec::<String>::new());
     assert_eq!(the_state()["trees"], json!({}));
+
+    // U1 row S224 (lane T3a of 0.11.1): the same, with the stop that finds it clean made from
+    // inside the tree that is listed again (the stop judges it there, and forgets the old one)
+    secret(&pruned, "third.rs");
+    blocked(&stop_from(&pruned, "s", &script));
+    assert_ne!(
+        remembered_lines(),
+        Vec::<String>::new(),
+        "the new failure was not remembered"
+    );
+    std::fs::remove_file(pruned.join(".git")).unwrap();
+    git(&root, &["worktree", "prune"]);
+    for entry in std::fs::read_dir(&pruned).unwrap() {
+        std::fs::remove_file(entry.unwrap().path()).unwrap();
+    }
+    linked_tree(&root, &pruned, "once-more");
+    let _ = stop_from(&pruned, "s", &script);
+    assert_eq!(
+        remembered_lines(),
+        Vec::<String>::new(),
+        "a tree listed again and found clean by a stop made from inside it was not forgotten"
+    );
+}
+
+/// U1 row S215 (lane T3a of 0.11.1): what is read at a tree's path counts as that tree's only
+/// when Git names that tree there. A linked tree something blocked in stays listed at its own
+/// path, while its `.git` file and another tree's records are edited to name each other: Git
+/// names the other tree at that path. A stop from the project must not read the path as the
+/// first tree, whose failure stands, and the reading there (clean) forgets nothing of it.
+#[test]
+fn a_path_git_names_as_another_tree_is_not_read_as_the_tree_listed_there() {
+    let scratch = Scratch::new("hook-path-named-another");
+    let root = repository(&scratch);
+    let (script, _) = reading_judge(&scratch);
+    let (first, other) = (scratch.join("first"), scratch.join("other"));
+    linked_tree(&root, &first, "first");
+    linked_tree(&root, &other, "other");
+    start(&root, "s");
+    secret(&first, "first.rs");
+    blocked(&stop_from(&first, "s", &script));
+    let before = remembered_lines();
+    // the key is taken out again: what stands at `first` now is the base, clean
+    std::fs::remove_file(first.join("first.rs")).unwrap();
+    let admin = std::fs::canonicalize(root.join(".git/worktrees/other")).unwrap();
+    std::fs::write(first.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
+    std::fs::write(
+        admin.join("gitdir"),
+        format!(
+            "{}\n",
+            std::fs::canonicalize(&first)
+                .unwrap()
+                .join(".git")
+                .display()
+        ),
+    )
+    .unwrap();
+    let decision = stop_from(&root, "s", &script);
+    assert_eq!(
+        remembered_lines(),
+        before,
+        "a path Git names as another tree was read as the tree listed there: {decision}"
+    );
+    let said = stop_words(&decision);
+    assert!(said.contains("/first\""), "{said}");
+}
+
+/// U1 row S219 (lane T3d of 0.11.1): a stop made from a submodule's Git directory
+/// (`.git/modules/<name>`) is UNJUDGED. Git names the submodule's working tree there, which
+/// does not contain the session's directory; the reason says so, and that the directory lies
+/// inside the project's Git directory. Taken for "another repository", that stop judged the
+/// project and named a repository the session was not in.
+#[test]
+fn a_stop_from_a_submodules_git_directory_is_unjudged_and_says_why() {
+    let scratch = Scratch::new("hook-submodule-git-dir");
+    let root = repository(&scratch);
+    let (script, _) = reading_judge(&scratch);
+    let other = scratch.join("other");
+    std::fs::create_dir(&other).unwrap();
+    git(&other, &["init", "--quiet"]);
+    std::fs::write(other.join("a.rs"), "fn a() {}\n").unwrap();
+    git(&other, &["add", "--all"]);
+    git(&other, &["commit", "--quiet", "-m", "base"]);
+    git(
+        &root,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "--quiet",
+            "add",
+            other.to_str().unwrap(),
+            "sub",
+        ],
+    );
+    git(&root, &["commit", "--quiet", "-m", "add a submodule"]);
+    start(&root, "s");
+    let modules = std::fs::canonicalize(root.join(".git/modules/sub")).unwrap();
+    let said = stop_words(&stop_from(&modules, "s", &script)).to_owned();
+    assert!(
+        said.starts_with("deep-diff-forge: UNJUDGED. ")
+            && said.contains(
+                "Git names as the working tree a directory that does not contain the session's directory"
+            ),
+        "a stop from a submodule's Git directory was not UNJUDGED for it: {said}"
+    );
+    // (the reason is cut at its bound after its paths were cut to their floor: these words
+    // are inside it whatever the paths are)
+    assert!(
+        said.contains(", which is inside the Git dir"),
+        "the reason does not say that the directory lies inside the Git directory: {said}"
+    );
+}
+
+/// U1 row S238 (lane T3a of 0.11.1): the project is the repository at the top level it was
+/// recorded at. Moved away with a link left at its path, Git finds the same repository through
+/// the link at another top level: that is not the project, and the stop is UNJUDGED, from the
+/// link and from where the project is now, and runs no judge.
+#[test]
+fn a_project_moved_behind_a_link_at_its_path_is_not_judged_there() {
+    let scratch = Scratch::new("hook-moved-behind-link");
+    let root = repository(&scratch);
+    let (script, log, _) = failing_judge(&scratch);
+    start(&root, "s");
+    silence_a_lint(&root);
+    let moved = scratch.join("moved");
+    std::fs::rename(&root, &moved).unwrap();
+    std::os::unix::fs::symlink(&moved, &root).unwrap();
+    for cwd in [&root, &moved] {
+        let said = stop_words(&stop_from(cwd, "s", &script)).to_owned();
+        assert!(
+            said.starts_with("deep-diff-forge: UNJUDGED. ")
+                && said.contains("is not the one this session started in"),
+            "the project moved behind a link at its path was taken for the project: {said}"
+        );
+    }
+    assert_eq!(runs(&log), 0, "a judge was run for the moved project");
 }
 
 // --- The hook-state version policy (F7.e; rules V1 to V10 of the model design) ------------
@@ -9375,6 +10074,8 @@ fn state_and_lock_names_are_the_documented_ones() {
         .map(|kind| format!("{stem}.{kind}"))
         .into();
     documented.insert(0, "key".to_owned());
+    // (and the directory's `.gitignore`, documented since 0.11.1: P5d)
+    documented.insert(0, ".gitignore".to_owned());
     assert_eq!(names, documented);
 }
 
@@ -9793,7 +10494,13 @@ fn a_copy_of_a_linked_tree_inside_the_project_is_named_as_left_out() {
     assert!(copied.success());
     secret(&copy, "incopy.rs");
     for _ in 0..3 {
-        let said = allowed(&stop_from(&root, "s", &script)).to_owned();
+        let decision = stop_from(&root, "s", &script);
+        assert_ne!(
+            decision,
+            Value::Null,
+            "a copy of a linked tree inside the project was not named: the stop was silent"
+        );
+        let said = allowed(&decision).to_owned();
         assert!(
             said.contains("The directory \"feature-copy\" in \"")
                 && said.contains(
@@ -10013,11 +10720,30 @@ fn a_tree_moved_by_hand_is_unjudged_until_repaired_and_then_stands() {
     let (script, _) = reading_judge(&scratch);
     let (linked, moved) = (scratch.join("linked"), scratch.join("moved"));
     linked_tree(&root, &linked, "side");
+    let clean = scratch.join("clean");
+    linked_tree(&root, &clean, "clean-side");
     start(&root, "s");
     secret(&linked, "first.rs");
     blocked(&stop_from(&linked, "s", &script));
     let before = remembered_lines();
     std::fs::rename(&linked, &moved).unwrap();
+    // U1 row S218 (lane T3a of 0.11.1): from the project, the tree whose directory is gone and
+    // where a failure stands is advised `git worktree repair`, and not prune; a tree gone with
+    // nothing standing there is the one prune is said for
+    std::fs::remove_dir_all(&clean).unwrap();
+    let from_project = stop_words(&stop_from(&root, "s", &script)).to_owned();
+    let gone = "\" of this project is gone or is no working tree any more: what only its own history names is not judged (";
+    assert!(
+        from_project.contains(&format!("/linked{gone}if it was moved with `mv`, `git worktree repair` run where it is now records it; `git worktree prune` would forget what blocked there)")),
+        "the gone tree where a failure stands is not advised repair: {from_project}"
+    );
+    assert!(
+        from_project.contains(&format!(
+            "/clean{gone}`git worktree prune` forgets a linked tree that is gone;"
+        )),
+        "the gone tree where nothing stands is not advised prune: {from_project}"
+    );
+    assert_eq!(remembered_lines(), before);
     let said = allowed(&stop_from(&moved, "s", &script)).to_owned();
     assert!(
         said.starts_with("deep-diff-forge: UNJUDGED. ")
@@ -10031,6 +10757,119 @@ fn a_tree_moved_by_hand_is_unjudged_until_repaired_and_then_stands() {
         let said = allowed(&stop_from(&moved, "s", &script)).to_owned();
         assert!(said.starts_with("deep-diff-forge: FAIL STANDS. "), "{said}");
         assert_eq!(remembered_lines(), before);
+    }
+}
+
+/// Package P3 of 0.11.1, row 9 of the reading of the macOS CI run of 0.11.0: the test above
+/// under a directory of 200 characters and more. A message shows 300 characters of a reason,
+/// and under a long path the cut took the words after the two paths: now the paths give way
+/// in their middle, and the reason says what to do and what is not judged, within its bound.
+#[test]
+fn under_a_long_path_a_moved_tree_s_reason_keeps_its_words() {
+    let scratch = Scratch::new("hook-long-mv");
+    let root = repository(&scratch);
+    let (script, _) = reading_judge(&scratch);
+    let deep = scratch.join("d".repeat(180));
+    std::fs::create_dir(&deep).unwrap();
+    let (linked, moved) = (deep.join("linked"), deep.join("moved"));
+    linked_tree(&root, &linked, "side");
+    start(&root, "s");
+    secret(&linked, "first.rs");
+    blocked(&stop_from(&linked, "s", &script));
+    std::fs::rename(&linked, &moved).unwrap();
+    let said = allowed(&stop_from(&moved, "s", &script)).to_owned();
+    let reason = said
+        .lines()
+        .find_map(|line| line.strip_prefix("  not judged: "))
+        .unwrap_or_else(|| panic!("no reason line: {said}"));
+    assert!(
+        said.starts_with("deep-diff-forge: UNJUDGED. ")
+            && reason.starts_with("Git names \"/")
+            && reason.contains("/linked\" as that tree (`git worktree repair` in a tree moved with `mv` records where it is): whether the session's directory is another working tree could not be found out")
+            && reason.chars().count() <= 301,
+        "{said}"
+    );
+}
+
+/// Package P3 of 0.11.1, review 1, M1: the same stop from a tree moved to a directory whose
+/// name ends in a backslash, under a short base and a long one. Its path is shown ending `\"`;
+/// read by its quotes, the reason ran its first path on to the next and cut the words between
+/// them ("Git names "/var/…e records name "…/linked" as that tree … Git direct"). The words
+/// are whole and the path keeps its backslash at its end.
+#[test]
+fn a_tree_moved_to_a_name_ending_in_a_backslash_keeps_its_reason_s_words() {
+    for depth in [0, 180] {
+        let scratch = Scratch::new("hook-mv-bs");
+        let root = repository(&scratch);
+        let (script, _) = reading_judge(&scratch);
+        let deep = scratch.join("d".repeat(depth.max(1)));
+        std::fs::create_dir(&deep).unwrap();
+        let (linked, moved) = (deep.join("linked"), deep.join("moved\\"));
+        linked_tree(&root, &linked, "side");
+        start(&root, "s");
+        secret(&linked, "first.rs");
+        blocked(&stop_from(&linked, "s", &script));
+        std::fs::rename(&linked, &moved).unwrap();
+        let said = allowed(&stop_from(&moved, "s", &script)).to_owned();
+        let reason = said
+            .lines()
+            .find_map(|line| line.strip_prefix("  not judged: "))
+            .unwrap_or_else(|| panic!("no reason line: {said}"));
+        assert!(
+            said.starts_with("deep-diff-forge: UNJUDGED. ")
+                && reason.starts_with("Git names \"/")
+                && reason.contains("/moved\\\" as the working tree of a Git directory whose records name \"/")
+                && reason.contains("/linked\" as that tree (`git worktree repair` in a tree moved with `mv` records where it is): whether the session's directory is another working tree could not be found out")
+                && reason.chars().count() <= 301,
+            "{depth}: {said}"
+        );
+    }
+}
+
+/// Package P3 of 0.11.1, rows 5 to 8 of the reading of the macOS CI run of 0.11.0: the copy
+/// of `a_copy_the_records_were_repaired_onto_is_not_read_while_the_tree_stands` under a
+/// directory of 200 characters and more. The line that counts what is not judged showed 180
+/// characters of a name and cut its clauses; now the path gives way in its middle, and both
+/// clauses are whole, within the line's bound.
+#[test]
+fn under_a_long_path_the_counting_line_keeps_every_clause() {
+    let scratch = Scratch::new("hook-long-copy");
+    let root = repository(&scratch);
+    let (script, _) = reading_judge(&scratch);
+    let deep = scratch.join("d".repeat(180));
+    std::fs::create_dir(&deep).unwrap();
+    let (linked, copy) = (deep.join("linked"), deep.join("copy"));
+    linked_tree(&root, &linked, "side");
+    start(&root, "s");
+    secret(&linked, "first.rs");
+    blocked(&stop_from(&linked, "s", &script));
+    let copied = Command::new("cp")
+        .arg("-a")
+        .arg(&linked)
+        .arg(&copy)
+        .status()
+        .unwrap();
+    assert!(copied.success());
+    git(&copy, &["clean", "-fdq"]);
+    git(&copy, &["worktree", "repair"]);
+    secret(&linked, "second.rs");
+    let lines: Vec<String> = (0..2)
+        .filter_map(|_| {
+            let said = allowed(&stop_from(&root, "s", &script)).to_owned();
+            said.lines()
+                .find(|line| line.contains(" in this project ") && line.contains(" not judged: "))
+                .map(str::to_owned)
+        })
+        .collect();
+    assert!(!lines.is_empty(), "no stop counted what is not judged");
+    for line in &lines {
+        assert!(
+            line.contains(
+                "/copy\" (remembered at another directory, which stands) (a failure stands there)"
+            ) && line.contains("the working tree \"/")
+                && line.chars().count() <= 700,
+            "{line}"
+        );
     }
 }
 
@@ -10370,13 +11209,27 @@ fn a_commit_over_the_patch_builders_size_is_final_at_once() {
     std::fs::write(root.join("big.txt"), "a\n".repeat(24 * 1024 * 1024)).unwrap();
     commit_all(&root, "big");
     let id = head_id(&root);
+    // A commit after it is asked about at the same stop: a refused patch is said and
+    // remembered, and ends no asking (U1 S164, lane T3d).
+    secret(&root, "k.rs");
+    let key = commit_all(&root, "a key after it");
+    let decision = stop_from(&root, "s", &script);
+    assert!(
+        stop_words(&decision).contains(&format!("Commit {key}: FAIL\n")),
+        "the commit after one whose patch was refused was not judged at that stop: {decision}"
+    );
+    assert_eq!(decision["decision"], "block", "{decision}");
     for _ in 0..2 {
         let said = allowed(&stop_from(&root, "s", &script)).to_owned();
         assert!(said.contains(&id[..12]), "{said}");
         let written = judged_lines();
         assert!(written[&id].starts_with("x:"), "{written:?}");
     }
-    assert_eq!(shown(&log), Vec::<String>::new(), "the judge was asked");
+    assert!(
+        !shown(&log).iter().any(|names| names.contains("big.txt")),
+        "the judge was asked about the commit over the size: {:?}",
+        shown(&log)
+    );
 }
 
 /// Mutation run on `07df120`, `judge_commits`: a commit whose patch Git cannot make (here
@@ -10468,41 +11321,30 @@ fn lock_file() -> PathBuf {
     locks[0].clone()
 }
 
-/// Hold an exclusive `flock` on `path` (made when it is not there) from another process
-/// until `go` is removed. Returns when the lock is held.
-fn hold_lock(path: &Path, go: &Path) -> std::process::Child {
-    std::fs::write(go, "").unwrap();
-    let held = go.with_extension("held");
-    // (`-o`: the command does not hold the file open; only `flock` itself does)
-    let child = Command::new("flock")
-        .arg("-o")
-        .arg(path)
-        .args([
-            "sh",
-            "-c",
-            "touch \"$1\"; while [ -e \"$2\" ]; do sleep 0.02; done",
-            "sh",
-        ])
-        .arg(&held)
-        .arg(go)
-        .stdin(Stdio::null())
-        .spawn()
-        .unwrap();
-    let asked = std::time::Instant::now();
-    while !held.exists() {
-        assert!(
-            asked.elapsed() < std::time::Duration::from_secs(20),
-            "no lock"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    child
-}
+// `hold_lock(path, go)`: an exclusive `flock(2)` on `path` (made when it is not there), held by
+// another process until `go` is removed; returns when the lock is held. One holder for Linux and
+// macOS, in the testkit (also used by `tests/council_tuicr.rs`): `flock(1)` is not on macOS.
+use deep_diff_forge_testkit::hold_lock;
 
-/// Whether a process of this user other than `but` has `path` open (a link under
-/// `/proc/*/fd` names it).
+/// Whether a process of this user other than `but` has `path` open: a link under `/proc/*/fd`
+/// names it, or where there is no `/proc` (macOS), `lsof -t` lists such a process.
 fn opened_by_a_process(path: &Path, but: u32) -> bool {
     let but = but.to_string();
+    if !Path::new("/proc/self/fd").is_dir() {
+        // (`lsof -t`: the pids that have the file open, one a line, and exit 1 for none)
+        let out = Command::new("lsof")
+            .arg("-t")
+            .arg("--")
+            .arg(path)
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .unwrap();
+        return String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::trim)
+            .any(|pid| !pid.is_empty() && pid != but);
+    }
     std::fs::read_dir("/proc")
         .unwrap()
         .flatten()
@@ -10544,7 +11386,13 @@ fn a_stop_waits_for_the_session_s_lock_and_takes_only_the_one_that_is_there() {
         stop.join().unwrap()
     });
     assert!(holder.wait().unwrap().success());
-    blocked(&reason);
+    // U1 row S233 (lane T3a of 0.11.1): it judged with the session's state after its wait, and
+    // is not the stateless stop of a busy lock (which blocks for the credential too)
+    let first = blocked(&reason).to_owned();
+    assert!(
+        !first.starts_with(&stateless("state.lock_busy")),
+        "a stop did not wait half a second for its session's lock: {first}"
+    );
 
     // The stop opens the lock file while another hook holds it. Then that file is taken
     // away, a new one is made at its path and held by a third hook, and the first lets go:
@@ -11716,6 +12564,38 @@ fn a_stashed_change_blocks_as_a_commit_and_again_when_it_is_back() {
     );
 }
 
+/// Two first stops of `session` from `root` at once, each with `home` the home of its hooks,
+/// judged by the reading judge of `scratch` (`script`): what each said, in the order they
+/// ended. The judge's first call waits until one of the stops has ended (`judge.hold`), so the
+/// stop that holds the session's lock still holds it for all of the other's wait, however slow
+/// the host: before, the first judge slept 5 s against the other's 3 s wait, and on a loaded
+/// runner (macOS, `cargo test --workspace`) the other came to the lock after the first had
+/// ended and rightly took it (review of P5c round 3, M1).
+fn two_first_stops(
+    scratch: &Scratch,
+    root: &Path,
+    script: &Path,
+    session: &str,
+    home: impl Fn() + Sync,
+) -> Vec<Value> {
+    std::fs::write(scratch.join("judge.hold"), "").unwrap();
+    let both = std::thread::scope(|scope| {
+        let (done, ended) = std::sync::mpsc::channel();
+        for _ in 0..2 {
+            let (done, home) = (done.clone(), &home);
+            scope.spawn(move || {
+                home();
+                done.send(stop_from(root, session, script)).unwrap();
+            });
+        }
+        let first = ended.recv().unwrap();
+        let _ = std::fs::remove_file(scratch.join("judge.held"));
+        vec![first, ended.recv().unwrap()]
+    });
+    let _ = std::fs::remove_file(scratch.join("judge.hold"));
+    both
+}
+
 /// Review V4 round 15, VD4R15-M-3. Two stops that were both their session's first hook took
 /// no lock, because there was no state yet: both judged, both blocked for the same failure,
 /// both wrote. Every stop takes the session's lock, which is named from the session's id.
@@ -11725,17 +12605,8 @@ fn two_first_stops_of_a_session_do_not_run_at_once() {
     let root = repository(&scratch);
     let (script, log) = reading_judge(&scratch);
     secret(&root, "k.rs");
-    std::fs::write(scratch.join("judge.sleep"), "5\n").unwrap();
-    let both: Vec<Value> = std::thread::scope(|scope| {
-        let stops: Vec<_> = (0..2)
-            .map(|_| {
-                scope.spawn(|| {
-                    home_in(&scratch);
-                    stop_from(&root, "first", &script)
-                })
-            })
-            .collect();
-        stops.into_iter().map(|stop| stop.join().unwrap()).collect()
+    let both = two_first_stops(&scratch, &root, &script, "first", || {
+        home_in(&scratch);
     });
     let blocks = both
         .iter()
@@ -12659,36 +13530,78 @@ fn every_advice_item_equals_its_diagnostic() {
 /// F6.a (N-11): a file whose name this version cannot read (not UTF-8) is one item that names
 /// it as Git quoted it, and the other files of the change are still advised. The whole advice
 /// was off for the session.
+///
+/// Twice: the name in Git's objects alone (committed through the index and taken out of it
+/// again, a deletion no file system is asked about), and the name on disk, untracked. macOS's
+/// APFS refuses a name that is not UTF-8 (EILSEQ, 92): there the first case stands and the
+/// second says it is skipped.
 #[test]
 fn a_refused_path_does_not_silence_the_others() {
     use std::os::unix::ffi::OsStrExt as _;
-    let scratch = Scratch::new("hook-advice-refused-path");
-    let root = repository(&scratch);
-    let event = input("PostToolUse", &root, "s1", false);
-    std::fs::write(
-        root.join(std::ffi::OsStr::from_bytes(b"n\xffm.rs")),
-        "fn n() {}\n",
-    )
-    .unwrap();
-    std::fs::write(
-        root.join("a.rs"),
-        "fn a() {}\n#[allow(dead_code)]\nfn b() {}\n",
-    )
-    .unwrap();
-    let (code, stdout, stderr) = hook("post-tool", &[], &event);
-    assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
-    let advice = advice_of(&stdout);
-    assert!(
-        advice.contains("- \"\\\"a/n\\377m.rs\\\" \\\"b/n\\377m.rs\\\"\": this version could not read this file's change (its names as Git quoted them); nothing in it is advised.\n"),
-        "{advice}"
-    );
-    assert!(
-        advice.contains("- \"a.rs\":2: check_suppressed@line ("),
-        "the other file is not advised: {advice}"
-    );
-    assert!(!advice.contains("did not run"), "{advice}");
-    // said once
-    assert_eq!(hook("post-tool", &[], &event).1, "");
+    let name = std::ffi::OsStr::from_bytes(b"n\xffm.rs");
+    for on_disk in [false, true] {
+        let scratch = Scratch::new("hook-advice-refused-path");
+        let root = repository(&scratch);
+        let event = input("PostToolUse", &root, "s1", false);
+        if on_disk {
+            if let Err(e) = std::fs::write(root.join(name), "fn n() {}\n") {
+                assert!(
+                    cfg!(target_os = "macos") && e.raw_os_error() == Some(92),
+                    "{e}"
+                );
+                println!(
+                    "skipped: the name on disk: the file system refuses a name that is not UTF-8 ({e})"
+                );
+                return;
+            }
+        } else {
+            std::fs::write(scratch.join("n"), "fn n() {}\n").unwrap();
+            let blob = git(&root, &["hash-object", "-w", "../n"]);
+            let by_name = |args: &[&str]| {
+                let out = Command::new("git")
+                    .current_dir(&root)
+                    .envs(ISOLATE)
+                    .args(args)
+                    .arg(name)
+                    .output()
+                    .unwrap();
+                assert!(out.status.success(), "git {args:?}: {out:?}");
+            };
+            by_name(&[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                "100644",
+                blob.trim(),
+            ]);
+            let tree = git(&root, &["write-tree"]);
+            let commit = git(
+                &root,
+                &["commit-tree", tree.trim(), "-p", "HEAD", "-m", "n"],
+            );
+            git(&root, &["update-ref", "HEAD", commit.trim()]);
+            by_name(&["update-index", "--force-remove", "--"]);
+        }
+        std::fs::write(
+            root.join("a.rs"),
+            "fn a() {}\n#[allow(dead_code)]\nfn b() {}\n",
+        )
+        .unwrap();
+        let (code, stdout, stderr) = hook("post-tool", &[], &event);
+        assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
+        let advice = advice_of(&stdout);
+        assert!(
+            advice.contains("- \"\\\"a/n\\377m.rs\\\" \\\"b/n\\377m.rs\\\"\": this version could not read this file's change (its names as Git quoted them); nothing in it is advised.\n"),
+            "on disk: {on_disk}: {advice}"
+        );
+        assert!(
+            advice.contains("- \"a.rs\":2: check_suppressed@line ("),
+            "the other file is not advised (on disk: {on_disk}): {advice}"
+        );
+        assert!(!advice.contains("did not run"), "{advice}");
+        // said once
+        assert_eq!(hook("post-tool", &[], &event).1, "");
+    }
 }
 
 /// The words that begin a guard notice for `path`, as an advice says them.
@@ -12713,7 +13626,7 @@ fn each_guard_file_is_named_once_and_again_when_its_content_changes() {
     let files = [
         (
             "warden.toml",
-            "the policy file the stops judge with; this session's stops read the policy as it was at the commit the session began from",
+            "the policy file the stops judge with; where this project's ledger first recorded a commit that has the policy file, committing an edit of it can make this session's stops stricter, never looser, and committing it does not make it the project's accepted policy",
         ),
         (".gitattributes", "a Git attributes file"),
         (".github/workflows/x.yml", "a CI workflow"),
@@ -13079,7 +13992,8 @@ fn a_damaged_state_still_judges_the_tree_once() {
     let (script, log, _) = failing_judge(&scratch);
     start(&root, "s");
     // a commit of the session loosens the policy: the tree is judged under the policy at the
-    // commit the project's ledger names as its baseline, not at HEAD
+    // commit the project's ledger names as its baseline, not at HEAD alone (release 0.11.1,
+    // T11: under the policy at HEAD as well, the stricter answer standing)
     std::fs::write(root.join("warden.toml"), "# loosened by the session\n").unwrap();
     commit_all(&root, "a looser policy");
     silence_a_lint(&root);
@@ -13094,9 +14008,20 @@ fn a_damaged_state_still_judges_the_tree_once() {
         "{first}"
     );
     assert!(!first.contains("TEXT-OF-THE-DAMAGED-STATE"), "{first}");
-    // the tree, and the session's commit, which the ledger has no verdict for
-    assert_eq!(runs(&log), 2);
-    assert_eq!(last_policy(&log), "# the policy at the base commit");
+    // the tree, and the session's commit, which the ledger has no verdict for: each under the
+    // accepted policy, as 0.11.0 judged them, and under the policy at HEAD, whose file differs
+    // (release 0.11.1, ruling 6: two runs each, four in all)
+    assert_eq!(runs(&log), 4);
+    let seen = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(
+        (
+            seen.matches("POLICY # the policy at the base commit\n")
+                .count(),
+            seen.matches("POLICY # loosened by the session\n").count()
+        ),
+        (2, 2),
+        "{seen}"
+    );
     // the stop that follows the block: the failure stands
     let (code, stdout, _) = hook(
         "stop",
@@ -13605,8 +14530,9 @@ fn unverified_hold() -> Value {
 }
 
 /// S3.25.a: under a policy that requires verified claims a stop here can at best hold. The gate
-/// called that chain ready (the probe is held, so the policy seemed to protect itself); its link
-/// `claims_verified`, read from the verdict's notes, says it, and so does a session's start.
+/// called that chain ready (the probe is held, so the policy seemed to protect itself); both
+/// `claims_verified` and `policy_protects_itself`, read from the verdict, say why it is not
+/// ready, and so does a session's start.
 #[test]
 fn doctor_gate_says_stops_hold_when_the_policy_requires_verified_claims() {
     let (scratch, root, home, script, _log, exit_file) = gate_fixture("doctor-gate-claims");
@@ -13643,6 +14569,17 @@ fn doctor_gate_says_stops_hold_when_the_policy_requires_verified_claims() {
             && said.contains("An uncommitted or staged change can never be verified, so it can at best hold: commit first."),
         "{said}"
     );
+    assert!(
+        !doc["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["name"] == "policy_protects_itself")
+            .unwrap()["ok"]
+            .as_bool()
+            .unwrap(),
+        "{doc:#}"
+    );
     assert_eq!((code, doc["ok"].as_bool()), (7, Some(false)), "{stderr}");
     // the start of a session tells the agent: judged, and held
     let (_, stdout, _) = hook(
@@ -13651,7 +14588,8 @@ fn doctor_gate_says_stops_hold_when_the_policy_requires_verified_claims() {
         &input("SessionStart", &root, "s1", false),
     );
     assert!(
-        stdout.contains("- Stops will be judged. One link is weak: claims_verified: stops here will hold, never pass: "),
+        stdout.contains("- Stops will be judged. Some links are weak: policy_protects_itself: ")
+            && stdout.contains("claims_verified: stops here will hold, never pass: "),
         "{stdout}"
     );
 }
@@ -13824,6 +14762,18 @@ fn a_ledger_that_cannot_be_written_changes_no_decision() {
     let file = |own: &Path| own.join("ledger.jsonl");
     let same_block = |(control, spoiled): (Value, Value), why: &str| {
         let (control, spoiled) = (blocked(&control), blocked(&spoiled));
+        // (release 0.11.1, L1c: a ledger replaced while the project's policy record stands
+        // makes the accepted policy unreadable, which the failing unit's words then say; the
+        // decision, the block, is the same)
+        let spoiled = spoiled
+            .lines()
+            .filter(|line| {
+                !line.starts_with("This unit was judged under one of its two policies: this project's policy record and its ledger disagree")
+                    && !line.starts_with("This unit was judged under one of its two policies: this project's ledger cannot be read whole")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let spoiled = spoiled.as_str();
         assert!(spoiled.starts_with(control), "{control}\n---\n{spoiled}");
         let rest = &spoiled[control.len()..];
         assert!(
@@ -13870,26 +14820,12 @@ fn a_ledger_that_cannot_be_written_changes_no_decision() {
 
     let mut holder = None;
     let started = std::cell::Cell::new(None);
+    let go = scratch.join("go-ledger");
     same_block(
         stop_beside(&root, &judge, "locked", |own| {
             std::fs::remove_file(file(own)).unwrap();
-            let mut child = Command::new("flock")
-                .args(["-o", "-x"])
-                .arg(file(own))
-                .args(["sleep", "60"])
-                .spawn()
-                .unwrap();
-            let held = (0..200).any(|_| {
-                std::thread::sleep(std::time::Duration::from_millis(25));
-                file(own).exists()
-                    && Command::new("flock")
-                        .args(["-n", "-x"])
-                        .arg(file(own))
-                        .arg("true")
-                        .status()
-                        .is_ok_and(|s| !s.success())
-            });
-            assert!(held, "the lock holder did not take the lock");
+            // (made by the holder, as `flock(1)` made it: a regular file, held)
+            let mut child = hold_lock(&file(own), &go);
             assert!(child.try_wait().unwrap().is_none(), "the lock holder ended");
             holder = Some(child);
             started.set(Some(std::time::Instant::now()));
@@ -13898,8 +14834,8 @@ fn a_ledger_that_cannot_be_written_changes_no_decision() {
     );
     let took = started.get().unwrap().elapsed();
     if let Some(mut child) = holder {
-        let _ = child.kill();
-        let _ = child.wait();
+        std::fs::remove_file(&go).unwrap();
+        assert!(child.wait().unwrap().success());
     }
     assert!(took < std::time::Duration::from_secs(20), "{took:?}");
 
@@ -14960,4 +15896,1095 @@ fn a_key_file_that_is_no_key_judges_nothing_and_says_no_key() {
     assert!(!said.contains(&hex) && !said.contains(&*String::from_utf8_lossy(&real)));
     assert_eq!(runs(&log), 1);
     assert_eq!(std::fs::read(&state).unwrap(), before);
+}
+
+/// Whether a unit test that its library's test binary names `path::function` (as
+/// `module::tests::name`) is in some crate of the workspace: the longest leading part of `path`
+/// that is a source file of a crate (`src/a/b.rs` or `src/a/b/mod.rs`; `src/lib.rs` or
+/// `src/main.rs` for none) holds `mod <m> {` for each module of `path` left and `fn <function>()`.
+fn a_unit_test_exists(crates: &Path, path: &str, function: &str) -> bool {
+    let modules: Vec<&str> = path.split("::").collect();
+    std::fs::read_dir(crates).unwrap().any(|entry| {
+        let src = entry.unwrap().path().join("src");
+        (0..=modules.len()).rev().any(|file_part| {
+            let stem = modules[..file_part].join("/");
+            let files = if file_part == 0 {
+                ["lib.rs".to_owned(), "main.rs".to_owned()]
+            } else {
+                [format!("{stem}.rs"), format!("{stem}/mod.rs")]
+            };
+            files.iter().any(|file| {
+                std::fs::read_to_string(src.join(file)).is_ok_and(|text| {
+                    modules[file_part..]
+                        .iter()
+                        .all(|module| text.contains(&format!("mod {module} {{")))
+                        && text.contains(&format!("fn {function}()"))
+                })
+            })
+        })
+    })
+}
+
+/// The list of load-sensitive tests (`tests/LOAD_SENSITIVE`) names tests that exist, each once,
+/// so a renamed or removed test leaves no stale name for a run that skips the list: a test
+/// function of this directory by its name, a unit test of a library by its path in it
+/// (`module::tests::name`).
+#[test]
+fn the_load_sensitive_list_names_tests_that_exist() {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let list = std::fs::read_to_string(tests.join("LOAD_SENSITIVE")).unwrap();
+    let mut sources = String::new();
+    for entry in std::fs::read_dir(&tests).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|extension| extension == "rs") {
+            sources.push_str(&std::fs::read_to_string(&path).unwrap());
+        }
+    }
+    let names: Vec<&str> = list
+        .lines()
+        .filter_map(|line| line.split('#').next().map(str::trim))
+        .filter(|name| !name.is_empty())
+        .collect();
+    assert!(!names.is_empty(), "LOAD_SENSITIVE names no test");
+    let unknown: Vec<&&str> = names
+        .iter()
+        .filter(|name| match name.rsplit_once("::") {
+            None => !sources.contains(&format!("fn {name}()")),
+            Some((path, function)) => !a_unit_test_exists(&crates, path, function),
+        })
+        .collect();
+    assert!(
+        unknown.is_empty(),
+        "LOAD_SENSITIVE names tests that are not here: {unknown:?}"
+    );
+    // the reader of unit tests' paths, on a name that is there (a reader that always said no
+    // would pass this test once no listed name has a module path)
+    assert!(
+        a_unit_test_exists(
+            &crates,
+            "evidence::tests",
+            "the_import_rule_is_linear_on_long_lines"
+        ),
+        "the reader of unit tests' paths did not find a test that is there"
+    );
+    // the reader of unit tests' paths, on names that are not there
+    for planted in [
+        "evidence::tests::no_such_test",
+        "no_such_module::tests::the_import_rule_is_linear_on_long_lines",
+        "evidence::no_such_tests::the_import_rule_is_linear_on_long_lines",
+    ] {
+        let (path, function) = planted.rsplit_once("::").unwrap();
+        assert!(
+            !a_unit_test_exists(&crates, path, function),
+            "{planted} was read as a test"
+        );
+    }
+    let mut once = names.clone();
+    once.sort_unstable();
+    once.dedup();
+    assert_eq!(once.len(), names.len(), "LOAD_SENSITIVE names a test twice");
+}
+
+// ---- Release 0.11.1, P5c: the session's lock is taken wherever the state is written ----
+
+/// Where a `.git` stands above the hooks' state directory: the layouts a to d of P5c's design
+/// (`wf3/P5c-state-directory-design.md`, measured on 0.11.0).
+#[derive(Clone, Copy, Debug)]
+enum Above {
+    /// None (the control).
+    Nothing,
+    /// The home directory is a Git repository with a commit (a dotfiles repository).
+    Repository,
+    /// An empty `.git` directory in the home directory.
+    EmptyGitDirectory,
+    /// The home directory is a linked working tree of another repository (`.git` is a file).
+    GitFile,
+}
+
+/// Whether the row `above` of a test is no control under `scratch`: [`Above::Nothing`] is a
+/// control only where no `.git` stands above the temporary directory (review of P5c, L4). Such
+/// a row is said and left out, not passed.
+fn not_a_control(scratch: &Scratch, above: Above) -> bool {
+    let Above::Nothing = above else {
+        return false;
+    };
+    let Some(git) = git_above(&scratch.join("control")) else {
+        return false;
+    };
+    eprintln!(
+        "note: the control row (nothing above the state directory) is left out: a .git stands at {} above the temporary directory",
+        git.display()
+    );
+    true
+}
+
+/// Make `home` the home of this thread's hooks.
+fn home_is(home: &Path) {
+    HOME.with(|slot| *slot.borrow_mut() = Some(home.to_path_buf()));
+    name_what_the_hooks_met();
+}
+
+/// A home `name` in `scratch` with `above` in it and no state directory yet, made the home of
+/// this thread's hooks.
+fn fresh_home(scratch: &Scratch, name: &str, above: Above) -> PathBuf {
+    let home = scratch.join(name);
+    let dotfiles = |repository: &Path| {
+        git(repository, &["init", "--quiet"]);
+        std::fs::write(repository.join(".bashrc"), "# dotfiles\n").unwrap();
+        git(repository, &["add", ".bashrc"]);
+        git(repository, &["commit", "--quiet", "-m", "dotfiles"]);
+    };
+    match above {
+        Above::Nothing => std::fs::create_dir(&home).unwrap(),
+        Above::Repository => {
+            std::fs::create_dir(&home).unwrap();
+            dotfiles(&home);
+        }
+        Above::EmptyGitDirectory => std::fs::create_dir_all(home.join(".git")).unwrap(),
+        Above::GitFile => {
+            let dots = scratch.join(format!("{name}-dots"));
+            std::fs::create_dir(&dots).unwrap();
+            dotfiles(&dots);
+            git(
+                &dots,
+                &[
+                    "worktree",
+                    "add",
+                    "--quiet",
+                    "-b",
+                    name,
+                    home.to_str().unwrap(),
+                ],
+            );
+            assert!(home.join(".git").is_file());
+        }
+    }
+    home_is(&home);
+    home
+}
+
+/// `session-<the first 32 hex digits of the SHA-256 of the session's id>`: the stem of the
+/// session's files.
+fn stem(session: &str) -> String {
+    format!(
+        "session-{}",
+        &deep_diff_forge_core::sha256_hex(session.as_bytes())[..32]
+    )
+}
+
+/// The id a state gives the hooks' key it was written with: the first 16 hex digits of the
+/// SHA-256 of `ddf-hook-key`, a zero byte and the key.
+fn key_id(key: &[u8]) -> String {
+    let mut bytes = b"ddf-hook-key\0".to_vec();
+    bytes.extend_from_slice(key);
+    deep_diff_forge_core::sha256_hex(&bytes)[..16].to_owned()
+}
+
+/// The names in `dir`, sorted; none when `dir` is not there (so that an assertion about them
+/// says what it found instead of failing on the listing).
+fn names_in(dir: &Path) -> Vec<String> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => panic!("{}: {error}", dir.display()),
+    };
+    let mut names: Vec<String> = entries
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+/// Whether another process holds an exclusive `flock` on `path` now. (`flock(2)` from this
+/// process: portable to macOS, which has no `/proc/locks`.)
+fn locked_by_another(path: &Path) -> bool {
+    let file = std::fs::File::open(path).unwrap();
+    match nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusiveNonblock) {
+        Ok(_taken) => false,
+        Err((_, nix::errno::Errno::EWOULDBLOCK)) => true,
+        Err((_, other)) => panic!("flock {}: {other}", path.display()),
+    }
+}
+
+/// Wait, at most twenty seconds, until `done`.
+fn wait_until(what: &str, done: impl Fn() -> bool) {
+    let asked = std::time::Instant::now();
+    while !done() {
+        assert!(
+            asked.elapsed() < std::time::Duration::from_secs(20),
+            "{what} did not happen in twenty seconds"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// Release 0.11.1, P5c (rows C3, C5, C7; test T1). A hook that ran while the hooks' state
+/// directory was not there took no lock when a directory above it held a `.git` (a home
+/// directory that is a Git repository, an empty `.git`, the `.git` file of a linked working
+/// tree), and the state was written all the same. Two first stops of a session both judged
+/// and both wrote, and the client's continuing stop blocked again in 28 of 46 measured races:
+/// each stop drew a key, the state named the one that lost, and the next hook emptied what had
+/// blocked. With any of them above it every hook behaves as with none (the control, first).
+#[test]
+fn a_git_directory_above_the_state_directory_changes_nothing_of_the_lock() {
+    for above in [
+        Above::Nothing,
+        Above::Repository,
+        Above::EmptyGitDirectory,
+        Above::GitFile,
+    ] {
+        let scratch = Scratch::new(&format!("hook-git-above-{above:?}"));
+        if not_a_control(&scratch, above) {
+            continue;
+        }
+        let root = repository(&scratch);
+        let (script, log) = reading_judge(&scratch);
+        // the account's first hook is a start: it leaves its lock file beside the state
+        fresh_home(&scratch, "start-home", above);
+        start(&root, "s");
+        let (state, lock) = (
+            sessions().join(format!("{}.json", stem("s"))),
+            sessions().join(format!("{}.lock", stem("s"))),
+        );
+        assert!(
+            state.is_file() && lock.is_file(),
+            "{above:?}: the first start took no lock: {:?}",
+            names_in(&sessions())
+        );
+        // a stop holds the session's lock while its judge runs
+        secret(&root, "k.rs");
+        std::fs::write(scratch.join("judge.sleep"), "2\n").unwrap();
+        let start_home = home();
+        let held = std::thread::scope(|scope| {
+            let stop = scope.spawn(|| {
+                home_is(&start_home);
+                stop_from(&root, "s", &script)
+            });
+            wait_until("the stop's judging", || runs(&log) == 1);
+            let held = locked_by_another(&lock);
+            blocked(&stop.join().unwrap());
+            held
+        });
+        assert!(
+            held,
+            "{above:?}: the stop did not hold the session's lock while it judged"
+        );
+        std::fs::remove_file(scratch.join("judge.sleep")).unwrap();
+        // an advice hook under a held lock says nothing and writes nothing
+        silence_a_lint(&root);
+        let before = std::fs::read(&state).unwrap();
+        let go = scratch.join("go");
+        let mut holder = hold_lock(&lock, &go);
+        let said = hook("post-tool", &[], &input("PostToolUse", &root, "s", false)).1;
+        std::fs::remove_file(&go).unwrap();
+        assert!(holder.wait().unwrap().success());
+        assert!(
+            said.is_empty() && std::fs::read(&state).unwrap() == before,
+            "{above:?}: an advice hook under a held lock said or wrote: {said}"
+        );
+        // (and with the lock let go it says and writes: the control of the line above)
+        let said = hook("post-tool", &[], &input("PostToolUse", &root, "s", false)).1;
+        assert!(
+            said.contains("check_suppressed") && std::fs::read(&state).unwrap() != before,
+            "{above:?}: {said}"
+        );
+
+        two_first_stops_take_turns(&scratch, &root, &script, above);
+    }
+}
+
+/// Two first stops of a session at once, in a fresh home with `above` in it: one judges with
+/// the state and the other finds the lock held (both block, as a failing tree blocks every
+/// stop); the client's continuing stop is then let through; and the state names the hooks' key
+/// (test T1, [`a_git_directory_above_the_state_directory_changes_nothing_of_the_lock`]).
+fn two_first_stops_take_turns(scratch: &Scratch, root: &Path, script: &Path, above: Above) {
+    fresh_home(scratch, "race-home", above);
+    let race_home = home();
+    let both = two_first_stops(scratch, root, script, "first", || home_is(&race_home));
+    let blocks = both
+        .iter()
+        .filter(|said| said["decision"] == "block")
+        .count();
+    let waited = both
+        .iter()
+        .filter(|said| {
+            said["reason"]
+                .as_str()
+                .is_some_and(|text| text.starts_with(&stateless("state.lock_busy")))
+        })
+        .count();
+    assert_eq!(
+        (blocks, waited),
+        (2, 1),
+        "{above:?}: two first stops of a session ran at once: {both:?}"
+    );
+    let (code, stdout, stderr) = hook(
+        "stop",
+        &["--judge", script.to_str().unwrap()],
+        &input("Stop", root, "first", true),
+    );
+    assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
+    let after: Value = if stdout.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_str(&stdout).unwrap()
+    };
+    assert_ne!(
+        after["decision"], "block",
+        "{above:?}: the client's continuing stop blocked again: {after}"
+    );
+    let key = std::fs::read(sessions().join("key")).unwrap();
+    let state: Value = serde_json::from_slice(
+        &std::fs::read(sessions().join(format!("{}.json", stem("first")))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        state["key_id"].as_str(),
+        Some(key_id(&key).as_str()),
+        "{above:?}: the state names another key than the hooks' key file"
+    );
+}
+
+/// Release 0.11.1, P5c row C4 (test T2): wherever a hook writes a session's state it holds the
+/// session's lock. A hook that took the lock leaves its lock file while the state stands; one
+/// that took none leaves none. So after each hook (a session's first hook, an advice hook, in
+/// a fresh home; then a start, an advice hook and a stop), in every layout and with
+/// `XDG_STATE_HOME` outside a home that is a repository, the state is there with its lock file
+/// beside it, and every stop holds the lock while its judge runs.
+#[test]
+fn wherever_a_hook_writes_the_state_it_holds_the_lock() {
+    let scratch = Scratch::new("hook-lock-wherever");
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    silence_a_lint(&root);
+    secret(&root, "k.rs");
+    std::fs::write(scratch.join("judge.sleep"), "1\n").unwrap();
+    let layouts = [
+        ("a", Above::Nothing, false),
+        ("b", Above::Repository, false),
+        ("c", Above::EmptyGitDirectory, false),
+        ("d", Above::GitFile, false),
+        ("g", Above::Repository, true),
+    ];
+    for (name, above, outside) in layouts {
+        if not_a_control(&scratch, above) {
+            continue;
+        }
+        let home = fresh_home(&scratch, &format!("home-{name}"), above);
+        let xdg = scratch.join(format!("state-{name}"));
+        let dir = if outside {
+            xdg.join("deep-diff-forge/hooks")
+        } else {
+            sessions()
+        };
+        let session = format!("t-{name}");
+        let shape = |command: &mut Command| {
+            if outside {
+                command.env("XDG_STATE_HOME", &xdg);
+            }
+        };
+        let run = |event: &str, extra: &[&str], kind: &str| {
+            let (code, stdout, stderr) =
+                hook_in(event, extra, &input(kind, &root, &session, false), shape);
+            assert_eq!((code, stderr.as_str()), (0, ""), "{stdout}");
+        };
+        let kept_under_the_lock = |after: &str| {
+            let names = names_in(&dir);
+            let stem = stem(&session);
+            assert!(
+                names.contains(&format!("{stem}.json")) && names.contains(&format!("{stem}.lock")),
+                "{name}: after {after} the state is not there with its lock file beside it: {names:?}"
+            );
+        };
+        run("post-tool", &[], "PostToolUse");
+        kept_under_the_lock("the session's first hook, an advice hook");
+        run("session-start", &[], "SessionStart");
+        kept_under_the_lock("a start");
+        run("post-tool", &[], "PostToolUse");
+        kept_under_the_lock("an advice hook");
+        let judged = runs(&log);
+        let lock = dir.join(format!("{}.lock", stem(&session)));
+        let held = std::thread::scope(|scope| {
+            let stop = scope.spawn(|| {
+                home_is(&home);
+                run("stop", &["--judge", script.to_str().unwrap()], "Stop");
+            });
+            wait_until("the stop's judging", || runs(&log) > judged);
+            let held = locked_by_another(&lock);
+            stop.join().unwrap();
+            held
+        });
+        assert!(
+            held,
+            "{name}: the stop did not hold the lock while it judged"
+        );
+        kept_under_the_lock("a stop");
+    }
+}
+
+/// Release 0.11.1, P5c rows C5 and C6 (test T3): a state directory inside the working tree of
+/// the session's project is refused, as 0.11.0 refuses it (the home directory is the project,
+/// or lies inside it): the start and an advice hook say so, every stop is UNJUDGED and never
+/// blocks, the judge is never called, and when the hooks have run no file of theirs is in the
+/// project and Git sees what it saw before. (The lock may leave empty directories there: Git
+/// records none.)
+#[test]
+fn a_state_directory_inside_the_project_is_refused_and_leaves_no_file_there() {
+    for case in ["home-is-the-project", "home-inside-the-project"] {
+        let scratch = Scratch::new(&format!("hook-state-in-project-{case}"));
+        let root = repository(&scratch);
+        let (script, log) = reading_judge(&scratch);
+        let home = if case == "home-is-the-project" {
+            root.clone()
+        } else {
+            root.join("users/u")
+        };
+        std::fs::create_dir_all(&home).unwrap();
+        home_is(&home);
+        secret(&root, "k.rs");
+        let status = || {
+            git(
+                &root,
+                &[
+                    "status",
+                    "--porcelain",
+                    "--untracked-files=all",
+                    "--ignored",
+                ],
+            )
+        };
+        let before = status();
+        let refused = "lies inside the project's working tree";
+        let (code, started, stderr) = hook(
+            "session-start",
+            &[],
+            &input("SessionStart", &root, "s", false),
+        );
+        assert_eq!((code, stderr.as_str()), (0, ""), "{started}");
+        assert!(
+            started.starts_with("deep-diff-forge: the stops of this session will not be judged and no advice will be given: the state directory ")
+                && started.contains(refused)
+                && started.contains(": point XDG_STATE_HOME (or HOME) outside it. That is not a pass."),
+            "{case}: {started}"
+        );
+        let advice =
+            system_message(&hook("post-tool", &[], &input("PostToolUse", &root, "s", false)).1);
+        assert!(
+            advice.starts_with("deep-diff-forge: the hook did not run: the state directory ")
+                && advice.contains(refused),
+            "{case}: {advice}"
+        );
+        assert_eq!(
+            hook("post-tool", &[], &input("PostToolUse", &root, "s", false)).1,
+            "",
+            "{case}: said twice"
+        );
+        for _ in 0..2 {
+            let stop = stop_from(&root, "s", &script);
+            let said = allowed(&stop);
+            assert!(
+                said.starts_with(
+                    "deep-diff-forge: UNJUDGED. This stop was not judged: the state directory "
+                ) && said.contains(refused),
+                "{case}: {said}"
+            );
+        }
+        assert_eq!(runs(&log), 0, "{case}: the judge was called");
+        let left = files_left_under(&home.join(".local"));
+        assert!(
+            left.is_empty(),
+            "{case}: the hooks left files in the project: {left:?}"
+        );
+        assert_eq!(status(), before, "{case}");
+    }
+}
+
+/// The session-start hook takes the session's lock for its reading and writing (SECURITY.md;
+/// release 0.11.1, an audit found no test of it: every test contended stops or advice hooks).
+/// Another process holds the lock of a session while its start runs: the start writes nothing
+/// into the state directory, says that it recorded nothing and why, and a start after the lock
+/// is let go records the session as usual.
+#[test]
+fn a_session_start_under_a_held_lock_records_nothing_and_says_so() {
+    let scratch = Scratch::new("hook-start-lock-held");
+    let root = repository(&scratch);
+    // (another session's start makes the state directory)
+    start(&root, "other");
+    let listing = || -> Vec<(String, Vec<u8>)> {
+        names_in(&sessions())
+            .into_iter()
+            .map(|name| {
+                let bytes = std::fs::read(sessions().join(&name)).unwrap();
+                (name, bytes)
+            })
+            .collect()
+    };
+    let lock = sessions().join(format!("{}.lock", stem("s")));
+    let go = scratch.join("go");
+    let mut holder = hold_lock(&lock, &go);
+    let before = listing();
+    let (code, said, stderr) = hook(
+        "session-start",
+        &[],
+        &input("SessionStart", &root, "s", false),
+    );
+    let after = listing();
+    std::fs::remove_file(&go).unwrap();
+    assert!(holder.wait().unwrap().success());
+    assert_eq!((code, stderr.as_str()), (0, ""), "{said}");
+    assert!(
+        said.contains("- The start of this session could not be recorded (another hook of this session was running, so this start recorded nothing): a later hook takes the commit HEAD names then, so commits made before it are not judged."),
+        "{said}"
+    );
+    assert_eq!(
+        after, before,
+        "the start wrote into the state directory while another hook held the session's lock"
+    );
+    // the lock let go, a start records the session
+    start(&root, "s");
+    assert!(sessions().join(format!("{}.json", stem("s"))).is_file());
+}
+
+/// Review of P5c, V1: while a stop holds the session's lock and its judge runs, another process
+/// moves the state directory away and puts a fresh directory of mode 0700 at its name. The stop
+/// writes nothing into the fresh directory (its writes went by the directory's name, so its
+/// state went there while its lock stayed in the one moved away), and says that its state could
+/// not be saved and why. First, the positive control: a stop alone writes the session's state at
+/// its name.
+#[test]
+fn a_state_directory_replaced_while_a_stop_holds_the_lock_gets_nothing_written() {
+    stop_with_its_state_directory_replaced("hook-state-dir-replaced", false);
+}
+
+/// Review of P5c round 2, M1: as the test above, with a symbolic link to another directory put
+/// at the state directory's name in place of a fresh directory: nothing is written into the
+/// link's target.
+#[test]
+fn a_state_directory_replaced_by_a_link_while_a_stop_holds_the_lock_gets_nothing_written() {
+    stop_with_its_state_directory_replaced("hook-state-dir-linked", true);
+}
+
+/// The two tests above: a fresh directory (or, with `link`, a link to the directory
+/// `elsewhere`) put at the state directory's name while a stop judges.
+fn stop_with_its_state_directory_replaced(name: &str, link: bool) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let scratch = Scratch::new(name);
+    let root = repository(&scratch);
+    let (script, log) = reading_judge(&scratch);
+    start(&root, "s");
+    secret(&root, "k.rs");
+    let state = sessions().join(format!("{}.json", stem("s")));
+    let before = std::fs::read(&state).unwrap();
+    blocked(&stop_from(&root, "s", &script));
+    assert_ne!(
+        std::fs::read(&state).unwrap(),
+        before,
+        "(control) a stop alone wrote no state at its name"
+    );
+    // (a commit, so that the next stop has its verdict to write)
+    secret(&root, "k2.rs");
+    commit_all(&root, "a commit of this session");
+    std::fs::write(scratch.join("judge.sleep"), "2\n").unwrap();
+    let (dir, held) = (sessions(), sessions().with_file_name("hooks-held"));
+    let elsewhere = scratch.join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    std::fs::set_permissions(&elsewhere, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let judged = runs(&log);
+    let stop_home = home();
+    let said = std::thread::scope(|scope| {
+        let stop = scope.spawn(|| {
+            home_is(&stop_home);
+            stop_from(&root, "s", &script)
+        });
+        wait_until("the stop's judging", || runs(&log) > judged);
+        std::fs::rename(&dir, &held).unwrap();
+        if link {
+            std::os::unix::fs::symlink(&elsewhere, &dir).unwrap();
+        } else {
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        stop.join().unwrap()
+    });
+    std::fs::remove_file(scratch.join("judge.sleep")).unwrap();
+    assert_eq!(
+        (names_in(&dir), files_left_under(&elsewhere)),
+        (Vec::<String>::new(), Vec::<PathBuf>::new()),
+        "the stop wrote into what was put at the state directory's name while it held the lock in the one moved away: {said}"
+    );
+    assert!(
+        stop_words(&said).contains("is no longer the directory the session's lock was taken in (another process moved it away or put another in its place while this hook ran)"),
+        "{said}"
+    );
+    assert!(names_in(&held).contains(&format!("{}.lock", stem("s"))));
+}
+
+/// Review of P5c round 2, M1: an advice hook reads the session's state in its directory, and
+/// takes the session's lock only to write. Between the two (here: while its first Git call
+/// waits) the directory is moved away and a symbolic link to another directory is put at its
+/// name. The lock may follow the link, as in 0.11.0; the state is not written through it: the
+/// link's target stays empty, and the hook says the state directory is not a directory of its
+/// own, as 0.11.0 said. First, the positive control: an advice hook alone writes the state.
+#[test]
+fn an_advice_hook_writes_no_state_through_a_link_put_at_the_state_directory() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let scratch = Scratch::new("hook-advice-link");
+    let root = repository(&scratch);
+    start(&root, "s");
+    let state = sessions().join(format!("{}.json", stem("s")));
+    let before = std::fs::read(&state).unwrap();
+    silence_a_lint(&root);
+    let (code, _, stderr) = hook("post-tool", &[], &input("PostToolUse", &root, "s", false));
+    assert_eq!((code, stderr.as_str()), (0, ""));
+    assert_ne!(
+        std::fs::read(&state).unwrap(),
+        before,
+        "(control) an advice hook alone wrote no state"
+    );
+    // (another finding, so that the next advice hook has something to write)
+    std::fs::write(
+        root.join("b.rs"),
+        "fn c() {}\n#[allow(unused)]\nfn d() {}\n",
+    )
+    .unwrap();
+    let (armed, waiting) = (scratch.join("armed"), scratch.join("waiting"));
+    let first = git_with(
+        &scratch,
+        "git-waits",
+        &format!(
+            "if [ -e '{armed}' ] && [ ! -e '{waiting}' ]; then : > '{waiting}'; while [ -e '{armed}' ]; do sleep 0.05; done; fi",
+            armed = armed.display(),
+            waiting = waiting.display()
+        ),
+    );
+    std::fs::write(&armed, "").unwrap();
+    let (dir, elsewhere) = (sessions(), scratch.join("elsewhere"));
+    std::fs::create_dir(&elsewhere).unwrap();
+    std::fs::set_permissions(&elsewhere, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let advice_home = home();
+    let said = std::thread::scope(|scope| {
+        let advice = scope.spawn(|| {
+            home_is(&advice_home);
+            let mut dirs = vec![first.clone()];
+            dirs.extend(std::env::split_paths(
+                &std::env::var_os("PATH").unwrap_or_default(),
+            ));
+            hook_in(
+                "post-tool",
+                &[],
+                &input("PostToolUse", &root, "s", false),
+                |command| {
+                    command.env("PATH", std::env::join_paths(dirs).unwrap());
+                },
+            )
+        });
+        wait_until("the advice hook's first Git call", || waiting.exists());
+        std::fs::rename(&dir, dir.with_file_name("hooks-held")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &dir).unwrap();
+        std::fs::remove_file(&armed).unwrap();
+        advice.join().unwrap()
+    });
+    assert_eq!(
+        files_left_under(&elsewhere),
+        Vec::<PathBuf>::new(),
+        "the advice hook wrote through a link put at the state directory's name: {said:?}"
+    );
+    assert!(
+        said.1
+            .contains("is not a directory of its own (a symbolic link or a file stands there)"),
+        "{said:?}"
+    );
+}
+
+/// Review of P5c round 2, L1: a session's lock file this user may write and not read (mode
+/// 0200) is still the lock: the hook looks at it to check it is the one at its name, and does
+/// not open it again to read. A stop takes the lock and blocks for a failure, as in 0.11.0;
+/// the re-check that opened the file to read gave every stop `state.lock_busy` (UNJUDGED in the
+/// session's memory, no block).
+#[test]
+fn a_lock_file_that_cannot_be_read_is_still_the_lock() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let scratch = Scratch::new("hook-lock-0200");
+    let root = repository(&scratch);
+    let (script, _log) = reading_judge(&scratch);
+    start(&root, "s");
+    let lock = sessions().join(format!("{}.lock", stem("s")));
+    std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o200)).unwrap();
+    secret(&root, "k.rs");
+    let said = stop_from(&root, "s", &script);
+    let reason = blocked(&said);
+    assert!(
+        !reason.starts_with(&stateless("state.lock_busy")),
+        "a lock file that cannot be read was taken for another hook's: {reason}"
+    );
+}
+
+/// Review of P5c, L1 and L2: where the session's lock file cannot be opened (a directory stands
+/// at its name), no hook writes the session's state without the lock (0.11.0 wrote it), the
+/// start says why it recorded nothing, and a stop says the cause first, with how to read what
+/// follows it, and not that the session-start hook must be installed (it is, and it ran).
+#[test]
+fn a_lock_that_cannot_be_taken_keeps_no_state_and_a_stop_says_its_cause_first() {
+    let scratch = Scratch::new("hook-lock-unopenable");
+    let root = repository(&scratch);
+    let (script, _log) = reading_judge(&scratch);
+    let lock = format!("{}.lock", stem("s"));
+    std::fs::create_dir_all(sessions().join(&lock)).unwrap();
+    let (code, started, stderr) = hook(
+        "session-start",
+        &[],
+        &input("SessionStart", &root, "s", false),
+    );
+    assert_eq!((code, stderr.as_str()), (0, ""), "{started}");
+    let unlocked = |hook: &str| {
+        assert_eq!(
+            names_in(&sessions()),
+            std::slice::from_ref(&lock),
+            "{hook} wrote a state without the session's lock"
+        );
+    };
+    unlocked("the start");
+    assert!(
+        started.contains("- The start of this session could not be recorded (its state could not be saved: the session's lock file "),
+        "{started}"
+    );
+    secret(&root, "k.rs");
+    let said = stop_from(&root, "s", &script);
+    unlocked("the stop");
+    let reason = blocked(&said);
+    assert!(
+        reason.starts_with("deep-diff-forge: this session's lock cannot be taken where its state is kept (the session's lock file ")
+            && reason.contains("Read what follows with that: \"when this session's hooks first ran\" means this stop; a commit marked \"not this session's\" may be this session's own work"),
+        "{reason}"
+    );
+    assert!(
+        !reason.contains("the session-start hook must be installed")
+            && !reason.contains("The hook could not keep its state ("),
+        "{reason}"
+    );
+    // a session whose start was recorded, and whose lock file cannot be opened from then on:
+    // its start kept a state, and the stop says so no other way
+    start(&root, "r");
+    let lock = sessions().join(format!("{}.lock", stem("r")));
+    std::fs::remove_file(&lock).unwrap();
+    std::fs::create_dir(&lock).unwrap();
+    secret(&root, "k2.rs");
+    let said = stop_from(&root, "r", &script);
+    let reason = blocked(&said);
+    assert!(
+        reason.starts_with("deep-diff-forge: this session's lock cannot be taken where its state is kept (the session's lock file ")
+            && reason.contains("so this stop keeps no state: until the cause is repaired")
+            && !reason.contains("its start included"),
+        "{reason}"
+    );
+}
+
+// ---- Release 0.11.1, P5d: the hooks' state directory keeps itself out of every working tree ----
+
+/// Where the hooks' state directory lies in another working tree of the session's project
+/// (design D7 of P5d): the home directory, which holds the state, is that tree.
+#[derive(Clone, Copy, Debug)]
+enum OtherTree {
+    /// The home directory is the main working tree; the project is a linked one.
+    HomeMain,
+    /// The home directory is a linked working tree; the project is the main one.
+    HomeLinked,
+    /// The home directory is a dotfiles repository whose linked working tree, outside the home
+    /// directory, is the project.
+    Dotfiles,
+}
+
+/// A layout of [`OtherTree`]: the home directory (the tree the session enters), and the
+/// project the client names.
+struct Laid {
+    home: PathBuf,
+    project: PathBuf,
+}
+
+/// Lay `case` out in `scratch` (made the home of this thread's hooks), as the design's probes
+/// laid it (`probe_d7.py`): every tree with the files and the policy of [`repository`].
+fn lay_other_tree(scratch: &Scratch, case: OtherTree) -> Laid {
+    let main = repository(scratch);
+    let laid = match case {
+        OtherTree::HomeMain | OtherTree::HomeLinked => {
+            let linked = scratch.join("linked");
+            git(
+                &main,
+                &[
+                    "worktree",
+                    "add",
+                    "--quiet",
+                    "-b",
+                    "side",
+                    linked.to_str().unwrap(),
+                ],
+            );
+            if let OtherTree::HomeMain = case {
+                Laid {
+                    home: main,
+                    project: linked,
+                }
+            } else {
+                Laid {
+                    home: linked,
+                    project: main,
+                }
+            }
+        }
+        OtherTree::Dotfiles => {
+            std::fs::write(main.join(".bashrc"), "# dotfiles\n").unwrap();
+            git(&main, &["add", ".bashrc"]);
+            git(&main, &["commit", "--quiet", "-m", "dotfiles"]);
+            let project = scratch.join("work/proj");
+            std::fs::create_dir(scratch.join("work")).unwrap();
+            git(
+                &main,
+                &[
+                    "worktree",
+                    "add",
+                    "--quiet",
+                    "-b",
+                    "work",
+                    project.to_str().unwrap(),
+                ],
+            );
+            Laid {
+                home: main,
+                project,
+            }
+        }
+    };
+    home_is(&laid.home);
+    laid
+}
+
+/// Run the hook `event` of `session` from `cwd` with the client naming the project of `laid`
+/// (`CLAUDE_PROJECT_DIR`); a stop is given `judge`. A start must record the session, and a stop
+/// gives its decision (`Null` when it says nothing).
+fn hook_of(laid: &Laid, event: &str, cwd: &Path, session: &str, judge: &Path) -> Value {
+    let kind = match event {
+        "session-start" => "SessionStart",
+        "post-tool" => "PostToolUse",
+        _ => "Stop",
+    };
+    let extra: &[&str] = if event == "stop" {
+        &["--judge", judge.to_str().unwrap()]
+    } else {
+        &[]
+    };
+    let (code, stdout, stderr) = hook_in(event, extra, &input(kind, cwd, session, false), |c| {
+        c.env("CLAUDE_PROJECT_DIR", &laid.project);
+    });
+    assert_eq!((code, stderr.as_str()), (0, ""), "{event}: {stdout}");
+    assert!(
+        !stdout.contains("- The start of this session could not be recorded ("),
+        "{event}: {stdout}"
+    );
+    if event != "stop" || stdout.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{e}: {stdout:?}"))
+    }
+}
+
+/// The files of the patches the reading judge was shown that lie in the hooks' state
+/// directory of a home directory that is the tree's top.
+fn hooks_files_shown(log: &Path) -> Vec<String> {
+    shown(log)
+        .iter()
+        .flat_map(|names| names.split(','))
+        .filter(|name| name.starts_with(".local/state/deep-diff-forge/"))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Release 0.11.1, P5d (rows R2, R4; test T1). Where the home directory, which holds the hooks'
+/// state, is another working tree of the session's project, a stop made from that tree gave the
+/// judge the hooks' key, the session's state, its lock file and its tips as the agent's change
+/// (0.11.0 blocked on the key's random bytes, or held, with no change of the agent's). With
+/// the directory's `.gitignore` no patch the judge is given names a file of the hooks; a secret
+/// the agent then writes into that tree is judged and blocks, as anywhere. (Asserted on the
+/// patches' files, not on a real judge's verdict, which depends on the key's bytes.)
+#[test]
+fn the_hooks_files_in_another_working_tree_of_the_project_are_not_the_agents_change() {
+    for case in [
+        OtherTree::HomeMain,
+        OtherTree::HomeLinked,
+        OtherTree::Dotfiles,
+    ] {
+        let scratch = Scratch::new(&format!("hook-other-tree-{case:?}"));
+        let laid = lay_other_tree(&scratch, case);
+        let (script, log) = reading_judge(&scratch);
+        hook_of(&laid, "session-start", &laid.project, "s", &script);
+        hook_of(&laid, "post-tool", &laid.home, "s", &script);
+        assert!(
+            sessions().join("key").is_file() && laid.home.join(".git").symlink_metadata().is_ok(),
+            "{case:?}: (control) the hooks did not keep their state in the home directory's working tree"
+        );
+        let first = hook_of(&laid, "stop", &laid.home, "s", &script);
+        assert_ne!(first["decision"], "block", "{case:?}: {first}");
+        assert_eq!(
+            hooks_files_shown(&log),
+            Vec::<String>::new(),
+            "{case:?}: a judged patch named the hooks' files (no change of the agent's): {:?}",
+            shown(&log)
+        );
+        // the agent's own change in that tree is judged as before
+        secret(&laid.home, "leak.rs");
+        hook_of(&laid, "post-tool", &laid.home, "s", &script);
+        let after = runs(&log);
+        blocked(&hook_of(&laid, "stop", &laid.home, "s", &script));
+        assert!(
+            runs(&log) > after
+                && shown(&log)
+                    .iter()
+                    .any(|names| names.split(',').any(|name| name == "leak.rs")),
+            "{case:?}: the secret in the home directory's tree was not judged: {:?}",
+            shown(&log)
+        );
+        assert_eq!(
+            hooks_files_shown(&log),
+            Vec::<String>::new(),
+            "{case:?}: a judged patch named the hooks' files beside the agent's change: {:?}",
+            shown(&log)
+        );
+    }
+}
+
+/// Release 0.11.1, P5d (rows R2, R4; test T3; P5c's layout b): in a home directory that is a
+/// dotfiles repository, its `git status` lists no file of the hooks, whichever hook was the
+/// account's first (a start, an advice hook, a stop: each writes the state) and after a stop.
+/// Before, it listed the key, the states and the lists, and `git add --all` committed the key
+/// beside the states it keys. (The control: a file of another program in the same place is
+/// listed.)
+#[test]
+fn a_home_repository_does_not_list_the_hooks_files() {
+    let scratch = Scratch::new("hook-home-repository-ignores");
+    let root = repository(&scratch);
+    let (script, _) = reading_judge(&scratch);
+    silence_a_lint(&root);
+    for (row, first) in [
+        ("a start", "session-start"),
+        ("an advice hook", "post-tool"),
+        ("a stop", "stop"),
+    ] {
+        let home = fresh_home(&scratch, &format!("home-{first}"), Above::Repository);
+        let listed = || {
+            git(&home, &["status", "--porcelain", "--untracked-files=all"])
+                .lines()
+                .filter(|line| line.contains(".local/"))
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        let kind = match first {
+            "session-start" => "SessionStart",
+            "post-tool" => "PostToolUse",
+            _ => "Stop",
+        };
+        for (event, kind) in [(first, kind), ("stop", "Stop")] {
+            let judged = ["--judge", script.to_str().unwrap()];
+            let extra: &[&str] = if event == "stop" { &judged } else { &[] };
+            let (code, stdout, stderr) = hook(event, extra, &input(kind, &root, row, false));
+            assert_eq!((code, stderr.as_str()), (0, ""), "{row}: {stdout}");
+            assert!(
+                names_in(&sessions()).contains(&format!("{}.json", stem(row))),
+                "{row}: {event} kept no state: {:?}",
+                names_in(&sessions())
+            );
+            assert_eq!(
+                listed(),
+                Vec::<String>::new(),
+                "{row}: after {event} the home repository lists the hooks' files"
+            );
+        }
+        let other = home.join(".local/state/another-program/x");
+        std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+        std::fs::write(&other, "x\n").unwrap();
+        assert_eq!(
+            listed(),
+            ["?? .local/state/another-program/x".to_owned()],
+            "{row}: (control) the home repository does not list a file there"
+        );
+    }
+}
+
+/// Release 0.11.1, P5d (row R5; test T5), the stated limit asserted so that a change of it is
+/// seen: in the layout of T1 (the home directory the main working tree of the project), a file
+/// the agent puts into the hooks' state directory there is ignored as the hooks' files are,
+/// and is not judged while it is not staged (as a file under any `.gitignore` that ignores
+/// itself, a limit SECURITY.md states). Once the repository's index lists it (`git add -f`) it
+/// is in the next commit, and the working tree's patch holds it as the working tree has it
+/// (HR-M-2): staged harmless and then given a secret in the working tree only, a stop blocks.
+/// (A stop also judges the index by itself, HR4-H-1: the staged version here is harmless so
+/// that only the working tree's patch can block.)
+#[test]
+fn a_file_put_into_the_hooks_directory_is_judged_once_staged() {
+    let scratch = Scratch::new("hook-other-tree-planted");
+    let laid = lay_other_tree(&scratch, OtherTree::HomeMain);
+    let (script, log) = reading_judge(&scratch);
+    hook_of(&laid, "session-start", &laid.project, "s", &script);
+    hook_of(&laid, "post-tool", &laid.home, "s", &script);
+    let planted = ".local/state/deep-diff-forge/hooks/leak.rs";
+    secret(&laid.home, planted);
+    let unstaged = hook_of(&laid, "stop", &laid.home, "s", &script);
+    assert_ne!(
+        unstaged["decision"],
+        "block",
+        "the stated limit changed: an unstaged file in the hooks' directory was judged: {unstaged} {:?}",
+        shown(&log)
+    );
+    std::fs::write(laid.home.join(planted), "fn harmless() {}\n").unwrap();
+    git(&laid.home, &["add", "-f", planted]);
+    secret(&laid.home, planted);
+    let staged = hook_of(&laid, "stop", &laid.home, "s", &script);
+    assert!(
+        staged["decision"] == "block"
+            && shown(&log)
+                .iter()
+                .any(|names| names.split(',').any(|name| name == planted)),
+        "a file the index lists in the hooks' directory was not judged as the working tree has it: {staged} {:?}",
+        shown(&log)
+    );
+}
+
+/// Release 0.11.1, P5d (rows R2, R4; test T6; N109): a state directory in the home directory's
+/// tree as an earlier build leaves it (the key and another session's state and lists, no
+/// `.gitignore`: the tree's `git status` lists them) gets the file at the first state this
+/// build keeps there; a stop from that tree then judges the agent's change and none of the
+/// directory's files, another session's included.
+#[test]
+fn another_sessions_files_in_the_tree_are_not_judged_after_a_kept_state() {
+    let scratch = Scratch::new("hook-other-tree-earlier");
+    let laid = lay_other_tree(&scratch, OtherTree::HomeMain);
+    let (script, log) = reading_judge(&scratch);
+    hook_of(&laid, "session-start", &laid.project, "other", &script);
+    // (as an earlier build leaves it; the control below says whether it is)
+    let _ = std::fs::remove_file(sessions().join(".gitignore"));
+    let listed = git(
+        &laid.home,
+        &["status", "--porcelain", "--untracked-files=all"],
+    );
+    assert!(
+        listed.contains(".local/state/deep-diff-forge/hooks/key")
+            && listed.contains(&format!("{}.json", stem("other"))),
+        "(control) the directory is not as an earlier build leaves it: {listed}"
+    );
+    hook_of(&laid, "session-start", &laid.project, "s", &script);
+    std::fs::write(laid.home.join("note.txt"), "a harmless change\n").unwrap();
+    hook_of(&laid, "post-tool", &laid.home, "s", &script);
+    hook_of(&laid, "stop", &laid.home, "s", &script);
+    assert!(
+        shown(&log)
+            .iter()
+            .any(|names| names.split(',').any(|name| name == "note.txt")),
+        "(control) the agent's change was not judged: {:?}",
+        shown(&log)
+    );
+    assert_eq!(
+        hooks_files_shown(&log),
+        Vec::<String>::new(),
+        "a judged patch named the hooks' files, another session's included: {:?}",
+        shown(&log)
+    );
 }

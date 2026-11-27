@@ -69,16 +69,30 @@ jobs:
       - name: check on Rust 1.88
         run: cargo check --workspace --all-targets --locked
 
-  # macOS binaries ship from release.yml, so their tests run on every event: each pull request,
-  # each push to main, the weekly run, a manual run and a release (release.yml calls this
-  # workflow). Before 2026-10-30 they ran only weekly, manually and on release, and two macOS
-  # breaks in PR #44 were caught only by a manual run. The job takes about 4 minutes, so it runs
-  # on every pull request rather than behind a path filter, which would miss a break that reaches
-  # the daemon or the socket code through another crate.
+  # The whole suite on macOS, on every event: each pull request, each push to main, the weekly
+  # run, a manual run and a release (release.yml calls this workflow). release.yml has macOS
+  # targets, but releases are built locally since 0.8.4 (scripts/release_local.sh) and no macOS
+  # binary has shipped since 0.8.3; `cargo install deep-diff-forge-cli` builds there all the same.
+  # Every run on record from 2026-11-22 to 2026-11-24 was red here: 22 tests on the 0.11.0 tree,
+  # read to their cause, most of them tests that assumed Linux (flock(1), sha256sum, a short
+  # /tmp, file names that are not UTF-8), since made portable. It runs on every pull request
+  # rather than behind a path filter, which would miss a break that reaches the daemon or the
+  # socket code through another crate.
+  #
+  # The job took 39 minutes (run 45670721783) and 45 minutes (run 45701563166, PR #131), the whole
+  # suite in one pass, of the 60 it had. Its test step is now the gate's (scripts/test_step.sh),
+  # which adds a second pass: the tests LOAD_SENSITIVE names, alone on one thread. Those tests took
+  # at most 17 minutes on this runner in those two runs, measured from their test binary's start
+  # to their result line while the rest of the suite ran beside them (an upper bound: alone they
+  # are not slowed by the others). 45 + 17 = 62 minutes; the limit of 90 leaves 28 more, over four
+  # times the 6 minutes by which the two runs differed, so a slow run ends with its own result.
+  # `linux-arm64` keeps the one plain pass: it passed both runs, the listed tests included, in 19
+  # and 23 minutes of its 60 (its hook tests took 436 s, the graph crate's 326 s, against 1022 s
+  # and 544 s here).
   macos:
     name: macOS tests
     runs-on: macos-26
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (node24)
         with:
@@ -86,9 +100,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
           toolchain: 1.99.1
-      # --no-fail-fast: one run reports every failing test binary, not just the first.
+      # The gate's test step, as in the job `gate`: the workspace's tests less those
+      # crates/deep-diff-forge-cli/tests/LOAD_SENSITIVE names, then those alone on one thread;
+      # both with --no-fail-fast (one run reports every failing test binary, not just the first).
+      # In PR #131's two runs one hook test of that list and four timing tests of the graph crate
+      # failed here only while the whole suite ran at once (the list gives each its run).
       - name: test on macOS
-        run: cargo test --workspace --locked --no-fail-fast
+        run: scripts/test_step.sh
 
   # Linux arm64 binaries ship from release.yml (since 2026-10-31, built and run on
   # ubuntu-22.04-arm, the image the release builds on: on ubuntu-24.04-arm the binary needed
@@ -145,7 +163,13 @@ jobs:
   gate:
     name: deploy gate-feature
     runs-on: ubuntu-26.04
-    timeout-minutes: 45
+    # Raised from 45: PR #131's runs took 38.5 and 37.3 minutes (runs 45670721783 and
+    # 45701563166), of which the test step 2,200 s and 2,131 s; no other step took over 22 s.
+    # 45 left 17% over the slower run. 60 leaves 21.5 minutes (56%), eighteen times the 1.2
+    # minutes by which the two runs differed. What used the old margin is the suite's growth, not
+    # runner noise: the test step took 98 s on 2026-11-21 (run 44953015980) and 1,526 s on
+    # 2026-11-24 (run 45449170576).
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (node24)
         with:
@@ -176,7 +200,10 @@ jobs:
           cargo clippy -p deep-diff-forge-patch --no-default-features --all-targets --locked -- -D warnings -W clippy::pedantic
           cargo clippy --manifest-path fuzz/Cargo.toml --all-targets --locked -- -D warnings -W clippy::pedantic
       - name: test
-        run: cargo test --workspace --locked
+        # The workspace's tests less those crates/deep-diff-forge-cli/tests/LOAD_SENSITIVE names,
+        # then those alone on one thread; both with --no-fail-fast (one run reports every failing
+        # test binary, not just the first). scripts/ci_local.sh runs the same script.
+        run: scripts/test_step.sh
       - name: docs
         # Mirror the docs.rs build so a broken intra-doc link fails CI, not the
         # public docs page after publish.
@@ -216,7 +243,10 @@ jobs:
     name: review controller mutation and fuzz evidence
     runs-on: ubuntu-26.04
     # Raised from 30: the gate image build installs two Rust toolchains and compiles
-    # cargo-mutants and cargo-fuzz inside the image.
+    # cargo-mutants and cargo-fuzz inside the image. What it holds (0.11.1): every step but the
+    # mutation took 8.6 to 10.9 minutes in the last three green runs (44953015980, 43870688071,
+    # 43087441253); the mutation's 22 mutants took 3 minutes locally, and at most 22 x (120 s
+    # floor + 30 s build) = 55 minutes if every one of them hung, so 66 in the worst case.
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (node24)
@@ -231,9 +261,19 @@ jobs:
           cargo install cargo-fuzz --version 0.13.2 --locked
           rustup toolchain install nightly-2026-10-25 --profile minimal
       - name: scoped mutation of admission and receipt qualification
+        # The review crate's admission (`identifier`, lib.rs) and receipt qualification
+        # (`check_execution`, policy.rs), judged by that crate's own tests. cargo-mutants 27.1.0
+        # times its baseline on the mutated package's tests alone (1 to 3 s here) whatever
+        # --test-workspace says, so with `--test-workspace true` every mutant ran the whole
+        # workspace (25 to 37 minutes on this runner since 2026-11-24) against a timeout set from
+        # that baseline or a fixed 300 s: PR #131's runs logged TIMEOUT for each mutant and were
+        # cancelled at 75 minutes. With `false` the mutants run what the baseline measured (all 22
+        # caught locally, 3 minutes, slowest mutant's tests 19 s). `--file` keeps the scope to the
+        # two functions: `--re` does not filter struct-field mutants, and without it the 24 of
+        # journal.rs ran too (22 of them are not caught by the crate's own tests).
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/ddf-review-mutation-target
-        run: cargo mutants --package deep-diff-forge-review --re 'identifier|check_execution' --test-workspace true --timeout 300
+        run: cargo mutants --package deep-diff-forge-review --file crates/deep-diff-forge-review/src/lib.rs --file crates/deep-diff-forge-review/src/policy.rs --re 'identifier|check_execution' --test-workspace false --timeout-multiplier 5 --minimum-test-timeout 120
       - name: instrumented fuzz smoke for every target
         # Every target in fuzz/Cargo.toml runs here for 10 s (anchor B-06); before, four only ever
         # compiled. The list comes from the manifest (scripts/fuzz_target.sh --list), so a new
@@ -310,10 +350,18 @@ jobs:
   diff-mutation:
     # Anchor B-01: every pull request's changed Rust lines are mutated against its merge base, and
     # one missed mutant or timeout fails. Sharded four ways so a large change still fits.
-    # Each mutant runs the whole workspace suite (council podman tests included), about a minute
-    # each: PR #83's shards held 106-107 mutants, and two were cancelled at the old 120-minute
-    # limit (measured 2026-11-02). 300 stays under the hosted runners' 360-minute job cap; the
-    # shard names are unchanged because ruleset 25868121 requires them.
+    # Each mutant runs the whole workspace suite (council podman tests included). That suite now
+    # takes about 35 minutes on this runner: the gate job's test step ran it in 2,106 s and 2,043 s
+    # (runs 45670721783 and 45701563166), and a fixed `--timeout 300` cut the unmutated baseline
+    # itself, so every shard failed before testing a mutant. scripts/diff_mutation.sh derives the
+    # timeout from the baseline instead (twice the baseline, at least 40 minutes). A shard then
+    # holds the baseline (~35 minutes) and, in the rest of its 300 minutes, about seven mutants
+    # that run the whole suite (missed ones; a caught one stops at the first failing test binary);
+    # a change of more mutants than that (PR #131: 214 to 223 a shard, 859 and 891 in its two
+    # runs) does not finish in 300 minutes whatever the timeout. PR #83's shards (106-107 mutants, at about a minute
+    # each then) were cancelled at the old 120-minute limit (measured 2026-11-02). 300 stays under
+    # the hosted runners' 360-minute job cap; the shard names are unchanged because ruleset
+    # 25868121 requires them.
     name: diff mutation (shard ${{ matrix.shard }}/4)
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-26.04

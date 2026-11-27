@@ -12,7 +12,7 @@ use deep_diff_forge_patch::{
     GitAcquireError, GitAcquireOptions, JudgePatchError, file_at_commit, judge_patch,
 };
 use deep_diff_forge_testkit::Scratch;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -572,6 +572,16 @@ fn a_file_is_read_from_the_commit_not_from_the_working_tree() {
         file_at_commit(&root, "no-such-rev", "src.rs", &options()),
         Err(GitAcquireError::InvalidSelection { .. })
     ));
+    // a symbolic link committed at the name is no policy, whatever it points at (U1 S280,
+    // lane T3d: Git stores a link as a blob of mode 120000)
+    std::os::unix::fs::symlink("src.rs", root.join("link.toml")).unwrap();
+    git(&root, &["add", "link.toml"]);
+    git(&root, &["commit", "--quiet", "-m", "a link"]);
+    assert_eq!(
+        file_at_commit(&root, "HEAD", "link.toml", &options()).unwrap(),
+        None,
+        "a link committed at the policy's name was read as a policy"
+    );
 }
 
 /// Independent review of the hooks, HR-M-2. The scratch index was filled with `git add --all`,
@@ -741,6 +751,111 @@ fn the_users_configuration_does_not_shape_the_patch_and_the_users_ignore_file_do
     assert!(!without.contains("new name.txt"), "{without}");
     assert!(without.contains("+fn a() { b(); }\n"), "{without}");
     assert!(!marker.exists(), "a filter of the user's configuration ran");
+
+    // U1 row S258 (lane T3a of 0.11.1): only an absolute ignore file is passed on. A relative
+    // one would be read from wherever Git runs, here the working tree, whose own file then
+    // shapes the patch; it is not passed on, and the file is judged like any other.
+    std::fs::write(root.join("relative-ignore"), "new name.txt\n").unwrap();
+    let relative = judge_patch(
+        &root,
+        "HEAD",
+        &fresh(&scratch, "relative"),
+        &with(&user_config("\texcludesFile = relative-ignore\n")),
+    )
+    .unwrap();
+    let relative = String::from_utf8_lossy(&relative.bytes).into_owned();
+    assert!(
+        relative.contains("b/new name.txt") && relative.contains("b/relative-ignore"),
+        "a relative core.excludesFile of the user's shaped the patch: {relative}"
+    );
+    std::fs::remove_file(root.join("relative-ignore")).unwrap();
+}
+
+/// U1 rows S256 and S261 (lane T3a of 0.11.1). The tests above plant the repository's
+/// configuration and the user's file; these are the other ways configuration reaches Git, each
+/// on its own: the system's file (`GIT_CONFIG_SYSTEM`, with `GIT_CONFIG_NOSYSTEM` not set),
+/// configuration a parent Git passes down (`GIT_CONFIG_PARAMETERS`, and `GIT_CONFIG_COUNT` with
+/// its keys), and the user's own attributes file (`$XDG_CONFIG_HOME/git/attributes`, read when
+/// no `core.attributesFile` is set). Each would normalise a file with CRLF line ends or cut
+/// the diff's context; the bytes must be the plain ones.
+#[test]
+fn configuration_of_the_system_a_parent_git_or_the_users_attributes_does_not_shape_the_patch() {
+    let scratch = Scratch::new("judge-patch-inherited-config");
+    let root = changed_repository(&scratch);
+    std::fs::write(root.join("crlf.txt"), "one\r\ntwo\r\n").unwrap();
+    // a change in the middle of a longer file: the diff's own configuration (its context) shows
+    let lines = "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\n";
+    std::fs::write(root.join("long.txt"), lines).unwrap();
+    git(&root, &["add", "long.txt"]);
+    git(&root, &["commit", "--quiet", "-m", "long"]);
+    std::fs::write(
+        root.join("long.txt"),
+        lines.replace("line 5\n", "line five\n"),
+    )
+    .unwrap();
+    let plain = judge_patch(&root, "HEAD", &fresh(&scratch, "plain"), &options()).unwrap();
+    let shown = String::from_utf8_lossy(&plain.bytes).into_owned();
+    assert!(
+        shown.contains("+one\r\n")
+            && shown.contains(" line 3\n line 4\n-line 5\n+line five\n line 6\n"),
+        "{shown}"
+    );
+    let system = scratch.write(
+        "system-gitconfig",
+        "[core]\n\tautocrlf = true\n[diff]\n\tcontext = 0\n",
+    );
+    let xdg = scratch.join("xdg");
+    std::fs::create_dir_all(xdg.join("git")).unwrap();
+    std::fs::write(xdg.join("git/attributes"), "*.txt text\n").unwrap();
+    let env = |pairs: &[(&str, &OsStr)]| GitAcquireOptions {
+        env: [("GIT_CONFIG_GLOBAL", OsStr::new("/dev/null"))]
+            .iter()
+            .chain(pairs)
+            .map(|&(k, v)| (OsString::from(k), v.to_os_string()))
+            .collect(),
+        ..GitAcquireOptions::default()
+    };
+    for (case, options) in [
+        (
+            "the system's configuration",
+            env(&[("GIT_CONFIG_SYSTEM", system.as_os_str())]),
+        ),
+        (
+            "GIT_CONFIG_PARAMETERS of a parent Git",
+            env(&[
+                ("GIT_CONFIG_NOSYSTEM", OsStr::new("1")),
+                (
+                    "GIT_CONFIG_PARAMETERS",
+                    OsStr::new("'core.autocrlf'='true' 'diff.context'='0'"),
+                ),
+            ]),
+        ),
+        (
+            "GIT_CONFIG_COUNT of a parent Git",
+            env(&[
+                ("GIT_CONFIG_NOSYSTEM", OsStr::new("1")),
+                ("GIT_CONFIG_COUNT", OsStr::new("2")),
+                ("GIT_CONFIG_KEY_0", OsStr::new("core.autocrlf")),
+                ("GIT_CONFIG_VALUE_0", OsStr::new("true")),
+                ("GIT_CONFIG_KEY_1", OsStr::new("diff.context")),
+                ("GIT_CONFIG_VALUE_1", OsStr::new("0")),
+            ]),
+        ),
+        (
+            "the user's attributes file",
+            env(&[
+                ("GIT_CONFIG_NOSYSTEM", OsStr::new("1")),
+                ("XDG_CONFIG_HOME", xdg.as_os_str()),
+            ]),
+        ),
+    ] {
+        let made = judge_patch(&root, "HEAD", &fresh(&scratch, case), &options).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&made.bytes),
+            shown,
+            "{case} changed the patch"
+        );
+    }
 }
 
 /// Round 11 of the review of the hooks. A directory in the working tree that is a Git
@@ -1156,6 +1271,39 @@ fn the_commits_that_something_names_are_listed_by_their_ids() {
     assert_eq!(named(Named::Everything), everything);
     everything.retain(|id| *id != made.fetched);
     assert_eq!(named(Named::Own), everything);
+
+    // U1 row S124 (lane T3a of 0.11.1): each carrier on its own. A second stash leaves the first
+    // named by the stash's reflog alone, and a tree whose `HEAD` reflog is gone names its commit
+    // by its `HEAD` alone (each was also named another way above, so neither was held).
+    std::fs::write(made.root.join("src.rs"), "fn stashed_again() {}\n").unwrap();
+    git(&made.root, &["stash", "--quiet"]);
+    let admin = text(git(
+        &scratch.join("linked"),
+        &["rev-parse", "--path-format=absolute", "--git-dir"],
+    ));
+    std::fs::remove_file(Path::new(&admin).join("logs/HEAD")).unwrap();
+    for which in [Named::Everything, Named::Own] {
+        let now = named(which);
+        assert!(
+            now.contains(&made.stash[0]),
+            "{which:?}: the older stash, named by the stash's reflog alone, is not listed: {now:?}"
+        );
+        assert!(
+            now.contains(&made.there),
+            "{which:?}: a linked tree's HEAD, with no reflog of its own, is not listed: {now:?}"
+        );
+    }
+}
+
+/// U1 row S270 (lane T3d of 0.11.1): SECURITY.md says a session's list of the commits named
+/// when it began holds up to a million ids, and that a repository naming more cannot be
+/// recorded. A million refs is no test to run; the number is held here, beside the listing
+/// it bounds, so that a change of it is a change of this test (a definition check, as lane
+/// T3a's for the waits). That more is refused, and said, is held by the agent-hook test of a
+/// repository with more working trees than are read: one refusal, one path.
+#[test]
+fn the_named_commits_a_session_can_record_are_the_million_security_md_names() {
+    assert_eq!(deep_diff_forge_patch::NAMED_COMMITS_CAP, 1_000_000);
 }
 
 /// `commits_beyond` gives the commits that lead on from the known ones, parents before
@@ -1228,6 +1376,10 @@ fn the_commits_beyond_the_known_ones_are_listed_parents_first() {
 /// kibibyte, with an index whose listing is over a mebibyte and more than two kibibytes of its
 /// own ignore rules, is read whole.
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "a path over 1 KiB cannot exist by name where PATH_MAX is 1,024 (macOS)"
+)]
 fn a_long_path_a_large_index_and_many_ignore_rules_are_read_whole() {
     let scratch = Scratch::new("judge-patch-bounds");
     let mut deep = scratch.path().to_path_buf();

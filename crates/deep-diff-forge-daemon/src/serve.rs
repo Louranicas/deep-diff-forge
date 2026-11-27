@@ -1545,17 +1545,182 @@ mod tests {
         joined(drip).unwrap();
     }
 
+    /// A reader that hands out one byte per read and records each read deadline it is armed
+    /// with. Each read first lets the clock move past the moment it was armed (a spin on the
+    /// clock, not a sleep), so the time left must shrink between reads; before byte `stall.0` it
+    /// also lets the clock pass `stall.1` after the first read, so a test can put a deadline
+    /// behind a byte without waiting on a scheduler.
+    struct Drip {
+        bytes: Vec<u8>,
+        given: usize,
+        armed: std::cell::RefCell<Vec<Duration>>,
+        armed_at: std::cell::Cell<Option<Instant>>,
+        first: Option<Instant>,
+        stall: Option<(usize, Duration)>,
+    }
+
+    impl Drip {
+        fn new(bytes: &[u8], stall: Option<(usize, Duration)>) -> Self {
+            Self {
+                bytes: bytes.to_vec(),
+                given: 0,
+                armed: std::cell::RefCell::new(Vec::new()),
+                armed_at: std::cell::Cell::new(None),
+                first: None,
+                stall,
+            }
+        }
+    }
+
+    impl std::io::Read for Drip {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "test: moves the clock past each arming instead of sleeping"
+        )]
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let Some(&byte) = self.bytes.get(self.given) else {
+                return Ok(0);
+            };
+            if let Some(armed_at) = self.armed_at.get() {
+                while Instant::now() <= armed_at {}
+            }
+            if let (Some((at, after)), Some(first)) = (self.stall, self.first)
+                && at == self.given
+            {
+                while Instant::now() < first + after {}
+            }
+            self.first.get_or_insert_with(Instant::now);
+            buf[0] = byte;
+            self.given += 1;
+            Ok(1)
+        }
+    }
+
+    impl ReadDeadline for Drip {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "test: notes when the reader was armed"
+        )]
+        fn set_read_deadline(&self, timeout: Duration) -> std::io::Result<()> {
+            self.armed.borrow_mut().push(timeout);
+            self.armed_at.set(Some(Instant::now()));
+            Ok(())
+        }
+    }
+
+    /// SECURITY.md (daemon): "Each line read has a 30-second absolute deadline (`READ_TIMEOUT`),
+    /// applied as the remaining time before every read, so slow byte-drip traffic cannot renew
+    /// it." The number, and the remaining time: every read after the first is armed with less
+    /// than the one before, never the whole timeout again. What is not held: that
+    /// `handle_connection` passes `READ_TIMEOUT` and not another value (no seam reaches its
+    /// socket without waiting the 30 s out).
+    #[test]
+    fn each_read_is_armed_with_the_time_left_not_the_whole_timeout() {
+        assert_eq!(
+            READ_TIMEOUT,
+            Duration::from_secs(30),
+            "SECURITY.md documents a 30-second line deadline"
+        );
+        let mut reader = BufReader::new(Drip::new(b"ab\n", None));
+        let mut line = Vec::new();
+        let read = read_capped_line_deadline(&mut reader, &mut line, 1024, READ_TIMEOUT);
+        assert_eq!(read.map_err(|err| err.kind()), Ok(3));
+        let armed = reader.get_ref().armed.borrow().clone();
+        assert_eq!(armed.len(), 3, "one deadline per read: {armed:?}");
+        assert!(armed[0] <= READ_TIMEOUT, "{armed:?}");
+        assert!(
+            armed.windows(2).all(|pair| pair[1] < pair[0]),
+            "a read was armed with the whole timeout again instead of the time left: {armed:?}"
+        );
+    }
+
+    /// The deadline is one for the whole line: bytes that keep coming, each well inside the
+    /// timeout of the one before, do not move it. The second byte arrives only after the deadline
+    /// (counted from the first read, so after it however the reader measures), and the line is cut
+    /// off there, never completed.
+    #[test]
+    fn a_line_still_arriving_at_its_deadline_is_cut_off_there() {
+        let timeout = Duration::from_millis(5);
+        let mut reader = BufReader::new(Drip::new(b"ab\n", Some((1, timeout))));
+        let mut line = Vec::new();
+        let read = read_capped_line_deadline(&mut reader, &mut line, 1024, timeout);
+        assert_eq!(
+            (read.map_err(|err| err.kind()), line.as_slice()),
+            (Err(std::io::ErrorKind::TimedOut), &b"ab"[..]),
+            "a byte that arrived after the line's deadline renewed it"
+        );
+    }
+
+    /// SECURITY.md (daemon): "An oversized request gets one `INVALID_REQUEST` error and the
+    /// connection closes." Over a real connection: a line one byte over the cap gets one
+    /// `INVALID_REQUEST` answer with a null id; a valid request sent after it is never answered,
+    /// and the client reads the end of the connection (or the reset Linux reports when that
+    /// request was still unread as the daemon closed), never a second line, and does not wait for
+    /// the daemon's 30 s read deadline. The connection's thread has ended. Before 0.11.1 this test
+    /// only built an error value and sent nothing (U1 audit, 2026-11-26).
     #[test]
     fn oversized_request_gets_error_then_connection_closes() {
-        // A request line over a (here, artificially exercised) cap yields an
-        // INVALID_REQUEST error response; integration of the cap is proven by the
-        // read_capped_line unit tests + the handle_connection wiring.
-        let resp = error_response(
-            &Value::Null,
-            &RpcError::new(INVALID_REQUEST, "request exceeds maximum size"),
+        let (client, server) = UnixStream::pair().expect("socketpair");
+        let handle = thread::spawn(move || handle_connection(server, &engine()));
+        let mut writer = client.try_clone().unwrap();
+        let send = thread::spawn(move || {
+            let _ = writer.write_all(&padded_health_request(MAX_REQUEST_BYTES + 1, false));
+            let _ = writer.flush();
+            writer
+        });
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut reader = BufReader::new(client);
+        let mut first = String::new();
+        reader.read_line(&mut first).unwrap();
+        let v: Value = serde_json::from_str(&first).unwrap();
+        assert_eq!(v["error"]["code"], INVALID_REQUEST, "{v}");
+        assert_eq!(v["id"], Value::Null, "{v}");
+        let mut writer = joined(send).unwrap();
+        // A request the daemon would answer on an open connection; its write may break, since
+        // the daemon may have closed already.
+        let _ = writer.write_all(b"{\"id\":8,\"method\":\"daemon.health\"}\n");
+        let _ = writer.flush();
+        let mut rest = String::new();
+        match reader.read_line(&mut rest) {
+            Ok(0) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::ConnectionReset => {}
+            other => panic!(
+                "the connection stayed open after the oversized request's error: {other:?}, read {rest:?}"
+            ),
+        }
+        assert!(
+            joined(handle).is_ok_and(|served| served.is_ok()),
+            "the connection's thread did not end cleanly"
         );
-        let v: Value = serde_json::from_str(&resp).unwrap();
-        assert_eq!(v["error"]["code"], INVALID_REQUEST);
+    }
+
+    /// SECURITY.md (daemon): "Writes have a 30-second timeout (`WRITE_TIMEOUT`)." The values,
+    /// without waiting 30 s: the client's socket write timeout (`WRITE_TIMEOUT`, set in
+    /// [`request`]) and the daemon's limit for writing one answer (`RESPONSE_WRITE_LIMIT`, which a
+    /// default engine carries and every answer is written within) are both 30 s, and SECURITY.md
+    /// still says so. The tests that drive a client that stops reading set their own short limit
+    /// (`with_write_limit`), so before 0.11.1 both constants could be raised to 3000 s with the
+    /// crate green (U1 audit, 2026-11-26). Not proven here: that `request` passes `WRITE_TIMEOUT`
+    /// and not another value to `set_write_timeout` (the client's socket is not reachable from a
+    /// test without waiting the timeout out).
+    #[test]
+    fn writes_have_the_documented_30_second_timeout() {
+        assert_eq!(WRITE_TIMEOUT, Duration::from_secs(30), "WRITE_TIMEOUT");
+        assert_eq!(
+            RESPONSE_WRITE_LIMIT,
+            Duration::from_secs(30),
+            "RESPONSE_WRITE_LIMIT"
+        );
+        assert_eq!(
+            Engine::new().write_limit(),
+            RESPONSE_WRITE_LIMIT,
+            "a default engine's write limit"
+        );
+        let security = include_str!("../../../SECURITY.md");
+        let flat = security.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(flat.contains("Writes have a 30-second timeout (`WRITE_TIMEOUT`)."));
     }
 
     #[test]
@@ -1647,7 +1812,11 @@ mod tests {
             serde_json::from_str(&process_line(r#"{"id":2,"method":"test.panic"}"#, &e)).unwrap();
         assert_eq!(crashed["error"]["code"], crate::protocol::INTERNAL_ERROR);
         assert_eq!(crashed["id"], 2);
-        assert_eq!((e.session_count(), e.is_running()), (0, true));
+        assert_eq!(
+            (e.session_count(), e.is_running()),
+            (0, true),
+            "a panic while the session table was held did not empty it"
+        );
         let health: Value =
             serde_json::from_str(&process_line(r#"{"id":3,"method":"daemon.health"}"#, &e))
                 .unwrap();
@@ -1657,7 +1826,11 @@ mod tests {
             reopened["result"]["session"], opened["result"]["session"],
             "a session id was reused after the reset"
         );
-        assert_eq!(e.session_count(), 1);
+        assert_eq!(
+            e.session_count(),
+            1,
+            "the table's poison was not cleared: the next use emptied it again"
+        );
     }
 
     /// A panic that held nothing leaves every other client's session in place: only a panic
@@ -1672,7 +1845,11 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(crashed["error"]["code"], crate::protocol::INTERNAL_ERROR);
-        assert_eq!(e.session_count(), 1);
+        assert_eq!(
+            e.session_count(),
+            1,
+            "a panic that did not hold the session table removed the sessions"
+        );
         assert_eq!((e.admission().running(), e.admission().in_flight()), (0, 0));
     }
 
@@ -1796,13 +1973,26 @@ mod tests {
                 answered.send(health).unwrap();
             });
             let health = rx.recv_timeout(Duration::from_secs(10));
+            // Read before the hold is released: `daemon.health` gives its admission back before it
+            // answers, so 1 is the held request, still running when the answer came. Requests run
+            // one at a time answer it only once the hold has given up (after the hook's own 10 s)
+            // and ended: 0, whatever the timing. Before lane T3b this test only waited for the
+            // answer, and that 10 s wait outlasted the hook's, so a serialized engine passed.
+            let running_when_answered = e.admission().running();
             // Released before any assertion, so a failing assertion cannot leave it waiting.
             test_hooks::release("test.hold");
             assert!(holding, "the held request was never admitted");
-            let health: Value = serde_json::from_str(
-                &health.expect("daemon.health waited for a request that was still running"),
-            )
-            .unwrap();
+            // Asserted, not unwrapped (U1, lane T3b): requests serialized behind one lock fail
+            // here by name.
+            assert!(
+                health.is_ok(),
+                "daemon.health waited for a request that was still running"
+            );
+            assert_eq!(
+                running_when_answered, 1,
+                "daemon.health was answered only after the running request had ended: requests ran one at a time"
+            );
+            let health: Value = serde_json::from_str(&health.unwrap()).unwrap();
             assert_eq!(health["result"]["status"], "ok");
             let held: Value = serde_json::from_str(&held.join().unwrap()).unwrap();
             assert_eq!(held["error"]["code"], crate::protocol::METHOD_NOT_FOUND);
@@ -1810,7 +2000,10 @@ mod tests {
         assert_eq!(e.admission().running(), 0);
     }
 
-    /// The connection that saw the panic keeps being served (before, its loop ended).
+    /// SECURITY.md (daemon): "A dispatch panic is caught per request." The connection that saw
+    /// the panic answers it `INTERNAL_ERROR` and keeps being served (before, its loop ended). The
+    /// answers are asserted before the connection's thread is joined, so a panic that is not
+    /// caught fails on them by name rather than on the join (U1, lane T3b).
     #[test]
     fn a_connection_keeps_serving_after_a_contained_panic() {
         let (client, server) = UnixStream::pair().expect("socketpair");
@@ -1819,17 +2012,71 @@ mod tests {
             handle_connection(server, &e)
         });
         let mut writer = client.try_clone().unwrap();
-        writeln!(writer, r#"{{"id":1,"method":"test.panic"}}"#).unwrap();
-        writeln!(writer, r#"{{"id":2,"method":"daemon.health"}}"#).unwrap();
-        writer.flush().unwrap();
-        writer.shutdown(std::net::Shutdown::Write).unwrap();
+        // Reported in the assertion below, not unwrapped: where the panic escapes and the server
+        // end is closed early, these fail differently by platform (macOS answers `shutdown` on a
+        // closed peer with EINVAL, as PR #131 run 46011325661 showed for `set_read_timeout`).
+        let sent = (
+            writeln!(writer, r#"{{"id":1,"method":"test.panic"}}"#),
+            writeln!(writer, r#"{{"id":2,"method":"daemon.health"}}"#),
+            writer.flush(),
+            writer.shutdown(std::net::Shutdown::Write),
+        );
+        // A connection that ended early may end in a reset (Linux): what was read stands.
         let lines: Vec<Value> = BufReader::new(client)
             .lines()
-            .map(|l| serde_json::from_str(&l.unwrap()).unwrap())
+            .map_while(Result::ok)
+            .map(|l| serde_json::from_str(&l).unwrap_or(Value::Null))
             .collect();
-        joined(handle).unwrap().unwrap();
-        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert_eq!(
+            lines
+                .iter()
+                .map(|line| (line["id"].clone(), line["error"]["code"].clone()))
+                .collect::<Vec<_>>(),
+            [
+                (Value::from(1), Value::from(crate::protocol::INTERNAL_ERROR)),
+                (Value::from(2), Value::Null)
+            ],
+            "the panic was not answered and the connection not kept: {lines:?} (sent: {sent:?})"
+        );
         assert_eq!(lines[1]["result"]["status"], "ok");
+        assert!(
+            joined(handle).is_ok_and(|served| served.is_ok()),
+            "the connection's thread did not end cleanly (sent: {sent:?})"
+        );
+    }
+
+    /// SECURITY.md (daemon): "Workers share one engine and their requests run in parallel." One
+    /// engine: a session opened over one connection is seen over another, and a stop sent over a
+    /// third stops the daemon.
+    #[test]
+    fn a_session_opened_on_one_connection_is_seen_on_another() {
+        let (_scratch, sock) = scratch_socket_with_parent("one-engine", 0o700);
+        let server_loc = SocketLocation::at(sock.clone());
+        let server = thread::spawn(move || run_server(&server_loc));
+        wait_for_socket(&sock);
+        let client = SocketLocation::at(sock.clone());
+        let opened: Value =
+            serde_json::from_str(&request(&client, OPEN_X).expect("session.open")).unwrap();
+        let session = opened["result"]["session"].as_str().unwrap_or_default();
+        let seen: Value = serde_json::from_str(
+            &request(
+                &client,
+                &format!(
+                    r#"{{"id":2,"method":"session.snapshot","params":{{"session":"{session}"}}}}"#
+                ),
+            )
+            .expect("session.snapshot"),
+        )
+        .unwrap();
+        assert!(
+            seen["error"].is_null() && !seen["result"].is_null(),
+            "a session opened over one connection was not found over another: {seen}"
+        );
+        let _ = request(&client, r#"{"id":3,"method":"daemon.shutdown"}"#);
+        assert!(
+            joined(server).is_ok(),
+            "a stop over another connection did not stop it"
+        );
     }
 
     /// Bug hunt 2026-10-28, H4-06: a response carrying U+2028/U+2029 leaves the socket as one
@@ -1921,8 +2168,18 @@ mod tests {
             .unwrap()
             .permissions()
             .mode();
-        assert_eq!(sock_mode & 0o777, SECURE_SOCKET_MODE);
-        assert_eq!(dir_mode & 0o777, crate::security::SECURE_DIR_MODE);
+        // The documented numbers (SECURITY.md), not the constants: a constant changed to another
+        // owner-only mode would pass a comparison with itself.
+        assert_eq!(
+            sock_mode & 0o777,
+            0o600,
+            "the bound socket is not mode 0600"
+        );
+        assert_eq!(
+            dir_mode & 0o777,
+            0o700,
+            "the managed directory is not mode 0700"
+        );
         let lock = std::fs::symlink_metadata(sock.with_file_name("deep-diff-forge.sock.lock"))
             .expect("the start lock sits beside the socket");
         assert!(lock.is_file());
@@ -1961,10 +2218,15 @@ mod tests {
         std::fs::write(&sock, b"important").unwrap();
         let metadata = std::fs::metadata(&sock).unwrap();
         cleanup_owned_socket(&sock, (metadata.dev(), metadata.ino()));
-        assert_eq!(std::fs::read(&sock).unwrap(), b"important");
+        assert_eq!(
+            std::fs::read(&sock).ok().as_deref(),
+            Some(&b"important"[..]),
+            "cleanup removed a regular file that had the identity it was given"
+        );
     }
 
-    /// The socket this server bound is removed on shutdown (legitimate nearby case).
+    /// SECURITY.md (daemon): "Shutdown removes only the socket inode that server created
+    /// (`cleanup_owned_socket`)." The positive half: the socket this server bound is removed.
     #[test]
     fn cleanup_removes_the_socket_it_bound() {
         let (_scratch, sock) = scratch_socket("cl-own");
@@ -1972,12 +2234,17 @@ mod tests {
         let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
         let metadata = std::fs::symlink_metadata(&sock).unwrap();
         cleanup_owned_socket(&sock, (metadata.dev(), metadata.ino()));
-        assert!(std::fs::symlink_metadata(&sock).is_err());
+        assert!(
+            std::fs::symlink_metadata(&sock).is_err(),
+            "cleanup left the socket this server bound"
+        );
         drop(listener);
     }
 
-    /// A socket swapped in at the same path after bind is someone else's: shutdown leaves it.
-    /// Before this test the identity comparison had no test (Remaining Work 2.6).
+    /// The negative half: a socket swapped in at the same path after bind is someone else's, and
+    /// shutdown leaves that inode in place. Before this test the identity comparison had no test
+    /// (Remaining Work 2.6); before lane T3b its last check unwrapped the path's metadata, so a
+    /// cleanup that removed the replacement failed on the unwrap, not on an assertion.
     #[test]
     fn cleanup_never_removes_a_socket_swapped_in_after_bind() {
         let (_scratch, sock) = scratch_socket("cl-swap");
@@ -1988,31 +2255,167 @@ mod tests {
         std::fs::remove_file(&sock).unwrap();
         let theirs = std::os::unix::net::UnixListener::bind(&sock).unwrap();
         let swapped = std::fs::symlink_metadata(&sock).unwrap();
-        assert_ne!((swapped.dev(), swapped.ino()), identity);
+        let replacement = (swapped.dev(), swapped.ino());
+        assert_ne!(replacement, identity);
         cleanup_owned_socket(&sock, identity);
-        assert!(
-            std::fs::symlink_metadata(&sock)
-                .unwrap()
-                .file_type()
-                .is_socket()
+        let after = std::fs::symlink_metadata(&sock)
+            .ok()
+            .map(|m| (m.file_type().is_socket(), (m.dev(), m.ino())));
+        assert_eq!(
+            after,
+            Some((true, replacement)),
+            "cleanup removed a socket that was swapped in after bind"
         );
         drop((ours, theirs));
     }
 
+    /// SECURITY.md (daemon): "At most eight connections are served at once (`MAX_CONNECTIONS`)."
+    /// The number itself, then eight slots taken, the ninth refused, one given back by its guard's
+    /// drop, and one taken again.
     #[test]
     fn connection_slots_are_hard_bounded_and_released() {
+        assert_eq!(
+            MAX_CONNECTIONS, 8,
+            "SECURITY.md documents eight connections"
+        );
         let active = Arc::new(AtomicUsize::new(0));
         let mut guards = Vec::new();
-        for _ in 0..MAX_CONNECTIONS {
-            assert!(try_acquire_connection(&active, MAX_CONNECTIONS));
+        for slot in 0..8 {
+            assert!(
+                try_acquire_connection(&active, MAX_CONNECTIONS),
+                "slot {slot} of eight was refused"
+            );
             guards.push(ActiveConnection(Arc::clone(&active)));
         }
-        assert!(!try_acquire_connection(&active, MAX_CONNECTIONS));
+        assert!(
+            !try_acquire_connection(&active, MAX_CONNECTIONS),
+            "a ninth connection got a slot"
+        );
         guards.pop();
-        assert!(try_acquire_connection(&active, MAX_CONNECTIONS));
+        assert!(
+            try_acquire_connection(&active, MAX_CONNECTIONS),
+            "a slot given back was not taken again"
+        );
         // Balance the final successful acquisition; the remaining guards clean
         // up their own slots on drop.
         active.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    /// SECURITY.md (daemon): "The trust boundary is the OS account." The accept loop's own check:
+    /// a client whose peer uid is not the daemon's (`me`) is refused before it takes any slot,
+    /// counted, and closed; a client of the daemon's own user is admitted. A second account cannot
+    /// be had in a test, so the daemon's `me` is moved instead of the client's uid (the same
+    /// comparison, from the other side).
+    #[test]
+    fn the_accept_loop_admits_only_the_daemons_own_user() {
+        use std::io::Read as _;
+        let engine = Arc::new(engine());
+        let (wake, _woken) = Wake::pair().expect("wake pair");
+        let active = Arc::new(AtomicUsize::new(0));
+        let control = Arc::new(AtomicUsize::new(0));
+        let me = rustix::process::geteuid().as_raw();
+        let (client, server) = UnixStream::pair().expect("socketpair");
+        // Armed before `admit` can refuse and close the server's end: macOS refuses
+        // SO_RCVTIMEO with EINVAL once the peer has closed (macOS CI, PR #131 run 46011325661,
+        // job log kept at /var/mnt/storage/ddf-tmp/macos131f.log: this test's own unwrap failed
+        // there after the daemon had refused uid 501 correctly). Reads still work: what is
+        // buffered, then end of file.
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        admit(
+            server,
+            &engine,
+            me.wrapping_add(1),
+            (&active, &control),
+            &wake,
+        );
+        let held = (
+            active.load(Ordering::Acquire),
+            control.load(Ordering::Acquire),
+        );
+        let refused =
+            engine.metrics().document(Duration::ZERO, "0")["connections"]["refused_peer"].as_u64();
+        let mut byte = [0_u8; 1];
+        let closed = (&client).read(&mut byte);
+        drop(client);
+        assert_eq!(
+            held,
+            (0, 0),
+            "a client of uid {me} took a slot of a daemon running as uid {}",
+            me.wrapping_add(1)
+        );
+        assert_eq!(refused, Some(1), "the refused peer was not counted");
+        assert!(
+            closed.as_ref().is_ok_and(|read| *read == 0),
+            "the refused connection was not closed: {closed:?}"
+        );
+        // Legitimate nearby case: the daemon's own user is admitted and served.
+        let (client, server) = UnixStream::pair().expect("socketpair");
+        // Armed before `admit` too, so a daemon that closes this client (a plant refusing its own
+        // user) fails on the answer below, not on the arming, on every platform.
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        admit(server, &engine, me, (&active, &control), &wake);
+        assert_eq!(
+            active.load(Ordering::Acquire),
+            1,
+            "a client of the daemon's own user was not admitted"
+        );
+        // The write and the read are reported in the assertion, not unwrapped: a server end that
+        // was closed makes them fail differently by platform (a broken pipe, a reset, EINVAL).
+        let sent = writeln!(&client, r#"{{"id":1,"method":"daemon.health"}}"#);
+        let mut answer = String::new();
+        let read = BufReader::new(&client).read_line(&mut answer);
+        assert!(
+            answer.contains("\"status\":\"ok\""),
+            "the daemon's own user was not served: sent {sent:?}, read {read:?}, answer {answer:?}"
+        );
+    }
+
+    /// SECURITY.md (daemon): "The daemon is Unix-only and listens on a filesystem Unix-domain
+    /// socket." Read from the crate's source: nothing in it names a network listener or socket,
+    /// and the crate refuses to build off Unix. What this does not prove: a dependency's own code,
+    /// which the crate's `Cargo.toml` and `cargo deny` bound. The filesystem socket itself is held
+    /// by `run_server_full_round_trip_then_shutdown`.
+    #[test]
+    fn the_daemon_has_no_listener_but_a_unix_socket() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut named = Vec::new();
+        let mut files = 0;
+        for entry in std::fs::read_dir(&src).expect("the crate's src") {
+            let path = entry.expect("an entry").path();
+            if path.extension().is_none_or(|extension| extension != "rs") {
+                continue;
+            }
+            files += 1;
+            let text = std::fs::read_to_string(&path).expect("a source file");
+            // Product code only: this test's own word list sits in a test module.
+            let text = text
+                .find("\n#[cfg(test)]\nmod tests {")
+                .map_or(text.as_str(), |tests| &text[..tests]);
+            for word in [
+                "TcpListener",
+                "TcpStream",
+                "UdpSocket",
+                "ToSocketAddrs",
+                "named_pipe",
+                "cfg(windows)",
+                "target_os = \"windows\"",
+            ] {
+                if text.contains(word) {
+                    named.push(format!("{} names `{word}`", path.display()));
+                }
+            }
+        }
+        assert!(files >= 10, "only {files} source files were read");
+        assert!(named.is_empty(), "{named:#?}");
+        let lib = include_str!("lib.rs");
+        assert!(
+            lib.contains("#[cfg(not(unix))]\ncompile_error!("),
+            "the crate no longer refuses to build off Unix"
+        );
     }
 
     #[expect(
@@ -2046,6 +2449,12 @@ mod tests {
         wait_for_socket(&sock);
         let client = SocketLocation::at(sock.clone());
 
+        // SECURITY.md: the daemon "listens on a filesystem Unix-domain socket": at its path.
+        assert!(
+            std::fs::symlink_metadata(&sock).is_ok_and(|m| m.file_type().is_socket()),
+            "no Unix-domain socket in the filesystem at {}",
+            sock.display()
+        );
         let health = request(&client, r#"{"id":1,"method":"daemon.health"}"#).expect("health");
         assert!(health.contains("\"status\":\"ok\""));
 
@@ -2054,7 +2463,7 @@ mod tests {
 
         assert!(joined(server).is_ok(), "the thread did not finish");
         // Socket is cleaned up on shutdown.
-        assert!(!sock.exists());
+        assert!(!sock.exists(), "shutdown left the socket it bound");
     }
 
     /// A `daemon.health` request padded with spaces to `bytes` bytes, newline excluded.
@@ -2343,8 +2752,13 @@ mod tests {
             &SocketLocation::at(sock.clone()),
             r#"{"id":1,"method":"daemon.shutdown"}"#,
         );
-        let stop = stop.expect("the stop is answered with every slot held");
-        assert!(stop.contains("\"stopping\":true"), "{stop}");
+        // Asserted, not unwrapped (U1, lane T3b): a stop closed unanswered beyond every slot fails
+        // here by name.
+        assert!(
+            stop.as_ref()
+                .is_ok_and(|stop| stop.contains("\"stopping\":true")),
+            "daemon.shutdown was not answered with every slot held: {stop:?}"
+        );
         assert!(joined(server).is_ok(), "the daemon did not stop");
         let took = started.elapsed();
         assert!(took < Duration::from_secs(1), "the stop took {took:?}");
@@ -2373,6 +2787,115 @@ mod tests {
             "{response}"
         );
         assert!(joined(connection).is_ok_and(|served| served.is_ok()));
+    }
+
+    /// SECURITY.md (daemon): "two control slots (`CONTROL_CONNECTIONS`) take one request each, of
+    /// at most 4 KiB read within 5 s", and "A connection beyond those has 250 ms
+    /// (`FULL_READ_TIMEOUT`) to send `daemon.shutdown`". The documented numbers. What is not held
+    /// here: that the control slot's read is given `CONTROL_READ_TIMEOUT` and the overflow's
+    /// `FULL_READ_TIMEOUT` (each would need its wait sat out; the overflow's bound is the
+    /// one-second stop of `ten_idle_connections_do_not_delay_a_stop_past_one_second`).
+    #[test]
+    fn the_control_limits_are_the_documented_ones() {
+        assert_eq!(
+            (
+                CONTROL_CONNECTIONS,
+                CONTROL_REQUEST_BYTES,
+                CONTROL_READ_TIMEOUT,
+                FULL_READ_TIMEOUT
+            ),
+            (2, 4096, Duration::from_secs(5), Duration::from_millis(250)),
+            "SECURITY.md documents two control slots, 4 KiB in 5 s, and 250 ms beyond them"
+        );
+    }
+
+    /// Serve `line` on a control connection and return its one answer.
+    fn control_answer(line: &str) -> Value {
+        let (client, server) = UnixStream::pair().expect("socketpair");
+        // Armed before the server can answer and close (macOS, as above).
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let connection = thread::spawn(move || handle_control_connection(server, &engine()));
+        writeln!(&client, "{line}").unwrap();
+        let mut response = String::new();
+        BufReader::new(&client).read_line(&mut response).unwrap();
+        assert!(joined(connection).is_ok_and(|served| served.is_ok()));
+        serde_json::from_str(&response).unwrap_or(Value::Null)
+    }
+
+    /// A control slot answers `daemon.health`, `daemon.status`, `daemon.metrics` and
+    /// `daemon.shutdown`, and refuses anything else `RESOURCE_EXHAUSTED`, naming the four.
+    #[test]
+    fn a_control_slot_answers_the_four_control_methods_and_refuses_other_work() {
+        for method in [
+            "daemon.health",
+            "daemon.status",
+            "daemon.metrics",
+            "daemon.shutdown",
+        ] {
+            let answer = control_answer(&format!(r#"{{"id":1,"method":"{method}"}}"#));
+            assert!(
+                answer["result"].is_object(),
+                "{method} was not answered on a control slot: {answer}"
+            );
+        }
+        for method in ["diff.plan", "session.open", "daemon.nonesuch"] {
+            let answer =
+                control_answer(&format!(r#"{{"id":1,"method":"{method}","params":{{}}}}"#));
+            assert!(
+                answer["error"]["code"] == RESOURCE_EXHAUSTED
+                    && answer["error"]["message"]
+                        .as_str()
+                        .is_some_and(|message| message.contains("connection limit")),
+                "{method} on a control slot was not refused as busy: {answer}"
+            );
+        }
+    }
+
+    /// A control request may be 4 KiB with its newline: one of exactly 4096 bytes is answered,
+    /// one of 4097 is refused.
+    #[test]
+    fn a_control_request_may_be_4_kib_with_its_newline() {
+        let at_cap = control_answer(&padded_health(1, 4095));
+        assert_eq!(
+            at_cap["result"]["status"], "ok",
+            "a control request of exactly 4096 bytes was not answered: {at_cap}"
+        );
+        let over = control_answer(&padded_health(2, 4096));
+        assert_eq!(
+            over["error"]["code"], RESOURCE_EXHAUSTED,
+            "a control request of 4097 bytes was answered: {over}"
+        );
+    }
+
+    /// Two control slots, no more: with eight idle clients on the data slots and two on the control
+    /// slots, a `daemon.health` is closed unanswered (beyond every slot only `daemon.shutdown` is
+    /// answered), and the stop still is.
+    #[test]
+    fn beyond_the_two_control_slots_only_a_stop_is_answered() {
+        let (_scratch, sock) = scratch_socket_with_parent("full-ctl", 0o700);
+        let server_loc = SocketLocation::at(sock.clone());
+        let server = thread::spawn(move || run_server(&server_loc));
+        wait_for_socket(&sock);
+        // Accepted in order, so they hold every slot before the requests below are accepted.
+        let idle: Vec<UnixStream> = (0..10)
+            .map(|_| UnixStream::connect(&sock).expect("idle connection"))
+            .collect();
+        let client = SocketLocation::at(sock.clone());
+        let health = request(&client, r#"{"id":1,"method":"daemon.health"}"#);
+        assert!(
+            health.is_err(),
+            "daemon.health was answered with eight data and two control slots held: {health:?}"
+        );
+        let stop = request(&client, r#"{"id":2,"method":"daemon.shutdown"}"#);
+        assert!(
+            stop.as_ref()
+                .is_ok_and(|stop| stop.contains("\"stopping\":true")),
+            "{stop:?}"
+        );
+        assert!(joined(server).is_ok(), "the daemon did not stop");
+        drop(idle);
     }
 
     /// A connection answers its request and ends at end of file, both within a deadline, so a
@@ -2710,7 +3233,11 @@ mod tests {
         let target = parent.join("elsewhere");
         std::fs::write(&target, b"keep").unwrap();
         std::os::unix::fs::symlink(&target, parent.join("test.sock.lock")).unwrap();
-        bind_explicit(&sock).expect_err("a symlinked start lock is refused");
+        let bound = bind_explicit(&sock);
+        assert!(
+            bound.is_err(),
+            "a start lock planted as a symlink was followed and the socket bound"
+        );
         assert_eq!(std::fs::read(&target).unwrap(), b"keep");
         assert!(
             std::fs::symlink_metadata(&sock).is_err(),
@@ -2867,15 +3394,52 @@ mod tests {
         let parent = scratch.join("absent");
         assert!(!parent.exists(), "precondition: parent must be absent");
         let sock = parent.join("test.sock");
-        let listener = bind_explicit(&sock).expect("bind_explicit must create the missing parent");
+        let listener = bind_explicit(&sock);
+        // Asserted, not unwrapped: a parent created at the umask's mode is refused by the
+        // validation that follows, and that must fail here by name (U1, lane T3b). Under a umask
+        // of 077 a missing chmod would not show; the usual 022 shows it.
+        assert!(
+            listener.is_ok(),
+            "bind_explicit did not create a usable missing parent: {listener:?}"
+        );
         assert!(sock.exists(), "socket must be created");
         let mode = std::fs::metadata(&parent).unwrap().permissions().mode();
         assert_eq!(
             mode & 0o777,
-            crate::security::SECURE_DIR_MODE,
+            0o700,
             "freshly created parent must be owner-private (0700)"
         );
         drop(listener);
+    }
+
+    /// SECURITY.md (daemon): "an existing parent is validated and never chmodded". A parent at
+    /// `0300` is owner-private (it passes the validation) and not `0700`, so a chmod to `0700`
+    /// before or after the validation shows; a `0700` parent cannot show one. Its mode is put back
+    /// before the scratch directory is removed, also when an assertion fails.
+    #[test]
+    fn explicit_bind_never_chmods_an_existing_owner_private_parent() {
+        struct Restore<'a>(&'a Path);
+        impl Drop for Restore<'_> {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(self.0, std::fs::Permissions::from_mode(0o700));
+            }
+        }
+        let (parent, sock) = explicit_scratch("nochmod-300", 0o300);
+        let _restore = Restore(parent.path());
+        let bound = bind_explicit(&sock);
+        let mode = std::fs::symlink_metadata(parent.path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert!(
+            bound.is_ok(),
+            "an owner-private 0300 parent was refused: {bound:?}"
+        );
+        assert_eq!(
+            mode, 0o300,
+            "bind_explicit chmodded the caller's existing parent"
+        );
     }
 
     // F2-T5: SocketLocation::at() produces an Explicit provenance location.
@@ -3271,8 +3835,13 @@ mod tests {
         let mut response = vec![b'x'; MAX_RESPONSE_BYTES - 1];
         response.push(b'\n');
         let (_parent, location, daemon) = fake_daemon("resp-at-cap", response);
-        let got = request(&location, r#"{"method":"daemon.health"}"#).expect("at-cap response");
-        assert_eq!(got.len(), MAX_RESPONSE_BYTES - 1);
+        let got = request(&location, r#"{"method":"daemon.health"}"#);
+        // The length, not the bytes: a failure must not print 80 MiB.
+        assert_eq!(
+            got.as_ref().map(String::len).map_err(std::io::Error::kind),
+            Ok(MAX_RESPONSE_BYTES - 1),
+            "a response of exactly the cap, its newline counted, was not accepted"
+        );
         joined(daemon).unwrap();
     }
 
@@ -3282,10 +3851,17 @@ mod tests {
         // docs/reference/mcp-sdk-daemon.md), and a line with no newline at all.
         let mut framed = vec![b'x'; MAX_RESPONSE_BYTES];
         framed.push(b'\n');
-        for response in [framed, vec![b'x'; MAX_RESPONSE_BYTES + 1]] {
+        for (case, response) in [
+            ("one byte over with its newline", framed),
+            ("no newline", vec![b'x'; MAX_RESPONSE_BYTES + 1]),
+        ] {
             let (_parent, location, daemon) = fake_daemon("resp-over", response);
-            let err = request(&location, r#"{"method":"daemon.health"}"#).unwrap_err();
-            assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+            let got = request(&location, r#"{"method":"daemon.health"}"#);
+            assert_eq!(
+                got.as_ref().map(String::len).map_err(std::io::Error::kind),
+                Err(std::io::ErrorKind::InvalidData),
+                "a response over the cap ({case}) was not refused"
+            );
             joined(daemon).unwrap();
         }
     }

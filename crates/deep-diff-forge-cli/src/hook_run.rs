@@ -622,12 +622,7 @@ fn own_directory(own: &Path) -> Result<(), String> {
     use std::os::unix::fs::DirBuilderExt as _;
     let is_own =
         |own: &Path| std::fs::symlink_metadata(own).map(|found| found.file_type().is_dir());
-    let refused = || {
-        format!(
-            "{} is not a directory of its own (a symbolic link or a file stands there)",
-            shown(own)
-        )
-    };
+    let refused = || not_own_words(own);
     match is_own(own) {
         Ok(true) => Ok(()),
         Ok(false) => Err(refused()),
@@ -647,6 +642,14 @@ fn own_directory(own: &Path) -> Result<(), String> {
         }
         Err(error) => Err(format!("its directory could not be read: {error}")),
     }
+}
+
+/// What is said of a directory of the hooks where a symbolic link or a file stands.
+fn not_own_words(dir: &Path) -> String {
+    format!(
+        "{} is not a directory of its own (a symbolic link or a file stands there)",
+        shown(dir)
+    )
 }
 
 /// The most entries of the hooks' directory that are looked at for scratch directories of
@@ -1051,6 +1054,80 @@ fn sessions_dir() -> Result<PathBuf, String> {
     )
 }
 
+/// Where the hooks keep the state of this user's sessions, and whether it is theirs
+/// ([`state_dir`]).
+#[derive(Debug, PartialEq, Eq)]
+enum StateDir {
+    /// A directory of its own: there, made now, or (when nothing was to be made) not there yet.
+    Own(PathBuf),
+    /// A symbolic link or a file stands there; `to_directory` when it is a link to a directory.
+    NotOwn { dir: PathBuf, to_directory: bool },
+    /// There is none: why.
+    None(Unmade),
+}
+
+/// Why there is no state directory ([`StateDir::None`]).
+#[derive(Debug, PartialEq, Eq)]
+enum Unmade {
+    /// No absolute `XDG_STATE_HOME` or `HOME` names one ([`sessions_dir`]'s words).
+    Unnamed(String),
+    /// A directory above it could not be made: what the system said.
+    Above(String),
+    /// It could not be made ([`own_directory`]'s words).
+    Refused(String),
+}
+
+impl Unmade {
+    /// What a hook says of a state it could not keep for this.
+    fn kept_words(&self) -> String {
+        match self {
+            Self::Unnamed(words) | Self::Refused(words) => words.clone(),
+            Self::Above(error) => format!("its state directory could not be made: {error}"),
+        }
+    }
+}
+
+/// The one decision of where a hook keeps the state of this user's sessions (release 0.11.1,
+/// P5c, row C1): [`sessions_dir`], and whether that is a directory of its own, made when
+/// `make` and it is missing. The session's lock, the writer of the state and the doctor make
+/// it ([`session_lock`], [`Session::keep`], [`state_directory_check`]); the readers do not
+/// ([`Session::open`], [`session_seen`]). No `.git` is looked at and no Git is run: whether
+/// the state may be kept there for a session is asked of the session's project alone
+/// ([`Session::inside`]). The lock asked about any `.git` above a missing directory and took
+/// none, while the writer made the directory and wrote: two first stops of a session both
+/// judged (P5c).
+fn state_dir(make: bool) -> StateDir {
+    state_dir_at(sessions_dir(), make)
+}
+
+/// [`state_dir`] for the directory `named` names, or for none.
+fn state_dir_at(named: Result<PathBuf, String>, make: bool) -> StateDir {
+    let dir = match named {
+        Ok(dir) => dir,
+        Err(words) => return StateDir::None(Unmade::Unnamed(words)),
+    };
+    match std::fs::symlink_metadata(&dir) {
+        Ok(found) if found.file_type().is_dir() => return StateDir::Own(dir),
+        Ok(_) => {
+            return StateDir::NotOwn {
+                to_directory: dir.is_dir(),
+                dir,
+            };
+        }
+        Err(_) if !make => return StateDir::Own(dir),
+        Err(_) => {}
+    }
+    if let Some(parent) = dir.parent()
+        && let Err(error) = std::fs::create_dir_all(parent)
+    {
+        return StateDir::None(Unmade::Above(error.to_string()));
+    }
+    match own_directory(&dir) {
+        Ok(()) => StateDir::Own(dir),
+        Err(words) => StateDir::None(Unmade::Refused(words)),
+    }
+}
+
 /// The base as the state file writes it: the commit's id, or one of two words.
 fn base_text(base: &Base) -> &str {
     match base {
@@ -1283,14 +1360,27 @@ fn hook_key(
     dir: &Path,
     random: impl FnOnce() -> std::io::Result<[u8; 32]>,
 ) -> Result<([u8; 32], bool), String> {
-    use std::os::unix::fs::OpenOptionsExt as _;
     let path = dir.join(KEY_FILE);
-    let refused = |why: String| format!("the hooks' key file {} {why}", shown(&path));
-    let mut file = match std::fs::OpenOptions::new()
+    key_in(&path, read_unfollowed(&path), random)
+}
+
+/// Open `path` to read it, following no link at its last name and not waiting on a FIFO.
+fn read_unfollowed(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
-        .open(&path)
-    {
+        .open(path)
+}
+
+/// [`hook_key`] of the key file `path`, as `opened` opened it.
+fn key_in(
+    path: &Path,
+    opened: std::io::Result<std::fs::File>,
+    random: impl FnOnce() -> std::io::Result<[u8; 32]>,
+) -> Result<([u8; 32], bool), String> {
+    let refused = |why: String| format!("the hooks' key file {} {why}", shown(path));
+    let mut file = match opened {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let key = random()
@@ -1327,25 +1417,275 @@ fn urandom_key() -> std::io::Result<[u8; 32]> {
 /// returned; a state this hook writes then names its own key, which the next hook finds is
 /// not the file's, and empties its keyed members ([`align_key`]).
 fn keep_key(dir: &Path, key: &[u8; 32]) -> Result<[u8; 32], String> {
+    At::open(dir, true)
+        .map_err(|error| format!("the hooks' key could not be kept: {error}"))
+        .and_then(|at| keep_key_at(&at, key))
+}
+
+/// [`keep_key`] in the open directory `at`.
+fn keep_key_at(at: &At, key: &[u8; 32]) -> Result<[u8; 32], String> {
     use std::io::Write as _;
-    use std::os::unix::fs::OpenOptionsExt as _;
-    let partial = dir.join(format!("{KEY_FILE}.{}.partial", random_hex()));
-    let made = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(nix::libc::O_NOFOLLOW)
-        .open(&partial)
+    let partial = PathBuf::from(format!("{KEY_FILE}.{}.partial", random_hex()));
+    let made = at
+        .file(&partial, At::NEW)
         .and_then(|mut file| file.write_all(key))
-        .and_then(|()| std::fs::hard_link(&partial, dir.join(KEY_FILE)));
-    let _ = std::fs::remove_file(&partial);
+        .and_then(|()| at.link(&partial, Path::new(KEY_FILE)));
+    let _ = at.remove(&partial);
     match made {
         Ok(()) => Ok(*key),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            hook_key(dir, || Err(std::io::Error::other("the key file went away")))
-                .map(|(there, _)| there)
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => key_in(
+            &at.path(Path::new(KEY_FILE)),
+            at.file(Path::new(KEY_FILE), At::READ),
+            || Err(std::io::Error::other("the key file went away")),
+        )
+        .map(|(there, _)| there),
         Err(error) => Err(format!("the hooks' key could not be kept: {error}")),
+    }
+}
+
+/// The name of the file that keeps the hooks' state directory out of every Git working tree it
+/// lies in ([`ignore_everything_at`]).
+const IGNORE_FILE: &str = ".gitignore";
+
+/// What that file holds: every name in the directory is ignored, the file's own included.
+const IGNORE_TEXT: &[u8] =
+    b"# deep-diff-forge: the hooks' state of this user's sessions; no part of any commit.\n*\n";
+
+/// Make the hooks' `.gitignore` ([`IGNORE_TEXT`]) in the open state directory `at` when none is
+/// there (release 0.11.1, P5d). Where the directory lies inside a Git working tree (a home
+/// directory that is a dotfiles repository, or another working tree of the session's own
+/// project), Git then leaves the hooks' key, states and lists out of `git status` and
+/// `git add --all`, and a stop that judges that tree no longer judges them as the agent's
+/// change: before, it gave the judge the key and blocked on its random bytes with no change of
+/// the agent's. Files the tree's index lists are judged whatever it says
+/// ([`judge_patch_probed`]). Only [`Session::keep`] calls it, through the directory the
+/// session's lock was taken in, before it writes the key and the state ([`publish_ignore`]).
+fn ignore_everything_at(at: &At) {
+    use std::io::Write as _;
+    let _ = publish_ignore(
+        at,
+        || {},
+        |file, bytes| {
+            #[cfg(test)]
+            if IGNORE_WRITE_FAILS.get() {
+                return Err(std::io::Error::other("a write of the test that fails"));
+            }
+            file.write_all(bytes)
+        },
+    );
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Whether the write of [`ignore_everything_at`] fails on this thread (for the tests of
+    /// [`Session::keep`] with a `.gitignore` that cannot be written).
+    static IGNORE_WRITE_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// [`ignore_everything_at`], with `write` writing the bytes and `between` run before they are
+/// published (for the tests). The name `.gitignore` is only ever given to a whole file: the
+/// bytes go into a partial file of this hook's own (`.gitignore.<16 hex digits>.partial`, made
+/// new, mode 0600, no link followed), whose length is checked, and that file is then linked as
+/// `.gitignore`, which refuses a name that is there. So another hook that finds the name finds
+/// the whole file (review of P5d, M1: the name was made empty and then written, so a second
+/// session's hook took an empty file for the hooks' and wrote its key beside it, and a hook
+/// killed or refused in the middle left a part of the file that no later hook made whole). What
+/// stands at the name already (a file of any content, a link, a directory) is left as it is;
+/// so is a directory that holds a `.git` (the top of a working tree: its `*` would hide every
+/// untracked file of that tree; review of P5d, L2). The partial file is removed on every exit,
+/// and, when this hook publishes the name, partial files of hooks that were killed are removed (a hook killed
+/// after its link and before its unlink leaves its partial for good: it is ignored by the `*`). A file
+/// that cannot be made is not made: the state is kept as before, and nothing is said.
+fn publish_ignore(
+    at: &At,
+    between: impl FnOnce(),
+    write: impl FnOnce(&mut std::fs::File, &[u8]) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let name = Path::new(IGNORE_FILE);
+    if at.has(name) || at.has(Path::new(".git")) {
+        return Ok(());
+    }
+    let partial = PathBuf::from(format!("{IGNORE_FILE}.{}.partial", random_hex()));
+    let published = at
+        .file(&partial, At::NEW)
+        .and_then(|mut file| {
+            write(&mut file, IGNORE_TEXT)?;
+            let written = file.metadata()?.len();
+            if u64::try_from(IGNORE_TEXT.len()).ok() == Some(written) {
+                Ok(())
+            } else {
+                Err(std::io::Error::other(format!(
+                    "{written} bytes were written"
+                )))
+            }
+        })
+        .and_then(|()| {
+            between();
+            at.link(&partial, name)
+        });
+    let _ = at.remove(&partial);
+    if published.is_ok() {
+        clear_stale_ignores(at);
+    }
+    published
+}
+
+/// Remove from `at` the partial files of [`publish_ignore`] that hooks which were killed left
+/// (directly in it, by their name only; at most [`STALE_LOOKED_AT`] entries looked at). One of a
+/// hook still at work is removed too: its link then fails, and the name it would have made is
+/// there already. The directory is listed by its name, which the caller found still names it;
+/// what is removed is removed through `at`.
+fn clear_stale_ignores(at: &At) {
+    let Ok(entries) = std::fs::read_dir(at.path(Path::new("."))) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok).take(STALE_LOOKED_AT) {
+        let name = entry.file_name();
+        let stale = name
+            .to_str()
+            .and_then(|name| name.strip_prefix(".gitignore."))
+            .and_then(|rest| rest.strip_suffix(".partial"))
+            .is_some_and(|hex| {
+                hex.len() == 16 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+            });
+        if stale {
+            let _ = at.remove(Path::new(&name));
+        }
+    }
+}
+
+/// An open directory of the hooks (release 0.11.1, review of P5c, V1): what is made, moved,
+/// linked and removed through it is made, moved, linked and removed in that directory,
+/// whatever its name names by then. The session's lock is taken through one and keeps it
+/// ([`lock::Held`]), and the state is written through it ([`Session::keep`]): a process that
+/// moves the state directory away and puts another at its name while a hook holds the lock
+/// gets nothing written into the other. (The writes went by the directory's name, so they
+/// went into the other, while the lock stayed in the one moved away.)
+pub(crate) struct At {
+    dir: std::fs::File,
+    /// The name it was opened by: for what is said, and for [`At::still_named`].
+    name: PathBuf,
+    /// Whether a symbolic link at that name was followed.
+    follow: bool,
+    /// Its device and inode.
+    id: (u64, u64),
+}
+
+impl At {
+    /// How a file is made new: write only, refused where any name stands, mode 0600.
+    const NEW: (nix::fcntl::OFlag, nix::sys::stat::Mode) = (
+        nix::fcntl::OFlag::O_WRONLY
+            .union(nix::fcntl::OFlag::O_CREAT)
+            .union(nix::fcntl::OFlag::O_EXCL),
+        nix::sys::stat::Mode::S_IRUSR.union(nix::sys::stat::Mode::S_IWUSR),
+    );
+    /// How a file is read: without waiting on a FIFO.
+    const READ: (nix::fcntl::OFlag, nix::sys::stat::Mode) = (
+        nix::fcntl::OFlag::O_RDONLY.union(nix::fcntl::OFlag::O_NONBLOCK),
+        nix::sys::stat::Mode::empty(),
+    );
+
+    /// Open the directory `name`; a symbolic link at its last name is followed only with
+    /// `follow`.
+    fn open(name: &Path, follow: bool) -> std::io::Result<Self> {
+        use nix::fcntl::OFlag;
+        use std::os::unix::fs::MetadataExt as _;
+        let mut flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC;
+        if !follow {
+            flags |= OFlag::O_NOFOLLOW;
+        }
+        let dir = std::fs::File::from(nix::fcntl::open(
+            name,
+            flags,
+            nix::sys::stat::Mode::empty(),
+        )?);
+        let found = dir.metadata()?;
+        Ok(Self {
+            dir,
+            name: name.to_owned(),
+            follow,
+            id: (found.dev(), found.ino()),
+        })
+    }
+
+    /// The path of `file` in it, as it was named: for what is said.
+    fn path(&self, file: &Path) -> PathBuf {
+        self.name.join(file)
+    }
+
+    /// Whether its name still names it.
+    fn still_named(&self) -> bool {
+        use std::os::unix::fs::MetadataExt as _;
+        let there = if self.follow {
+            std::fs::metadata(&self.name)
+        } else {
+            std::fs::symlink_metadata(&self.name)
+        };
+        there.is_ok_and(|there| (there.dev(), there.ino()) == self.id)
+    }
+
+    /// Open `file` in it with `how` ([`At::NEW`], [`At::READ`], or other flags and a mode),
+    /// following no link at its name and closed at an exec.
+    fn file(
+        &self,
+        file: &Path,
+        (flags, mode): (nix::fcntl::OFlag, nix::sys::stat::Mode),
+    ) -> std::io::Result<std::fs::File> {
+        use nix::fcntl::OFlag;
+        Ok(nix::fcntl::openat(
+            &self.dir,
+            file,
+            flags | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+            mode,
+        )?
+        .into())
+    }
+
+    /// Move `from` to `to`, both in it; what stands at `to` is replaced.
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        Ok(nix::fcntl::renameat(&self.dir, from, &self.dir, to)?)
+    }
+
+    /// Link `from` as `to`, both in it, following no link; refused where `to` stands.
+    fn link(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        Ok(nix::unistd::linkat(
+            &self.dir,
+            from,
+            &self.dir,
+            to,
+            nix::fcntl::AtFlags::empty(),
+        )?)
+    }
+
+    /// Remove the file `file` from it.
+    fn remove(&self, file: &Path) -> std::io::Result<()> {
+        Ok(nix::unistd::unlinkat(
+            &self.dir,
+            file,
+            nix::unistd::UnlinkatFlags::NoRemoveDir,
+        )?)
+    }
+
+    /// Whether it was opened through a symbolic link at its name.
+    fn through_link(&self) -> bool {
+        self.follow
+    }
+
+    /// The device and inode of what stands at `file` in it, a link not followed (as
+    /// `symlink_metadata` gives them, whatever its mode lets this user do with it).
+    fn identity_of(&self, file: &Path) -> std::io::Result<(i128, i128)> {
+        let found =
+            nix::sys::stat::fstatat(&self.dir, file, nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW)?;
+        Ok((i128::from(found.st_dev), i128::from(found.st_ino)))
+    }
+
+    /// Whether anything stands at `file` in it (a name that cannot be looked at counts as
+    /// standing).
+    fn has(&self, file: &Path) -> bool {
+        !matches!(
+            nix::sys::stat::fstatat(&self.dir, file, nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW),
+            Err(nix::errno::Errno::ENOENT)
+        )
     }
 }
 
@@ -1403,13 +1743,18 @@ fn load(path: &Path) -> Result<Option<State>, String> {
 /// checked before anything is read (review V4, VD4-M-1). With the state, whether the file is
 /// of an older schema ([`state_read`]).
 fn load_read(path: &Path) -> Result<Option<(State, bool)>, StateRefusal> {
-    use std::os::unix::fs::OpenOptionsExt as _;
+    state_in(read_unfollowed(path))
+}
+
+/// [`load_read`] of the state file `file` in the open directory `at`.
+fn load_read_at(at: &At, file: &Path) -> Result<Option<(State, bool)>, StateRefusal> {
+    state_in(at.file(file, At::READ))
+}
+
+/// [`load_read`] of a state file as `opened` opened it.
+fn state_in(opened: std::io::Result<std::fs::File>) -> Result<Option<(State, bool)>, StateRefusal> {
     let damaged = StateRefusal::Damaged;
-    let file = match std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
-        .open(path)
-    {
+    let file = match opened {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(damaged(format!("it cannot be opened ({error})"))),
@@ -1432,16 +1777,42 @@ fn load_read(path: &Path) -> Result<Option<(State, bool)>, StateRefusal> {
     state_read(&text).map(Some)
 }
 
+#[cfg(test)]
 /// The schema of the state file at `path` when a newer build of the hooks wrote it
 /// ([`StateRefusal::Newer`]): a write is abandoned then, whatever this hook read before
 /// ([`Session::keep`]).
 fn newer_there(path: &Path) -> Option<u32> {
-    match load_read(path) {
-        Err(StateRefusal::Newer(number)) => Some(number),
+    newer_in(&load_read(path))
+}
+
+/// The newer schema of the state file `file` in the open directory `at`, as `newer_there`
+/// reads it of a path ([`StateRefusal::Newer`]).
+fn newer_there_at(at: &At, file: &Path) -> Option<u32> {
+    newer_in(&load_read_at(at, file))
+}
+
+/// The newer schema a read found, if that is why it refused the file.
+fn newer_in(read: &Result<Option<(State, bool)>, StateRefusal>) -> Option<u32> {
+    match read {
+        Err(StateRefusal::Newer(number)) => Some(*number),
         _ => None,
     }
 }
 
+#[cfg(test)]
+/// The directory a file is in, opened ([`At`]), and its name there.
+fn at_of(path: &Path) -> std::io::Result<(At, PathBuf)> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| std::io::Error::other(format!("{} names no file", shown(path))))?;
+    let dir = path
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    Ok((At::open(dir, true)?, PathBuf::from(name)))
+}
+
+#[cfg(test)]
 /// Write `text` beside `path` and move it into place, so a reader never sees half of it. The
 /// partial file is made new, with mode 0600 and without following a link; the move replaces
 /// whatever stands at the name, a link included, and follows nothing.
@@ -1449,6 +1820,7 @@ fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     write_private_unless(path, text, || Ok(()))
 }
 
+#[cfg(test)]
 /// [`write_private`], with `refuse` asked after the partial file is written and before it is
 /// moved into place: when it says why not, nothing is moved and the partial file is removed.
 fn write_private_unless(
@@ -1456,28 +1828,41 @@ fn write_private_unless(
     text: &str,
     refuse: impl FnOnce() -> std::io::Result<()>,
 ) -> std::io::Result<()> {
+    let (at, file) = at_of(path)?;
+    write_private_unless_at(&at, &file, text, refuse)
+}
+
+/// `write_private_unless` of the file `file` in the open directory `at`: the partial file,
+/// the move and the removal are all made in that directory.
+fn write_private_unless_at(
+    at: &At,
+    file: &Path,
+    text: &str,
+    refuse: impl FnOnce() -> std::io::Result<()>,
+) -> std::io::Result<()> {
     use std::io::Write as _;
-    use std::os::unix::fs::OpenOptionsExt as _;
     // A name drawn at random: one taken from the process id removed what a writer with the
     // same id in another PID namespace had half written (F3.a).
-    let partial = path.with_extension(format!("{}.partial", random_hex()));
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(nix::libc::O_NOFOLLOW)
-        .open(&partial)
-        .and_then(|mut file| file.write_all(text.as_bytes()))
+    let partial = file.with_extension(format!("{}.partial", random_hex()));
+    at.file(&partial, At::NEW)
+        .and_then(|mut made| made.write_all(text.as_bytes()))
         .and_then(|()| refuse())
-        .and_then(|()| std::fs::rename(&partial, path))
+        .and_then(|()| at.rename(&partial, file))
         .inspect_err(|_| {
             // what could not be moved into place is not left beside the state
-            let _ = std::fs::remove_file(&partial);
+            let _ = at.remove(&partial);
         })
 }
 
+#[cfg(test)]
 /// Write a session's state file.
 fn save(path: &Path, state: &State) -> Result<(), String> {
+    let (at, file) = at_of(path).map_err(|e| format!("its state could not be saved: {e}"))?;
+    save_at(&at, &file, state)
+}
+
+/// Write a session's state file `file` in the open directory `at`.
+fn save_at(at: &At, file: &Path, state: &State) -> Result<(), String> {
     let text = state_text(state);
     // Never written: what the next hook would refuse to read.
     if text.len() as u64 > STATE_CAP {
@@ -1485,8 +1870,8 @@ fn save(path: &Path, state: &State) -> Result<(), String> {
     }
     // nor over a state a newer build wrote since this hook read it (where there are no file
     // locks; read again just before the move, which narrows that race and does not close it)
-    write_private_unless(path, &text, || match newer_there(path) {
-        Some(number) => Err(std::io::Error::other(newer_written(path, number))),
+    write_private_unless_at(at, file, &text, || match newer_there_at(at, file) {
+        Some(number) => Err(std::io::Error::other(newer_written(&at.path(file), number))),
         None => Ok(()),
     })
     .map_err(|e| format!("its state could not be saved: {e}"))
@@ -1636,19 +2021,15 @@ impl Session {
     /// should be, or when the session's file is there and cannot be read as a state: none of
     /// these is "no state".
     fn open(id: &str) -> Result<Self, Why> {
-        let dir = sessions_dir().map_err(|text| Why::new(ReasonClass::StateNoDirectory, text))?;
-        match std::fs::symlink_metadata(&dir) {
-            Ok(found) if !found.file_type().is_dir() => {
-                return Err(Why::new(
-                    ReasonClass::StateNoDirectory,
-                    format!(
-                        "{} is not a directory of its own (a symbolic link or a file stands there)",
-                        shown(&dir)
-                    ),
-                ));
+        let dir = match state_dir(false) {
+            StateDir::Own(dir) => dir,
+            StateDir::NotOwn { dir, .. } => {
+                return Err(Why::new(ReasonClass::StateNoDirectory, not_own_words(&dir)));
             }
-            _ => {}
-        }
+            StateDir::None(why) => {
+                return Err(Why::new(ReasonClass::StateNoDirectory, why.kept_words()));
+            }
+        };
         let file = state_file(&dir, id);
         let read = load_read(&file)
             .map_err(|refusal| Why::new(refusal.class(), refused_text(&file, &refusal)))?;
@@ -1695,48 +2076,97 @@ impl Session {
     /// making its directory first; and before it the lists this hook recorded, so that a state
     /// never names a list that is not there. Nothing is written when the file holds a state of
     /// a newer schema now, read just before the lists and again just before the state is
-    /// moved into place ([`save`]).
-    fn keep(&mut self) -> Result<(), String> {
-        if self.tips.is_none()
-            && self.judged.is_none()
-            && !self.upgrade
-            && (self.kept.as_ref() == Some(&self.state)
-                || (self.kept.is_none() && self.state == State::default()))
-        {
+    /// moved into place ([`save_at`]).
+    ///
+    /// It writes only with `writable`, the token of this session's lock ([`lock`], P5c row
+    /// C4), and only through the directory that lock was taken in, held open: a token of
+    /// another session's lock is refused, and so is a directory that its name no longer names
+    /// (another process moved it away, or put another in its place, while this hook held the
+    /// lock: review of P5c, V1). Nothing is written then. What a moved directory is sent after
+    /// the last look goes into the directory the lock was taken in, never into the other.
+    /// Before the key and the state it makes the directory's `.gitignore` when none is there
+    /// ([`ignore_everything_at`], P5d).
+    fn keep(&mut self, writable: &Writable<'_>) -> Result<(), String> {
+        if self.nothing_to_keep() {
             return Ok(());
         }
-        if let Some(parent) = self.dir.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("its state directory could not be made: {e}"))?;
+        let saved = |why: String| format!("its state could not be saved: {why}");
+        if writable.state() != self.file {
+            return Err(saved(format!(
+                "the lock held is the one of {}, not of this session's state {}",
+                shown(writable.state()),
+                shown(&self.file)
+            )));
         }
-        own_directory(&self.dir)?;
-        if let Some(number) = newer_there(&self.file) {
-            return Err(format!(
-                "its state could not be saved: {}",
-                newer_written(&self.file, number)
-            ));
+        let at = writable.at();
+        // The lock may be taken through a symbolic link to a directory, as in 0.11.0; the state
+        // is never written through one (review of P5c round 2, M1: an advice hook read its state
+        // in the directory, a link was put at its name before it took the lock, and the state
+        // went into the link's target).
+        if at.through_link() {
+            return Err(not_own_words(&self.dir));
         }
+        let moved = || {
+            format!(
+                "the state directory {} is no longer the directory the session's lock was taken in (another process moved it away or put another in its place while this hook ran)",
+                shown(&self.dir)
+            )
+        };
+        if !at.still_named() {
+            return Err(saved(format!("{}; nothing was written", moved())));
+        }
+        let name = |file: &Path| PathBuf::from(file.file_name().unwrap_or_default());
+        let state = name(&self.file);
+        if let Some(number) = newer_there_at(at, &state) {
+            return Err(saved(newer_written(&self.file, number)));
+        }
+        ignore_everything_at(at);
         if let Some(key) = self.new_key.take() {
-            keep_key(&self.dir, &key).map_err(|e| format!("its state could not be saved: {e}"))?;
+            keep_key_at(at, &key).map_err(saved)?;
         }
         // (the state names the key its digests were made with)
         self.state.key_id = hook::current_key_id();
         let lists = [
-            (tips_file(&self.file), &self.tips),
-            (judged_file(&self.file), &self.judged),
+            (name(&tips_file(&self.file)), &self.tips),
+            (name(&judged_file(&self.file)), &self.judged),
         ];
         for (file, lines) in lists {
             if let Some(lines) = lines {
-                write_private(&file, &tips_text(lines).0)
-                    .map_err(|e| format!("its state could not be saved: {e}"))?;
+                write_private_unless_at(at, &file, &tips_text(lines).0, || Ok(()))
+                    .map_err(|e| saved(e.to_string()))?;
             }
         }
-        save(&self.file, &self.state)?;
+        save_at(at, &state, &self.state)?;
+        if !at.still_named() {
+            return Err(format!(
+                "its state could not be saved where the next hook looks for it: {}; it was written into the directory the lock was taken in",
+                moved()
+            ));
+        }
         self.kept = Some(self.state.clone());
         self.upgrade = false;
         self.tips = None;
         self.judged = None;
         Ok(())
+    }
+
+    /// Whether [`Session::keep`] has nothing to write.
+    fn nothing_to_keep(&self) -> bool {
+        self.tips.is_none()
+            && self.judged.is_none()
+            && !self.upgrade
+            && (self.kept.as_ref() == Some(&self.state)
+                || (self.kept.is_none() && self.state == State::default()))
+    }
+
+    /// [`Session::keep`] in `turn`: with its token, or, when the turn gives none, why the
+    /// state is not kept (when there is anything to keep).
+    fn keep_in(&mut self, turn: &Turn) -> Result<(), String> {
+        match turn.writable() {
+            Some(writable) => self.keep(&writable),
+            None if self.nothing_to_keep() => Ok(()),
+            None => Err(turn.unkept()),
+        }
     }
 
     /// Write what an advice hook has to keep, and say whether it was written. The hook worked
@@ -1769,7 +2199,15 @@ impl Session {
             said(&self.state.guards, &read.guards),
         );
         let mine = std::mem::take(&mut self.state);
-        let read = load_read(&self.file).map_err(|refusal| refused_text(&self.file, &refusal))?;
+        // (read again through the directory the lock was taken in, where there is one)
+        let read = match turn.writable() {
+            Some(writable) => load_read_at(
+                writable.at(),
+                Path::new(self.file.file_name().unwrap_or_default()),
+            ),
+            None => load_read(&self.file),
+        }
+        .map_err(|refusal| refused_text(&self.file, &refusal))?;
         let (now, upgrade) = read.map_or((None, false), |(state, before)| (Some(state), before));
         self.upgrade = upgrade;
         self.kept.clone_from(&now);
@@ -1795,7 +2233,7 @@ impl Session {
                 self.state.guards.insert(key);
             }
         }
-        self.keep().map(|()| true)
+        self.keep_in(&turn).map(|()| true)
     }
 
     /// The session's tips: the ones this hook recorded and could not write yet, else the ones
@@ -2816,6 +3254,7 @@ fn post_tool(input: &Input, args: &[String]) -> Option<String> {
                 return said_beside(Some(&work.place.own), &input.session, &why.text);
             }
             let _ = begin_in_ledger(input, &mut session, &mut work, deadline);
+            bind_on_first_use(&work.place, &policy_name(args), deadline);
             let advice = advice_for(
                 &work,
                 &mut session.state,
@@ -2842,6 +3281,27 @@ fn post_tool(input: &Input, args: &[String]) -> Option<String> {
             &input.session,
             &why,
         ),
+    }
+}
+
+/// The advice hook's part of the binding (release 0.11.1, R3 and ruling 2 Q4: the first hook of
+/// any event that finds no binding writes it): under the project lock, beside the ledger's first
+/// record, and said nothing of (a start that binds says so, T4). Nothing when the policy record
+/// cannot be read whole or has a binding, when the ledger has no baseline yet, or when the lock
+/// is not had in the advice hook's wait.
+fn bind_on_first_use(place: &Place, name: &str, deadline: Deadline) {
+    // (the common case first, with no lock: a record that has its binding)
+    if !matches!(crate::policy_record::read(&place.own), Ok(found) if found.as_ref().is_none_or(|r| r.binding.is_none()))
+    {
+        return;
+    }
+    let Ok(Some(baseline)) = crate::ledger::first_baseline(&place.own) else {
+        return;
+    };
+    if let Ok(held) = own_directory(&place.own).and_then(|()| {
+        crate::policy_record::lock(&place.own, ADVICE_LOCK_WAIT.min(deadline.left()))
+    }) {
+        let _ = bind(place, &baseline, name, deadline, &held);
     }
 }
 
@@ -2968,7 +3428,7 @@ fn session_start(input: &Input, args: &[String]) -> Option<String> {
             "another hook of this session was running, so this start recorded nothing".to_owned()
         })
     } else {
-        session.keep().err()
+        session.keep_in(&turn).err()
     };
     // the checks that follow take time and write nothing of the session
     drop(turn);
@@ -2994,8 +3454,19 @@ fn session_start(input: &Input, args: &[String]) -> Option<String> {
             ));
         }
     };
+    // What the start says of the accepted policy (release 0.11.1), the name bound on first use
+    // under the project lock; the start's probe runs on the accepted policy where there is one
+    // (T14, critic L2), on the session base's otherwise.
+    let (accepted_lines, accepted_bytes) = accepted_words(&work.place, id, args, deadline);
     // The same links `agent doctor --gate` checks, in the time a start has.
-    let gate = gate_in(&work.place.top, Ok(&work.place), Some(id), args, deadline);
+    let gate = gate_in(
+        &work.place.top,
+        Ok(&work.place),
+        Some(id),
+        accepted_bytes.as_deref(),
+        args,
+        deadline,
+    );
     let not_ready: Vec<(String, String)> = gate
         .checks
         .iter()
@@ -3012,11 +3483,82 @@ fn session_start(input: &Input, args: &[String]) -> Option<String> {
         gate.dirty,
         unsaved.as_deref(),
     );
-    // (F13.b: a start that writes the project's baseline says so, under the first line)
-    if first_record && let Some(at) = said.find('\n') {
-        said.insert_str(at + 1, &first_record_words(id));
+    // (F13.b: a start that writes the project's baseline says so, under the first line; release
+    // 0.11.1: then whether the stops judge under the project's accepted policy too)
+    let mut lines = if first_record {
+        first_record_words(id)
+    } else {
+        String::new()
+    };
+    lines.push_str(&accepted_lines);
+    if let Some(at) = said.find('\n') {
+        said.insert_str(at + 1, &lines);
     }
     Some(said)
+}
+
+/// What a session's start says of the project's accepted policy (release 0.11.1): that this
+/// start bound the policy name on first use (T4), then that the stops judge under the accepted
+/// policy too where its file differs from the one at the session's base `id` (T2), that there is
+/// none, so they judge under the base's alone (T3), or that it cannot be read, a name the
+/// project's policy record does not bind among the causes (T6's cause at the start). Nothing more
+/// when the two are the same bytes.
+fn accepted_words(
+    place: &Place,
+    id: &str,
+    args: &[String],
+    deadline: Deadline,
+) -> (String, Option<Vec<u8>>) {
+    let name = policy_name(args);
+    let (_, projected) = locked_project_policy(
+        place,
+        || crate::ledger::frontier(&place.own).ok(),
+        &name,
+        deadline,
+        START_LOCK_WAIT,
+    );
+    let mut said = projected.bound_now.as_deref().map_or_else(String::new, |bound| {
+        format!(
+            "- This start bound the policy name {} to this project, on first use, in its policy record (a file of the repository's Git directory that any process of this user can write): stops given another policy name pass nothing.\n",
+            hook::shown_path(bound)
+        )
+    });
+    let accepted = &projected.accepted;
+    // (a session's base with no policy file: nothing is judged under both; ruling 6, F3)
+    let at_base = file_at_commit(&place.top, id, &name, &deadline.git());
+    let line = match (accepted, accepted.second_half(place, id, &name, deadline)) {
+        (_, Some(SecondHalf::Policy { commit, .. })) if !matches!(at_base, Ok(Some(_))) => {
+            format!(
+                "- The commit this session began from ({}) has no policy file {} that can be read: a change is UNJUDGED unless the project's accepted policy (the one at commit {}) fails or holds it.\n",
+                seven(id),
+                hook::shown_path(&name),
+                seven(&commit)
+            )
+        }
+        (Accepted::None(cause), _) => format!(
+            "- This project's ledger and policy record name no accepted policy ({}): changes are judged under the policy at commit {} alone, as before.\n",
+            cause.cause(&name),
+            seven(id)
+        ),
+        (_, Some(SecondHalf::Policy { commit, .. })) => format!(
+            "- The policy file {} at commit {} is not the accepted policy of this project (that is the one at commit {}): each change is judged under both. Committing an edit of the policy does not make it accepted. A separate local acceptance convention does; any process running as this user can invoke or write that convention, so it is not authentication. The pull-request judge under the target branch's policy is the authority.\n",
+            hook::shown_path(&name),
+            seven(id),
+            seven(&commit)
+        ),
+        (Accepted::Unreadable(why), _) => format!(
+            "- This project's accepted policy cannot be read ({}): a change that the policy at commit {} does not fail or hold is UNJUDGED at the stops.\n",
+            deep_diff_forge_core::display_safe(&why.text),
+            seven(id)
+        ),
+        _ => String::new(),
+    };
+    said.push_str(&line);
+    let bytes = match &projected.accepted {
+        Accepted::Policy { bytes, .. } => Some(bytes.clone()),
+        Accepted::None(_) | Accepted::Unreadable(_) => None,
+    };
+    (said, bytes)
 }
 
 fn policy_name(args: &[String]) -> String {
@@ -3154,7 +3696,14 @@ fn judge_words(stderr: &[u8]) -> Option<String> {
         },
         Err(_) => last.trim().to_owned(),
     };
-    Some(words.chars().take(JUDGE_WORDS).collect())
+    // a cut is said, with "…": cut without a mark, a judge's words read as whole where a reason
+    // had room for all that was kept (P3 of 0.11.1, review 1, M2)
+    if words.chars().count() <= JUDGE_WORDS {
+        return Some(words);
+    }
+    let mut kept: String = words.chars().take(JUDGE_WORDS - 1).collect();
+    kept.push('…');
+    Some(kept)
 }
 
 /// What one run of the judge gave: its exit code, its verdict document, what it said on its
@@ -3325,8 +3874,9 @@ fn claims_of(judged: Judged, verdict: Option<&Value>, bound: &Bound) -> Judged {
     }
 }
 
-/// What every working tree of one stop is judged with: the judge, the policy at the base
-/// commit, and the rankers with their digests.
+/// What every working tree of one stop is judged with under one policy: the judge, the policy
+/// (at the session's base commit, or the project's accepted policy: release 0.11.1, R1), and the
+/// rankers with their digests.
 struct Bench<'a> {
     scratch: &'a Scratch,
     program: PathBuf,
@@ -3357,8 +3907,10 @@ impl<'a> Bench<'a> {
         writable: &[&Path],
         deadline: Deadline,
     ) -> Result<Self, Why> {
-        // The policy is the one at the commit the session began from: a change cannot loosen
-        // the policy it is judged by, by committing it either.
+        // Half 1 of every unit (release 0.11.1, R1): the policy at the commit the session began
+        // from, so a change cannot loosen it by committing it in the session. Half 2, the
+        // project's accepted policy, is [`Bench::with_policy`]'s: a committed edit that a session
+        // left judges neither its own nor a later session's work alone.
         let name = policy_name(args);
         let policy = match file_at_commit(top, base, &name, &deadline.git()) {
             Ok(Some(bytes)) => bytes,
@@ -3381,9 +3933,26 @@ impl<'a> Bench<'a> {
                 ));
             }
         };
+        Self::with_policy(&name, &policy, scratch, args, writable, (deadline, None))
+    }
+
+    /// A bench for the policy `policy` (the file `name` of some commit): one policy file of its
+    /// own in the scratch directory, named by its digest, so that two benches of a stop never
+    /// judge with each other's policy (R7). `known` are the rankers with their digests when
+    /// another bench of the stop has them: the rankers are fixed for a stop (ruling 4), so they
+    /// are hashed once a stop, not once a bench.
+    fn with_policy(
+        name: &str,
+        policy: &[u8],
+        scratch: &'a Scratch,
+        args: &[String],
+        writable: &[&Path],
+        (deadline, known): (Deadline, Option<Candidates>),
+    ) -> Result<Self, Why> {
         let program = judge_program_why(args, writable)?;
-        let policy_file = scratch.0.join("policy.toml");
-        std::fs::write(&policy_file, &policy).map_err(|e| {
+        let policy_sha256 = deep_diff_forge_core::sha256_hex(policy);
+        let policy_file = scratch.0.join(format!("policy-{policy_sha256}.toml"));
+        std::fs::write(&policy_file, policy).map_err(|e| {
             Why::new(
                 ReasonClass::ChainInputUnwritable,
                 format!("the judge's input could not be written: {e}"),
@@ -3393,10 +3962,13 @@ impl<'a> Bench<'a> {
             scratch,
             program,
             policy_file,
-            policy_sha256: deep_diff_forge_core::sha256_hex(&policy),
-            probe: probe_patch(&name, &policy),
-            candidates: sealed_rankers(args, deadline)
-                .map_err(|text| Why::new(ReasonClass::ChainRankersUnlisted, text))?,
+            policy_sha256,
+            probe: probe_patch(name, policy),
+            candidates: match known {
+                Some(known) => known,
+                None => sealed_rankers(args, deadline)
+                    .map_err(|text| Why::new(ReasonClass::ChainRankersUnlisted, text))?,
+            },
             deadline,
             ranked_by: std::cell::RefCell::new(None),
             sealed: std::cell::RefCell::new(None),
@@ -3406,12 +3978,13 @@ impl<'a> Bench<'a> {
 
     /// Have `patch` judged; `name` is the file it is written to in the scratch directory.
     /// With the answer comes whether the judge was run for it at all: with no time left
-    /// ([`run_time`]), no ranker to offer or an input that cannot be written, it was not.
+    /// ([`run_part`]), no ranker to offer or an input that cannot be written, it was not.
+    /// `part` is which of a unit's runs this is ([`Part`]).
     fn judge(
         &self,
         patch: &[u8],
         name: &str,
-        after: After,
+        (after, part): (After, Part),
         bound: Option<&Bound>,
     ) -> (Judged, bool) {
         let bound = self.bound(bound);
@@ -3453,7 +4026,7 @@ impl<'a> Bench<'a> {
                 ranker: ranker_sha256,
             };
             let left = self.deadline.left();
-            let Some(time) = run_time(left, after) else {
+            let Some(time) = run_part(left, after, part) else {
                 last = Judged::Unjudged {
                     reason: NO_TIME.to_owned(),
                     class: ReasonClass::TimeNoTimeLeft,
@@ -3462,7 +4035,7 @@ impl<'a> Bench<'a> {
             };
             ran = true;
             let ((code, verdict, said, digest), refused) =
-                self.run_bound(&patch_file, ranker, bound, time, after);
+                self.run_bound(&patch_file, ranker, bound, time, (after, part));
             *self.sealed.borrow_mut() = Some(crate::ledger::Seals {
                 policy: self.policy_sha256.clone(),
                 patch: patch_sha256.clone(),
@@ -3533,14 +4106,17 @@ impl Bench<'_> {
     /// refuses bound mode for it (exit 3: a repository it does not admit; exit 4: the patch is
     /// not the diff it made, or the ranker is not admitted), the commit is run again without
     /// `--repo`, as before, in the time that is left; the words that say so come back with it
-    /// (S3.25.b). A unit that had a verdict before this package has one now.
+    /// (S3.25.b). A unit that had a verdict before this package has one now. That second run is
+    /// outside the guarantee [`sorted_commits`] states: it takes its time by the same rule
+    /// ([`run_part`]) from what the first left, so a judge that refuses bound mode after using
+    /// its time can leave the asks owed after it less than they need.
     fn run_bound(
         &self,
         patch_file: &Path,
         ranker: &Path,
         bound: Option<&Bound>,
         time: Duration,
-        after: After,
+        (after, part): (After, Part),
     ) -> (Run, Option<String>) {
         let first = run_judge(
             &self.program,
@@ -3553,7 +4129,7 @@ impl Bench<'_> {
         if bound.is_none() || !matches!(first.0, Some(3 | 4)) {
             return (first, None);
         }
-        let Some(time) = run_time(self.deadline.left(), after) else {
+        let Some(time) = run_part(self.deadline.left(), after, part) else {
             return (first, None);
         };
         let words = format!(
@@ -3637,6 +4213,61 @@ fn run_time(left: Duration, after: After) -> Option<Duration> {
             .saturating_sub(ASK_OWED.saturating_mul(owed))
             .max(COMMIT_FLOOR)
             .min(left),
+    };
+    (!time.is_zero()).then_some(time)
+}
+
+/// Which run of a unit a run of the judge is (release 0.11.1, R7): the one run of a stop with one
+/// policy, or the first or the second of the two runs a unit has in a stop that judges under two
+/// policies (the session base's, then the accepted one).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Part {
+    Alone,
+    First,
+    Second,
+}
+
+/// [`run_time`] for each [`Part`]. A stop with one policy is [`Part::Alone`]: [`run_time`],
+/// 0.11.0's rule, unchanged. In a stop with two, an ask owed after this one holds back [`ASK_OWED_TWO`], and
+/// the first half of a unit gets half of what its share would be, so that the second half
+/// always has the rest:
+///
+/// | the run | the first half gets | the second half gets |
+/// | --- | --- | --- |
+/// | a working tree's change | half of (`left` less what is held back, which is at most `left` less two [`COMMIT_FLOOR`]s), else half of `left` | `left` less what is held back, which is at most `left` less one [`COMMIT_FLOOR`], else all that is left |
+/// | an ask about a commit, `k` asks owed after it | half of (`left` less `k` times [`ASK_OWED_TWO`]), at least [`COMMIT_FLOOR`] and at most `left` less [`COMMIT_FLOOR`] | `left` less `k` times [`ASK_OWED_TWO`], at least [`COMMIT_FLOOR`], at most `left` |
+///
+/// So with [`OWED_ASKS_NEED_TWO`] left when a stop with two policies comes to its commits, both
+/// halves of each owed ask are made, however long the first takes: 3 + 3, then 4 + 4 and
+/// 4 + 4 seconds for a judge that uses all it is given, with two seconds a run left for Git.
+fn run_part(left: Duration, after: After, part: Part) -> Option<Duration> {
+    let time = match (after, part) {
+        (_, Part::Alone) => return run_time(left, after),
+        // What is held back is at most what leaves each half of this change a run: with a
+        // 35-second window (submodules, a linked tree) the reserves of two runs reach the
+        // window, and the first tree's two runs took all of it (the implementation review of
+        // L1b, F4, measured: 17.5 + 17.1 s, the staged change and every owed ask not run).
+        (After::Trees(kept), Part::First) => {
+            let kept = kept.min(left.saturating_sub(COMMIT_FLOOR * 2));
+            Some(left.saturating_sub(kept) / 2)
+                .filter(|time| *time >= COMMIT_FLOOR)
+                .unwrap_or(left / 2)
+        }
+        (After::Trees(kept), Part::Second) => {
+            return run_time(
+                left,
+                After::Trees(kept.min(left.saturating_sub(COMMIT_FLOOR))),
+            );
+        }
+        (After::Asks(owed), Part::Second) => left
+            .saturating_sub(ASK_OWED_TWO.saturating_mul(owed))
+            .max(COMMIT_FLOOR)
+            .min(left),
+        (After::Asks(owed), Part::First) => {
+            (left.saturating_sub(ASK_OWED_TWO.saturating_mul(owed)) / 2)
+                .max(COMMIT_FLOOR)
+                .min(left.saturating_sub(COMMIT_FLOOR))
+        }
     };
     (!time.is_zero()).then_some(time)
 }
@@ -4058,8 +4689,21 @@ const OTHER_TREES: usize = 16;
 struct Stopping<'a> {
     work: &'a Work,
     cwd: &'a str,
-    /// The commit the session began from: the policy is read from it.
+    /// The commit the session began from: the policy of half 1 of every unit is read from it
+    /// (release 0.11.1, R1), unless `first` gives half 1 otherwise.
     base: &'a str,
+    /// Half 1 of every unit where it is not the policy file at `base`: in the stop whose session
+    /// state could not be used, the project's accepted policy, or why it cannot be had (ruling 9
+    /// of release 0.11.1: the accepted policy is one required policy of every stop). `None`: the
+    /// file at `base`.
+    first: Option<&'a SecondHalf>,
+    /// Half 2 of every unit: the project's accepted policy where its file differs from the one
+    /// at `base`, or why it cannot be had; `None` when the stop judges under one policy (the same
+    /// bytes, or no accepted policy: R6 a and b).
+    second: Option<&'a SecondHalf>,
+    /// What the stop's words call its two policies ([`STOP_NAMES`], or [`STATELESS_NAMES`] for
+    /// the stop whose session state could not be used, which has no session base).
+    names: Names,
     scratch: &'a Scratch,
     args: &'a [String],
     /// When the judging must be done: [`STOP_RESERVE`] before the stop's own deadline, and
@@ -4444,7 +5088,7 @@ const SECOND_TREE_LOOK: Duration = Duration::from_secs(2);
 /// [`sorted_commits`]: every line was read here, so a commit that once had no verdict and
 /// has passed since held its five seconds back at every later stop, and one that had been
 /// in both lanes ten (eleventh independent review of the hooks, HR11-L-1).
-fn asks_kept(known: &[String]) -> Duration {
+fn asks_kept(known: &[String], two: bool) -> Duration {
     let last: std::collections::BTreeMap<&str, Answer<'_>> =
         known.iter().filter_map(|entry| answer(entry)).collect();
     let waiting = |in_turn: bool| {
@@ -4458,7 +5102,13 @@ fn asks_kept(known: &[String]) -> Duration {
     // of the owed asks after the first, the ones no commit waits for
     let none_waits =
         (OWED_ASKS - 1).saturating_sub(u32::from(waiting(true)) + u32::from(waiting(false)));
-    OWED_ASKS_NEED.saturating_sub(ASK_OWED.saturating_mul(none_waits))
+    // (a stop with two policies: two runs an ask, release 0.11.1, R7)
+    let (need, owed) = if two {
+        (OWED_ASKS_NEED_TWO, ASK_OWED_TWO)
+    } else {
+        (OWED_ASKS_NEED, ASK_OWED)
+    };
+    need.saturating_sub(owed.saturating_mul(none_waits))
 }
 
 /// A patch that was read, judged: the verdict, or [`Judged::Unjudged`] when the judge gave
@@ -4479,131 +5129,685 @@ fn judged_patch(
     }
 }
 
+/// The second policy of a stop (release 0.11.1, R1 and R6): the project's accepted policy where
+/// its file differs from the one at the session's base, or why it exists and cannot be had.
+#[derive(Debug, Clone)]
+enum SecondHalf {
+    /// The accepted policy: the bytes of the file the hooks are given, at the commit `commit`.
+    Policy { commit: String, bytes: Vec<u8> },
+    /// It exists and cannot be read (R6 c): a unit that the policy at the session's base does
+    /// not fail or hold is UNJUDGED with this reason, never a pass.
+    Unreadable(Why),
+}
+
+/// One policy a stop judges every unit under: its bench, looked for when a patch first needs
+/// it, and whether its chain gives verdicts at this stop.
+struct Half<'a> {
+    /// `None` for half 1, the policy at the session's base; half 2's otherwise.
+    second: Option<&'a SecondHalf>,
+    bench: Option<Result<Bench<'a>, Why>>,
+    /// `Some(true)` once a patch, or the probe, has got a verdict under this policy at this
+    /// stop: its chain works. `Some(false)` when the probe was asked and got none.
+    chain: Option<bool>,
+}
+
+/// The rankers with their digests that a bench of the stop already has, so that another bench
+/// does not hash them again (ruling 4: they are fixed for a stop).
+fn candidates_of(halves: &[Half<'_>]) -> Option<Candidates> {
+    halves.iter().find_map(|half| match &half.bench {
+        Some(Ok(bench)) => Some(bench.candidates.clone()),
+        _ => None,
+    })
+}
+
+/// The bench of one half of a stop ([`Half`]): the policy at the session's base, or the second
+/// policy ([`SecondHalf`]).
+fn half_bench<'a>(
+    stop: &'a Stopping<'a>,
+    trees: &[PathBuf],
+    (second, known): (Option<&'a SecondHalf>, Option<Candidates>),
+) -> Result<Bench<'a>, Why> {
+    let place = &stop.work.place;
+    let mut paths: Vec<&Path> = trees.iter().map(PathBuf::as_path).collect();
+    paths.push(&place.common);
+    match second {
+        None => Bench::new(
+            &place.top,
+            stop.base,
+            stop.scratch,
+            stop.args,
+            &paths,
+            stop.deadline,
+        )
+        .map_err(|mut why| {
+            // the stateless stop has no session base: its first policy is the one at the commit
+            // the ledger first recorded (ruling 8, N2)
+            if stop.names == STATELESS_NAMES {
+                why.text = why
+                    .text
+                    .replacen("the base commit has", "that commit has", 1);
+            }
+            why
+        }),
+        Some(SecondHalf::Policy { bytes, .. }) => Bench::with_policy(
+            &policy_name(stop.args),
+            bytes,
+            stop.scratch,
+            stop.args,
+            &paths,
+            (stop.deadline, known),
+        ),
+        Some(SecondHalf::Unreadable(why)) => Err(why.clone()),
+    }
+}
+
 /// The judge of one stop, looked for when the first patch needs it: a stop with nothing to
-/// judge needs no judge and no policy.
+/// judge needs no judge and no policy. It judges every patch under each policy of the stop: the
+/// one at the session's base and, where the project's accepted policy differs from it, that one
+/// too ([`united`]).
 struct Judge<'a> {
     stop: &'a Stopping<'a>,
     /// The working trees a change under judgement can write to: no judge is run from them.
     writable: Vec<PathBuf>,
-    bench: Option<Result<Bench<'a>, Why>>,
-    /// What was said about each patch, by its SHA-256: the same patch is judged once.
+    /// One half, or two when the stop judges under two policies. That is known before the
+    /// first run (release 0.11.1, critic note N6): what a run leaves for the asks owed after it
+    /// depends on it ([`asks_kept`], [`run_part`]).
+    halves: Vec<Half<'a>>,
+    /// What was said about each patch under each policy, by the patch's SHA-256, the policy's
+    /// SHA-256 and the mode (`unbound`, or `bound:<commit>`): the same patch is judged once
+    /// under each policy. The cache lives for one stop, and in one stop each bench's judge and
+    /// ranker candidates are fixed (a bench finds them once), so the key needs neither (ruling 4
+    /// of release 0.11.1); a cache that outlived a stop would need the judge's and the rankers'
+    /// identities in its key.
     answers: std::collections::BTreeMap<String, Judged>,
-    /// `Some(true)` once a patch, or the probe, has got a verdict at this stop: the chain works.
-    /// `Some(false)` when the probe was asked and got none.
-    chain: Option<bool>,
     /// What the next run of the judge must leave for what is judged after it.
     after: After,
-    /// Whether the judge was run for the patch [`Judge::judge`] was last asked about, at
-    /// this stop (for that patch or for another with the same bytes).
+    /// Whether the judge was run, under every policy of the stop that has a bench, for the
+    /// patch [`Judge::judge`] was last asked about (for that patch or one with the same bytes).
     ran: bool,
-    /// The seals of each patch the judge was run for, by its SHA-256, and the SHA-256 of the
-    /// patch [`Judge::judge`] was last asked about: what the ledger records (F11).
+    /// The seals of each run, by the key of [`Judge::answers`]: what the ledger records (F11);
+    /// and the key of the patch [`Judge::judge`] was last asked about, a half each (`None`: no
+    /// run of that half).
     seals: std::collections::BTreeMap<String, crate::ledger::Seals>,
-    last: Option<String>,
+    last: Vec<Option<String>>,
+    /// Which halves gave the patch last asked about no verdict.
+    no_verdict: Vec<bool>,
 }
 
 impl<'a> Judge<'a> {
-    fn bench(&mut self) -> &Result<Bench<'a>, Why> {
-        let stop = self.stop;
-        let trees = &self.writable;
-        self.bench.get_or_insert_with(|| {
-            let place = &stop.work.place;
-            let mut paths: Vec<&Path> = trees.iter().map(PathBuf::as_path).collect();
-            paths.push(&place.common);
-            Bench::new(
-                &place.top,
-                stop.base,
-                stop.scratch,
-                stop.args,
-                &paths,
-                stop.deadline,
-            )
-        })
+    /// The judge of the stop `stop`: one half for the policy at the session's base, and a second
+    /// for [`Stopping::second`] when there is one.
+    fn of(stop: &'a Stopping<'a>, writable: Vec<PathBuf>) -> Self {
+        let half = |second| Half {
+            second,
+            bench: None,
+            chain: None,
+        };
+        let mut halves = vec![half(stop.first)];
+        halves.extend(stop.second.map(|second| half(Some(second))));
+        Self {
+            stop,
+            writable,
+            halves,
+            answers: std::collections::BTreeMap::new(),
+            after: After::Asks(0),
+            ran: false,
+            seals: std::collections::BTreeMap::new(),
+            last: Vec::new(),
+            no_verdict: Vec::new(),
+        }
+    }
+
+    /// Whether a unit takes two runs of the judge at this stop: the accepted policy can be read
+    /// and differs from the one at the session's base. (One that cannot be read takes no run.)
+    fn two_runs(&self) -> bool {
+        matches!(self.stop.second, Some(SecondHalf::Policy { .. }))
+            && !matches!(self.stop.first, Some(SecondHalf::Unreadable(_)))
+    }
+
+    /// Forget what was said of the patch last asked about.
+    fn forget(&mut self) {
+        self.ran = false;
+        self.last.clear();
+        self.no_verdict.clear();
     }
 
     fn judge(&mut self, patch: &[u8], bound: Option<&Bound>) -> Judged {
-        // (a bound verdict is about its pair: the same patch of another commit is asked again)
-        let bound = match self.bench() {
-            Ok(bench) => bench.bound(bound),
-            Err(_) => None,
-        };
-        let digest = match bound {
-            Some(bound) => format!("{}:{}", deep_diff_forge_core::sha256_hex(patch), bound.head),
-            None => deep_diff_forge_core::sha256_hex(patch),
-        };
-        self.last = Some(digest.clone());
-        if let Some(known) = self.answers.get(&digest) {
-            self.ran = true;
-            return known.clone();
+        let count = self.halves.len();
+        let digest = deep_diff_forge_core::sha256_hex(patch);
+        self.last = vec![None; count];
+        self.no_verdict = vec![false; count];
+        let mut answers = Vec::with_capacity(count);
+        let two = self.two_runs();
+        for at in 0..count {
+            let part = match (two, at) {
+                (false, _) => Part::Alone,
+                (true, 0) => Part::First,
+                (true, _) => Part::Second,
+            };
+            let (answer, ran) = self.judge_half(at, patch, &digest, bound, part);
+            self.no_verdict[at] = matches!(answer, Judged::Unjudged { .. });
+            answers.push((answer, ran));
         }
-        let after = self.after;
-        let ((answer, ran), sealed) = match self.bench() {
-            Ok(bench) => (
-                bench.judge(patch, "change.patch", after, bound),
-                bench.sealed.borrow_mut().take(),
-            ),
-            Err(reason) => (
-                (
+        // (a half with no bench was not run, and its reason says why: the others count)
+        self.ran = (answers.iter().zip(&self.halves))
+            .all(|((_, ran), half)| *ran || matches!(half.bench, Some(Err(_))));
+        let mut answers = answers.into_iter();
+        let first = answers.next().map_or(Judged::Pass, |(answer, _)| answer);
+        match answers.next() {
+            Some((second, _)) => united(first, second, &self.words()),
+            None => first,
+        }
+    }
+
+    /// The words that name the two policies of the stop ([`Halves`]).
+    fn words(&self) -> Halves {
+        let short = |id: &str| id.chars().take(7).collect::<String>();
+        Halves {
+            names: self.stop.names,
+            base: match self.stop.first {
+                Some(SecondHalf::Policy { commit, .. }) => short(commit),
+                // (an accepted policy that cannot be had has no commit to name: ruling 11, N3)
+                Some(SecondHalf::Unreadable(_)) => String::new(),
+                None => short(self.stop.base),
+            },
+            accepted: match self.stop.second {
+                Some(SecondHalf::Policy { commit, .. }) => Some(short(commit)),
+                _ => None,
+            },
+        }
+    }
+
+    /// One half's answer about `patch` (`digest` its SHA-256), with whether the judge was run for
+    /// it under that half's policy.
+    fn judge_half(
+        &mut self,
+        at: usize,
+        patch: &[u8],
+        digest: &str,
+        bound: Option<&Bound>,
+        part: Part,
+    ) -> (Judged, bool) {
+        let Self {
+            stop,
+            writable,
+            halves,
+            answers,
+            seals,
+            last,
+            after,
+            ..
+        } = self;
+        let known = candidates_of(halves);
+        let Half {
+            second,
+            bench,
+            chain,
+        } = &mut halves[at];
+        let bench = bench.get_or_insert_with(|| half_bench(stop, writable, (*second, known)));
+        let bench = match bench {
+            Ok(bench) => bench,
+            Err(reason) => {
+                return (
                     Judged::Unjudged {
                         reason: reason.text.clone(),
                         class: reason.class,
                     },
                     false,
-                ),
-                None,
-            ),
+                );
+            }
         };
-        if let Some(sealed) = sealed {
-            self.seals.insert(digest.clone(), sealed);
+        // (a bound verdict is about its pair: the same patch of another commit is asked again)
+        let bound = bench.bound(bound);
+        let mode = bound.map_or_else(|| "unbound".to_owned(), |b| format!("bound:{}", b.head));
+        let key = format!("{digest}:{}:{mode}", bench.policy_sha256);
+        last[at] = Some(key.clone());
+        if let Some(known) = answers.get(&key) {
+            return (known.clone(), true);
         }
-        self.ran = ran;
+        let (answer, ran) = bench.judge(patch, "change.patch", (*after, part), bound);
+        if let Some(sealed) = bench.sealed.borrow_mut().take() {
+            seals.insert(key.clone(), sealed);
+        }
         if !matches!(answer, Judged::Unjudged { .. }) {
-            self.chain = Some(true);
+            *chain = Some(true);
         }
         // (a patch the judge was not run for is asked about again, also at this stop)
         if ran {
-            self.answers.insert(digest, answer.clone());
+            answers.insert(key, answer.clone());
         }
-        answer
+        (answer, ran)
     }
 
-    /// The seals of the patch [`Judge::judge`] was last asked about, when the judge was run
-    /// for it.
-    fn last_seals(&self) -> Option<crate::ledger::Seals> {
-        self.seals.get(self.last.as_ref()?).cloned()
+    /// The seals of the patch [`Judge::judge`] was last asked about, one for each half of the
+    /// stop: `None` for a half the judge was not run for.
+    fn last_seals(&self) -> Vec<Option<crate::ledger::Seals>> {
+        self.last
+            .iter()
+            .map(|key| key.as_ref().and_then(|key| self.seals.get(key)).cloned())
+            .collect()
     }
 
-    /// Whether the chain gives verdicts at this stop: known from the first verdict any patch
-    /// got; else the judge is asked, once, about the probe `agent doctor --gate` uses (one
-    /// comment line added to the policy). This says only whether asking about more commits
-    /// at this stop can lead anywhere. It does not say what a missing verdict means: a commit
-    /// with no verdict is not done whatever this answers.
+    /// Whether the chain gives verdicts at this stop under every policy that gave the patch
+    /// last asked about no verdict: known from the first verdict any patch got under it; else
+    /// the judge is asked, once, about the probe `agent doctor --gate` uses (one comment line
+    /// added to that policy). This says only whether asking about more commits at this stop
+    /// can lead anywhere. It does not say what a missing verdict means: a commit with no
+    /// verdict is not done whatever this answers. Under two policies the probe of the policy
+    /// that gave no verdict decides (release 0.11.1, R7): a pin update that the accepted policy
+    /// refuses ends the asking after [`FIRST_ASKS`] asks, as a judge that answers nothing does.
     fn chain_answers(&mut self) -> bool {
-        if let Some(known) = self.chain {
+        let failed: Vec<usize> = (self.unanswered().into_iter().enumerate())
+            .filter_map(|(at, failed)| failed.then_some(at))
+            .collect();
+        failed.into_iter().all(|at| self.half_answers(at))
+    }
+
+    /// Which halves gave the patch last asked about no verdict: every half when the judge was
+    /// not asked about it at all (its patch could not be made), as one half was in 0.11.0.
+    fn unanswered(&self) -> Vec<bool> {
+        if self.no_verdict.is_empty() {
+            vec![true; self.halves.len()]
+        } else {
+            self.no_verdict.clone()
+        }
+    }
+
+    /// Whether the chain of the half `at` gives verdicts at this stop ([`Judge::chain_answers`]).
+    fn half_answers(&mut self, at: usize) -> bool {
+        let Self {
+            stop,
+            writable,
+            halves,
+            ..
+        } = self;
+        let candidates = candidates_of(halves);
+        let Half {
+            second,
+            bench,
+            chain,
+        } = &mut halves[at];
+        if let Some(known) = *chain {
             return known;
         }
-        let works = match self.bench() {
-            Ok(bench) => bench.probe.as_ref().is_some_and(|probe| {
-                !matches!(
-                    bench
-                        .judge(probe.as_bytes(), "probe.patch", After::Asks(0), None)
-                        .0,
-                    Judged::Unjudged { .. }
-                )
-            }),
-            Err(_) => false,
-        };
-        self.chain = Some(works);
+        let works =
+            match bench.get_or_insert_with(|| half_bench(stop, writable, (*second, candidates))) {
+                Ok(bench) => bench.probe.as_ref().is_some_and(|probe| {
+                    !matches!(
+                        bench
+                            .judge(
+                                probe.as_bytes(),
+                                "probe.patch",
+                                (After::Asks(0), Part::Alone),
+                                None
+                            )
+                            .0,
+                        Judged::Unjudged { .. }
+                    )
+                }),
+                Err(_) => false,
+            };
+        *chain = Some(works);
         works
     }
 
-    /// Why no patch can be judged at this stop, when the judge could not be prepared.
-    fn broken(&self) -> Option<&Why> {
-        match &self.bench {
-            Some(Err(reason)) => Some(reason),
-            _ => None,
+    /// The chain of each half, as [`Judge::half_answers`] last found it.
+    fn chains(&self) -> Vec<Option<bool>> {
+        self.halves.iter().map(|half| half.chain).collect()
+    }
+
+    /// Why no patch can be judged at this stop: the judge could be prepared under none of its
+    /// policies (the reason of the first). Where one half has a bench, the units are judged under
+    /// it, and what it fails or holds keeps that answer; the rest are UNJUDGED naming the half
+    /// that has none ([`united`]). (In 7cdc8b9d a missing first bench made every commit wait and
+    /// threw away the other half's fail or hold, where 0.11.0's stateless stop blocked: the
+    /// implementation review of L1b, F1b.)
+    ///
+    /// Where both halves have no bench the reason names both (ruling 10, F6: a hook given another
+    /// name than the bound one, whose file is missing at the base, named only the missing file).
+    fn broken(&self) -> Option<Why> {
+        let reasons: Vec<Option<&Why>> = (self.halves.iter())
+            .map(|half| match &half.bench {
+                Some(Err(reason)) => Some(reason),
+                _ => None,
+            })
+            .collect();
+        if reasons.is_empty() || reasons.iter().any(Option::is_none) {
+            return None;
+        }
+        let mut both = reasons.into_iter().flatten();
+        let first = both.next()?.clone();
+        Some(match both.next() {
+            // (the second's first: the accepted policy's reason is what decides, and a long
+            // reason is cut at its end)
+            Some(second) if second.text != first.text => Why::new(
+                second.class,
+                format!(
+                    "under {}: {}; and under {}: {}",
+                    self.stop.names.second, second.text, self.stop.names.first, first.text
+                ),
+            ),
+            _ => first,
+        })
+    }
+}
+
+/// What a stop calls its two policies in what it says (T7, T8): each in full and as T8 names
+/// it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Names {
+    first: &'static str,
+    first_short: &'static str,
+    second: &'static str,
+    second_short: &'static str,
+}
+
+/// A stop's names: the policy at the session's base, and the project's accepted policy.
+const STOP_NAMES: Names = Names {
+    first: "the policy at the session base",
+    first_short: "at the session base",
+    second: "the accepted policy",
+    second_short: "the accepted one",
+};
+
+/// The stateless stop's names where the project has an accepted policy, or one it cannot read
+/// (ruling 9): that policy, and the policy at `HEAD`.
+const STATELESS_ACCEPTED_NAMES: Names = Names {
+    first: "the accepted policy",
+    first_short: "the accepted one",
+    second: "the policy at HEAD",
+    second_short: "the one at HEAD",
+};
+
+/// The stateless stop's names where the project has no accepted policy: 0.11.0's policy (the
+/// one at the commit the ledger first recorded), and the policy at `HEAD`.
+const STATELESS_NAMES: Names = Names {
+    first: "the policy at the commit this project's ledger first recorded",
+    first_short: "the one first recorded",
+    second: "the policy at HEAD",
+    second_short: "the one at HEAD",
+};
+
+/// What names the two policies of a stop in what it says: their names, the commit of the first
+/// and the commit of the second (`None`: it cannot be read, and its reason names it), seven
+/// digits each.
+struct Halves {
+    names: Names,
+    base: String,
+    accepted: Option<String>,
+}
+
+/// The most characters of a reason that [`no_verdict_said`] carries.
+const NO_VERDICT_CHARS: usize = 200;
+
+/// What [`united`] says beside a verdict when the two policies of a stop gave a unit different
+/// verdicts (text T8 of release 0.11.1); it starts with [`hook::TWO_POLICIES`].
+fn two_policies_said(words: &Halves) -> Option<String> {
+    let accepted = words.accepted.as_deref()?;
+    Some(format!(
+        "{}{} (commit {}) and {} (commit {accepted}); the stricter stands",
+        hook::TWO_POLICIES,
+        words.names.first_short,
+        words.base,
+        words.names.second_short,
+    ))
+}
+
+/// What [`united`] says beside a fail or a hold when the other policy gave the unit no verdict
+/// (`reason`; `other` names that policy, `None` when its reason names it): it was judged under
+/// one policy, and the other's run is named with why it gave none. It starts with
+/// [`hook::ONE_OF_TWO`]. (T8 said "judged under two policies" here: ruling 5, F-O1, and the
+/// implementation review of L1b, F3.)
+fn no_verdict_said(other: Option<&str>, reason: &str) -> String {
+    let reason: String = reason.chars().take(NO_VERDICT_CHARS).collect();
+    match other {
+        Some(other) => format!(
+            "{}under {other} it got no verdict: {reason}",
+            hook::ONE_OF_TWO
+        ),
+        None => format!("{}{reason}", hook::ONE_OF_TWO),
+    }
+}
+
+/// The order of the answers, the stricter first: fail, then hold (a [`Judged::Refused`] ranks
+/// with it), then UNJUDGED, then pass.
+fn strictness(judged: &Judged) -> u8 {
+    match judged {
+        Judged::Fail { .. } => 0,
+        Judged::Hold { .. } | Judged::Refused { .. } => 1,
+        Judged::Unjudged { .. } => 2,
+        Judged::Pass => 3,
+    }
+}
+
+/// The answer of a unit judged under two policies (release 0.11.1, R1): `first` under the stop's
+/// first policy (the session base's; the stateless stop's: 0.11.0's), `second` under its other.
+/// The stricter answer stands (fail, hold, UNJUDGED, pass), so the answer is never below either:
+/// nothing that the first policy alone failed or held passes. On equal answers the rules, the
+/// judge's notes and so the remembered failing lines of both are united, and the class follows
+/// the united answer; of a hold and a hold for a label the judge does not know, the second
+/// stands (it holds the stop once) and carries the first's rules. A half that gave no verdict,
+/// or was not run, makes a unit UNJUDGED in either order, with words that name the half (T7),
+/// unless the other fails or holds it, which stands and says which half gave no verdict. Where
+/// the stricter is a fail or a hold and the other policy gave another verdict, that is said
+/// beside it (T8). What the stop says beside a verdict is no failing line.
+fn united(first: Judged, second: Judged, words: &Halves) -> Judged {
+    use std::cmp::Ordering;
+    let names = words.names;
+    let based = if words.base.is_empty() {
+        names.first.to_owned()
+    } else {
+        format!("{} (commit {})", names.first, words.base)
+    };
+    let accepted =
+        (words.accepted.as_deref()).map(|commit| format!("{} (commit {commit})", names.second));
+    match strictness(&first).cmp(&strictness(&second)) {
+        Ordering::Less => stricter(
+            first,
+            (Some(based.as_str()), names.second),
+            (&second, accepted.as_deref()),
+            words,
+        ),
+        Ordering::Greater => stricter(
+            second,
+            (accepted.as_deref(), names.first),
+            (&first, Some(based.as_str())),
+            words,
+        ),
+        Ordering::Equal => tie(first, second, (based.as_str(), accepted.as_deref())),
+    }
+}
+
+/// [`united`] where one half's answer, `judged`, is the stricter: `this` names its policy
+/// (`None`: a policy that could not be read, and the reason says so), `other` the other half's
+/// in a few words; `(answer, named)` is the other half's answer and its policy named in full.
+fn stricter(
+    judged: Judged,
+    (this, other): (Option<&str>, &str),
+    (answer, named): (&Judged, Option<&str>),
+    words: &Halves,
+) -> Judged {
+    let beside = || match answer {
+        Judged::Unjudged { reason, .. } => Some(no_verdict_said(named, reason)),
+        _ => two_policies_said(words),
+    };
+    match judged {
+        Judged::Unjudged { reason, class } => {
+            let reason = match this {
+                // not run for lack of time, the other made (T7)
+                Some(this) if class == ReasonClass::TimeNoTimeLeft && reason == NO_TIME => {
+                    format!(
+                        "the run under {this} was not made for lack of time; the run under {other} was"
+                    )
+                }
+                // the judge's words with the half named in front
+                Some(this) => format!("under {this}: {reason}"),
+                // a reason of its own that names the policy (one that cannot be read)
+                None => reason,
+            };
+            Judged::Unjudged { reason, class }
+        }
+        Judged::Fail { rules, mut said } => {
+            said.extend(beside());
+            Judged::Fail { rules, said }
+        }
+        Judged::Hold { rules, mut said } => {
+            said.extend(beside());
+            Judged::Hold { rules, said }
+        }
+        other @ (Judged::Pass | Judged::Refused { .. }) => other,
+    }
+}
+
+/// A hold (its `rules` and notes `said`) beside a hold for a label the judge does not know: the second
+/// stands, since it holds the stop once where a hold does not (as 0.11.0's answer did under the
+/// policy that gave it), and carries the first's rules and notes in its words, so that nothing
+/// of either is dropped (the implementation review of L1b, F2).
+fn refused_over_held(
+    (rules, said): (Vec<hook::RuleOutcome>, Vec<String>),
+    (class, sentence, reason, lines): (ReasonClass, String, String, Lines),
+) -> Judged {
+    let ids: Vec<&str> = rules
+        .iter()
+        .take(RULES_KEPT)
+        .map(|rule| rule.id.as_str())
+        .collect();
+    let more = rules.len().saturating_sub(RULES_KEPT);
+    let also = match (ids.is_empty(), more) {
+        (true, _) => {
+            "the judge also holds this change for a person under the stop's other policy".to_owned()
+        }
+        (false, 0) => format!(
+            "the judge also holds this change for a person under the stop's other policy (rules {})",
+            ids.join(", ")
+        ),
+        (false, more) => format!(
+            "the judge also holds this change for a person under the stop's other policy (rules {} and {more} more)",
+            ids.join(", ")
+        ),
+    };
+    let notes = if said.is_empty() {
+        String::new()
+    } else {
+        format!("; its notes: {}", said.join("; "))
+    };
+    Judged::Refused {
+        class,
+        sentence: format!("{sentence} And {also}."),
+        reason: format!("{reason}; {also}{notes}"),
+        lines,
+    }
+}
+
+/// [`united`] where both halves gave answers of the same strictness; `(based, accepted)` name
+/// the halves for two answers with no verdict.
+fn tie(first: Judged, second: Judged, (based, accepted): (&str, Option<&str>)) -> Judged {
+    let said_of = |mut said: Vec<String>, more: Vec<String>| {
+        for words in more {
+            if !said.contains(&words) {
+                said.push(words);
+            }
+        }
+        said
+    };
+    match (first, second) {
+        (
+            Judged::Fail { rules, said },
+            Judged::Fail {
+                rules: more,
+                said: also,
+            },
+        ) => Judged::Fail {
+            rules: rules_of(rules, more),
+            said: said_of(said, also),
+        },
+        (
+            Judged::Hold { rules, said },
+            Judged::Hold {
+                rules: more,
+                said: also,
+            },
+        ) => Judged::Hold {
+            rules: rules_of(rules, more),
+            said: said_of(said, also),
+        },
+        (
+            Judged::Hold { rules, said },
+            Judged::Refused {
+                class,
+                sentence,
+                reason,
+                lines,
+            },
+        )
+        | (
+            Judged::Refused {
+                class,
+                sentence,
+                reason,
+                lines,
+            },
+            Judged::Hold { rules, said },
+        ) => refused_over_held((rules, said), (class, sentence, reason, lines)),
+        (
+            Judged::Refused {
+                class,
+                sentence,
+                reason,
+                mut lines,
+            },
+            Judged::Refused { lines: more, .. },
+        ) => {
+            for (line, count) in more {
+                let kept = lines.entry(line).or_default();
+                *kept = (*kept).max(count);
+            }
+            Judged::Refused {
+                class,
+                sentence,
+                reason,
+                lines,
+            }
+        }
+        (
+            Judged::Unjudged { reason, class },
+            Judged::Unjudged {
+                reason: other,
+                class: also,
+            },
+        ) if reason != other || class != also => Judged::Unjudged {
+            reason: match accepted {
+                Some(accepted) => {
+                    format!("under {based}: {reason}; under {accepted}: {other}")
+                }
+                None => format!("under {based}: {reason}; {other}"),
+            },
+            class,
+        },
+        (first, _) => first,
+    }
+}
+
+/// The rules of two answers of the same kind, united: a rule of both (by its id and whether
+/// it is held) keeps the violations of both; the failing rules stay before the held ones.
+fn rules_of(
+    mut rules: Vec<hook::RuleOutcome>,
+    more: Vec<hook::RuleOutcome>,
+) -> Vec<hook::RuleOutcome> {
+    for rule in more {
+        match (rules.iter_mut()).find(|kept| kept.id == rule.id && kept.held == rule.held) {
+            Some(kept) => {
+                for violation in rule.violations {
+                    if !kept.violations.contains(&violation) {
+                        kept.violations.push(violation);
+                    }
+                }
+            }
+            None => rules.push(rule),
         }
     }
+    rules.sort_by_key(|rule| rule.held);
+    rules
 }
 
 /// Something in the project that a stop knows of and has not judged: said at every stop
@@ -4899,20 +6103,817 @@ fn with_frontier(
     out
 }
 
+/// Why a project has no accepted policy (release 0.11.1, R6 a and b): its stops judge under the
+/// policy at the session's base alone, as 0.11.0 did, and its start says so (text T3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NoAccepted {
+    /// The ledger has no whole baseline record: it is new, or was removed.
+    NoRecord,
+    /// The baseline record names no commit: the project was first recorded before its first.
+    NullHead,
+    /// The baseline's commit has no policy file of the name the hooks are given.
+    NoFile,
+}
+
+impl NoAccepted {
+    /// The cause as the start's line says it (T3).
+    fn cause(self, name: &str) -> String {
+        match self {
+            Self::NoRecord => "the ledger has no record of the project yet".to_owned(),
+            Self::NullHead => "the ledger's first record names no commit".to_owned(),
+            Self::NoFile => format!(
+                "the commit of the ledger's first record has no file {}",
+                hook::shown_path(name)
+            ),
+        }
+    }
+}
+
+/// The project's accepted policy for one hook (release 0.11.1, R2 and R6).
+#[derive(Debug, Clone)]
+enum Accepted {
+    /// There is none (R6 a, b): the hooks judge under the policy at the session's base alone.
+    None(NoAccepted),
+    /// The bytes of the policy file the hooks are given, at the commit `commit`: the one the
+    /// ledger first recorded, or the commit of the last acceptance of the project's policy
+    /// record that applied (`by`, release 0.11.1, L1c). `sealed` holds every digest that was
+    /// the accepted policy on the way: the first record's, and each applied acceptance's.
+    Policy {
+        commit: String,
+        bytes: Vec<u8>,
+        sha256: String,
+        sealed: BTreeSet<String>,
+        by: Option<String>,
+    },
+    /// It exists and cannot be read (R6 c): the baseline's commit is gone from the repository,
+    /// a shallow clone has no history back to it, or Git failed.
+    Unreadable(Why),
+}
+
+impl Accepted {
+    /// The digest of the accepted policy, when it was read.
+    fn sha256(&self) -> Option<&str> {
+        match self {
+            Self::Policy { sha256, .. } => Some(sha256),
+            Self::None(_) | Self::Unreadable(_) => None,
+        }
+    }
+
+    /// The digests a `pass` record must be sealed to for its commit to leave the project's
+    /// frontier (R10): the digests that were the project's accepted policy (the ledger's first
+    /// record's, and each applied acceptance's: L1c); `None` when every pass counts, as in
+    /// 0.11.0 (no accepted policy).
+    fn sealed_to(&self) -> Option<BTreeSet<String>> {
+        match self {
+            Self::None(_) => None,
+            Self::Policy { sealed, .. } => Some(sealed.clone()),
+            Self::Unreadable(_) => Some(BTreeSet::new()),
+        }
+    }
+
+    /// Half 2 of a stop whose session's base is `base` ([`SecondHalf`]): `None` when there is no
+    /// accepted policy, or its file is the same bytes as the one at `base` (one run, as 0.11.0).
+    fn second_half(
+        &self,
+        place: &Place,
+        base: &str,
+        name: &str,
+        deadline: Deadline,
+    ) -> Option<SecondHalf> {
+        match self {
+            Self::None(_) => None,
+            Self::Unreadable(why) => Some(SecondHalf::Unreadable(why.clone())),
+            Self::Policy { commit, bytes, .. } => {
+                let at_base = file_at_commit(&place.top, base, name, &deadline.git());
+                (!matches!(at_base, Ok(Some(ref same)) if same == bytes)).then(|| {
+                    SecondHalf::Policy {
+                        commit: commit.clone(),
+                        bytes: bytes.clone(),
+                    }
+                })
+            }
+        }
+    }
+}
+
+/// Whether `HEAD` and the commit `head` share history in the commits the repository has: they
+/// have a common ancestor (a branch forked before `head`, or a `HEAD` behind it). A shallow cut
+/// between them leaves none. `false` when it cannot be told.
+fn shares_history(place: &Place, head: &str, deadline: Deadline) -> bool {
+    let git = deadline.git();
+    let Ok(HeadState::Commit(at)) = head_state(&place.top, &git) else {
+        return false;
+    };
+    matches!(
+        deep_diff_forge_patch::merge_base(&place.top, &at, head, &git),
+        Ok(Some(_))
+    )
+}
+
+/// What a hook derived of the project's policy record beside its answer ([`Accepted`]), release
+/// 0.11.1, package L1c: the policy name the record binds after the acceptances that applied
+/// (`None`: the record has no binding), the acceptances that applied, in order, and those that
+/// did not, each with why. A stop's snapshot covers the first two; the doctor names the third.
+#[derive(Debug, Clone, Default)]
+struct Derivation {
+    bound: Option<String>,
+    applied: Vec<crate::policy_record::Acceptance>,
+    /// The acceptances that did not apply, each with why and whether its commit is outside this
+    /// working tree's history (harmless here: the doctor names it and stays ready, ruling 10 F3).
+    ignored: Vec<(crate::policy_record::Acceptance, String, bool)>,
+    /// Where an acceptance in this tree's history disagrees with the accepted policy reached
+    /// before it (ruling 10, F2): the policy reached (its digest, commit and bytes), from which the
+    /// owner's next acceptance applies. `None` otherwise.
+    reached: Option<Reached>,
+    /// Those disagreeing acceptances, in the file's order (ruling 11).
+    disagreeing: Vec<crate::policy_record::Acceptance>,
+}
+
+/// The accepted policy a derivation reached before an acceptance that disagrees with it: its
+/// digest, its commit and its bytes (each `None` where there was none).
+type Reached = (Option<String>, Option<String>, Option<Vec<u8>>);
+
+/// Why the accepted policy cannot be had while the project's ledger exists and cannot be read
+/// whole (ruling 10, F1): what a stop's units, the start and the doctor say.
+fn ledger_unreadable() -> Why {
+    Why::new(
+        ReasonClass::ChainPolicyMissing,
+        "this project's ledger cannot be read whole (it is larger than its readers read, not a regular file, not text, or cannot be opened or read), so its accepted policy cannot be had: no change passes until a person deals with the file (`chain.policy_missing`)",
+    )
+}
+
+/// The first seven characters of a commit id, as the texts name a commit.
+fn seven(id: &str) -> String {
+    id.chars().take(7).collect()
+}
+
+/// Why the accepted policy cannot be read when the project's policy record and its ledger
+/// disagree on the ledger's first record (ruling 3, N5): the ledger was removed or replaced while
+/// the record stands, so the new baseline's policy is never taken in its place. `now` says what
+/// the ledger holds instead.
+fn disagreement(binding: &crate::policy_record::Binding, now: &str) -> Why {
+    Why::new(
+        ReasonClass::PlaceBaseGone,
+        format!(
+            "this project's policy record and its ledger disagree, so the accepted policy cannot be read: the record was made beside a first record of the ledger that named {}, and {now} (as after the ledger was removed or replaced) (`place.base_gone`)",
+            binding.baseline_head.as_ref().map_or_else(
+                || "no commit".to_owned(),
+                |head| format!("commit {}", &head[..12])
+            )
+        ),
+    )
+}
+
+/// What a ledger's first record `now` is beside a binding that disagrees with it.
+fn now_words(
+    binding: &crate::policy_record::Binding,
+    now: Option<&crate::ledger::Baseline>,
+) -> String {
+    match now {
+        None => "the ledger has no first record now".to_owned(),
+        Some(now) if now.head != binding.baseline_head => format!(
+            "the ledger's first record now names {}",
+            now.head.as_ref().map_or_else(
+                || "no commit".to_owned(),
+                |head| format!("commit {}", &head[..12])
+            )
+        ),
+        Some(_) => "the ledger's first record now names that commit with other commits beside it"
+            .to_owned(),
+    }
+}
+
+/// Whether the acceptance `acceptance` applies (release 0.11.1, R4, a compare-and-swap), once
+/// [`accepted_policy`] has found its commit in this tree's history (ruling 3, N3, decided first:
+/// ruling 11) and its `from_sha256` the digest reached: the file it names at that commit has the
+/// digest `to_sha256`. `Ok(Ok(bytes))`: it applies, with the file's bytes; `Ok(Err(why))`: it does
+/// not; `Err`: Git could not say.
+fn applies(
+    place: &Place,
+    acceptance: &crate::policy_record::Acceptance,
+    git: &GitAcquireOptions,
+) -> Result<Result<Vec<u8>, String>, GitAcquireError> {
+    let commit = &acceptance.commit[..12];
+    let name = hook::shown_path(&acceptance.policy);
+    Ok(
+        match file_at_commit(&place.top, &acceptance.commit, &acceptance.policy, git)? {
+            Some(bytes) if deep_diff_forge_core::sha256_hex(&bytes) == acceptance.to => Ok(bytes),
+            Some(_) => Err(format!(
+                "the file {name} at its commit {commit} is not the bytes its to_sha256 names"
+            )),
+            None => Err(format!("its commit {commit} has no file {name}")),
+        },
+    )
+}
+
+/// The project's accepted policy (release 0.11.1, R2, R3 and R4, rulings 2 to 4): the file of the
+/// bound policy name at the `head` of the ledger's first whole baseline record, replaced, in
+/// order, by each acceptance of the project's policy record (`record`, as
+/// [`crate::policy_record::read`] read it) that applies ([`applies`]). `frontier` is what the
+/// ledger gave, `None` when it could not be read; `name` is the policy name the hooks are given.
+/// Replace objects and grafts cannot alter the answer: every Git call of the hooks runs with them
+/// off (`deep_diff_forge_core::git`).
+///
+/// The policy record decides, never silently in the looser direction: a record that cannot be
+/// read whole, a binding made beside another first record of the ledger than the one it has now,
+/// and a hook given another name than the bound one each make the accepted policy unreadable
+/// ([`Accepted::Unreadable`]: what the policy at the session's base does not fail or hold is
+/// UNJUDGED), never "no accepted policy". A missing record is the first record's policy, as L1b
+/// had it: half 1, the policy at the session's base, keeps every stop at 0.11.0's.
+///
+/// This is the one place the accepted policy is decided (the seam of package L1b).
+#[expect(
+    clippy::too_many_lines,
+    reason = "one derivation in its order: the record, the binding against the ledger, the first record's policy, the acceptances, the name"
+)]
+fn accepted_policy(
+    place: &Place,
+    frontier: Option<&crate::ledger::Frontier>,
+    record: &Result<Option<crate::policy_record::Record>, String>,
+    name: &str,
+    deadline: Deadline,
+) -> (Accepted, Derivation) {
+    let mut derived = Derivation::default();
+    // A ledger that exists and cannot be read whole (over what its readers read, not a regular
+    // file, not text) leaves the accepted policy unknown: never "no accepted policy" (ruling 10,
+    // F1: an agent's own commits and stops can grow the ledger past its readers' bound).
+    let Some(frontier) = frontier else {
+        return (Accepted::Unreadable(ledger_unreadable()), derived);
+    };
+    let record = match record {
+        Ok(record) => record.as_ref(),
+        Err(why) => {
+            let why = Why::new(
+                ReasonClass::ChainPolicyMissing,
+                format!(
+                    "this project's policy record cannot be read whole ({}), so its accepted policy is not known (`chain.policy_missing`)",
+                    deep_diff_forge_core::display_safe(why)
+                ),
+            );
+            return (Accepted::Unreadable(why), derived);
+        }
+    };
+    let binding = record.and_then(|r| r.binding.as_ref()).map(|(b, _)| b);
+    derived.bound = binding.map(|b| b.policy.clone());
+    let Some(baseline) = &frontier.baseline else {
+        return match binding {
+            None => (Accepted::None(NoAccepted::NoRecord), derived),
+            Some(b) => (
+                Accepted::Unreadable(disagreement(b, &now_words(b, None))),
+                derived,
+            ),
+        };
+    };
+    if let Some(b) = binding
+        && (b.baseline_head != baseline.head
+            || b.baseline_tips_sha256 != crate::ledger::tips_sha256(&baseline.tips))
+    {
+        return (
+            Accepted::Unreadable(disagreement(b, &now_words(b, Some(baseline)))),
+            derived,
+        );
+    }
+    let git = deadline.git();
+    let failed = |error: &GitAcquireError| {
+        Accepted::Unreadable(Why::new(
+            git_class(error),
+            format!(
+                "the accepted policy could not be read from Git: {}",
+                git_words(error)
+            ),
+        ))
+    };
+    let mut bound = binding.map_or(name, |b| b.policy.as_str()).to_owned();
+    // (the name, the digest, the commit, the bytes and the acceptance that supplied them)
+    let mut current: Option<(String, String, Vec<u8>, Option<String>)> = None;
+    let mut sealed = BTreeSet::new();
+    let mut none = NoAccepted::NullHead;
+    if let Some(head) = &baseline.head {
+        let short = &head[..12];
+        // A shallow clone whose history may be cut before the baseline's commit: what lies
+        // between is not known, so the accepted policy is not tied to HEAD (R6 c2). The cause
+        // decides the words (the implementation review of L1b, F3): the commit is not in the
+        // clone; or it is and HEAD shares no history with it in the commits the clone has, which
+        // a cut cannot be told from. A HEAD that shares history with it (a branch forked before
+        // it, a session begun behind it) is no cut: the history between them is there, and the
+        // accepted policy is defined, as in a complete repository (R6, "Not UNJUDGED").
+        if place.common.join("shallow").exists() {
+            let shallow = |words: String| {
+                (
+                    Accepted::Unreadable(Why::new(ReasonClass::PlaceShallowParent, words)),
+                    derived.clone(),
+                )
+            };
+            match head_contains(&place.top, head, &git) {
+                Ok(true) => {}
+                Ok(false) if shares_history(place, head, deadline) => {}
+                Ok(false) => {
+                    return shallow(format!(
+                        "this clone is shallow and HEAD shares no history it has with the commit this project's ledger first recorded ({short}): a cut cannot be told apart, so the accepted policy is not tied to it (`git fetch --unshallow` tells) (`place.shallow_parent`)"
+                    ));
+                }
+                Err(GitAcquireError::InvalidSelection { .. }) => {
+                    return shallow(format!(
+                        "this clone is shallow and does not have the commit this project's ledger first recorded ({short}), so the accepted policy cannot be read (`git fetch --unshallow` gets it) (`place.shallow_parent`)"
+                    ));
+                }
+                Err(error) => return (failed(&error), derived),
+            }
+        }
+        match file_at_commit(&place.top, head, &bound, &git) {
+            Ok(Some(bytes)) => {
+                let sha256 = deep_diff_forge_core::sha256_hex(&bytes);
+                sealed.insert(sha256.clone());
+                current = Some((sha256, head.clone(), bytes, None));
+            }
+            Ok(None) => none = NoAccepted::NoFile,
+            // the commit is no longer in the repository (R6 c1): never a fall back to HEAD
+            Err(GitAcquireError::InvalidSelection { detail })
+                if detail.ends_with("does not name a commit") =>
+            {
+                let why = Why::new(
+                    ReasonClass::PlaceBaseGone,
+                    format!(
+                        "the commit this project's ledger first recorded, {short}, is no longer in this repository, so the accepted policy cannot be read (`place.base_gone`)"
+                    ),
+                );
+                return (Accepted::Unreadable(why), derived);
+            }
+            Err(error) => return (failed(&error), derived),
+        }
+    }
+    // the binding names the digest of its file at that head: one that does not was not made
+    // beside this baseline
+    if let Some(b) = binding
+        && b.policy_sha256.as_deref() != current.as_ref().map(|c| c.0.as_str())
+    {
+        return (
+            Accepted::Unreadable(disagreement(
+                b,
+                "the binding names another digest of its policy file at that commit than the file has",
+            )),
+            derived,
+        );
+    }
+    // An acceptance in this tree's history that neither applies nor repeats the digest reached
+    // (two branches' acceptances met in a merge: ruling 10, F2) leaves the accepted policy
+    // unknown until a later acceptance applies from the digest reached.
+    let mut disagreeing: Vec<crate::policy_record::Acceptance> = Vec::new();
+    for acceptance in record.map_or(&[][..], |r| r.acceptances.as_slice()) {
+        let at = current.as_ref().map(|c| c.0.as_str());
+        // first: is it of this tree's history at all (ruling 11, F3)? One of another branch is
+        // never a disagreement and never fails the doctor's link
+        let short = &acceptance.commit[..12];
+        match head_contains(&place.top, &acceptance.commit, &git) {
+            Ok(true) => {}
+            Ok(false) => {
+                derived.ignored.push((
+                    acceptance.clone(),
+                    format!(
+                        "its commit {short} is not an ancestor of HEAD in {}",
+                        shown(&place.top)
+                    ),
+                    true,
+                ));
+                continue;
+            }
+            Err(GitAcquireError::InvalidSelection { detail })
+                if detail.ends_with("does not name a commit") =>
+            {
+                derived.ignored.push((
+                    acceptance.clone(),
+                    format!("its commit {short} is not in this repository"),
+                    true,
+                ));
+                continue;
+            }
+            Err(error) => return (failed(&error), derived),
+        }
+        if acceptance.from.as_deref() != at {
+            if Some(acceptance.to.as_str()) == at {
+                // a repeat of the digest reached: passed over
+                derived.ignored.push((
+                    acceptance.clone(),
+                    "it repeats the accepted digest reached before it".to_owned(),
+                    true,
+                ));
+            } else {
+                // in this tree's history and not from the policy reached: a disagreement, which
+                // stays until an acceptance at a commit that has it in its history applies
+                // (ruling 11, N-F2: an acceptance of the other branch does not settle it)
+                derived.ignored.push((
+                    acceptance.clone(),
+                    "it is in this tree's history and does not follow from the accepted policy reached before it".to_owned(),
+                    false,
+                ));
+                disagreeing.push(acceptance.clone());
+            }
+            continue;
+        }
+        match applies(place, acceptance, &git) {
+            Ok(Ok(bytes)) => {
+                sealed.insert(acceptance.to.clone());
+                bound.clone_from(&acceptance.policy);
+                current = Some((
+                    acceptance.to.clone(),
+                    acceptance.commit.clone(),
+                    bytes,
+                    Some(acceptance.commit.clone()),
+                ));
+                derived.applied.push(acceptance.clone());
+                // settled only by an acceptance at a commit that has every disagreeing one in
+                // its history (made where the owner saw both)
+                let mut settles = !disagreeing.is_empty();
+                for earlier in &disagreeing {
+                    match deep_diff_forge_patch::merge_base(
+                        &place.top,
+                        &earlier.commit,
+                        &acceptance.commit,
+                        &git,
+                    ) {
+                        Ok(Some(base)) if base == earlier.commit => {}
+                        Ok(_) => settles = false,
+                        Err(error) => return (failed(&error), derived),
+                    }
+                }
+                if settles {
+                    disagreeing.clear();
+                    for entry in &mut derived.ignored {
+                        if !entry.2 && entry.1.contains("does not follow from the accepted policy")
+                        {
+                            entry.1.push_str("; an acceptance at commit ");
+                            entry.1.push_str(short);
+                            entry
+                                .1
+                                .push_str(", which has it in its history, settled it");
+                            entry.2 = true;
+                        }
+                    }
+                }
+            }
+            Ok(Err(why)) => derived.ignored.push((acceptance.clone(), why, false)),
+            Err(error) => return (failed(&error), derived),
+        }
+    }
+    if binding.is_some() {
+        derived.bound = Some(bound.clone());
+    }
+    if bound != name {
+        let why = Why::new(
+            ReasonClass::ChainPolicyMissing,
+            format!(
+                "these hooks are given the policy name {}; this project's policy record binds {} (a file any process of this user can write): no change passes until the two names match (`chain.policy_missing`)",
+                hook::shown_path(name),
+                hook::shown_path(&bound)
+            ),
+        );
+        return (Accepted::Unreadable(why), derived);
+    }
+    if !disagreeing.is_empty() {
+        let reached = current.as_ref().map_or_else(
+            || "no accepted policy".to_owned(),
+            |c| format!("the one at commit {}", &c.1[..12]),
+        );
+        let commits: Vec<&str> = disagreeing.iter().map(|a| &a.commit[..12]).collect();
+        let why = Why::new(
+            ReasonClass::ChainPolicyMissing,
+            format!(
+                "acceptances in this tree's history (of commit {}) do not follow from the accepted policy reached before them ({reached}), as after a merge of two branches' acceptances, so the accepted policy cannot be had until the owner accepts at a commit that has them in its history (`chain.policy_missing`)",
+                commits.join(", ")
+            ),
+        );
+        derived.reached = Some(match current {
+            Some((sha256, commit, bytes, _)) => (Some(sha256), Some(commit), Some(bytes)),
+            None => (None, None, None),
+        });
+        derived.disagreeing = disagreeing;
+        return (Accepted::Unreadable(why), derived);
+    }
+    match current {
+        None => (Accepted::None(none), derived),
+        Some((sha256, commit, bytes, by)) => (
+            Accepted::Policy {
+                commit,
+                bytes,
+                sha256,
+                sealed,
+                by,
+            },
+            derived,
+        ),
+    }
+}
+
+/// How long a stop waits for the project lock ([`crate::policy_record::lock`]), each of the two
+/// times it takes it; a start and an advice hook wait their own lock waits.
+const PROJECT_LOCK_WAIT: Duration = Duration::from_secs(3);
+
+/// What one hook read of the project's ledger and policy record and derived from them (release
+/// 0.11.1, L1c): the accepted policy, what the doctor names, the binding this hook wrote (`T4`),
+/// the digest of the snapshot its stop records carry, and what a stop compares again under the
+/// project lock before its records are made ([`snapshot_again`]): the ledger's first whole
+/// baseline as it stood after this read (`ledger`; a stop can write it at its first read), and
+/// the snapshot derived from that and the policy record (`reference`, the same as `snapshot`
+/// unless this read wrote the baseline).
+struct Projected {
+    accepted: Accepted,
+    derived: Derivation,
+    record: Result<Option<crate::policy_record::Record>, String>,
+    bound_now: Option<String>,
+    snapshot: String,
+    ledger: Result<Option<crate::ledger::Baseline>, String>,
+    reference: String,
+}
+
+impl Projected {
+    /// What a hook that could not take the project lock has: no accepted policy it can tie to
+    /// anything (`why` says why), so what the policy at the session's base does not fail or
+    /// hold is UNJUDGED.
+    fn locked_out(why: &str, frontier: Option<&crate::ledger::Frontier>) -> Self {
+        let accepted = Accepted::Unreadable(Why::new(
+            ReasonClass::ChainPolicyMissing,
+            format!(
+                "this project's policy record could not be read: {} (`chain.policy_missing`)",
+                deep_diff_forge_core::display_safe(why)
+            ),
+        ));
+        Self {
+            snapshot: crate::ledger::snapshot_sha256(
+                frontier.and_then(|f| f.baseline.as_ref()),
+                None,
+            ),
+            accepted,
+            derived: Derivation::default(),
+            record: Err(why.to_owned()),
+            bound_now: None,
+            ledger: Err(why.to_owned()),
+            reference: String::new(),
+        }
+    }
+}
+
+/// The snapshot digest of the accepted policy derived from the ledger's first whole baseline
+/// `baseline` and the policy record `record` for a hook at `place` given `name`, as a stop's
+/// records carry it ([`crate::ledger::snapshot_sha256_of`]), with what was derived.
+fn snapshot_from(
+    place: &Place,
+    baseline: Option<crate::ledger::Baseline>,
+    record: &Result<Option<crate::policy_record::Record>, String>,
+    name: &str,
+    deadline: Deadline,
+) -> (String, Accepted) {
+    let frontier = crate::ledger::Frontier {
+        baseline,
+        ..crate::ledger::Frontier::default()
+    };
+    let (accepted, derived) = accepted_policy(place, Some(&frontier), record, name, deadline);
+    let snapshot = crate::ledger::snapshot_sha256_of(
+        frontier.baseline.as_ref(),
+        derived.bound.as_deref(),
+        &derived.applied,
+        accepted.sha256(),
+    );
+    (snapshot, accepted)
+}
+
+/// Bind the policy name `name` to the project on first use (release 0.11.1, R3, ruling 2 Q4):
+/// under the project lock `held`, when the policy record still has no binding and can be read
+/// whole, beside the ledger's first record `baseline`. `Ok(true)` when the binding was written.
+/// A name the record's reader would refuse, and a baseline head whose policy file Git cannot
+/// read, bind nothing.
+fn bind(
+    place: &Place,
+    baseline: &crate::ledger::Baseline,
+    name: &str,
+    deadline: Deadline,
+    held: &crate::policy_record::ProjectLock,
+) -> Result<bool, String> {
+    if crate::policy_record::read(&place.own)?.is_some_and(|r| r.binding.is_some())
+        || !crate::policy_record::is_name(name)
+    {
+        return Ok(false);
+    }
+    let digest = match &baseline.head {
+        None => None,
+        Some(at) => file_at_commit(&place.top, at, name, &deadline.git())
+            .map_err(|error| git_words(&error))?
+            .map(|bytes| deep_diff_forge_core::sha256_hex(&bytes)),
+    };
+    let binding = crate::policy_record::Binding {
+        policy: name.to_owned(),
+        baseline_head: baseline.head.clone(),
+        baseline_tips_sha256: crate::ledger::tips_sha256(&baseline.tips),
+        policy_sha256: digest,
+    };
+    own_directory(&place.own)?;
+    crate::policy_record::append(
+        &place.own,
+        held,
+        &crate::policy_record::binding_value(&binding),
+    )?;
+    Ok(true)
+}
+
+/// Read the project's policy record and derive its accepted policy for a hook at `place` given the
+/// policy name `name`, from the ledger's `frontier` (`None`: it could not be read). With the
+/// project lock (`held`) a hook binds the name on first use ([`bind`]) where the ledger has a
+/// baseline and the record no binding; without it nothing is written (the doctor, `agent check`).
+fn project_policy(
+    place: &Place,
+    frontier: Option<&crate::ledger::Frontier>,
+    name: &str,
+    deadline: Deadline,
+    held: Option<&crate::policy_record::ProjectLock>,
+) -> Projected {
+    let mut record = crate::policy_record::read(&place.own);
+    let mut bound_now = None;
+    // (whether a binding exists is decided inside the lock, by [`bind`] alone)
+    if let (Some(held), Some(baseline), Ok(_)) =
+        (held, frontier.and_then(|f| f.baseline.as_ref()), &record)
+        && bind(place, baseline, name, deadline, held) == Ok(true)
+    {
+        bound_now = Some(name.to_owned());
+        record = crate::policy_record::read(&place.own);
+    }
+    let (accepted, derived) = accepted_policy(place, frontier, &record, name, deadline);
+    let snapshot = crate::ledger::snapshot_sha256_of(
+        frontier.and_then(|f| f.baseline.as_ref()),
+        derived.bound.as_deref(),
+        &derived.applied,
+        accepted.sha256(),
+    );
+    // what the append compares against: the same derivation, unless this read wrote the
+    // ledger's baseline (a first record), when it is derived again from what stands now
+    // (from the same reader as `frontier`: where that could not be read, neither can this)
+    let ledger = match frontier {
+        Some(_) => crate::ledger::first_baseline(&place.own),
+        None => Err("the ledger could not be read whole".to_owned()),
+    };
+    let reference = match &ledger {
+        Ok(now) if now.as_ref() != frontier.and_then(|f| f.baseline.as_ref()) => {
+            snapshot_from(place, now.clone(), &record, name, deadline).0
+        }
+        _ => snapshot.clone(),
+    };
+    Projected {
+        accepted,
+        derived,
+        record,
+        bound_now,
+        snapshot,
+        ledger,
+        reference,
+    }
+}
+
+/// [`project_policy`] for a hook that writes: the project lock taken for at most `wait` (and the
+/// hooks' own directory made), the ledger's `frontier` read by the caller under it.
+fn locked_project_policy(
+    place: &Place,
+    frontier: impl FnOnce() -> Option<crate::ledger::Frontier>,
+    name: &str,
+    deadline: Deadline,
+    wait: Duration,
+) -> (Option<crate::ledger::Frontier>, Projected) {
+    let held = own_directory(&place.own)
+        .and_then(|()| crate::policy_record::lock(&place.own, wait.min(deadline.left())));
+    let frontier = frontier();
+    let projected = match &held {
+        Ok(held) => project_policy(place, frontier.as_ref(), name, deadline, Some(held)),
+        Err(why) => Projected::locked_out(why, frontier.as_ref()),
+    };
+    (frontier, projected)
+}
+
+/// The accepted policy in words, for a sentence that compares two of them.
+fn accepted_named(accepted: &Accepted) -> String {
+    match accepted {
+        Accepted::Policy { commit, .. } => format!("the one at commit {}", seven(commit)),
+        Accepted::None(_) => "none".to_owned(),
+        Accepted::Unreadable(why) => format!(
+            "one that cannot be read ({})",
+            deep_diff_forge_core::display_safe(&why.text)
+        ),
+    }
+}
+
+/// Before a stop's records are made (release 0.11.1, ruling 4, the snapshot at the append): take
+/// the project lock again, read the ledger's first record and the policy record again, derive the
+/// snapshot again under the lock (with HEAD as it is now) and compare it with what the stop judged
+/// by (`first`). Returns the lock, which the stop holds through its ledger
+/// append, and `Some(words)` when the accepted policy the stop judged by is no longer the
+/// project's, or that cannot be told in time: then no `pass` of this stop may be recorded
+/// ([`unpass`]). Its cost comes out of [`STOP_RESERVE`], after the judging.
+fn snapshot_again(
+    place: &Place,
+    name: &str,
+    first: &Projected,
+    deadline: Deadline,
+) -> (Option<crate::policy_record::ProjectLock>, Option<String>) {
+    let held = match own_directory(&place.own).and_then(|()| {
+        crate::policy_record::lock(&place.own, PROJECT_LOCK_WAIT.min(deadline.left()))
+    }) {
+        Ok(held) => held,
+        Err(why) => {
+            return (
+                None,
+                Some(format!(
+                    "this project's policy record could not be read again before this stop's records were made ({why})"
+                )),
+            );
+        }
+    };
+    // Always derived again (no fast path on the two files' bytes: which acceptances apply also
+    // depends on HEAD, the shallow marker and the objects Git has; an early read of binary 1
+    // moved HEAD while the judge ran and a stale pass was appended).
+    let record = crate::policy_record::read(&place.own);
+    let baseline = match (crate::ledger::first_baseline(&place.own), &first.ledger) {
+        (Ok(baseline), Ok(_)) => baseline,
+        // unreadable at both reads: the accepted policy cannot be had (ruling 10, F1), so no pass
+        // of this stop is known to be under it
+        (Err(why), Err(_)) => {
+            return (
+                Some(held),
+                Some(format!(
+                    "this project's ledger cannot be read whole ({}), so the accepted policy cannot be had",
+                    deep_diff_forge_core::display_safe(&why)
+                )),
+            );
+        }
+        (Err(why), Ok(_)) => {
+            return (
+                Some(held),
+                Some(format!(
+                    "this project's ledger could not be read again before this stop's records were made ({})",
+                    deep_diff_forge_core::display_safe(&why)
+                )),
+            );
+        }
+        (Ok(_), Err(_)) => {
+            return (
+                Some(held),
+                Some(
+                    "this project's ledger, which could not be read when this stop began, can be read now: what it judged by is not known to be the accepted policy"
+                        .to_owned(),
+                ),
+            );
+        }
+    };
+    let (snapshot, accepted) = snapshot_from(place, baseline, &record, name, deadline);
+    if snapshot == first.reference {
+        return (Some(held), None);
+    }
+    (
+        Some(held),
+        Some(format!(
+            "this project's accepted policy changed while this stop judged: it was {}, and it is now {}",
+            accepted_named(&first.accepted),
+            accepted_named(&accepted)
+        )),
+    )
+}
+
+/// What a stop whose snapshot no longer holds ([`snapshot_again`]) records (ruling 4: a stale
+/// `pass` is never appended): every `pass` of it as `unjudged` with the class
+/// `chain.policy_missing`, and none of its commits remembered as passed by the session, so each is
+/// judged again at the next stop under the accepted policy as it is then. Whether a `pass` was
+/// there to change: what the stop then says ([`unpassed_words`]) is said only of one.
+fn unpass(records: &mut [crate::ledger::Unit], commits: &mut Vec<(String, String)>) -> bool {
+    let mut any = false;
+    for unit in records.iter_mut().filter(|unit| unit.outcome == "pass") {
+        (unit.outcome, unit.class) = ("unjudged", ReasonClass::ChainPolicyMissing);
+        unit.seals = None;
+        unit.blocked = false;
+        any = true;
+    }
+    commits.retain(|(_, said)| said != "p");
+    any
+}
+
+/// What a stop says when its snapshot no longer held (`change`, [`snapshot_again`]).
+fn unpassed_words(change: &str) -> String {
+    format!(
+        "UNJUDGED: {change}. What passed at this stop was judged under a policy that is no longer the accepted one, so it is recorded as UNJUDGED, not as a pass: stop again to have it judged under the policy accepted now (`chain.policy_missing`)."
+    )
+}
+
 /// What a stop says when the project's ledger has no baseline: its session's own commits are
-/// judged, as before the frontier, and the commits that were there when it began are recorded
-/// as the project's baseline.
-const NO_RECORD: &str = "No record of this project was found in its ledger (the ledger is new to this build, or it was removed): this stop judged the commits made since this session began, as before, and the commits that were there when it began are now the project's baseline. The ledger is a file the agent can write; the pull request's judge is the boundary.";
+/// judged, as before the frontier, under the policy at the session's base alone (no accepted
+/// policy exists yet: release 0.11.1, R6 a), and the commits that were there when it began are
+/// recorded as the project's baseline.
+const NO_RECORD: &str = "No record of this project was found in its ledger (the ledger is new to this build, or it was removed): this stop judged the commits made since this session began, as before, under the policy at the commit it began from alone, since no accepted policy exists yet, and the commits that were there when it began are now the project's baseline. The ledger is a file the agent can write; the pull request's judge is the boundary.";
 
 /// The project's ledger as a stop reads it (F13.b), with what must be said of it: a ledger
 /// with no baseline gets the commits there when the session began as one ([`NO_RECORD`]); a
-/// ledger that cannot be read gives none, which judges as before.
+/// ledger that cannot be read gives none, which judges as before, under the policy at the
+/// session's base alone. With them comes whether the ledger could be read, for the project's
+/// accepted policy ([`accepted_policy`]).
 fn project_frontier(
     work: &Work,
     tips: &Tips,
     base: &str,
     deadline: Deadline,
-) -> (crate::ledger::Frontier, Option<Note>) {
+) -> (crate::ledger::Frontier, Option<Note>, bool) {
     let own = &work.place.own;
     let note = |text: String| {
         Some(Note {
@@ -4922,7 +6923,7 @@ fn project_frontier(
         })
     };
     match crate::ledger::frontier(own) {
-        Ok(frontier) if frontier.baseline.is_some() => (frontier, None),
+        Ok(frontier) if frontier.baseline.is_some() => (frontier, None, true),
         Ok(frontier) => {
             if let Tips::Listed(tips) = tips {
                 let baseline = crate::ledger::Baseline {
@@ -4933,14 +6934,15 @@ fn project_frontier(
                 let _ = own_directory(own)
                     .and_then(|()| crate::ledger::append_baseline(own, &baseline, wait));
             }
-            (frontier, note(NO_RECORD.to_owned()))
+            (frontier, note(NO_RECORD.to_owned()), true)
         }
         Err(why) => (
             crate::ledger::Frontier::default(),
             note(format!(
-                "The project's ledger could not be read ({}): this stop judged the commits made since this session began, as before.",
+                "The project's ledger could not be read ({}): this stop judged the commits made since this session began, as before, under the policy at the commit this session began from, and the project's accepted policy cannot be had while the ledger cannot be read, so a change that policy does not fail or hold is UNJUDGED. A ledger that a session's commits and stops have grown past what its readers read stays so until a person deals with the file; the pull request's judge is the boundary.",
                 deep_diff_forge_core::display_safe(&why)
             )),
+            false,
         ),
     }
 }
@@ -5420,6 +7422,16 @@ const OWED_ASKS: u32 = 3;
 /// tree's change leaves what the asks owed need ([`asks_kept`]).
 const OWED_ASKS_NEED: Duration =
     Duration::from_secs(COMMIT_FLOOR.as_secs() + ASK_OWED.as_secs() * (OWED_ASKS as u64 - 1));
+/// [`ASK_OWED`] in a stop that judges under two policies (release 0.11.1, R7): an ask is two runs
+/// there, so it is [`COMMIT_FLOOR`] for each and two seconds more for what lies between.
+const ASK_OWED_TWO: Duration = Duration::from_secs(2 * COMMIT_FLOOR.as_secs() + 2);
+/// [`OWED_ASKS_NEED`] in a stop that judges under two policies: [`COMMIT_FLOOR`] for each half
+/// of the first ask and [`ASK_OWED_TWO`] for each of the others ([`run_part`]). With today's
+/// constants, two runs an ask left the third owed ask unmade whatever the stop had left (the
+/// first runs take it): the arithmetic of the design of release 0.11.1, section 4.
+const OWED_ASKS_NEED_TWO: Duration = Duration::from_secs(
+    2 * COMMIT_FLOOR.as_secs() + ASK_OWED_TWO.as_secs() * (OWED_ASKS as u64 - 1),
+);
 /// What is said of a commit that had no verdict before and was not asked about at a stop
 /// because the stop's time was used: in front of its reason from before.
 const NOT_ASKED: &str = "not asked at this stop for lack of time (it keeps its turn); before:";
@@ -5495,14 +7507,16 @@ fn judge_commits(
     let (mut units, asks) = sorted_commits(listed, known);
     let mut owed = u32::try_from(asks.iter().filter(|ask| ask.reserved).count()).unwrap_or(0);
     // Why the commits from here on wait, once one has to.
-    let mut waits: Option<Why> = tribunal.broken().cloned();
+    let mut waits: Option<Why> = tribunal.broken();
     let (mut waiting, mut failed) = (0_usize, 0_usize);
     // the stop's time is what makes the commits from here on wait
     let mut out_of_time = false;
-    // (the commit, its attempts, whether they are final whatever the chain did, the class)
-    let mut tried: Vec<(usize, u32, bool, ReasonClass)> = Vec::new();
-    // for the ledger (F11): the seals of each commit judged, and the commits left waiting
-    let mut sealed: std::collections::BTreeMap<usize, crate::ledger::Seals> =
+    // (the commit, its attempts, whether they are final whatever the chain did, the class, and
+    // which policies of the stop gave it no verdict)
+    let mut tried: Vec<(usize, u32, bool, ReasonClass, Vec<bool>)> = Vec::new();
+    // for the ledger (F11): the seals of each commit judged, one for each policy of the stop,
+    // and the commits left waiting
+    let mut sealed: std::collections::BTreeMap<usize, Vec<Option<crate::ledger::Seals>>> =
         std::collections::BTreeMap::new();
     let mut waited: Vec<String> = Vec::new();
     for ask in asks {
@@ -5550,13 +7564,13 @@ fn judge_commits(
             ));
             continue;
         }
-        tribunal.ran = false;
-        tribunal.last = None;
+        tribunal.forget();
         let (judged, proven) = judge_commit(stopping, tribunal, at, commit)?;
         let ran = tribunal.ran;
-        sealed.extend(tribunal.last_seals().map(|seals| (at, seals)));
+        sealed.insert(at, tribunal.last_seals());
+        let unanswered = tribunal.unanswered();
         if let Some(reason) = tribunal.broken() {
-            waits = Some(reason.clone());
+            waits = Some(reason);
             waiting += usize::from(ask.attempts.is_none());
             waited.extend(ask.attempts.is_none().then(|| id.clone()));
             continue;
@@ -5592,7 +7606,7 @@ fn judge_commits(
                 // written down as asked at this stop, with the attempts it had.
                 failed += 1;
                 let attempts = ask.attempts.unwrap_or(0);
-                tried.push((at, attempts, true, *class));
+                tried.push((at, attempts, true, *class, unanswered));
                 units[at] = Some(commit_unit(
                     id,
                     if ask.in_turn() {
@@ -5607,7 +7621,7 @@ fn judge_commits(
                 // asked in its turn: the ask counts, whatever the chain did, and the commit
                 // is said as what it is
                 let attempts = ask.attempts.unwrap_or(ATTEMPTS).saturating_add(1);
-                tried.push((at, attempts, true, *class));
+                tried.push((at, attempts, true, *class, unanswered));
                 units[at] = Some(commit_unit(
                     id,
                     no_verdict(&in_turn(attempts, reason), *class),
@@ -5616,9 +7630,8 @@ fn judge_commits(
             }
             Judged::Unjudged { reason, class } => {
                 failed += 1;
-                tried.push((at, ask.attempts.unwrap_or(0), false, *class));
-                if tribunal.chain != Some(true) && failed >= FIRST_ASKS && !tribunal.chain_answers()
-                {
+                tried.push((at, ask.attempts.unwrap_or(0), false, *class, unanswered));
+                if failed >= FIRST_ASKS && !tribunal.chain_answers() {
                     waits = Some(Why::new(*class, reason.clone()));
                 }
                 units[at] = Some(commit_unit(id, judged));
@@ -5627,7 +7640,8 @@ fn judge_commits(
         };
         if said == "p" {
             let name = crate::ledger::Name::Commit(id.clone());
-            out.ledger.push((None, name, sealed.remove(&at)));
+            let seals = sealed.remove(&at).unwrap_or_default();
+            named_records(&mut out.ledger, None, &name, seals);
         }
         units[at] = (said != "p").then(|| commit_unit(id, judged));
         out.commits.push((id.clone(), said));
@@ -5639,16 +7653,23 @@ fn judge_commits(
     // asked (it was asked after three failed asks), no attempt ever counted, and every stop
     // of the session asked again, at the judge's own time-out each (sixth independent review
     // of the hooks, HR6-L-3).
-    if failed > 0
-        && tribunal.chain.is_none()
-        && waits.is_none()
-        && stopping.deadline.left() >= COMMIT_FLOOR
-    {
-        tribunal.chain_answers();
+    // (under two policies, each policy that gave a commit no verdict: release 0.11.1, R7)
+    if failed > 0 && waits.is_none() && stopping.deadline.left() >= COMMIT_FLOOR {
+        for half in 0..tribunal.halves.len() {
+            if tried.iter().any(|tried| tried.4.get(half) == Some(&true)) {
+                tribunal.half_answers(half);
+            }
+        }
     }
-    let counts = u32::from(tribunal.chain == Some(true));
-    for (at, attempts, counted, class) in tried {
-        let attempts = if counted { attempts } else { attempts + counts };
+    let chains = tribunal.chains();
+    for (at, attempts, counted, class, unanswered) in tried {
+        let counts =
+            (unanswered.iter().zip(&chains)).all(|(failed, chain)| !failed || *chain == Some(true));
+        let attempts = if counted {
+            attempts
+        } else {
+            attempts + u32::from(counts)
+        };
         out.commits.push((
             listed[at].0.clone(),
             format!("n{attempts}@{}:{}", stopping.number, class.as_str()),
@@ -5670,8 +7691,8 @@ fn judge_commits(
             out.classes.insert(first + place, *class);
         }
         let name = crate::ledger::Name::Commit(id.clone());
-        out.ledger
-            .push((Some(first + place), name, sealed.remove(&at)));
+        let seals = sealed.remove(&at).unwrap_or_default();
+        named_records(&mut out.ledger, Some(first + place), &name, seals);
     }
     out.units.extend(units.into_iter().flatten());
     if waiting > 0 {
@@ -6456,17 +8477,18 @@ fn tree_units(
     after: Duration,
     out: &mut Judging,
 ) {
-    let second = if matches!(found.staged, Reading::Found(Staged::Other(_))) {
-        ASK_OWED
-    } else {
-        Duration::ZERO
+    let second = match (&found.staged, tribunal.two_runs()) {
+        (Reading::Found(Staged::Other(_)), false) => ASK_OWED,
+        // (two runs a change in a stop with two policies: release 0.11.1, R7)
+        (Reading::Found(Staged::Other(_)), true) => ASK_OWED_TWO,
+        _ => Duration::ZERO,
     };
     let digest = |patch: &Reading<Vec<u8>>| match patch {
         Reading::Found(bytes) => Some(deep_diff_forge_core::sha256_hex(bytes)),
         _ => None,
     };
-    let mut named = vec![(digest(&found.tree), "uncommitted", None)];
-    tribunal.last = None;
+    let mut named = vec![(digest(&found.tree), "uncommitted", Vec::new())];
+    tribunal.forget();
     let tree = judged_patch(tribunal, found.tree, after + second);
     named[0].2 = tribunal.last_seals();
     let index = match found.staged {
@@ -6474,7 +8496,7 @@ fn tree_units(
         Reading::Found(Staged::Same) => Reading::Found(Staged::Same),
         Reading::Found(Staged::Other(bytes)) => {
             let staged = Some(deep_diff_forge_core::sha256_hex(&bytes));
-            tribunal.last = None;
+            tribunal.forget();
             let judged = judged_patch(tribunal, Reading::Found(bytes), after);
             named.push((staged, "staged", tribunal.last_seals()));
             match judged {
@@ -6502,15 +8524,38 @@ fn tree_units(
                 (patch.clone(), *kind, seals.clone())
             }
             // (a cause that holds once is the uncommitted change's: F12)
-            _ if unit.tag.ends_with('o') => (named[0].0.clone(), "uncommitted", None),
-            _ if at == 0 => (None, "uncommitted", None),
-            _ => (None, "staged", None),
+            _ if unit.tag.ends_with('o') => (named[0].0.clone(), "uncommitted", Vec::new()),
+            _ if at == 0 => (None, "uncommitted", Vec::new()),
+            _ => (None, "staged", Vec::new()),
         };
         let tree = id.to_owned();
         let name = crate::ledger::Name::Tree { patch, kind, tree };
-        out.ledger.push((Some(out.units.len() + at), name, seals));
+        named_records(&mut out.ledger, Some(out.units.len() + at), &name, seals);
     }
     out.units.extend(units);
+}
+
+/// What the ledger is to record of one unit (release 0.11.1, R9 as ruling 3 made it): one record
+/// for each policy the stop judged it under, each with that run's seals (`seals`, one for each
+/// half; `None` for a half the judge was not run for), and one with no seals when no run was
+/// made. Every record of a unit gets the unit's one answer ([`ledger_units`]), so a unit that
+/// one half could not judge is `unjudged` in each of them, and a `pass` record is written only
+/// when every half passed.
+fn named_records(
+    ledger: &mut Vec<(
+        Option<usize>,
+        crate::ledger::Name,
+        Option<crate::ledger::Seals>,
+    )>,
+    at: Option<usize>,
+    name: &crate::ledger::Name,
+    seals: Vec<Option<crate::ledger::Seals>>,
+) {
+    if seals.iter().all(Option::is_none) {
+        ledger.push((at, name.clone(), None));
+    } else {
+        ledger.extend(seals.into_iter().map(|seals| (at, name.clone(), seals)));
+    }
 }
 
 /// What a stop saw of the working tree `id` at `top`, from what it has of its uncommitted
@@ -6856,18 +8901,10 @@ fn judge_units(
         .filter(|(_, _, _, unreadable)| unreadable.is_none())
         .map(|(_, id, _, _)| id.clone())
         .collect();
-    let mut tribunal = Judge {
-        stop: stopping,
-        writable,
-        bench: None,
-        answers: std::collections::BTreeMap::new(),
-        chain: None,
-        after: After::Asks(0),
-        ran: false,
-        seals: std::collections::BTreeMap::new(),
-        last: None,
-    };
-    let (count, asks) = (trees.len(), asks_kept(known));
+    let mut tribunal = Judge::of(stopping, writable);
+    // (a stop with two policies makes two runs a change and an ask: release 0.11.1, R7)
+    let two = tribunal.two_runs();
+    let (count, asks) = (trees.len(), asks_kept(known, two));
     for (at, (top, id, scratch, unreadable)) in trees.into_iter().enumerate() {
         let found = match unreadable {
             Some(reason) => Uncommitted::not_read(Why::new(ReasonClass::PlaceUnpaired, reason)),
@@ -6889,6 +8926,7 @@ fn judge_units(
                 Ok(false)
             )
         });
+        let later = if two { later * 2 } else { later };
         let after = later + asks;
         tree_units(&mut tribunal, &top, &id, found, blocked, after, &mut out);
     }
@@ -7677,18 +9715,46 @@ const NOTE_NAME: usize = 180;
 /// stands there)", which is the one thing the line is there to say of it. (Found by the
 /// mutation run, whose scratch directory has a longer path than a gate's: its baseline
 /// failed on the test of a working tree inside the project.)
+///
+/// What gives way is the quoted path, in its middle ([`hook::middle_cut`]), and every clause
+/// of the name is kept whole: cut at its end, the name of a tree under a path of a macOS
+/// temp directory's length lost "(remembered at another directory, which s…" (the macOS CI
+/// run of 0.11.0, rows 5 to 8 of its reading). The path is what lies between the name's first
+/// and its last quote: the words of a name hold none. A name with no quoted path, or whose
+/// words alone do not leave the path a character (no name of this build: the longest has 94
+/// characters besides its path), is cut after its last whole word that fits and keeps what
+/// it says of a failure that stands.
 fn counted_name(name: &str) -> String {
-    let count = name.chars().count();
-    if count <= NOTE_NAME {
+    let chars: Vec<char> = name.chars().collect();
+    if chars.len() <= NOTE_NAME {
         return name.to_owned();
+    }
+    let quotes = (
+        chars.iter().position(|&c| c == '"'),
+        chars.iter().rposition(|&c| c == '"'),
+    );
+    if let (Some(first), Some(last)) = quotes
+        && first < last
+        && chars.len() - (last - first - 1) < NOTE_NAME
+    {
+        let room = NOTE_NAME - (chars.len() - (last - first - 1));
+        let before: String = chars[..=first].iter().collect();
+        let after: String = chars[last..].iter().collect();
+        return format!(
+            "{before}{}{after}",
+            hook::middle_cut(&chars[first + 1..last], room)
+        );
     }
     let said = name
         .rfind(" (a failure stands")
         .map_or("", |at| &name[at..]);
-    let head: String = name
-        .chars()
-        .take(NOTE_NAME.saturating_sub(said.chars().count() + 1))
-        .collect();
+    let room = NOTE_NAME.saturating_sub(said.chars().count() + 1);
+    let mut head: String = chars[..room].iter().collect();
+    if chars.get(room).is_some_and(|&c| c != ' ')
+        && let Some(at) = head.rfind(' ')
+    {
+        head.truncate(at);
+    }
     format!("{head}…{said}")
 }
 
@@ -7785,129 +9851,323 @@ const LOCK_WAIT: Duration = Duration::from_secs(3);
 const START_LOCK_WAIT: Duration = Duration::from_secs(2);
 const ADVICE_LOCK_WAIT: Duration = Duration::from_millis(300);
 
-/// The session's lock, held: a `flock` on the file `session-<hash>.lock` beside its state. It
-/// is let go when this is dropped, and when the process ends however it ends: a hook that is
-/// killed holds nothing. The file is taken away again by a hook that leaves the session
-/// with no state (a stop where there is no repository), so that a session the hooks have
-/// nothing to do with leaves no file behind.
-struct Held {
-    #[expect(dead_code, reason = "held for its lock")]
-    lock: nix::fcntl::Flock<std::fs::File>,
-    path: PathBuf,
-    state: PathBuf,
-}
+/// The session's lock and the token of a write (release 0.11.1, P5c, rows C3 and C4). They are
+/// in a module of their own so that nothing else can make a token: a [`Writable`] comes only
+/// from a [`Turn`] that holds the lock ([`Turn::Mine`]) or from a file system that has no locks
+/// ([`Turn::NoLocks`]), and [`Session::keep`], the one writer of a session's state, takes one.
+/// So wherever a hook writes a session's state it holds the session's lock, unless the file
+/// system has none.
+mod lock {
+    use super::{
+        At, Deadline, Duration, Path, PathBuf, StateDir, not_own_words, state_dir_at, state_file,
+    };
 
-impl Drop for Held {
-    fn drop(&mut self) {
-        // still locked here: whoever waits on this file finds another at its path, or
-        // none, and takes that one ([`session_lock`])
-        if !self.state.exists() {
-            let _ = std::fs::remove_file(&self.path);
+    /// The session's lock, held: a `flock` on the file `session-<hash>.lock` beside its state,
+    /// in the state directory held open. It is let go when this is dropped, and when the
+    /// process ends however it ends: a hook that is killed holds nothing. The file is taken
+    /// away again by a hook that leaves the session with no state (a stop where there is no
+    /// repository), so that a session the hooks have nothing to do with leaves no file behind.
+    pub(super) struct Held {
+        #[expect(dead_code, reason = "held for its lock")]
+        lock: nix::fcntl::Flock<std::fs::File>,
+        /// The directory the lock was taken in, open.
+        at: At,
+        /// The lock file's name there.
+        file: PathBuf,
+        /// The session's state file: its path, and its name there.
+        state: PathBuf,
+        state_name: PathBuf,
+    }
+
+    impl Drop for Held {
+        fn drop(&mut self) {
+            // still locked here: whoever waits on this file finds another at its path, or
+            // none, and takes that one ([`session_lock`])
+            if !self.at.has(&self.state_name) {
+                let _ = self.at.remove(&self.file);
+            }
+        }
+    }
+
+    /// The state directory, open, where `flock` refused for another cause than another holder
+    /// ([`Turn::NoLocks`]).
+    pub(super) struct NoFlock {
+        at: At,
+        state: PathBuf,
+    }
+
+    /// Whether a hook has its session's state to itself.
+    pub(super) enum Turn {
+        /// It has, for as long as this is held.
+        Mine(Held),
+        /// `flock` refused the lock file for another cause than another holder: a file system
+        /// with no locks is the case this is for, and any other refusal is taken the same way.
+        /// The state is written without a lock, as before 0.11.1 (stated).
+        NoLocks(NoFlock),
+        /// Another hook of the session holds it and did not let go in the time given.
+        Taken,
+        /// There is no state directory of its own to take it in, so no state is written: none
+        /// can be made, or a link or a file stands there (what the hook then says of its state
+        /// says so too). Why, in the words a hook says of a state it could not keep.
+        NoDirectory(String),
+        /// The state directory is there, and the lock cannot be taken in it: the directory or
+        /// the session's lock file cannot be opened. No state is written. Why, as a cause.
+        Unlockable(String),
+    }
+
+    /// Leave to write one session's state, through the directory its lock was taken in: only a
+    /// held lock gives it, or a lock `flock` refused ([`Turn::writable`]). It lives no longer
+    /// than the turn it came from.
+    pub(super) struct Writable<'turn> {
+        at: &'turn At,
+        state: &'turn Path,
+    }
+
+    impl Writable<'_> {
+        /// The directory the lock was taken in, open.
+        pub(super) fn at(&self) -> &At {
+            self.at
+        }
+
+        /// The state file of the session whose lock it is.
+        pub(super) fn state(&self) -> &Path {
+            self.state
+        }
+
+        /// A token for the state file `state` in `at` with no lock: for the unit tests of the
+        /// writer alone.
+        #[cfg(test)]
+        pub(super) fn for_test<'turn>(at: &'turn At, state: &'turn Path) -> Writable<'turn> {
+            Writable { at, state }
+        }
+    }
+
+    impl Turn {
+        /// The token of a write, when this turn gives one.
+        pub(super) fn writable(&self) -> Option<Writable<'_>> {
+            match self {
+                Self::Mine(held) => Some(Writable {
+                    at: &held.at,
+                    state: &held.state,
+                }),
+                Self::NoLocks(none) => Some(Writable {
+                    at: &none.at,
+                    state: &none.state,
+                }),
+                Self::Taken | Self::NoDirectory(_) | Self::Unlockable(_) => None,
+            }
+        }
+
+        /// Why a state is not written in this turn, when it gives no token.
+        pub(super) fn unkept(&self) -> String {
+            match self {
+                Self::NoDirectory(why) => why.clone(),
+                Self::Unlockable(cause) => format!("its state could not be saved: {cause}"),
+                Self::Mine(_) | Self::NoLocks(_) | Self::Taken => {
+                    "another hook of this session holds its state".to_owned()
+                }
+            }
+        }
+
+        /// Why the session's lock cannot be taken where its state is, when that is so.
+        pub(super) fn unlockable(&self) -> Option<&str> {
+            match self {
+                Self::Unlockable(cause) => Some(cause),
+                _ => None,
+            }
+        }
+    }
+
+    /// Take the session's lock, waiting at most `wait`.
+    ///
+    /// Every hook reads the session's state, works, and writes it. Two that did so at the same
+    /// time wrote across each other. Two stops: one's list of judged commits, the other's list,
+    /// the other's state, the first's state, after which the state named a list that was not
+    /// in the file and every later stop was UNJUDGED (sixth independent review of the hooks).
+    /// Two stops that were both the session's first hook, which took no lock because there was
+    /// no state yet: both judged, both blocked for the same failure, both wrote (review V4
+    /// round 15, VD4R15-M-3). An advice hook and a stop: the advice hook's older copy of what
+    /// had blocked came back, so a failure that a stop had seen repaired and forgotten "had
+    /// blocked" again and did not block when it returned (seventh independent review,
+    /// HR7-L-4).
+    ///
+    /// So the lock is taken by every stop for all of its run, the first one too (the file is
+    /// named from the session's id, which a hook has before any state exists), by a
+    /// session-start hook for its reading and writing, and by an advice hook for its writing
+    /// ([`super::Session::keep_advice`]). It is taken in the state directory [`super::state_dir`]
+    /// gives, made when it is missing, whatever stands above it: until 0.11.1 a hook that
+    /// found no state directory under a `.git` (a home directory that is a Git repository,
+    /// or a fresh home under a tree) took no lock and the state was written all the same, and
+    /// two first stops of a session both judged (P5c). Through a symbolic link to a directory
+    /// it is taken there, as before; the state is refused there by its writer and reader. The
+    /// directory is held open from before the lock file is opened ([`At`]), and the lock file
+    /// is opened, checked and removed through it: the token it gives writes there.
+    pub(super) fn session_lock(session: &str, wait: Duration) -> Turn {
+        lock_in(&super::sessions_dir(), session, wait, |_| {})
+    }
+
+    /// Where [`lock_in`] stands when it calls its `between`: a seam where a test puts what
+    /// another process may do in that moment.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(super) enum Phase {
+        /// The state directory decided, before it is opened.
+        Directory,
+        /// The directory opened, before the lock file is.
+        LockFile,
+        /// Before each `flock` of the lock file.
+        Lock,
+        /// The lock file found not to be the one at its name, before it is opened again.
+        Reopen,
+    }
+
+    /// [`session_lock`] in the state directory `named` names; `between` runs at each [`Phase`].
+    ///
+    /// A directory or a lock file that is not there when it is opened is looked for again, the
+    /// directory decided again, until the wait is over: two first stops of a session make the
+    /// directory and the lock file at once, and on macOS one of them was told "No such file or
+    /// directory" by the open that makes the lock file (the run of 0.11.1's tests on macOS; on
+    /// Linux it is not seen), and a directory moved away and made again between the two opens
+    /// gives the same answer. Only a refusal that lasts, or another refusal, is
+    /// [`Turn::Unlockable`] (0.11.0 took any of them as no lock and wrote all the same). Where
+    /// the wait ends while the lock file taken is no longer at its name and none stands there
+    /// (removed each time), that is said as the cause, not as another hook's lock (review of
+    /// P5c round 3, L1); only a lock file another holds, or another file at its name, is
+    /// [`Turn::Taken`].
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the session-lock door: a hook waits a bounded time, in short sleeps, for another hook of its session"
+    )]
+    pub(super) fn lock_in(
+        named: &Result<PathBuf, String>,
+        session: &str,
+        wait: Duration,
+        between: impl Fn(Phase),
+    ) -> Turn {
+        use nix::fcntl::{Flock, FlockArg, OFlag};
+        let until = Deadline::after(wait);
+        let pause = || std::thread::sleep(Duration::from_millis(25));
+        let gone = |error: &std::io::Error| {
+            error.kind() == std::io::ErrorKind::NotFound && !until.left().is_zero()
+        };
+        'whole: loop {
+            let (dir, follow) = match state_dir_at(named.clone(), true) {
+                StateDir::Own(dir) => (dir, false),
+                StateDir::NotOwn {
+                    dir,
+                    to_directory: true,
+                } => (dir, true),
+                StateDir::NotOwn { dir, .. } => return Turn::NoDirectory(not_own_words(&dir)),
+                StateDir::None(why) => return Turn::NoDirectory(why.kept_words()),
+            };
+            between(Phase::Directory);
+            let at = match At::open(&dir, follow) {
+                Ok(at) => at,
+                Err(error) if gone(&error) => {
+                    pause();
+                    continue;
+                }
+                Err(error) => {
+                    return Turn::Unlockable(format!(
+                        "the state directory {} cannot be opened ({error})",
+                        super::shown(&dir)
+                    ));
+                }
+            };
+            between(Phase::LockFile);
+            let state = state_file(&dir, session);
+            let name = |path: &Path| PathBuf::from(path.file_name().unwrap_or_default());
+            let (file, state_name) = (name(&state.with_extension("lock")), name(&state));
+            let open = || {
+                at.file(
+                    &file,
+                    (
+                        OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_NONBLOCK,
+                        nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+                    ),
+                )
+            };
+            let unopened = |error: std::io::Error| {
+                Turn::Unlockable(format!(
+                    "the session's lock file {} cannot be opened ({error})",
+                    super::shown(&at.path(&file))
+                ))
+            };
+            let mut opened = match open() {
+                Ok(opened) => opened,
+                Err(error) if gone(&error) => {
+                    pause();
+                    continue;
+                }
+                Err(error) => return unopened(error),
+            };
+            loop {
+                between(Phase::Lock);
+                match Flock::lock(opened, FlockArg::LockExclusiveNonblock) {
+                    Ok(lock) => {
+                        let (same, vanished) = at_its_name(&lock, &at, &file);
+                        if same {
+                            return Turn::Mine(Held {
+                                lock,
+                                at,
+                                file,
+                                state,
+                                state_name,
+                            });
+                        }
+                        drop(lock);
+                        if until.left().is_zero() {
+                            return vanished.map_or(Turn::Taken, Turn::Unlockable);
+                        }
+                        between(Phase::Reopen);
+                        opened = match open() {
+                            Ok(again) => again,
+                            Err(error) if gone(&error) => {
+                                pause();
+                                continue 'whole;
+                            }
+                            Err(error) => return unopened(error),
+                        };
+                    }
+                    Err((back, nix::errno::Errno::EWOULDBLOCK)) if !until.left().is_zero() => {
+                        opened = back;
+                        pause();
+                    }
+                    Err((_, nix::errno::Errno::EWOULDBLOCK)) => return Turn::Taken,
+                    // a file system with no locks: as before
+                    Err(_) => return Turn::NoLocks(NoFlock { at, state }),
+                }
+            }
+        }
+    }
+
+    /// Whether the file `lock` holds is the one at the name `file` in `at`: a hook that left the
+    /// session with no state has taken its lock file away, and another may have made a new one
+    /// since. It is looked at, not opened: a lock file this user cannot read is still the one at
+    /// its name (review of P5c round 2, L1). With it, when nothing stands at that name, the cause
+    /// a wait that ends there says (review of P5c round 3, L1).
+    fn at_its_name(
+        lock: &nix::fcntl::Flock<std::fs::File>,
+        at: &At,
+        file: &Path,
+    ) -> (bool, Option<String>) {
+        use std::os::unix::fs::MetadataExt as _;
+        match (lock.metadata(), at.identity_of(file)) {
+            (Ok(held), Ok(there)) => (
+                (i128::from(held.dev()), i128::from(held.ino())) == there,
+                None,
+            ),
+            (_, Err(error)) if error.kind() == std::io::ErrorKind::NotFound => (
+                false,
+                Some(format!(
+                    "the session's lock file {} was gone from its name each time it was taken ({error})",
+                    super::shown(&at.path(file))
+                )),
+            ),
+            _ => (false, None),
         }
     }
 }
-
-/// Whether a hook has its session's state to itself.
-enum Turn {
-    /// It has, for as long as this is held.
-    Mine(#[expect(dead_code, reason = "held for its lock")] Held),
-    /// There is no lock to have: no state directory can be made (what the hook then says
-    /// of its state says so too), or the file system has no locks.
-    Unlocked,
-    /// Another hook of the session holds it and did not let go in the time given.
-    Taken,
-}
-
-/// Take the session's lock, waiting at most `wait`.
-///
-/// Every hook reads the session's state, works, and writes it. Two that did so at the same
-/// time wrote across each other. Two stops: one's list of judged commits, the other's list,
-/// the other's state, the first's state, after which the state named a list that was not in
-/// the file and every later stop was UNJUDGED (sixth independent review of the hooks). Two
-/// stops that were both the session's first hook, which took no lock because there was no
-/// state yet: both judged, both blocked for the same failure, both wrote (review V4 round
-/// 15, VD4R15-M-3). An advice hook and a stop: the advice hook's older copy of what had
-/// blocked came back, so a failure that a stop had seen repaired and forgotten "had blocked"
-/// again and did not block when it returned (seventh independent review, HR7-L-4).
-///
-/// So the lock is taken by every stop for all of its run, the first one too (the file is
-/// named from the session's id, which a hook has before any state exists), by a
-/// session-start hook for its reading and writing, and by an advice hook for its writing
-/// ([`Session::keep_advice`]).
-#[expect(
-    clippy::disallowed_methods,
-    reason = "the session-lock door: a hook waits a bounded time, in short sleeps, for another hook of its session"
-)]
-fn session_lock(session: &str, wait: Duration) -> Turn {
-    use nix::fcntl::{Flock, FlockArg};
-    use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
-    let Ok(dir) = sessions_dir() else {
-        return Turn::Unlocked;
-    };
-    // The directory is made here when it is missing, unless it would lie inside a Git
-    // working tree: a state directory inside the project is refused by every hook, and
-    // nothing is written there to find that out.
-    let inside_a_tree = || {
-        resolved(&dir)
-            .ancestors()
-            .any(|above| above.join(".git").symlink_metadata().is_ok())
-    };
-    let made = dir.is_dir()
-        || (!inside_a_tree()
-            && dir
-                .parent()
-                .is_none_or(|parent| std::fs::create_dir_all(parent).is_ok())
-            && own_directory(&dir).is_ok());
-    if !made {
-        return Turn::Unlocked;
-    }
-    let state = state_file(&dir, session);
-    let path = state.with_extension("lock");
-    let open = || {
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
-            .open(&path)
-    };
-    let until = Deadline::after(wait);
-    let Ok(mut file) = open() else {
-        return Turn::Unlocked;
-    };
-    loop {
-        match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
-            Ok(lock) => {
-                // The file that was locked must be the one at the path: a hook that left
-                // the session with no state has taken its lock file away, and another may
-                // have made a new one since.
-                let same = match (lock.metadata(), std::fs::symlink_metadata(&path)) {
-                    (Ok(held), Ok(there)) => held.ino() == there.ino() && held.dev() == there.dev(),
-                    _ => false,
-                };
-                if same {
-                    return Turn::Mine(Held { lock, path, state });
-                }
-                drop(lock);
-                if until.left().is_zero() {
-                    return Turn::Taken;
-                }
-                let Ok(again) = open() else {
-                    return Turn::Unlocked;
-                };
-                file = again;
-            }
-            Err((back, nix::errno::Errno::EWOULDBLOCK)) if !until.left().is_zero() => {
-                file = back;
-                std::thread::sleep(Duration::from_millis(25));
-            }
-            Err((_, nix::errno::Errno::EWOULDBLOCK)) => return Turn::Taken,
-            // a file system with no locks: as before
-            Err(_) => return Turn::Unlocked,
-        }
-    }
-}
+use lock::{Turn, Writable, session_lock};
 
 /// What a stop says in a repository that has no commit: it has no base, so nothing in it is
 /// judged, and its files are in the project all the same. They are said, as everything is
@@ -7969,12 +10229,18 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, Why> {
     }
     let _ = begin_in_ledger(input, &mut session, &mut work, deadline);
     // The project and the base are recorded before anything else can fail.
-    let mut unsaved = session.keep().err();
+    let mut unsaved = session.keep_in(&turn).err();
     let mut beside: Vec<Note> = Vec::new();
     let mut memory: Vec<String> = Vec::new();
     // what the project's ledger records of this stop (F11): a stop that judged nothing is one
-    // record of the stop's own
+    // record of the stop's own; with each record, what the stop took the accepted policy from
+    // (release 0.11.1, ruling 4; none was read where nothing was judged)
     let mut records: Vec<crate::ledger::Unit> = Vec::new();
+    let mut snapshot = crate::ledger::snapshot_sha256(None, None);
+    // the project lock from before the records are made until after the append, and why the
+    // snapshot the stop judged by no longer held (release 0.11.1, ruling 4)
+    let mut project_lock: Option<crate::policy_record::ProjectLock> = None;
+    let mut stale: Option<String> = None;
     let nothing_judged = |class: ReasonClass| crate::ledger::Unit {
         name: crate::ledger::Name::Stop,
         outcome: "unjudged",
@@ -8010,7 +10276,45 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, Why> {
                     return stateless_stop(input, args, &why, deadline);
                 }
                 Ok((tips, mut known)) => {
-                    let (frontier, said) = project_frontier(&work, &tips, &base, deadline);
+                    // The ledger and the policy record are read under the project lock, the
+                    // name bound there on first use, and the snapshot taken (release 0.11.1,
+                    // ruling 4); the lock is let go for the judging and taken again before the
+                    // records are made ([`snapshot_again`]).
+                    let name = policy_name(args);
+                    let held = own_directory(&work.place.own).and_then(|()| {
+                        crate::policy_record::lock(
+                            &work.place.own,
+                            PROJECT_LOCK_WAIT.min(deadline.left()),
+                        )
+                    });
+                    let (mut frontier, mut said, read) =
+                        project_frontier(&work, &tips, &base, deadline);
+                    // The project's accepted policy, before anything is judged (release 0.11.1:
+                    // the time a run leaves for the asks depends on it, critic note N6).
+                    let projected = match &held {
+                        Ok(held) => project_policy(
+                            &work.place,
+                            read.then_some(&frontier),
+                            &name,
+                            deadline,
+                            Some(held),
+                        ),
+                        Err(why) => Projected::locked_out(why, read.then_some(&frontier)),
+                    };
+                    drop(held);
+                    if frontier.baseline.is_none() && projected.derived.bound.is_some() {
+                        said = Some(Note {
+                            name: "the project's ledger".to_owned(),
+                            text: RECORD_STANDS.to_owned(),
+                            standing: 0,
+                        });
+                    }
+                    let accepted = &projected.accepted;
+                    snapshot.clone_from(&projected.snapshot);
+                    if let Some(sealed_to) = accepted.sealed_to() {
+                        frontier.passes_sealed_to(&sealed_to);
+                    }
+                    let second = accepted.second_half(&work.place, &base, &name, deadline);
                     let scratch = Scratch::new(&work.place.own).map_err(scratch_failed)?;
                     let number = session.state.stops.saturating_add(1);
                     let (judging, look) = stop_deadlines(&work.place, deadline);
@@ -8018,6 +10322,9 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, Why> {
                         work: &work,
                         cwd: &input.cwd,
                         base: &base,
+                        first: None,
+                        second: second.as_ref(),
+                        names: STOP_NAMES,
                         scratch: &scratch,
                         args,
                         deadline: judging,
@@ -8038,6 +10345,17 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, Why> {
                         .map(|unit| hook::blocks_now(unit, &session.state.blocked))
                         .collect();
                     records = ledger_units(&judging, &blocks);
+                    unrecord_waiting(&mut records, &frontier);
+                    // One snapshot at the append (ruling 4): the project lock again, held
+                    // through the ledger's append; a stale pass is never recorded, nor
+                    // remembered by the session.
+                    let (held, change) = snapshot_again(&work.place, &name, &projected, deadline);
+                    project_lock = held;
+                    if let Some(change) = change
+                        && unpass(&mut records, &mut judging.commits)
+                    {
+                        stale = Some(change);
+                    }
                     // The stops are counted for the commits that are asked about and get no
                     // verdict, which are marked with the number: a stop with none of them
                     // changes nothing by having been made.
@@ -8068,7 +10386,7 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, Why> {
         hook::room_beside(&decision).saturating_sub(lines_taken(&memory)),
     );
     notes.append(&mut memory);
-    if let Err(why) = session.keep() {
+    if let Err(why) = session.keep_in(&turn) {
         unsaved = Some(why);
     }
     // A state that cannot be saved must not hide the decision, and is said with it: the same
@@ -8093,17 +10411,24 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, Why> {
                 )),
             };
         }
-        notes.push(format!(
-            "The hook could not keep its state ({}): the same failure can block again, a commit can be judged again, and the commit this session began from may not be remembered.",
-            deep_diff_forge_core::display_safe(&why)
-        ));
+        // (where the lock cannot be taken, its cause leads instead: below)
+        if turn.unlockable().is_none() {
+            notes.push(format!(
+                "The hook could not keep its state ({}): the same failure can block again, a commit can be judged again, and the commit this session began from may not be remembered.",
+                deep_diff_forge_core::display_safe(&why)
+            ));
+        }
+    }
+    if let Some(change) = &stale {
+        notes.push(unpassed_words(change));
     }
     // The ledger changes no decision: one that cannot be written is said beside it.
     if !records.is_empty() {
         let wait = LEDGER_WAIT.min(deadline.left());
         let own = &work.place.own;
-        let written = own_directory(own)
-            .and_then(|()| crate::ledger::append_stop(own, &input.session, &records, wait));
+        let written = own_directory(own).and_then(|()| {
+            crate::ledger::append_stop(own, &input.session, &records, &snapshot, wait)
+        });
         if let Err(why) = written {
             notes.push(format!(
                 "The hook could not write the project's ledger {} ({}): what this stop decided stands, and is not recorded there.",
@@ -8112,9 +10437,62 @@ fn stop(input: &Input, args: &[String]) -> Result<Option<String>, Why> {
             ));
         }
     }
+    // (held through the append: ruling 4)
+    drop(project_lock);
+    // Where the session's lock cannot be taken in its state directory, this hook keeps no
+    // state, and the cause is said first (review of P5c, L1). Where no state of the session
+    // was ever kept, no hook of it kept one, its start included: the sentences a stop says of
+    // a session with no record of its start are then false ("when this session's hooks first
+    // ran", a commit of the session's "not this session's", "the session-start hook must be
+    // installed"), and the cause comes with how to read them.
+    if let Some(cause) = turn.unlockable() {
+        let never = session.kept.is_none();
+        if never {
+            let late = hook::first_stop();
+            notes.retain(|note| *note != late);
+        }
+        decision = led_by(decision, &unlockable_words(cause, never));
+    }
     let note = (!notes.is_empty()).then(|| notes.join("\n"));
     Ok(hook::stop_output_with(&decision, note.as_deref()))
 }
+
+/// What a stop says first where the session's lock cannot be taken in its state directory
+/// (`cause`), and `never` any state of the session was kept: [`stop`].
+fn unlockable_words(cause: &str, never: bool) -> String {
+    let cause = deep_diff_forge_core::display_safe(cause);
+    if never {
+        format!(
+            "deep-diff-forge: this session's lock cannot be taken where its state is kept ({cause}), so no hook of this session has kept its state, its start included. Read what follows with that: \"when this session's hooks first ran\" means this stop; a commit marked \"not this session's\" may be this session's own work; the session-start hook may be installed and have run; and until the cause is repaired a failure that has blocked can block again (what follows says it does not: that needs the state this hook cannot keep), and a commit can be judged again."
+        )
+    } else {
+        format!(
+            "deep-diff-forge: this session's lock cannot be taken where its state is kept ({cause}), so this stop keeps no state: until the cause is repaired a failure that has blocked can block again (what follows says it does not: that needs the state this hook cannot keep), and a commit can be judged again."
+        )
+    }
+}
+
+/// `decision` with `lead` said before anything else it says.
+fn led_by(decision: StopDecision, lead: &str) -> StopDecision {
+    match decision {
+        StopDecision::Block { reason } => StopDecision::Block {
+            reason: format!("{lead}\n{reason}"),
+        },
+        StopDecision::Allow {
+            message: Some(message),
+        } => StopDecision::Allow {
+            message: Some(format!("{lead}\n{message}")),
+        },
+        StopDecision::Allow { message: None } => StopDecision::Allow {
+            message: Some(lead.to_owned()),
+        },
+    }
+}
+
+/// What a stop says when the project's ledger has no baseline while its policy record stands
+/// (ruling 3, N5): the record was made beside an earlier first record of the ledger, so the
+/// accepted policy cannot be read until the two files agree.
+const RECORD_STANDS: &str = "No record of this project was found in its ledger (it was removed, or is new to this build), while its policy record stands, which was made beside an earlier first record of the ledger: the commits that were there when this session began are now the ledger's baseline, and the accepted policy cannot be read while the two files disagree, so a change that the policy at the commit this session began from does not fail or hold is UNJUDGED. The ledger and the policy record are files the agent can write; the pull request's judge is the boundary.";
 
 /// The most of a working tree's `HEAD` reflog read to name where a commit came from.
 const REFLOG_READ: u64 = 1 << 20;
@@ -8204,12 +10582,79 @@ fn reflog_holder(place: &Place, short: &str) -> Option<PathBuf> {
         .map(|(_, top)| top)
 }
 
+/// The stateless stop's half 2 ([`stateless_stop`]): the policy file `name` at `HEAD` (the
+/// commit `head`) where it is there and is not the same bytes as at `base`, half 1's commit.
+fn head_half(
+    place: &Place,
+    base: &str,
+    head: &str,
+    name: &str,
+    deadline: Deadline,
+) -> Option<SecondHalf> {
+    let git = deadline.git();
+    let at_head = file_at_commit(&place.top, head, name, &git)
+        .ok()
+        .flatten()?;
+    let at_base = file_at_commit(&place.top, base, name, &git);
+    (!matches!(at_base, Ok(Some(ref same)) if *same == at_head)).then(|| SecondHalf::Policy {
+        commit: head.to_owned(),
+        bytes: at_head,
+    })
+}
+
+/// The stateless stop's half 2 beside the accepted policy (ruling 9): the policy file `name` at
+/// `HEAD` (the commit `head`) where it is there and is not the bytes `against` (with none to
+/// compare, wherever it is there).
+fn head_differs(
+    place: &Place,
+    head: &str,
+    name: &str,
+    against: Option<&[u8]>,
+    deadline: Deadline,
+) -> Option<SecondHalf> {
+    let at_head = file_at_commit(&place.top, head, name, &deadline.git())
+        .ok()
+        .flatten()?;
+    (against != Some(at_head.as_slice())).then(|| SecondHalf::Policy {
+        commit: head.to_owned(),
+        bytes: at_head,
+    })
+}
+
 /// What heads the message of a stop whose session state could not be used ([`stateless_stop`]).
-fn stateless_head(why: &Why, no_record: bool, commits: bool) -> String {
-    let policy = if no_record {
-        " No record of this project was found in its ledger, so the tree was judged under the policy at HEAD, which a commit of this session can have changed."
-    } else {
-        ""
+/// `accepted` is the project's accepted policy and `two` whether the tree was judged under it
+/// beside the policy at `HEAD` (release 0.11.1, T11; `name` is the policy file's).
+fn stateless_head(
+    why: &Why,
+    (accepted, two, name): (&Accepted, bool, &str),
+    commits: bool,
+) -> String {
+    const AT_HEAD: &str = "so the tree was judged under the policy at HEAD, which a commit of this session can have changed.";
+    let policy = match accepted {
+        Accepted::None(NoAccepted::NoRecord) => {
+            format!(" No record of this project was found in its ledger, {AT_HEAD}")
+        }
+        Accepted::None(NoAccepted::NullHead) => {
+            format!(" This project's ledger names no commit for its first record, {AT_HEAD}")
+        }
+        // (half 1 is that commit's policy, as in 0.11.0: none, so nothing passes)
+        Accepted::None(NoAccepted::NoFile) if two => format!(
+            " The commit this project's ledger first recorded has no file {}: a change is UNJUDGED, as before, unless the policy at HEAD, which a commit of this session can have changed, fails or holds it.",
+            hook::shown_path(name)
+        ),
+        Accepted::None(NoAccepted::NoFile) => format!(
+            " The commit this project's ledger first recorded has no file {}, and neither has HEAD: nothing could be judged, as before.",
+            hook::shown_path(name)
+        ),
+        Accepted::Policy { commit, .. } if two => format!(
+            " The tree was judged under the policy at HEAD and under the project's accepted policy (the one at commit {}), whose files differ; the stricter answer stands.",
+            commit.chars().take(7).collect::<String>()
+        ),
+        Accepted::Unreadable(why) => format!(
+            " The project's accepted policy cannot be had ({}): a change is UNJUDGED unless the policy at HEAD fails or holds it.",
+            deep_diff_forge_core::display_safe(&why.text)
+        ),
+        Accepted::Policy { .. } => String::new(),
     };
     let commits = match (commits, why.class) {
         (true, _) => {
@@ -8235,14 +10680,21 @@ fn stateless_head(why: &Why, no_record: bool, commits: bool) -> String {
 /// what needs no memory. It reads no file of the state directory and writes none: the session
 /// is empty and in memory, the project is found from the hook's input as for a new session,
 /// and the staged and uncommitted changes of the working trees are judged under the policy at
-/// the commit the project's ledger names as its baseline (at `HEAD` when the ledger has none,
-/// which is said). Nothing that blocked before is known, so a failing tree blocks; at a stop
+/// `HEAD` and the project's accepted policy (release 0.11.1, T11: the policy at the commit the
+/// project's ledger names as its baseline), the stricter answer standing; under the policy at
+/// `HEAD` alone where there is no accepted policy, which is said. 0.11.0 judged under the
+/// accepted policy alone, so nothing it failed or held passes. Nothing that blocked before is
+/// known, so a failing tree blocks; at a stop
 /// that follows a block (`stop_hook_active`) the failure stands instead, so the session is not
 /// trapped. With the ledger's baseline it then judges the frontier's commits (F13.b): every
 /// commit after the baseline that no stop record gave a verdict, this session's own among
 /// them, each once, since the ledger keeps the verdict it records; a failing one blocks under
 /// the same rule. Without a baseline no commit is judged (the session's base is unknown): they
 /// wait for a stop that has its state. The ledger records what was judged.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one stop without its state, in its order: the project, the two policies, the units, the records, the words"
+)]
 fn stateless_stop(
     input: &Input,
     args: &[String],
@@ -8261,18 +10713,66 @@ fn stateless_stop(
         Located::Here(work) => work,
     };
     let deadline = deadline.with_project(&work.place);
-    let frontier = crate::ledger::frontier(&work.place.own).unwrap_or_default();
-    let (base, no_record) = match (frontier.baseline.as_ref()).and_then(|b| b.head.clone()) {
-        Some(head) => (head, false),
-        None => match &work.project.base {
-            Base::Commit(id) => (id.clone(), true),
-            Base::NoCommit | Base::Orphan => return Ok(Some(hook::unjudged_output(&why.text))),
-        },
+    let name = policy_name(args);
+    // the ledger and the policy record under the project lock (release 0.11.1, ruling 4)
+    let (read, projected) = locked_project_policy(
+        &work.place,
+        || crate::ledger::frontier(&work.place.own).ok(),
+        &name,
+        deadline,
+        PROJECT_LOCK_WAIT,
+    );
+    let accepted = &projected.accepted;
+    let mut frontier = read.unwrap_or_default();
+    // Half 1 is 0.11.0's choice exactly: the commit the ledger first recorded, else HEAD. Its
+    // absence is what it was in 0.11.0 (UNJUDGED, `chain.policy_missing`; a commit that is gone:
+    // Git's words). In 7cdc8b9d half 1 was HEAD's policy, which a commit of the session can have
+    // written: with no file at the first record's commit the session's own loosening then passed
+    // its own key where 0.11.0 was UNJUDGED (the implementation review of L1b, F1a).
+    let recorded = (frontier.baseline.as_ref()).and_then(|baseline| baseline.head.clone());
+    let base = match (recorded, &work.project.base) {
+        (Some(head), _) => head,
+        (None, Base::Commit(id)) => id.clone(),
+        (None, Base::NoCommit | Base::Orphan) => {
+            return Ok(Some(hook::unjudged_output(&why.text)));
+        }
+    };
+    let snapshot = projected.snapshot.clone();
+    if let Some(sealed_to) = accepted.sealed_to() {
+        frontier.passes_sealed_to(&sealed_to);
+    }
+    // Ruling 9: the accepted policy is one required policy of every stop. Where the project has
+    // one, it is half 1 (in place of the file at the first record's commit, which an acceptance
+    // replaced); where it cannot be had (gone, a shallow cut, another name than the bound one, a
+    // policy record not whole, a binding the ledger disagrees with), half 1 gives no verdict and
+    // a unit is UNJUDGED unless the policy at HEAD fails or holds it; where there is none, half 1
+    // is 0.11.0's choice, as above. Half 2 is the policy at HEAD where it has the file and its
+    // bytes differ from half 1's: a commit of the session can only add to what is judged.
+    let first = match accepted {
+        Accepted::Policy { commit, bytes, .. } => Some(SecondHalf::Policy {
+            commit: commit.clone(),
+            bytes: bytes.clone(),
+        }),
+        Accepted::Unreadable(why) => Some(SecondHalf::Unreadable(why.clone())),
+        Accepted::None(_) => None,
+    };
+    let second = match (&work.project.base, &first) {
+        (Base::Commit(id), Some(SecondHalf::Policy { bytes, .. })) => {
+            head_differs(&work.place, id, &name, Some(bytes), deadline)
+        }
+        (Base::Commit(id), Some(SecondHalf::Unreadable(_))) => {
+            head_differs(&work.place, id, &name, None, deadline)
+        }
+        (Base::Commit(id), None) if *id != base => {
+            head_half(&work.place, &base, id, &name, deadline)
+        }
+        _ => None,
     };
     // With the session's lock held by another hook, that hook answers for the commits (when it
     // is a stop): judging them here too would judge each twice at once, and block twice.
     let commits = frontier.baseline.is_some() && why.class != ReasonClass::StateLockBusy;
-    let head = stateless_head(why, no_record, commits);
+    let two = matches!(second, Some(SecondHalf::Policy { .. }));
+    let head = stateless_head(why, (accepted, two, &name), commits);
     let scratch = Scratch::new(&work.place.own).map_err(scratch_failed)?;
     let (judging, look) = stop_deadlines(&work.place, deadline);
     let none = std::collections::BTreeMap::new();
@@ -8281,6 +10781,13 @@ fn stateless_stop(
         work: &work,
         cwd: &input.cwd,
         base: &base,
+        first: first.as_ref(),
+        second: second.as_ref(),
+        names: if first.is_some() {
+            STATELESS_ACCEPTED_NAMES
+        } else {
+            STATELESS_NAMES
+        },
         scratch: &scratch,
         args,
         deadline: judging,
@@ -8303,6 +10810,7 @@ fn stateless_stop(
         .map(|unit| hook::blocks_now(unit, &[]))
         .collect();
     let mut records = ledger_units(&judging, &blocks);
+    unrecord_waiting(&mut records, &frontier);
     // the stop's own record: the session's state was not used, for this class
     records.push(crate::ledger::Unit {
         name: crate::ledger::Name::Stop,
@@ -8325,10 +10833,18 @@ fn stateless_stop(
         };
     }
     let mut notes: Vec<String> = judging.beside.into_iter().map(|note| note.text).collect();
+    // one snapshot at the append (ruling 4): the project lock again, held through the append
+    let (project_lock, change) = snapshot_again(&work.place, &name, &projected, deadline);
+    if let Some(change) = change
+        && unpass(&mut records, &mut Vec::new())
+    {
+        notes.push(unpassed_words(&change));
+    }
     let wait = LEDGER_WAIT.min(deadline.left());
     let own = &work.place.own;
     let written = own_directory(own)
-        .and_then(|()| crate::ledger::append_stop(own, &input.session, &records, wait));
+        .and_then(|()| crate::ledger::append_stop(own, &input.session, &records, &snapshot, wait));
+    drop(project_lock);
     if let Err(failed) = written {
         notes.push(format!(
             "The hook could not write the project's ledger {} ({}): what this stop decided stands, and is not recorded there.",
@@ -8407,6 +10923,19 @@ fn ledger_units(judging: &Judging, blocks: &[bool]) -> Vec<crate::ledger::Unit> 
     }
     out.append(&mut passed);
     out
+}
+
+/// A commit the ledger already records as waiting for its turn (`time.not_asked`) is not
+/// recorded again while it still waits (release 0.11.1, ruling 10): every stop used to append
+/// one record of about 355 bytes for each waiting commit, which a session's own commits could
+/// grow past what the ledger's readers read. A change of its state (a verdict, another cause) is
+/// recorded.
+fn unrecord_waiting(records: &mut Vec<crate::ledger::Unit>, frontier: &crate::ledger::Frontier) {
+    records.retain(|unit| {
+        !(unit.outcome == "unjudged"
+            && unit.class == ReasonClass::TimeNotAsked
+            && matches!(&unit.name, crate::ledger::Name::Commit(id) if frontier.waiting.contains(id)))
+    });
 }
 
 /// One link of the chain a judged stop depends on.
@@ -8570,15 +11099,22 @@ fn companion(
 /// link was ready (second independent review of the hooks, HR2-L-1).
 fn state_directory_check(place: Option<&Place>) -> GateCheck {
     let usable = || -> Result<PathBuf, String> {
-        let dir = sessions_dir()?;
+        // (asked before anything is made: nothing is made in the project)
+        let dir = match state_dir(false) {
+            StateDir::Own(dir) | StateDir::NotOwn { dir, .. } => dir,
+            StateDir::None(why) => return Err(why.kept_words()),
+        };
         if let Some(why) = place.and_then(|place| inside_tree(&dir, &place.top)) {
             return Err(why);
         }
-        if let Some(parent) = dir.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("{} could not be made: {e}", shown(&dir)))?;
+        match state_dir_at(Ok(dir.clone()), true) {
+            StateDir::Own(_) => {}
+            StateDir::NotOwn { .. } => return Err(not_own_words(&dir)),
+            StateDir::None(Unmade::Above(error)) => {
+                return Err(format!("{} could not be made: {error}", shown(&dir)));
+            }
+            StateDir::None(why) => return Err(why.kept_words()),
         }
-        own_directory(&dir)?;
         let probe = dir.join(format!("gate-{}.probe", std::process::id()));
         let written = std::fs::write(&probe, b"");
         let _ = std::fs::remove_file(&probe);
@@ -8762,7 +11298,11 @@ pub(crate) struct SessionSeen {
 /// ([`load_read`]); no lock is taken and nothing is made or written, the state directory
 /// included. `agent check` is no hook of the session and must leave its record as it is.
 pub(crate) fn session_seen(session: &str) -> Result<SessionSeen, String> {
-    let file = state_file(&sessions_dir()?, session);
+    let dir = match state_dir(false) {
+        StateDir::Own(dir) | StateDir::NotOwn { dir, .. } => dir,
+        StateDir::None(why) => return Err(why.kept_words()),
+    };
+    let file = state_file(&dir, session);
     let state = match load_read(&file) {
         Ok(Some((state, _))) => state,
         Ok(None) => return Err(format!("it has no state ({} is not there)", shown(&file))),
@@ -8820,18 +11360,571 @@ pub(crate) fn project_of(dir: &Path) -> Result<(PathBuf, String), String> {
     place_of(dir, Deadline::after(GATE_LIMIT)).map(|place| (place.top, place.id))
 }
 
+/// How a stop of a session at `top` whose base is `base` differs from `agent check --session`
+/// by the project's accepted policy (release 0.11.1), which the check does not read: the stop
+/// also judges every unit under it where its file differs from the one at `base`, or cannot read
+/// it. `None` when the stop judges under the policy at `base` alone, as the check does.
+pub(crate) fn accepted_differs(top: &Path, base: &str, args: &[String]) -> Option<String> {
+    let deadline = Deadline::after(GATE_LIMIT);
+    let place = place_of(top, deadline).ok()?;
+    let name = policy_name(args);
+    let read = crate::ledger::frontier(&place.own);
+    let accepted = project_policy(&place, read.as_ref().ok(), &name, deadline, None).accepted;
+    match accepted.second_half(&place, base, &name, deadline)? {
+        SecondHalf::Policy { commit, .. } => Some(format!(
+            "a stop of this session also judges every unit under the project's accepted policy (the one at commit {}), whose file differs from the one at the session's base, and the stricter answer stands; this check judges under the policy at the session's base alone",
+            commit.chars().take(7).collect::<String>()
+        )),
+        SecondHalf::Unreadable(why) => Some(format!(
+            "a stop of this session cannot read the project's accepted policy ({}), so a unit that passes here is UNJUDGED at the stop",
+            deep_diff_forge_core::display_safe(&why.text)
+        )),
+    }
+}
+
 /// How many commits a stop of a session at `top` judges by the project's frontier (F13.b) that
 /// are not among `mine`, the session's own: those the project's sources lead to that its
-/// ledger's baseline does not and that have no stop's verdict there. Zero with no baseline, and
-/// when anything cannot be read (`agent check` then says nothing of them).
-pub(crate) fn frontier_left(top: &Path, mine: &[String]) -> usize {
+/// ledger's baseline does not and that have no stop's verdict there (a pass counting only as a
+/// stop counts it: release 0.11.1, R10; `args` name the policy as the hooks are given it). Zero
+/// with no baseline, and when anything cannot be read (`agent check` then says nothing of them).
+/// [`project_policy`] for a reader given no policy name (`agent verify-branch`, `agent
+/// policy-accept`): under the name the project's policy record binds after its acceptances, else
+/// the default name. With that name.
+fn as_bound(
+    place: &Place,
+    frontier: Option<&crate::ledger::Frontier>,
+    deadline: Deadline,
+) -> (Projected, String) {
+    let first_name = crate::policy_record::read(&place.own)
+        .ok()
+        .flatten()
+        .and_then(|record| record.binding.map(|(binding, _)| binding.policy))
+        .unwrap_or_else(|| DEFAULT_POLICY.to_owned());
+    let first = project_policy(place, frontier, &first_name, deadline, None);
+    // an acceptance that renamed the policy: derived again under the name it binds now
+    match first.derived.bound.clone() {
+        Some(bound) if bound != first_name => (
+            project_policy(place, frontier, &bound, deadline, None),
+            bound,
+        ),
+        _ => (first, first_name),
+    }
+}
+
+/// What `agent verify-branch` takes a `pass` record as (release 0.11.1, ruling 6, F5: the set a
+/// stop's frontier applies, R10): `Ok(None)` where the project has no accepted policy (every pass
+/// counts, as in 0.11.0), `Ok(Some((digests, words)))` where it has one (a pass counts only when
+/// sealed to one of `digests`, the digests that were the accepted policy), `Err(words)` where it
+/// exists and cannot be read (no commit verifies). The policy name is the one the project's
+/// policy record binds (after its acceptances), else the default one: `verify-branch` is given
+/// none. `HEAD` of the working tree at `dir` decides which acceptances apply, as for a stop there.
+pub(crate) fn accepted_seals(dir: &Path) -> Result<Option<(BTreeSet<String>, String)>, String> {
+    let deadline = Deadline::after(GATE_LIMIT);
+    let place = place_of(dir, deadline)?;
+    let frontier = crate::ledger::frontier(&place.own).ok();
+    let (projected, name) = as_bound(&place, frontier.as_ref(), deadline);
+    match &projected.accepted {
+        Accepted::None(_) => Ok(None),
+        Accepted::Unreadable(why) => Err(format!(
+            "the project's accepted policy cannot be read ({}), so no pass record can be told to be sealed to it: no commit is verified",
+            deep_diff_forge_core::display_safe(&why.text)
+        )),
+        accepted @ Accepted::Policy { commit, by, .. } => Ok(Some((
+            accepted.sealed_to().unwrap_or_default(),
+            format!(
+                "A pass counts only when it is sealed to a policy that was this project's accepted policy: {} at commit {} ({}), or one accepted before it. The published 0.11.0 reads no policy record and counts every pass.",
+                hook::shown_path(&name),
+                seven(commit),
+                by.as_ref().map_or_else(
+                    || "the one its ledger first recorded".to_owned(),
+                    |c| format!(
+                        "by an acceptance record of commit {}, a local convention",
+                        seven(c)
+                    )
+                )
+            ),
+        ))),
+    }
+}
+
+/// How long `agent policy-accept` waits for the project lock, each of the two times it takes it.
+const ACCEPT_LOCK_WAIT: Duration = Duration::from_secs(10);
+
+/// Why `agent policy-accept` stopped: the exit code (`deep_diff_forge_core::exit`) and the words.
+pub(crate) type AcceptRefused = (i32, String);
+
+/// What `agent policy-accept` shows and, once the person typed the new digest, appends (release
+/// 0.11.1, R4): the policy record's file, the bound name and the name to accept, the accepted
+/// policy now (its digest, commit and bytes: `None` where there is none), the commit `C` and the
+/// bytes of the name at it, the whole diff of the policy file between the two, and the change of
+/// the producer pins; with the snapshot it was derived from, which the append compares again under
+/// the project lock (a compare-and-swap).
+pub(crate) struct AcceptPlan {
+    pub(crate) record: String,
+    pub(crate) bound: String,
+    pub(crate) name: String,
+    pub(crate) from: Option<(String, String)>,
+    pub(crate) commit: String,
+    pub(crate) to: String,
+    pub(crate) diff: String,
+    pub(crate) pins: String,
+    /// Nothing to accept: the same name and the same bytes are the accepted policy now.
+    pub(crate) same: bool,
+    /// Where acceptances disagree (ruling 11, N1): each disagreeing acceptance's commit, its `to`
+    /// digest, and the diff of the policy to accept against it; `from` is then the policy reached
+    /// before them, not an accepted policy.
+    pub(crate) disagreements: Vec<(String, String, String)>,
+    place: Place,
+    snapshot: String,
+}
+
+/// The project's policy as `agent policy-accept` reads it, under the project lock: the ledger's
+/// first record and the policy record, which must have its binding, derived as a hook derives it
+/// ([`as_bound`]). An accepted policy that cannot be read refuses (exit 4).
+fn accept_state(
+    place: &Place,
+    deadline: Deadline,
+) -> Result<(Projected, String, crate::ledger::Frontier), AcceptRefused> {
+    use deep_diff_forge_core::exit::{INVALID_INPUT, IO};
+    let frontier = crate::ledger::frontier(&place.own)
+        .map_err(|why| (IO, format!("the project's ledger cannot be read: {why}")))?;
+    if frontier.baseline.is_none() {
+        return Err((
+            INVALID_INPUT,
+            "this project's ledger has no record of the project yet: the first hook of a session records it and binds its policy name, and an acceptance is made after that".to_owned(),
+        ));
+    }
+    match crate::policy_record::read(&place.own) {
+        Err(why) => return Err((INVALID_INPUT, why)),
+        Ok(found) if found.as_ref().is_none_or(|r| r.binding.is_none()) => {
+            return Err((
+                INVALID_INPUT,
+                format!(
+                    "the policy record {} has no binding yet: the first hook of a session that finds the project's ledger binds the policy name it is given, and an acceptance is made after that",
+                    crate::policy_record::shown(&place.own)
+                ),
+            ));
+        }
+        Ok(_) => {}
+    }
+    let (projected, bound) = as_bound(place, Some(&frontier), deadline);
+    // (acceptances that disagree, ruling 10 F2, are settled by this command: it accepts from the
+    // policy reached before the disagreeing record)
+    if let Accepted::Unreadable(why) = &projected.accepted
+        && projected.derived.reached.is_none()
+    {
+        return Err((
+            INVALID_INPUT,
+            format!(
+                "this project's accepted policy cannot be read: {}",
+                deep_diff_forge_core::display_safe(&why.text)
+            ),
+        ));
+    }
+    Ok((projected, bound, frontier))
+}
+
+/// The SHA-256 digests a policy's `[producer]` table lists under `sha256`, read line by line
+/// (display only: the judge is the policy's parser); `None` when no such list was read.
+fn producer_pins(text: &str) -> Option<BTreeSet<String>> {
+    let add = |pins: &mut BTreeSet<String>, words: &str| {
+        for (at, word) in words.split('"').enumerate() {
+            if at % 2 == 1 && word.len() == 64 && word.bytes().all(|b| b.is_ascii_hexdigit()) {
+                pins.insert(word.to_ascii_lowercase());
+            }
+        }
+    };
+    let (mut table, mut open, mut found) = (false, false, None::<BTreeSet<String>>);
+    for line in text.lines() {
+        let line = line.split('#').next().unwrap_or_default().trim();
+        if open {
+            add(found.get_or_insert_with(BTreeSet::new), line);
+            open = !line.contains(']');
+        } else if line.starts_with('[') {
+            table = line == "[producer]";
+        } else if table
+            && let Some(rest) = line.strip_prefix("sha256")
+            && let Some(rest) = rest.trim_start().strip_prefix('=')
+        {
+            add(found.get_or_insert_with(BTreeSet::new), rest);
+            open = rest.contains('[') && !rest.contains(']');
+        }
+    }
+    found
+}
+
+/// Whether a policy's `[producer]` table is in the plain form [`producer_pins`] reads: the header
+/// written `[producer]`, its `sha256` list of double-quoted strings, no dotted key or inline table
+/// for it (ruling 10, F7: forms the judge reads, which the line reader would misread).
+fn plain_producer(text: &str) -> bool {
+    let mut table = false;
+    for line in text.lines() {
+        let line = line.split('#').next().unwrap_or_default().trim();
+        let squeezed: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+        if squeezed.starts_with('[') {
+            if squeezed.contains("producer") && line != "[producer]" {
+                return false;
+            }
+            table = line == "[producer]";
+        } else if squeezed.starts_with("producer.")
+            || squeezed.starts_with("producer=")
+            || squeezed.starts_with("\"producer\"")
+            || (table && line.contains('\''))
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// The change of the producer pins between the accepted policy (`old`) and the one to accept.
+fn pins_change(old: Option<&[u8]>, new: &[u8]) -> String {
+    let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
+    if !old.is_none_or(|old| plain_producer(&text(old))) || !plain_producer(&text(new)) {
+        return "not summarised: a [producer] table is not in the plain form this line reads; read the diff below".to_owned();
+    }
+    let read = |bytes: &[u8]| std::str::from_utf8(bytes).ok().and_then(producer_pins);
+    let (old, new) = (old.map(read), read(new));
+    let list = |pins: &BTreeSet<String>| {
+        if pins.is_empty() {
+            "none".to_owned()
+        } else {
+            pins.iter().cloned().collect::<Vec<_>>().join(", ")
+        }
+    };
+    match (old, new) {
+        (Some(Some(old)), Some(new)) => {
+            let removed: BTreeSet<String> = old.difference(&new).cloned().collect();
+            let added: BTreeSet<String> = new.difference(&old).cloned().collect();
+            if removed.is_empty() && added.is_empty() {
+                format!("unchanged ({})", list(&new))
+            } else {
+                format!("removed: {}; added: {}", list(&removed), list(&added))
+            }
+        }
+        (None, Some(new)) => format!("{} (there is no accepted policy now)", list(&new)),
+        (_, None) => "no [producer] sha256 list was read in the policy to accept".to_owned(),
+        (Some(None), Some(new)) => format!(
+            "no [producer] sha256 list was read in the accepted policy; the policy to accept lists {}",
+            list(&new)
+        ),
+    }
+}
+
+/// The policy file's whole diff between the accepted policy (`old`, none: empty) and the one to
+/// accept, from Git (`git diff --no-index`), its own header lines left out, every line made safe
+/// to print.
+fn policy_diff(
+    scratch: &Scratch,
+    (old, new): (Option<&[u8]>, &[u8]),
+    label: &str,
+    deadline: Deadline,
+) -> Result<String, String> {
+    let dir = scratch.sub(label)?;
+    let (old_path, new_path) = (dir.join("accepted"), dir.join("to-accept"));
+    std::fs::write(&old_path, old.unwrap_or_default())
+        .and_then(|()| std::fs::write(&new_path, new))
+        .map_err(|e| format!("the two policies could not be written to compare: {e}"))?;
+    let patch = deep_diff_forge_patch::diff_files(&old_path, &new_path, &deadline.git())
+        .map_err(|error| git_words(&error))?;
+    let text = String::from_utf8_lossy(&patch);
+    Ok(text
+        .lines()
+        .filter(|line| {
+            ![
+                "diff --git ",
+                "index ",
+                "--- ",
+                "+++ ",
+                "new file mode",
+                "deleted file mode",
+            ]
+            .iter()
+            .any(|head| line.starts_with(head))
+        })
+        .fold(String::new(), |mut out, line| {
+            out.push_str(&deep_diff_forge_core::display_safe(line));
+            out.push('\n');
+            out
+        }))
+}
+
+/// The judge's reading of the policy file at `path` (`<judge> lint FILE --json`): `Ok` when it
+/// reads it, `Err((code, words))` when it does not (exit 4) or cannot be run (exit 3).
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the lint door: the owner's command has the judge read the policy to accept, under a deadline and output caps"
+)]
+fn judge_reads(program: &Path, path: &Path, deadline: Deadline) -> Result<(), AcceptRefused> {
+    use deep_diff_forge_core::exit::{INVALID_INPUT, IO};
+    let mut command = std::process::Command::new(program);
+    command.arg("lint").arg(path).arg("--json");
+    let limits = Limits {
+        time: JUDGE_TIME.min(deadline.left()),
+        stdout_bytes: 64 * 1024,
+        stderr_bytes: JUDGE_STDERR,
+    };
+    match run_bounded(&mut command, b"", limits) {
+        Ok(done) if done.status.success() => Ok(()),
+        Ok(done) => Err((
+            INVALID_INPUT,
+            format!(
+                "the judge {} does not read the policy to accept (exit {}): {}",
+                shown(program),
+                done.status
+                    .code()
+                    .map_or_else(|| "by a signal".to_owned(), |code| code.to_string()),
+                judge_words(&done.stderr).unwrap_or_else(|| "it said nothing".to_owned())
+            ),
+        )),
+        Err(stopped) => Err((
+            IO,
+            format!(
+                "the judge {} could not read the policy to accept: {stopped}",
+                shown(program)
+            ),
+        )),
+    }
+}
+
+/// `agent policy-accept` up to what it shows (release 0.11.1, R4): in the working tree at `dir`,
+/// the commit `commit` and, with `name`, a new policy name. Refused (exit 4) when the commit is not
+/// in the repository or not an ancestor of `HEAD`, when it has no file of the name, when the judge
+/// does not read that file, and when the project's policy cannot be derived (no ledger record or
+/// binding yet, a policy record that cannot be read whole, an accepted policy that cannot be
+/// read, which includes a shallow history to the ledger's first record). Writes nothing.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one plan read under one lock, in the order the command shows it"
+)]
+pub(crate) fn policy_accept_plan(
+    dir: &Path,
+    commit: &str,
+    name: Option<&str>,
+    args: &[String],
+) -> Result<AcceptPlan, AcceptRefused> {
+    use deep_diff_forge_core::exit::{INVALID_INPUT, IO};
+    let deadline = Deadline::after(GATE_LIMIT);
+    let place = place_of(dir, deadline).map_err(|why| (IO, why))?;
+    let deadline = deadline.with_project(&place);
+    let held = own_directory(&place.own)
+        .and_then(|()| crate::policy_record::lock(&place.own, ACCEPT_LOCK_WAIT))
+        .map_err(|why| (IO, why))?;
+    let (projected, bound, _) = accept_state(&place, deadline)?;
+    drop(held);
+    let name = name.map_or_else(|| bound.clone(), str::to_owned);
+    if !crate::policy_record::is_name(&name) {
+        return Err((
+            INVALID_INPUT,
+            "the policy name is empty, too long, or holds a control character".to_owned(),
+        ));
+    }
+    let commit = commit_of(&place, deadline, commit).map_err(|why| (INVALID_INPUT, why))?;
+    let short = &commit[..12];
+    match head_contains(&place.top, &commit, &deadline.git()) {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err((
+                INVALID_INPUT,
+                format!(
+                    "commit {short} is not an ancestor of HEAD in {}: only a policy in this working tree's history can be accepted here",
+                    shown(&place.top)
+                ),
+            ));
+        }
+        Err(error) => return Err((IO, git_words(&error))),
+    }
+    let bytes = file_at_commit(&place.top, &commit, &name, &deadline.git())
+        .map_err(|error| (IO, git_words(&error)))?
+        .ok_or_else(|| {
+            (
+                INVALID_INPUT,
+                format!(
+                    "commit {short} has no file {} (a regular file of that path)",
+                    hook::shown_path(&name)
+                ),
+            )
+        })?;
+    let to = deep_diff_forge_core::sha256_hex(&bytes);
+    let (from, old) = match &projected.accepted {
+        Accepted::Policy {
+            sha256,
+            commit,
+            bytes,
+            ..
+        } => (
+            Some((sha256.clone(), commit.clone())),
+            Some(bytes.as_slice()),
+        ),
+        Accepted::Unreadable(_) => match &projected.derived.reached {
+            Some((Some(sha256), Some(commit), Some(bytes))) => (
+                Some((sha256.clone(), commit.clone())),
+                Some(bytes.as_slice()),
+            ),
+            _ => (None, None),
+        },
+        Accepted::None(_) => (None, None),
+    };
+    // (where acceptances disagree the same digest is still accepted again: that settles it)
+    let same = name == bound
+        && projected.derived.reached.is_none()
+        && from.as_ref().is_some_and(|(digest, _)| *digest == to);
+    let scratch = Scratch::new(&place.own).map_err(|why| (IO, why))?;
+    let file = scratch
+        .sub("lint")
+        .map(|dir| dir.join(hook::shown_path(&name).replace(['/', '"'], "_")))
+        .map_err(|why| (IO, why))?;
+    std::fs::write(&file, &bytes).map_err(|e| {
+        (
+            IO,
+            format!("the policy could not be written to scratch: {e}"),
+        )
+    })?;
+    let program = judge_program(args, &[&place.top, &place.common]).map_err(|why| (IO, why))?;
+    judge_reads(&program, &file, deadline)?;
+    let diff = policy_diff(&scratch, (old, &bytes), "accept", deadline).map_err(|why| (IO, why))?;
+    // Settling a disagreement (ruling 11, N1): each disagreeing acceptance, its digest and the diff
+    // of the policy to accept against it; the commit must have every one of them in its history.
+    let mut disagreements = Vec::new();
+    for (at, earlier) in projected.derived.disagreeing.iter().enumerate() {
+        match deep_diff_forge_patch::merge_base(
+            &place.top,
+            &earlier.commit,
+            &commit,
+            &deadline.git(),
+        ) {
+            Ok(Some(base)) if base == earlier.commit => {}
+            Ok(_) => {
+                return Err((
+                    INVALID_INPUT,
+                    format!(
+                        "commit {short} does not have in its history commit {}, whose acceptance disagrees with the accepted policy reached: accept at a commit that has every disagreeing acceptance in its history",
+                        &earlier.commit[..12]
+                    ),
+                ));
+            }
+            Err(error) => return Err((IO, git_words(&error))),
+        }
+        let theirs = file_at_commit(
+            &place.top,
+            &earlier.commit,
+            &earlier.policy,
+            &deadline.git(),
+        )
+        .map_err(|error| (IO, git_words(&error)))?;
+        let diff = policy_diff(
+            &scratch,
+            (theirs.as_deref(), &bytes),
+            &format!("disagreeing-{at}"),
+            deadline,
+        )
+        .map_err(|why| (IO, why))?;
+        disagreements.push((earlier.commit.clone(), earlier.to.clone(), diff));
+    }
+    let pins = pins_change(old, &bytes);
+    Ok(AcceptPlan {
+        record: crate::policy_record::shown(&place.own),
+        bound,
+        name,
+        from,
+        commit,
+        to,
+        diff,
+        pins,
+        same,
+        disagreements,
+        snapshot: projected.snapshot,
+        place,
+    })
+}
+
+/// `agent policy-accept`'s append, after the person typed the new digest: under the project lock,
+/// the ledger and the policy record are read again and the project's policy derived again; only
+/// when its snapshot is the one shown (the compare-and-swap of R4: the same accepted digest, bound
+/// name, applied acceptances and ledger record) and the commit is still an ancestor of `HEAD` is
+/// one acceptance record appended. Then it is read back as a hook reads it. `Ok(words)` says what
+/// was written.
+pub(crate) fn policy_accept_write(plan: &AcceptPlan) -> Result<String, AcceptRefused> {
+    use deep_diff_forge_core::exit::{INVALID_INPUT, IO};
+    let place = &plan.place;
+    let deadline = Deadline::after(GATE_LIMIT).with_project(place);
+    let held = crate::policy_record::lock(&place.own, ACCEPT_LOCK_WAIT).map_err(|why| (IO, why))?;
+    let (projected, _, _) = accept_state(place, deadline)?;
+    if projected.snapshot != plan.snapshot {
+        return Err((
+            INVALID_INPUT,
+            format!(
+                "this project's accepted policy changed since it was shown (it is now {}): nothing was written",
+                accepted_named(&projected.accepted)
+            ),
+        ));
+    }
+    if !matches!(
+        head_contains(&place.top, &plan.commit, &deadline.git()),
+        Ok(true)
+    ) {
+        return Err((
+            INVALID_INPUT,
+            format!(
+                "commit {} is no longer an ancestor of HEAD in {}: nothing was written",
+                &plan.commit[..12],
+                shown(&place.top)
+            ),
+        ));
+    }
+    let acceptance = crate::policy_record::Acceptance {
+        policy: plan.name.clone(),
+        from: plan.from.as_ref().map(|(digest, _)| digest.clone()),
+        to: plan.to.clone(),
+        commit: plan.commit.clone(),
+        line: 0,
+    };
+    crate::policy_record::append(
+        &place.own,
+        &held,
+        &crate::policy_record::acceptance_value(&acceptance),
+    )
+    .map_err(|why| {
+        (
+            IO,
+            format!(
+                "the policy record {} could not be written ({why}): what is there is the record as it was, or with a part of this one at its end, which every reader passes over as not whole",
+                plan.record
+            ),
+        )
+    })?;
+    let frontier = crate::ledger::frontier(&place.own).ok();
+    let (now, _) = as_bound(place, frontier.as_ref(), deadline);
+    drop(held);
+    Ok(match &now.accepted {
+        Accepted::Policy { sha256, .. } if *sha256 == plan.to => format!(
+            "Accepted: the policy {} at commit {} (sha256 {}) is now this project's accepted policy; one acceptance record was appended to {}. Units not yet judged are judged under it from the next stop; a commit a stop already passed under an earlier accepted policy keeps that pass, and no commit is verified by this.",
+            hook::shown_path(&plan.name),
+            &plan.commit[..12],
+            plan.to,
+            plan.record
+        ),
+        other => format!(
+            "An acceptance record was appended to {}, and it does not apply as the hooks read it (the accepted policy is {}): run agent doctor --gate to see why.",
+            plan.record,
+            accepted_named(other)
+        ),
+    })
+}
+
+pub(crate) fn frontier_left(top: &Path, mine: &[String], args: &[String]) -> usize {
     let deadline = Deadline::after(GATE_LIMIT);
     let Ok(place) = place_of(top, deadline) else {
         return 0;
     };
-    let Ok(frontier) = crate::ledger::frontier(&place.own) else {
+    let Ok(mut frontier) = crate::ledger::frontier(&place.own) else {
         return 0;
     };
+    let accepted =
+        project_policy(&place, Some(&frontier), &policy_name(args), deadline, None).accepted;
+    if let Some(sealed_to) = accepted.sealed_to() {
+        frontier.passes_sealed_to(&sealed_to);
+    }
     let Some(baseline) = &frontier.baseline else {
         return 0;
     };
@@ -8961,7 +12054,12 @@ pub(crate) fn check_units(
             }) {
                 Ok(bench) => {
                     let judged = bench
-                        .judge(patch, "change.patch", After::Trees(Duration::ZERO), bound)
+                        .judge(
+                            patch,
+                            "change.patch",
+                            (After::Trees(Duration::ZERO), Part::Alone),
+                            bound,
+                        )
                         .0;
                     let admitted = bench.ranked_by.borrow_mut().take();
                     let other =
@@ -9226,14 +12324,124 @@ pub(crate) fn gate(cwd: &Path, args: &[String]) -> Vec<GateCheck> {
         Found::Failed { reason, .. } => Err(reason),
         Found::Unpaired(unpaired) => Err(unpaired.reason(cwd)),
     };
-    gate_in(
+    let mut checks = gate_in(
         cwd,
         place.as_ref().map_err(String::as_str),
+        None,
         None,
         args,
         deadline,
     )
-    .checks
+    .checks;
+    checks.push(match &place {
+        Ok(place) => accepted_check(place, args, deadline),
+        Err(_) => check(
+            "policy_accepted",
+            false,
+            not_checked("it needs the repository"),
+        ),
+    });
+    checks
+}
+
+/// The link `policy_accepted` (release 0.11.1, T14): the policy name the project's policy record
+/// binds, the accepted policy and what supplied it, the record's file and what it holds, and every
+/// acceptance that did not apply and every line passed over, with why. Ready where an accepted
+/// policy exists and nothing of the record was ignored, and where the project has no record yet
+/// (its first hook records it and binds the name it is given). It says that the binding and the
+/// acceptances are in a file this user can write: a local convention, not authentication.
+fn accepted_check(place: &Place, args: &[String], deadline: Deadline) -> GateCheck {
+    let name = policy_name(args);
+    let frontier = crate::ledger::frontier(&place.own);
+    let projected = project_policy(place, frontier.as_ref().ok(), &name, deadline, None);
+    let path = crate::policy_record::shown(&place.own);
+    let mut facts = Vec::new();
+    let mut ok = match (&projected.accepted, &projected.derived.bound) {
+        (Accepted::Policy { commit, by, .. }, bound) => {
+            facts.push(format!(
+                "{}; the accepted policy is the one at commit {} ({})",
+                bound.as_ref().map_or_else(
+                    || format!(
+                        "{} is not bound yet (the first hook of a session binds the name it is given)",
+                        hook::shown_path(&name)
+                    ),
+                    |bound| format!("{} is bound", hook::shown_path(bound))
+                ),
+                seven(commit),
+                by.as_ref().map_or_else(
+                    || "by the project's first record".to_owned(),
+                    |c| format!(
+                        "by an acceptance record, a local convention, of commit {}",
+                        seven(c)
+                    )
+                )
+            ));
+            true
+        }
+        (Accepted::None(NoAccepted::NoRecord), None) => {
+            facts.push(format!(
+                "no record of this project yet: the first hook of a session records it and binds the policy name it is given ({})",
+                hook::shown_path(&name)
+            ));
+            true
+        }
+        (Accepted::None(cause), _) => {
+            facts.push(format!("no accepted policy: {}", cause.cause(&name)));
+            false
+        }
+        (Accepted::Unreadable(why), _) => {
+            facts.push(deep_diff_forge_core::display_safe(&why.text).into_owned());
+            false
+        }
+    };
+    for (acceptance, why, other) in &projected.derived.ignored {
+        // (one of another branch's history is harmless here: named, the link stays ready)
+        if *other {
+            facts.push(format!(
+                "the acceptance record on line {} does not apply here and is harmless: {why}",
+                acceptance.line
+            ));
+        } else {
+            ok = false;
+            facts.push(format!(
+                "the acceptance record on line {} is ignored: {why}",
+                acceptance.line
+            ));
+        }
+    }
+    // what to do (ruling 10): a ledger that cannot be read, or acceptances that disagree
+    if projected.derived.reached.is_some() {
+        facts.push(
+            "to settle it, a person accepts the policy this tree should be judged by with agent policy-accept at a commit that has every disagreeing acceptance in its history: it shows each of them and the policy reached before them".to_owned(),
+        );
+    } else if frontier.is_err() {
+        facts.push(
+            "to settle it, a person deals with the ledger: after it is moved aside together with the policy record, the next session's start records the project again at the commit HEAD names and binds the policy name its hooks are given, and the policy at that commit is then the accepted one: check that file first, or accept the policy you want with agent policy-accept after it".to_owned(),
+        );
+    }
+    let holds = match &projected.record {
+        Ok(None) => "it does not exist".to_owned(),
+        Ok(Some(record)) => {
+            for (line, why) in &record.passed_over {
+                ok = false;
+                facts.push(format!("its line {line} is passed over: {why}"));
+            }
+            let acceptances = match record.acceptances.len() {
+                1 => "1 acceptance record".to_owned(),
+                n => format!("{n} acceptance records"),
+            };
+            if record.binding.is_some() {
+                format!("it holds a binding and {acceptances}")
+            } else {
+                format!("it holds no binding and {acceptances}")
+            }
+        }
+        Err(_) => "it cannot be read whole".to_owned(),
+    };
+    facts.push(format!(
+        "the binding and the acceptance history are in {path} ({holds}), a file any process running as this user can write: a local convention, not authentication"
+    ));
+    check("policy_accepted", ok, facts.join("; "))
 }
 
 /// What [`gate_in`] found.
@@ -9252,9 +12460,11 @@ fn not_checked(why: &str) -> String {
 }
 
 /// What the judge's verdict on the probe says, when it gave one: the ranker it admitted, its
-/// exit code, the schema and version its document names, and whether it holds the probe for
-/// claims it could not verify (a note `claims_unverified`).
-type ProbeVerdict = (PathBuf, i32, String, bool);
+/// exit code, the schema and version its document names, whether it holds the probe for
+/// claims it could not verify (a note `claims_unverified`), and whether a rule actually holds
+/// or fails the probe. A note or an expired waiver can make the verdict non-pass without
+/// protecting the policy file.
+type ProbeVerdict = (PathBuf, i32, String, bool, bool);
 
 /// The links `chain`, `policy_protects_itself` and `claims_verified`: the judge's verdict on
 /// the probe, or why it gave none.
@@ -9269,7 +12479,7 @@ fn chain_checks(name: &str, verdict: &Result<ProbeVerdict, String>, bound: bool)
             "chain",
             verdict.is_ok(),
             match verdict {
-                Ok((ranker, code, read, _)) => format!(
+                Ok((ranker, code, read, _, _)) => format!(
                     "the judge gave a verdict (exit {code}) with ranker {}: {read}, read by this build, which reads {}",
                     ranker.display(),
                     crate::verdict_v2::READS
@@ -9279,13 +12489,24 @@ fn chain_checks(name: &str, verdict: &Result<ProbeVerdict, String>, bound: bool)
         ),
         check(
             hook::PROTECTS_ITSELF,
-            verdict.as_ref().is_ok_and(|(_, code, _, _)| *code != 0),
+            verdict
+                .as_ref()
+                .is_ok_and(|(_, _, _, _, rule_stops_probe)| *rule_stops_probe),
             match verdict {
-                Ok((_, 0, _, _)) => format!(
+                Ok((_, 0, _, _, _)) => format!(
                     "a change to {} passes: any change could loosen the policy it is judged by",
                     hook::shown_path(name)
                 ),
-                Ok(_) => format!("a change to {} is held or fails", hook::shown_path(name)),
+                Ok((_, _, _, _, true)) => {
+                    format!(
+                        "a change to {} is held or fails under a rule",
+                        hook::shown_path(name)
+                    )
+                }
+                Ok(_) => format!(
+                    "a change to {} does not pass, but no rule holds or fails it: a note or an expired waiver does not prove that the policy protects its file",
+                    hook::shown_path(name)
+                ),
                 Err(_) => not_checked("the judge gave no verdict"),
             },
         ),
@@ -9293,10 +12514,10 @@ fn chain_checks(name: &str, verdict: &Result<ProbeVerdict, String>, bound: bool)
             hook::CLAIMS_VERIFIED,
             verdict
                 .as_ref()
-                .is_ok_and(|(_, _, _, unverified)| !unverified),
+                .is_ok_and(|(_, _, _, unverified, _)| !unverified),
             match verdict {
-                Ok((_, _, _, true)) if bound => hook::CLAIMS_BOUND.to_owned(),
-                Ok((_, _, _, true)) => hook::CLAIMS_HOLD.to_owned(),
+                Ok((_, _, _, true, _)) if bound => hook::CLAIMS_BOUND.to_owned(),
+                Ok((_, _, _, true, _)) => hook::CLAIMS_HOLD.to_owned(),
                 Ok(_) => {
                     "the judge's verdict on the probe has no note claims_unverified".to_owned()
                 }
@@ -9475,6 +12696,7 @@ fn gate_in(
     dir: &Path,
     place: Result<&Place, &str>,
     base: Option<&str>,
+    probed: Option<&[u8]>,
     args: &[String],
     deadline: Deadline,
 ) -> Gate {
@@ -9540,7 +12762,9 @@ fn gate_in(
     ));
     let program = program.ok();
     let scratch = place.map(|place| Scratch::new(&place.own));
-    let verdict = match (&scratch, &policy, &program) {
+    // (the start's probe runs on the project's accepted policy where it has one: `probed`)
+    let probed = probed.map(<[u8]>::to_vec).or_else(|| policy.clone());
+    let verdict = match (&scratch, &probed, &program) {
         (Some(Ok(scratch)), Some(policy), Some(program)) => {
             probe(scratch, &name, policy, program, args, deadline)
         }
@@ -9677,7 +12901,12 @@ fn probe(
                 let unverified = document["notes"].as_array().is_some_and(|notes| {
                     notes.iter().any(|note| note["code"] == "claims_unverified")
                 });
-                return Ok((ranker, code, read, unverified));
+                let rule_stops_probe = document["rules"].as_array().is_some_and(|rules| {
+                    rules
+                        .iter()
+                        .any(|rule| matches!(rule["outcome"].as_str(), Some("hold" | "fail")))
+                });
+                return Ok((ranker, code, read, unverified, rule_stops_probe));
             }
             (_, Judged::Unjudged { reason, .. }) => {
                 // version drift: a judge that writes a schema this build does not read
@@ -10130,8 +13359,11 @@ mod tests {
             Located::Trouble(why) => assert_eq!(why.class, ReasonClass::PlaceDirectoryGone),
             _ => panic!("the session's directory is gone"),
         }
+        // The canonical path, as the callers pass Git's `top`: a temp directory reached through a
+        // symbolic link (macOS's `/var` is `/private/var`) is not the state directory's own path.
+        let top = std::fs::canonicalize(scratch.path()).unwrap();
         assert_eq!(
-            session.inside(scratch.path()).map(|why| why.class),
+            session.inside(&top).map(|why| why.class),
             Some(ReasonClass::StateInsideTree)
         );
     }
@@ -12489,7 +15721,8 @@ mod tests {
                 "0123456789abcdef0123456789abcdef01234567:p".to_owned(),
             ]),
         };
-        let said = session.keep().unwrap_err();
+        let at = At::open(&dir, false).unwrap();
+        let said = session.keep(&Writable::for_test(&at, &file)).unwrap_err();
         assert!(
             said.contains("is now of schema v14, written by a newer deep-diff-forge")
                 && said.contains("nothing was written over it"),
@@ -13149,7 +16382,12 @@ mod tests {
         );
         let cut = counted_name(&name);
         assert_eq!(cut.chars().count(), NOTE_NAME, "{cut}");
-        assert!(cut.ends_with("d… (a failure stands there)"), "{cut}");
+        assert!(
+            cut.starts_with("the working tree \"/dd")
+                && cut.contains("d…d")
+                && cut.ends_with("d\" (a failure stands there)"),
+            "{cut}"
+        );
 
         let note = |n: usize| Note {
             name: format!("n{n}"),
@@ -13286,26 +16524,26 @@ mod tests {
         let line = |n: usize, said: &str| format!("{n:040x}:{said}");
         // no verdict at one stop, then a pass: nothing waits
         assert_eq!(
-            asks_kept(&[line(1, "n1@1:r"), line(1, "p")]),
+            asks_kept(&[line(1, "n1@1:r"), line(1, "p")], false),
             seconds(3_000)
         );
         // no verdict at six stops (the last ones in its turn), then a pass
         let mut six: Vec<String> = (1..=6).map(|n| line(1, &format!("n{n}@{n}:r"))).collect();
-        assert_eq!(asks_kept(&six), seconds(8_000));
+        assert_eq!(asks_kept(&six, false), seconds(8_000));
         six.push(line(1, "f:no-secrets"));
-        assert_eq!(asks_kept(&six), seconds(3_000));
+        assert_eq!(asks_kept(&six, false), seconds(3_000));
         // another commit still waits: it is counted, and only it
         six.push(line(2, "n2@8:r"));
-        assert_eq!(asks_kept(&six), seconds(8_000));
+        assert_eq!(asks_kept(&six, false), seconds(8_000));
         six.push(line(3, "n9@8:r"));
-        assert_eq!(asks_kept(&six), OWED_ASKS_NEED);
+        assert_eq!(asks_kept(&six, false), OWED_ASKS_NEED);
         // its last line counts, whatever stood before it
         six.push(line(3, "x:the commit has no parent that can be read"));
         six.push(line(2, "h:review"));
-        assert_eq!(asks_kept(&six), seconds(3_000));
+        assert_eq!(asks_kept(&six, false), seconds(3_000));
         // (a line that cannot be read is no commit that waits)
         six.push("not a line".to_owned());
-        assert_eq!(asks_kept(&six), seconds(3_000));
+        assert_eq!(asks_kept(&six, false), seconds(3_000));
     }
 
     /// Ninth independent review of the hooks, HR9-M-1, as reproduced: a failure of 257 lines
@@ -13616,22 +16854,22 @@ mod tests {
         // waits for a verdict (a commit never asked about may be there), five more for a
         // commit that waits for its turn, five more for one with fewer attempts.
         let line = |n: usize, said: &str| format!("{n:040x}:{said}");
-        assert_eq!(asks_kept(&[]), seconds(3_000));
+        assert_eq!(asks_kept(&[], false), seconds(3_000));
         assert_eq!(
-            asks_kept(&[line(1, "p"), line(2, "f:no-secrets")]),
+            asks_kept(&[line(1, "p"), line(2, "f:no-secrets")], false),
             seconds(3_000)
         );
-        assert_eq!(asks_kept(&[line(1, "n2@4:r")]), seconds(8_000));
+        assert_eq!(asks_kept(&[line(1, "n2@4:r")], false), seconds(8_000));
         assert_eq!(
-            asks_kept(&[line(1, "n7@4:r"), line(2, "n9@3:r")]),
+            asks_kept(&[line(1, "n7@4:r"), line(2, "n9@3:r")], false),
             seconds(8_000)
         );
         assert_eq!(
-            asks_kept(&[line(1, "n7@4:r"), line(2, "n0@3:r"), line(3, "p")]),
+            asks_kept(&[line(1, "n7@4:r"), line(2, "n0@3:r"), line(3, "p")], false),
             OWED_ASKS_NEED
         );
         // the stop's own tree, the project's tree clean, from a linked tree (35 seconds)
-        assert_eq!(tree(35_000, asks_kept(&[])), Some(seconds(32_000)));
+        assert_eq!(tree(35_000, asks_kept(&[], false)), Some(seconds(32_000)));
         assert_eq!(tree(35_000, OWED_ASKS_NEED), Some(seconds(22_000)));
         // both dirty: three seconds for the project's tree; the own tree has over half
         assert_eq!(
@@ -13867,14 +17105,14 @@ mod tests {
         assert!(line(long).chars().count() <= COUNT_LINE);
         // A name that is cut keeps what it says of a failure that stands: the path of a
         // working tree as a message shows it (120 characters) fits whole, and a longer
-        // name loses its middle, not its end.
+        // name loses its path's middle, not its end.
         let path = hook::shown_path(&format!("/home/u/{}/tree", "d".repeat(300)));
         let whole =
             format!("the working tree {path} (it could not be looked at) (a failure stands there)");
         assert!(whole.chars().count() > NOTE_NAME);
         let said = line(vec![note(&whole, 1)]);
         assert!(
-            said.ends_with("… (a failure stands there).") && said.chars().count() <= COUNT_LINE,
+            said.ends_with("d/tree\" (it could not be looked at) (a failure stands there)."),
             "{said}"
         );
         let fits = format!("the working tree {path} (a failure stands there)");
@@ -13899,6 +17137,143 @@ mod tests {
         assert_eq!(look_share(seconds(6), 1), seconds(6));
         assert_eq!(look_share(seconds(6), 0), seconds(6));
         assert_eq!(look_share(Duration::ZERO, 3), Duration::ZERO);
+    }
+
+    /// Package P3 of 0.11.1 (rows 5 to 8 of the reading of the macOS CI run of 0.11.0): under
+    /// a long path the counting line kept a name's path and cut its clauses ("(remembered at
+    /// another directory, which s…"). Every form of a name a note of this build has, with a
+    /// path of 200 characters and more under a base as long as one: the path loses its middle,
+    /// its first and last characters stay, every clause is whole, and the name has
+    /// [`NOTE_NAME`] characters at most; three of them on the counting line keep it within
+    /// [`COUNT_LINE`]. (The forms as `other_trees`, `no_longer_trees`, `left_out`,
+    /// `trees_to_judge` and `submodules_with_changes` write them.)
+    #[test]
+    fn a_counted_name_under_a_long_path_keeps_every_clause() {
+        let base = format!("/{}", "b".repeat(199));
+        let mut names = Vec::new();
+        for (path, tail) in [
+            (format!("{base}/linked"), "/linked"),
+            (format!("{base}/{}/copy", "c".repeat(80)), "/copy"),
+        ] {
+            let p = hook::shown_path(&path);
+            for what in [
+                "",
+                " (gone)",
+                " (the session's directory may be in it)",
+                " (remembered at another directory, which stands)",
+                " (it could not be looked at)",
+            ] {
+                for stands in ["", " (a failure stands there)"] {
+                    names.push((format!("the working tree {p}{what}{stands}"), tail));
+                }
+            }
+            for what in ["", "; it could not be looked at"] {
+                names.push((
+                    format!(
+                        "the directory {p} (no longer a working tree{what}; a failure stands there)"
+                    ),
+                    tail,
+                ));
+            }
+            names.push((
+                format!("the directory {p} (no working tree by the records)"),
+                tail,
+            ));
+            names.push((format!("the nested repository {p}"), tail));
+            names.push((format!("the repository {p} the session is in"), tail));
+            names.push((format!("the submodule {p}"), tail));
+        }
+        let mut longest_words = 0;
+        for (name, tail) in &names {
+            let (first, last) = (name.find('"').unwrap(), name.rfind('"').unwrap());
+            let (before, after) = (&name[..=first], &name[last..]);
+            longest_words = longest_words.max(before.chars().count() + after.chars().count());
+            let cut = counted_name(name);
+            assert!(cut.chars().count() <= NOTE_NAME, "{cut}");
+            assert!(
+                cut.starts_with(&format!("{before}/bbbbbbbb"))
+                    && cut.ends_with(&format!("{tail}{after}"))
+                    && cut.contains('…'),
+                "{name}\n{cut}"
+            );
+            // the longer the name, the more of its path goes, and no more: it fills its room
+            if name.chars().count() > NOTE_NAME {
+                assert_eq!(cut.chars().count(), NOTE_NAME, "{cut}");
+            }
+        }
+        assert_eq!(
+            longest_words, 94,
+            "the words of the longest name besides its path"
+        );
+        // a path that leaves its clauses room is not cut
+        let fits = "the working tree \"/a/b\" (remembered at another directory, which stands) (a failure stands there)";
+        assert_eq!(counted_name(fits), fits);
+        // the words alone leave the path no room: cut after a whole word, the failure said
+        let wordy = format!(
+            "the working tree \"/a\" ({}) (a failure stands there)",
+            "many words ".repeat(20).trim_end()
+        );
+        let cut = counted_name(&wordy);
+        assert!(
+            cut.ends_with(" words… (a failure stands there)") && cut.chars().count() <= NOTE_NAME,
+            "{cut}"
+        );
+        // three of the longest on the counting line, and more counted: within its room
+        let note = |name: &str| Note {
+            name: name.to_owned(),
+            text: format!("In full: {name}."),
+            standing: 1,
+        };
+        let mut state = State {
+            project: Some(project(Base::Commit(COMMIT.to_owned()))),
+            ..State::default()
+        };
+        let mut longest: Vec<&String> = names.iter().map(|(name, _)| name).collect();
+        longest.sort_by_key(|name| std::cmp::Reverse(name.chars().count()));
+        let said = notes_of(
+            &mut state,
+            longest.iter().map(|name| note(name)).collect(),
+            0,
+        );
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(said[0].chars().count() <= COUNT_LINE, "{}", said[0]);
+        for name in &longest[..3] {
+            assert!(said[0].contains(&counted_name(name)), "{name}\n{}", said[0]);
+        }
+        assert!(
+            said[0].ends_with(", and 29 more (among them 29 working trees where a failure stands that has blocked)."),
+            "{}",
+            said[0]
+        );
+    }
+
+    /// Package P3 of 0.11.1, row 9 of the reading of the macOS CI run of 0.11.0: the reason
+    /// of a stop from a tree moved with `mv` names two trees before it says what to do, and a
+    /// message showed [`hook::REASON_CHARS`] characters of it: under a path of a macOS temp
+    /// directory's length it ended "(`git worktree repair` in a tree moved with …". With paths
+    /// of 200 characters and more, what the message shows of it (the paths cut first) says
+    /// what to do and that neither directory is judged.
+    #[test]
+    fn a_moved_tree_s_reason_says_what_to_do_under_long_paths() {
+        let base = PathBuf::from(format!("/{}", "m".repeat(199)));
+        let unpaired = Unpaired {
+            id: "0".repeat(16),
+            top: base.join("moved"),
+            git_dir: base.join("repo/.git/worktrees/linked"),
+            recorded: Some(base.join("linked")),
+        };
+        let Elsewhere::Failed(reason, _) = unpaired_here(&base.join("moved"), &unpaired) else {
+            panic!("a pair the records do not make is not placed");
+        };
+        let shown: String = hook::quoted_cut(&reason, hook::REASON_CHARS)
+            .chars()
+            .take(hook::REASON_CHARS)
+            .collect();
+        assert!(
+            shown.starts_with("Git names \"/mmm")
+                && shown.contains("/linked\" as that tree (`git worktree repair` in a tree moved with `mv` records where it is): whether the session's directory is another working tree could not be found out"),
+            "{shown}"
+        );
     }
 
     /// Review V4 round 16, VD4R16-L-1: a linked working tree is known by the inode of its
@@ -14028,6 +17403,39 @@ mod tests {
             judge_words(long.as_bytes()).map(|w| w.chars().count()),
             Some(JUDGE_WORDS)
         );
+        // P3 of 0.11.1, review 1, M2: a cut is said with "…"; words at the bound are whole
+        let said = |n: usize| format!("{{\"message\":\"{}; the run stops\"}}", "m".repeat(n));
+        let cut = judge_words(said(JUDGE_WORDS).as_bytes()).unwrap();
+        assert!(
+            cut.ends_with("mmm…") && cut.chars().count() == JUDGE_WORDS,
+            "{cut}"
+        );
+        let whole = judge_words(said(JUDGE_WORDS - "; the run stops".len()).as_bytes()).unwrap();
+        assert!(
+            whole.ends_with("m; the run stops") && whole.chars().count() == JUDGE_WORDS,
+            "{whole}"
+        );
+        // the band between the bases the lane rendered (45 and 211; the review's was 56): a
+        // judge's path under a base of 56 characters, its message just within and just past
+        // the bound. The judge's quotes are its words: a reason does not cut them in the
+        // middle, and its end is cut with "…" where the line has no room.
+        let base = format!("/{}", "p".repeat(55));
+        for (js, ends) in [(160, "; the run stops"), (200, "…")] {
+            let message = format!(
+                "{{\"name\":\"io\",\"message\":\"cannot read \\\"{base}/{}/policy-cache/entry.json\\\": permission denied; the run stops\"}}",
+                "j".repeat(js)
+            );
+            let words = judge_words(message.as_bytes()).unwrap();
+            assert!(
+                words.starts_with(&format!("io: cannot read \"{base}/jjj"))
+                    && words.ends_with(ends)
+                    && words.chars().count() <= JUDGE_WORDS,
+                "{words}"
+            );
+            let reason =
+                format!("the judge could not read its inputs or its environment (exit 3): {words}");
+            assert_eq!(hook::quoted_cut(&reason, hook::REASON_CHARS), reason);
+        }
     }
 
     #[test]
@@ -14176,6 +17584,26 @@ mod tests {
         );
     }
 
+    /// U1 rows S233 and S321 (lane T3a of 0.11.1): the waits SECURITY.md names are the ones the
+    /// hooks use. A second stop of a session waits three seconds for the session's lock, and
+    /// the helper that hashes the rankers is ended when eight seconds have passed. What each
+    /// does when its wait ends is held by the end-to-end test of the session's lock
+    /// (`a_stop_waits_for_the_session_s_lock_and_takes_only_the_one_that_is_there`) and by
+    /// `the_helper_that_hashes_rankers_is_ended_at_the_deadline`.
+    #[test]
+    fn the_waits_security_md_names_are_the_ones_the_hooks_use() {
+        assert_eq!(
+            LOCK_WAIT,
+            Duration::from_secs(3),
+            "a stop's wait for its session's lock"
+        );
+        assert_eq!(
+            RANKER_SEAL_LIMIT,
+            Duration::from_secs(8),
+            "the limit of the helper that hashes the rankers"
+        );
+    }
+
     /// Review V4 round 4, VD4R4-M-2: a ranker is hashed in pieces, and one that is too large,
     /// not a regular file, or too slow to hash is refused with its reason instead of being
     /// read whole.
@@ -14306,6 +17734,625 @@ mod tests {
             assert_eq!(resolve_sessions_dir(None, os(relative)), None);
         }
         assert_eq!(resolve_sessions_dir(None, None), None);
+    }
+
+    /// Release 0.11.1, P5c row C1 (test U1): where the state is kept is decided without asking
+    /// about Git. A `.git` of any kind above the state directory (a repository, an empty
+    /// directory, the file of a linked working tree, a link to nothing) changes nothing: the
+    /// directory is the hooks' own, made with mode 0700 when it is to be made. The session's
+    /// lock asked about such a `.git` and took none, while the writer made the directory and
+    /// wrote: two first stops of a session both judged.
+    #[test]
+    fn the_state_directory_is_decided_without_asking_about_git() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-state-dir-decided");
+        let hooks = |root: &Path| root.join("home/.local/state/deep-diff-forge/hooks");
+        for name in [
+            "nothing",
+            "a-repository",
+            "an-empty-git-directory",
+            "a-git-file",
+            "a-git-link-to-nothing",
+        ] {
+            let root = scratch.join(name);
+            let git = root.join(".git");
+            std::fs::create_dir(&root).unwrap();
+            match name {
+                "a-repository" => {
+                    std::fs::create_dir_all(git.join("objects")).unwrap();
+                    std::fs::create_dir_all(git.join("refs/heads")).unwrap();
+                    std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+                }
+                "an-empty-git-directory" => std::fs::create_dir(&git).unwrap(),
+                "a-git-file" => {
+                    std::fs::write(&git, "gitdir: /nowhere/.git/worktrees/home\n").unwrap();
+                }
+                "a-git-link-to-nothing" => {
+                    std::os::unix::fs::symlink("/nowhere/at/all", &git).unwrap();
+                }
+                _ => {}
+            }
+            let dir = hooks(&root);
+            // a reader makes nothing
+            assert_eq!(
+                state_dir_at(Ok(dir.clone()), false),
+                StateDir::Own(dir.clone()),
+                "{name}"
+            );
+            assert!(!root.join("home").exists(), "{name}: a reader made it");
+            for _ in 0..2 {
+                assert_eq!(
+                    state_dir_at(Ok(dir.clone()), true),
+                    StateDir::Own(dir.clone()),
+                    "{name}"
+                );
+                let found = std::fs::symlink_metadata(&dir).unwrap();
+                assert!(
+                    found.is_dir() && found.permissions().mode() & 0o777 == 0o700,
+                    "{name}: {found:?}"
+                );
+            }
+        }
+        // a link to a directory, a link to nothing and a file where the directory should be
+        let dir = hooks(&scratch.join("not-own"));
+        std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
+        for (kind, to_directory) in [
+            ("a link to a directory", true),
+            ("a link to nothing", false),
+            ("a file", false),
+        ] {
+            match kind {
+                "a link to a directory" => {
+                    std::os::unix::fs::symlink(scratch.path(), &dir).unwrap();
+                }
+                "a link to nothing" => std::os::unix::fs::symlink("/nowhere/at/all", &dir).unwrap(),
+                _ => std::fs::write(&dir, "").unwrap(),
+            }
+            for make in [false, true] {
+                assert_eq!(
+                    state_dir_at(Ok(dir.clone()), make),
+                    StateDir::NotOwn {
+                        dir: dir.clone(),
+                        to_directory
+                    },
+                    "{kind}"
+                );
+            }
+            std::fs::remove_file(&dir).unwrap();
+        }
+        // no absolute variable names one
+        let os = |text: &str| Some(OsString::from(text));
+        let named = resolve_sessions_dir(os("state"), os("home")).ok_or_else(|| "none".to_owned());
+        assert_eq!(
+            state_dir_at(named, true),
+            StateDir::None(Unmade::Unnamed("none".to_owned()))
+        );
+    }
+
+    /// Release 0.11.1, P5c row C4 (test U2): the writer of a session's state writes only with
+    /// the token of that session's lock, and only through the directory the lock was taken in.
+    /// With a token of another directory, or of another session's lock in the same directory
+    /// (review of P5c, L3), nothing is written; nor when the directory was moved away and
+    /// another put at its name while the lock was held (review of P5c, V1): then nothing is
+    /// written into either. With its own token, in its own directory, the state is written.
+    #[test]
+    fn a_state_is_written_only_into_the_directory_its_lock_was_taken_in() {
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-state-token");
+        let (dir, other) = (scratch.join("hooks"), scratch.join("other"));
+        std::fs::create_dir(&other).unwrap();
+        std::fs::create_dir(&dir).unwrap();
+        let file = state_file(&dir, "s");
+        let mut session = Session {
+            dir: dir.clone(),
+            file: file.clone(),
+            state: State {
+                stops: 1,
+                ..State::default()
+            },
+            kept: None,
+            upgrade: false,
+            new_key: None,
+            tips: None,
+            judged: None,
+        };
+        let names = |at: &Path| -> Vec<std::ffi::OsString> {
+            std::fs::read_dir(at)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect()
+        };
+        let (at, other_at) = (
+            At::open(&dir, false).unwrap(),
+            At::open(&other, false).unwrap(),
+        );
+        let refused = |said: Result<(), String>, words: &str, what: &str| {
+            assert!(
+                said.as_ref().is_err_and(|said| said.contains(words)),
+                "a state was kept with {what}: {said:?}"
+            );
+        };
+        let other_file = state_file(&other, "s");
+        let said = session.keep(&Writable::for_test(&other_at, &other_file));
+        refused(
+            said,
+            "not of this session's state",
+            "the token of another directory",
+        );
+        let another = state_file(&dir, "t");
+        let said = session.keep(&Writable::for_test(&at, &another));
+        refused(
+            said,
+            "the lock held is the one of",
+            "the token of another session",
+        );
+        assert_eq!((names(&dir), names(&other)), (vec![], vec![]));
+        // the directory moved away, and another put at its name, while the lock is held
+        let held = scratch.join("hooks-held");
+        std::fs::rename(&dir, &held).unwrap();
+        std::fs::create_dir(&dir).unwrap();
+        let said = session.keep(&Writable::for_test(&at, &file));
+        refused(
+            said,
+            "is no longer the directory the session's lock was taken in (another process moved it away or put another in its place while this hook ran); nothing was written",
+            "its directory replaced",
+        );
+        assert_eq!((names(&dir), names(&held)), (vec![], vec![]));
+        // (positive control) its own token, in its own directory
+        std::fs::remove_dir(&dir).unwrap();
+        std::fs::rename(&held, &dir).unwrap();
+        session.keep(&Writable::for_test(&at, &file)).unwrap();
+        assert_eq!(load(&file), Ok(Some(session.state.clone())));
+    }
+
+    /// The run of 0.11.1's tests on macOS (P5c round 3): two first stops of a session make the
+    /// lock file at once, and one was told "No such file or directory" by the open that makes it,
+    /// and gave up the lock as `Unlockable`. A directory or a lock file that is not there when it
+    /// is opened is looked for again while the wait lasts, at each of the three opens (review of
+    /// P5c round 3, L2): the directory removed before its open; removed and made again between
+    /// its open and the lock file's; the lock file taken from its name and the directory removed
+    /// and made again before it is opened again. Each time the lock is taken, in the directory as
+    /// it is now.
+    #[test]
+    fn a_lock_file_that_is_not_there_for_a_moment_is_looked_for_again() {
+        use lock::Phase;
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-lock-again");
+        let dir = scratch.join("hooks");
+        let lock_file = state_file(&dir, "s").with_extension("lock");
+        for (phase, what) in [
+            (Phase::Directory, "the directory's open"),
+            (Phase::LockFile, "the lock file's open"),
+            (Phase::Reopen, "the open again after the name check"),
+        ] {
+            let (once, taken_away) = (std::cell::Cell::new(true), std::cell::Cell::new(false));
+            let turn = lock::lock_in(&Ok(dir.clone()), "s", Duration::from_secs(2), |at| {
+                if phase == Phase::Reopen && at == Phase::Lock && !taken_away.replace(true) {
+                    std::fs::remove_file(&lock_file).unwrap();
+                }
+                if at == phase && once.replace(false) {
+                    std::fs::remove_dir(&dir).unwrap();
+                    if phase != Phase::Directory {
+                        std::fs::create_dir(&dir).unwrap();
+                    }
+                }
+            });
+            assert!(!once.get(), "{what}: the moment was never reached");
+            assert!(
+                matches!(turn, Turn::Mine(_)) && lock_file.is_file(),
+                "{what}: a lock file or directory that was not there for a moment was not looked for again: {}",
+                turn_words(&turn)
+            );
+        }
+    }
+
+    /// What a [`Turn`] is, for a test's message.
+    fn turn_words(turn: &Turn) -> String {
+        match turn {
+            Turn::Mine(_) => "Mine".to_owned(),
+            Turn::NoLocks(_) => "NoLocks".to_owned(),
+            Turn::Taken => "Taken".to_owned(),
+            Turn::NoDirectory(why) => format!("NoDirectory({why})"),
+            Turn::Unlockable(why) => format!("Unlockable({why})"),
+        }
+    }
+
+    /// Review of P5c round 3, L1 and L2: what is not there each time it is looked for ends the
+    /// wait as a lock that cannot be taken, with its cause: the directory removed before its open,
+    /// or the lock file taken from its name each time it is locked (that is no other hook's lock:
+    /// it was said as `state.lock_busy`). The wait ends on time (at most 100 ms past it; the
+    /// seam fails the test past a second, so a wait that never ends is a red assertion and not a
+    /// hang) and, where a directory is missing, pauses between looks (at most one look every
+    /// 25 ms or so).
+    #[test]
+    fn what_is_gone_each_time_ends_the_wait_with_its_cause() {
+        use lock::Phase;
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-lock-gone");
+        let dir = scratch.join("hooks");
+        let lock_file = state_file(&dir, "s").with_extension("lock");
+        let wait = Duration::from_millis(300);
+        for (phase, cause) in [
+            (Phase::Directory, "the state directory"),
+            (Phase::Lock, "was gone from its name each time it was taken"),
+        ] {
+            let clock = Deadline::after(Duration::from_secs(60));
+            let looks = std::cell::Cell::new(0_u32);
+            let turn = lock::lock_in(&Ok(dir.clone()), "s", wait, |at| {
+                let spent = Duration::from_secs(60).saturating_sub(clock.left());
+                assert!(
+                    spent <= wait + Duration::from_secs(1),
+                    "{phase:?}: the looks did not end with the wait ({spent:?})"
+                );
+                if at == phase {
+                    looks.set(looks.get() + 1);
+                    match phase {
+                        Phase::Directory => std::fs::remove_dir(&dir).unwrap(),
+                        _ => std::fs::remove_file(&lock_file).unwrap(),
+                    }
+                }
+            });
+            let spent = Duration::from_secs(60).saturating_sub(clock.left());
+            assert!(
+                matches!(&turn, Turn::Unlockable(why) if why.contains(cause)),
+                "{phase:?}: {}",
+                turn_words(&turn)
+            );
+            assert!(
+                spent <= wait + Duration::from_millis(100),
+                "{phase:?}: the wait was {wait:?} and it took {spent:?}"
+            );
+            // (the look again after the name check does not pause: a busy loop as in 0.11.0,
+            // left for the follow-up P5e by the orchestrator's ruling of round 4)
+            assert!(
+                phase != Phase::Directory || looks.get() <= 30,
+                "{phase:?}: {} looks in {wait:?}: the looks do not pause",
+                looks.get()
+            );
+        }
+    }
+
+    /// Review of P5c round 2, M1: the session's lock may be taken through a symbolic link to a
+    /// directory at the state directory's name (as in 0.11.0); the state is never written through
+    /// one. With a token of the directory itself the state is written (the positive control);
+    /// with a token of the link's target, opened through the link as the lock opens it, nothing
+    /// is written there, and the words are 0.11.0's.
+    #[test]
+    fn a_state_is_never_written_through_a_link_at_the_state_directory() {
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-state-through-link");
+        let (dir, target) = (scratch.join("hooks"), scratch.join("elsewhere"));
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::create_dir(&target).unwrap();
+        let file = state_file(&dir, "s");
+        let session = || Session {
+            dir: dir.clone(),
+            file: file.clone(),
+            state: State {
+                stops: 1,
+                ..State::default()
+            },
+            kept: None,
+            upgrade: false,
+            new_key: None,
+            tips: None,
+            judged: None,
+        };
+        let at = At::open(&dir, false).unwrap();
+        session().keep(&Writable::for_test(&at, &file)).unwrap();
+        assert!(file.is_file(), "(control) the state was not written");
+        std::fs::rename(&dir, scratch.join("hooks-away")).unwrap();
+        std::os::unix::fs::symlink(&target, &dir).unwrap();
+        let through = At::open(&dir, true).unwrap();
+        let said = session().keep(&Writable::for_test(&through, &file));
+        assert!(
+            said.as_ref().is_err_and(|said| said.contains(
+                "is not a directory of its own (a symbolic link or a file stands there)"
+            )),
+            "a state was kept through a link at the state directory: {said:?}"
+        );
+        assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0);
+    }
+
+    /// A write of a state of session `s` in the directory `dir` (a fresh `stops`, with a new key
+    /// or none), through that directory held open; the state is kept (tests of P5d).
+    fn keep_a_state(row: &str, dir: &Path, stops: u64, new_key: Option<[u8; 32]>) {
+        let file = state_file(dir, "s");
+        let mut session = Session {
+            dir: dir.to_path_buf(),
+            file: file.clone(),
+            state: State {
+                stops,
+                ..State::default()
+            },
+            kept: None,
+            upgrade: false,
+            new_key,
+            tips: None,
+            judged: None,
+        };
+        let at = At::open(dir, false).unwrap();
+        let said = session.keep(&Writable::for_test(&at, &file));
+        assert!(
+            said.is_ok() && load(&file).is_ok_and(|kept| kept == Some(session.state.clone())),
+            "{row}: the state was not kept: {said:?}"
+        );
+    }
+
+    /// The bytes of the hooks' `.gitignore` (P5d, row R1), written out here so that a change of
+    /// them is seen.
+    const IGNORE_WRITTEN: &[u8] =
+        b"# deep-diff-forge: the hooks' state of this user's sessions; no part of any commit.\n*\n";
+
+    /// Release 0.11.1, P5d (rows R1, R2; test T2, first half): the writer of a session's state
+    /// makes the state directory's `.gitignore`, holding exactly [`IGNORE_WRITTEN`], a regular
+    /// file of mode 0600, beside the key and the state; and in a directory an earlier build made
+    /// (a key and a state, no such file) at its next write.
+    #[test]
+    fn the_state_directory_ignores_everything_in_it() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-state-ignore");
+        let dir = scratch.join("new");
+        std::fs::create_dir(&dir).unwrap();
+        keep_a_state("new", &dir, 1, Some([7; 32]));
+        let state = state_file(&dir, "s");
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                ".gitignore".to_owned(),
+                "key".to_owned(),
+                state.file_name().unwrap().to_string_lossy().into_owned()
+            ],
+            "new: the directory holds other files"
+        );
+        assert_eq!(
+            std::fs::read(dir.join(".gitignore")).unwrap(),
+            IGNORE_WRITTEN,
+            "new: the .gitignore does not hold the hooks' text"
+        );
+        let made = std::fs::symlink_metadata(dir.join(".gitignore")).unwrap();
+        assert!(
+            made.is_file() && (made.permissions().mode() & 0o777) == 0o600,
+            "new: the .gitignore is not a regular file of mode 0600: {made:?}"
+        );
+        // a directory an earlier build made, with a key and a state and no such file
+        let dir = scratch.join("earlier");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("key"), [7; 32]).unwrap();
+        std::fs::write(state_file(&dir, "s"), b"{}").unwrap();
+        keep_a_state("earlier", &dir, 2, None);
+        assert_eq!(
+            std::fs::read(dir.join(".gitignore")).ok().as_deref(),
+            Some(IGNORE_WRITTEN),
+            "earlier: a directory without the file did not get it at the next write"
+        );
+    }
+
+    /// Release 0.11.1, P5d (row R3; test T2, second half): what stands at the name `.gitignore`
+    /// in the state directory is left as it is, and the state is kept all the same: a link to a
+    /// file (the link and its target unchanged), a link to nothing (no target made), a file of
+    /// other bytes, a directory.
+    #[test]
+    fn what_stands_at_the_state_directorys_gitignore_is_kept() {
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-state-ignore-kept");
+        let fresh = |name: &str| {
+            let dir = scratch.join(name);
+            std::fs::create_dir(&dir).unwrap();
+            dir
+        };
+        let target = scratch.join("target");
+        std::fs::write(&target, b"x\n").unwrap();
+        for (row, to) in [
+            ("a link", target.clone()),
+            ("a dangling link", scratch.join("nothing")),
+        ] {
+            let dir = fresh(&row.replace(' ', "-"));
+            std::os::unix::fs::symlink(&to, dir.join(".gitignore")).unwrap();
+            keep_a_state(row, &dir, 1, None);
+            assert_eq!(
+                (
+                    std::fs::read_link(dir.join(".gitignore")).ok(),
+                    std::fs::read(&target).unwrap(),
+                    scratch.join("nothing").symlink_metadata().is_ok()
+                ),
+                (Some(to), b"x\n".to_vec(), false),
+                "{row}: a link at .gitignore was written through or replaced"
+            );
+        }
+        let dir = fresh("other-bytes");
+        std::fs::write(dir.join(".gitignore"), b"mine\n").unwrap();
+        keep_a_state("other bytes", &dir, 1, None);
+        assert_eq!(
+            std::fs::read(dir.join(".gitignore")).unwrap(),
+            b"mine\n",
+            "other bytes: an existing .gitignore was written over"
+        );
+        let dir = fresh("a-directory");
+        std::fs::create_dir(dir.join(".gitignore")).unwrap();
+        keep_a_state("a directory", &dir, 1, None);
+        assert!(
+            dir.join(".gitignore").symlink_metadata().unwrap().is_dir()
+                && std::fs::read_dir(dir.join(".gitignore")).unwrap().count() == 0,
+            "a directory: the directory at .gitignore was changed"
+        );
+    }
+
+    /// The names in `dir`, sorted (tests of P5d).
+    fn names_of(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// The bytes written whole, as the product writes them.
+    fn write_whole(file: &mut std::fs::File, bytes: &[u8]) -> std::io::Result<()> {
+        use std::io::Write as _;
+        file.write_all(bytes)
+    }
+
+    /// Review of P5d, M1 (a): while a hook's `.gitignore` is not yet published, another
+    /// session's write (another lock, the same directory) finds no file at that name, never an
+    /// empty or partial one, and makes the whole file itself; what the first hook does after
+    /// that leaves the whole file and no partial file. A file another put at the name in that
+    /// moment is left as it is (the name is never written over).
+    #[test]
+    fn another_hook_finds_the_whole_gitignore_or_none() {
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-ignore-race");
+        let dir = scratch.join("race");
+        std::fs::create_dir(&dir).unwrap();
+        let at = At::open(&dir, false).unwrap();
+        let seen = std::cell::RefCell::new(None);
+        let _ = publish_ignore(
+            &at,
+            || {
+                *seen.borrow_mut() = Some(std::fs::read(dir.join(".gitignore")).ok());
+                keep_a_state("the second hook", &dir, 1, Some([7; 32]));
+            },
+            write_whole,
+        );
+        assert_eq!(
+            seen.into_inner(),
+            Some(None),
+            "the second hook found a .gitignore whose bytes were not yet all published"
+        );
+        assert_eq!(
+            std::fs::read(dir.join(".gitignore")).ok().as_deref(),
+            Some(IGNORE_WRITTEN),
+            "the .gitignore is not whole after both hooks"
+        );
+        let state = state_file(&dir, "s");
+        let state = state.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(
+            names_of(&dir),
+            [".gitignore".to_owned(), "key".to_owned(), state],
+            "a partial file or another name was left"
+        );
+        let dir = scratch.join("foreign");
+        std::fs::create_dir(&dir).unwrap();
+        let at = At::open(&dir, false).unwrap();
+        let _ = publish_ignore(
+            &at,
+            || std::fs::write(dir.join(".gitignore"), b"mine\n").unwrap(),
+            write_whole,
+        );
+        assert_eq!(
+            (
+                std::fs::read(dir.join(".gitignore")).unwrap(),
+                names_of(&dir)
+            ),
+            (b"mine\n".to_vec(), vec![".gitignore".to_owned()]),
+            "a file put at the name while the bytes were written was written over, or a partial file was left"
+        );
+    }
+
+    /// Review of P5d, M1 (b): a write of the bytes that fails part way (an error after 8 bytes),
+    /// or that ends short as if it were done, publishes nothing and leaves no partial file; the
+    /// next write of a state makes the whole file. Through [`Session::keep`]: a write of the file
+    /// that fails keeps the state all the same, and the next keep makes the whole file.
+    #[test]
+    fn a_gitignore_that_could_not_be_written_whole_is_not_published() {
+        use std::io::Write as _;
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-ignore-short");
+        for (row, fails) in [("a failed write", true), ("a short write", false)] {
+            let dir = scratch.join(row.replace(' ', "-"));
+            std::fs::create_dir(&dir).unwrap();
+            let at = At::open(&dir, false).unwrap();
+            let said = publish_ignore(
+                &at,
+                || {},
+                |file, bytes| {
+                    file.write_all(&bytes[..8])?;
+                    if fails {
+                        Err(std::io::Error::other("no room"))
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
+            assert!(
+                said.is_err() && names_of(&dir).is_empty(),
+                "{row}: a .gitignore or a partial file was left: {:?} ({said:?})",
+                names_of(&dir)
+            );
+            keep_a_state(row, &dir, 1, None);
+            assert_eq!(
+                std::fs::read(dir.join(".gitignore")).ok().as_deref(),
+                Some(IGNORE_WRITTEN),
+                "{row}: the next write did not make the whole file"
+            );
+        }
+        let dir = scratch.join("in-keep");
+        std::fs::create_dir(&dir).unwrap();
+        IGNORE_WRITE_FAILS.set(true);
+        keep_a_state("a failing write in keep", &dir, 1, None);
+        IGNORE_WRITE_FAILS.set(false);
+        assert!(
+            !names_of(&dir)
+                .iter()
+                .any(|name| name.starts_with(".gitignore")),
+            "a failing write in keep left {:?}",
+            names_of(&dir)
+        );
+        keep_a_state("the next keep", &dir, 2, None);
+        assert_eq!(
+            std::fs::read(dir.join(".gitignore")).ok().as_deref(),
+            Some(IGNORE_WRITTEN),
+            "the next keep did not make the whole file"
+        );
+    }
+
+    /// Review of P5d, M1: a partial file that a killed hook left (`.gitignore.<16 hex
+    /// digits>.partial`) is removed once a later write publishes the whole file; a name of
+    /// another form is left.
+    #[test]
+    fn partial_files_of_killed_hooks_are_removed_once_the_gitignore_is_published() {
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-ignore-stale");
+        let dir = scratch.join("hooks");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join(".gitignore.0123456789abcdef.partial"), b"# deep-d").unwrap();
+        std::fs::write(dir.join(".gitignore.other.partial"), b"x").unwrap();
+        keep_a_state("stale", &dir, 1, None);
+        let state = state_file(&dir, "s");
+        let state = state.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(
+            names_of(&dir),
+            [
+                ".gitignore".to_owned(),
+                ".gitignore.other.partial".to_owned(),
+                state
+            ],
+            "the partial file a killed hook left was not removed, or another name was"
+        );
+        assert_eq!(
+            std::fs::read(dir.join(".gitignore")).unwrap(),
+            IGNORE_WRITTEN
+        );
+    }
+
+    /// Review of P5d, L2: a state directory that is itself the top of a working tree (a `.git`
+    /// file or directory stands in it) gets no `.gitignore`: its `*` would hide every untracked
+    /// file of that tree. The state is kept as before.
+    #[test]
+    fn a_state_directory_that_is_the_top_of_a_working_tree_gets_no_gitignore() {
+        let scratch = deep_diff_forge_testkit::Scratch::new("hook-ignore-top");
+        for (row, directory) in [("a .git file", false), ("a .git directory", true)] {
+            let dir = scratch.join(row.replace(' ', "-"));
+            std::fs::create_dir(&dir).unwrap();
+            if directory {
+                std::fs::create_dir(dir.join(".git")).unwrap();
+            } else {
+                std::fs::write(dir.join(".git"), "gitdir: /nowhere\n").unwrap();
+            }
+            keep_a_state(row, &dir, 1, None);
+            assert!(
+                dir.join(".gitignore").symlink_metadata().is_err(),
+                "{row}: a .gitignore was made where a .git stands"
+            );
+        }
     }
 
     /// Independent review of the hooks, HR-L-2: a reason an advice hook has for not running is
@@ -14473,5 +18520,501 @@ mod tests {
             Some(BLOCKED_CAP)
         );
         assert_eq!(trees_from(&trees(BLOCKED_CAP + 1)), None);
+    }
+
+    /// Release 0.11.1, R1 and R7 (T-11): the answer of a unit judged under two policies. The
+    /// stricter stands in either order; a half that gave no verdict, or was not run for lack of
+    /// time, makes the unit UNJUDGED, never a pass, with words that name the half (T7); equal
+    /// answers unite their rules and notes; what the stop says of the two policies (T8) is no
+    /// failing line and no note of the judge's.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one table of the answers of two policies, each row an assertion"
+    )]
+    fn a_unit_under_two_policies_takes_the_stricter_answer_and_names_the_half() {
+        let words = Halves {
+            names: STOP_NAMES,
+            base: "aaaaaaa".to_owned(),
+            accepted: Some("bbbbbbb".to_owned()),
+        };
+        let rule = |id: &str, held: bool, path: &str| hook::RuleOutcome {
+            id: id.to_owned(),
+            why: "w".to_owned(),
+            held,
+            violations: vec![("s".to_owned(), path.to_owned(), 1)],
+        };
+        let fail = |id: &str| Judged::Fail {
+            rules: vec![rule(id, false, id)],
+            said: vec![format!("note of {id}")],
+        };
+        let hold = |id: &str| Judged::Hold {
+            rules: vec![rule(id, true, id)],
+            said: Vec::new(),
+        };
+        let none = |reason: &str, class| Judged::Unjudged {
+            reason: reason.to_owned(),
+            class,
+        };
+        let refused = none(
+            "the policy does not admit this ranker",
+            ReasonClass::ChainJudgeRefused,
+        );
+        let late = none(NO_TIME, ReasonClass::TimeNoTimeLeft);
+        // a half that gave no verdict, in either order: UNJUDGED, naming the half (T7)
+        for (first, second, said) in [
+            (
+                Judged::Pass,
+                refused.clone(),
+                "under the accepted policy (commit bbbbbbb): the policy does not admit this ranker",
+            ),
+            (
+                refused.clone(),
+                Judged::Pass,
+                "under the policy at the session base (commit aaaaaaa): the policy does not admit this ranker",
+            ),
+            (
+                Judged::Pass,
+                late.clone(),
+                "the run under the accepted policy (commit bbbbbbb) was not made for lack of time; the run under the policy at the session base was",
+            ),
+            (
+                late.clone(),
+                Judged::Pass,
+                "the run under the policy at the session base (commit aaaaaaa) was not made for lack of time; the run under the accepted policy was",
+            ),
+        ] {
+            match united(first, second, &words) {
+                Judged::Unjudged { reason, .. } => assert_eq!(reason, said),
+                other => panic!("{other:?} is not UNJUDGED"),
+            }
+        }
+        // T7's two time texts are 140 characters (design s5)
+        for text in [
+            "UNJUDGED: the run under the accepted policy (commit bbbbbbb) was not made for lack of time; the run under the policy at the session base was",
+            "UNJUDGED: the run under the policy at the session base (commit aaaaaaa) was not made for lack of time; the run under the accepted policy was",
+        ] {
+            assert_eq!(text.chars().count(), 140, "{text}");
+        }
+        // the stricter stands in either order, and says that two policies judged (T8) where the
+        // other policy gave a verdict; where it gave none, which policy that was and why
+        // (ruling 5, F-O1; the implementation review of L1b, F3)
+        let said = "judged under two policies: at the session base (commit aaaaaaa) and the accepted one (commit bbbbbbb); the stricter stands";
+        assert_eq!(said.chars().count(), 122);
+        let refused_by_accepted = "judged under one of its two policies: under the accepted policy (commit bbbbbbb) it got no verdict: the policy does not admit this ranker";
+        let late_at_base = format!(
+            "judged under one of its two policies: under the policy at the session base (commit aaaaaaa) it got no verdict: {NO_TIME}"
+        );
+        for (first, second, beside) in [
+            (fail("no-secrets"), Judged::Pass, said.to_owned()),
+            (Judged::Pass, fail("no-secrets"), said.to_owned()),
+            (fail("no-secrets"), hold("ci-is-owned"), said.to_owned()),
+            (hold("ci-is-owned"), fail("no-secrets"), said.to_owned()),
+            (
+                fail("no-secrets"),
+                refused.clone(),
+                refused_by_accepted.to_owned(),
+            ),
+            (late.clone(), fail("no-secrets"), late_at_base.clone()),
+        ] {
+            let Judged::Fail { rules, said: told } = united(first, second, &words) else {
+                panic!("not a fail")
+            };
+            assert_eq!(rules, vec![rule("no-secrets", false, "no-secrets")]);
+            assert_eq!(told, vec!["note of no-secrets".to_owned(), beside]);
+        }
+        // the stateless stop names its policies as it has them: 0.11.0's, then the one at HEAD
+        let stateless = Halves {
+            names: STATELESS_NAMES,
+            base: "aaaaaaa".to_owned(),
+            accepted: Some("ccccccc".to_owned()),
+        };
+        assert_eq!(
+            united(Judged::Pass, fail("no-secrets"), &stateless),
+            Judged::Fail {
+                rules: vec![rule("no-secrets", false, "no-secrets")],
+                said: vec![
+                    "note of no-secrets".to_owned(),
+                    "judged under two policies: the one first recorded (commit aaaaaaa) and the one at HEAD (commit ccccccc); the stricter stands".to_owned()
+                ],
+            }
+        );
+        for (first, second) in [
+            (hold("ci-is-owned"), Judged::Pass),
+            (refused.clone(), hold("ci-is-owned")),
+        ] {
+            assert!(matches!(united(first, second, &words), Judged::Hold { .. }));
+        }
+        // a hold beside a hold for a label the judge does not know: the second stands (it holds
+        // the stop once, as 0.11.0's did) and carries the hold's rules, in either order (F2)
+        let gap = Judged::Refused {
+            class: ReasonClass::HoldVersionGap,
+            sentence: "the judge does not know x: the paired forge-warden must be upgraded; tell a person.".to_owned(),
+            reason: "unknown_signal".to_owned(),
+            lines: std::collections::BTreeMap::from([("wabc".to_owned(), 1)]),
+        };
+        for (first, second) in [
+            (hold("review-me"), gap.clone()),
+            (gap.clone(), hold("review-me")),
+        ] {
+            let Judged::Refused {
+                class,
+                sentence,
+                reason,
+                lines,
+            } = united(first, second, &words)
+            else {
+                panic!("the version gap did not stand")
+            };
+            assert_eq!(class, ReasonClass::HoldVersionGap);
+            assert_eq!(
+                sentence,
+                "the judge does not know x: the paired forge-warden must be upgraded; tell a person. And the judge also holds this change for a person under the stop's other policy (rules review-me)."
+            );
+            assert!(
+                reason.starts_with("unknown_signal; the judge also holds"),
+                "{reason}"
+            );
+            assert_eq!(
+                lines,
+                std::collections::BTreeMap::from([("wabc".to_owned(), 1)])
+            );
+        }
+        // equal answers: the rules and notes of both, failing rules first; no T8
+        let both = united(fail("no-todo"), fail("no-secrets"), &words);
+        assert_eq!(
+            both,
+            Judged::Fail {
+                rules: vec![
+                    rule("no-todo", false, "no-todo"),
+                    rule("no-secrets", false, "no-secrets")
+                ],
+                said: vec![
+                    "note of no-todo".to_owned(),
+                    "note of no-secrets".to_owned()
+                ],
+            }
+        );
+        let tied = united(hold("ci-is-owned"), hold("no-spawn"), &words);
+        assert!(
+            matches!(&tied, Judged::Hold { rules, said } if rules.len() == 2 && said.is_empty())
+        );
+        assert_eq!(hook::class_of(&tied, false), ReasonClass::HoldRule);
+        // one rule of both keeps the violations of both
+        let one = Judged::Fail {
+            rules: vec![rule("no-secrets", false, "a.rs")],
+            said: Vec::new(),
+        };
+        let other = Judged::Fail {
+            rules: vec![rule("no-secrets", false, "b.rs")],
+            said: Vec::new(),
+        };
+        let Judged::Fail { rules, .. } = united(one, other, &words) else {
+            panic!()
+        };
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].violations.len(), 2);
+        assert_eq!(united(Judged::Pass, Judged::Pass, &words), Judged::Pass);
+        // T8 is the stop's words: no failing line of the unit, and no note of the judge's
+        let alone = fail("no-secrets");
+        let told = united(fail("no-secrets"), Judged::Pass, &words);
+        assert_eq!(hook::failure_lines(&told), hook::failure_lines(&alone));
+        // and no part of a failure that stands beside a new one: it goes with the new part
+        let lines: BTreeSet<String> = hook::failure_lines(&told).into_keys().collect();
+        assert_eq!(hook::failure_part(&told, &lines, true), None);
+        assert_eq!(hook::failure_part(&told, &lines, false), Some(told.clone()));
+        let claims = Judged::Hold {
+            rules: Vec::new(),
+            said: vec!["note claims_unverified: c".to_owned()],
+        };
+        let claims_told = united(claims.clone(), Judged::Pass, &words);
+        assert_ne!(claims_told, claims);
+        assert_eq!(
+            hook::class_of(&claims_told, false),
+            ReasonClass::HoldClaimsUnverified
+        );
+        // an accepted policy that cannot be read: its own reason, and no T8
+        let unread = Halves {
+            names: STOP_NAMES,
+            base: "aaaaaaa".to_owned(),
+            accepted: None,
+        };
+        let gone = none(
+            "the commit this project's ledger first recorded, … (`place.base_gone`)",
+            ReasonClass::PlaceBaseGone,
+        );
+        assert_eq!(united(Judged::Pass, gone.clone(), &unread), gone);
+        let Judged::Fail { said: told, .. } = united(fail("no-secrets"), gone, &unread) else {
+            panic!("not a fail")
+        };
+        assert_eq!(
+            told,
+            vec![
+                "note of no-secrets".to_owned(),
+                "judged under one of its two policies: the commit this project's ledger first recorded, … (`place.base_gone`)".to_owned()
+            ]
+        );
+        // the stop's words of either form are no failing line and no note of the judge's
+        let one_of_two = united(late.clone(), fail("no-secrets"), &words);
+        assert_eq!(
+            hook::failure_lines(&one_of_two),
+            hook::failure_lines(&fail("no-secrets"))
+        );
+        let held_alone = united(claims.clone(), refused.clone(), &words);
+        assert_eq!(
+            hook::class_of(&held_alone, false),
+            ReasonClass::HoldClaimsUnverified
+        );
+    }
+
+    /// The invariant of release 0.11.1 (ruling 1, R1; ruling 6 for the stateless stop): the
+    /// answer of a unit under two policies is never below either policy's own answer, in either
+    /// order. So nothing that 0.11.0's policy alone (the stop's first, or the stateless stop's
+    /// first) fails or holds passes, nor becomes UNJUDGED.
+    #[test]
+    fn two_policies_never_answer_below_either() {
+        let words = Halves {
+            names: STOP_NAMES,
+            base: "aaaaaaa".to_owned(),
+            accepted: Some("bbbbbbb".to_owned()),
+        };
+        let rule = |id: &str, held: bool| hook::RuleOutcome {
+            id: id.to_owned(),
+            why: "w".to_owned(),
+            held,
+            violations: Vec::new(),
+        };
+        let answers = [
+            Judged::Pass,
+            Judged::Fail {
+                rules: vec![rule("a", false)],
+                said: Vec::new(),
+            },
+            Judged::Hold {
+                rules: vec![rule("b", true)],
+                said: Vec::new(),
+            },
+            Judged::Hold {
+                rules: Vec::new(),
+                said: vec!["note claims_unverified: c".to_owned()],
+            },
+            Judged::Refused {
+                class: ReasonClass::HoldVersionGap,
+                sentence: "s".to_owned(),
+                reason: "r".to_owned(),
+                lines: std::collections::BTreeMap::new(),
+            },
+            Judged::Unjudged {
+                reason: NO_TIME.to_owned(),
+                class: ReasonClass::TimeNoTimeLeft,
+            },
+            Judged::Unjudged {
+                reason: "x".to_owned(),
+                class: ReasonClass::ChainPolicyMissing,
+            },
+        ];
+        let mut pairs = 0;
+        for first in &answers {
+            for second in &answers {
+                let both = united(first.clone(), second.clone(), &words);
+                assert!(
+                    strictness(&both) <= strictness(first).min(strictness(second)),
+                    "{first:?} and {second:?} gave {both:?}"
+                );
+                assert_eq!(
+                    matches!(both, Judged::Pass),
+                    matches!((first, second), (Judged::Pass, Judged::Pass))
+                );
+                pairs += 1;
+            }
+        }
+        assert_eq!(pairs, answers.len() * answers.len());
+    }
+
+    /// Release 0.11.1, R7 and the design's section 4: in a stop with two policies every owed ask
+    /// is made with both its halves when [`OWED_ASKS_NEED_TWO`] is left, however long each first
+    /// half takes; today's constants with two runs left the third owed ask unmade. One policy:
+    /// [`run_time`], unchanged.
+    #[test]
+    fn two_runs_an_ask_are_made_for_every_owed_ask_with_twenty_two_seconds() {
+        let seconds = |ms: u64| Duration::from_millis(ms);
+        assert_eq!(ASK_OWED_TWO, seconds(8_000));
+        assert_eq!(OWED_ASKS_NEED_TWO, seconds(22_000));
+        // a judge that uses all it is given: 3 + 3, 4 + 4, 4 + 4 (the design's table)
+        let mut left = OWED_ASKS_NEED_TWO;
+        let mut made = Vec::new();
+        for owed in (0..OWED_ASKS).rev() {
+            assert!(left >= COMMIT_FLOOR, "an owed ask would not be made");
+            let first = run_part(left, After::Asks(owed), Part::First)
+                .unwrap()
+                .min(JUDGE_TIME);
+            left = left.checked_sub(first).unwrap();
+            let second = run_part(left, After::Asks(owed), Part::Second)
+                .unwrap()
+                .min(JUDGE_TIME);
+            left = left.checked_sub(second).unwrap();
+            made.push((first.as_secs(), second.as_secs()));
+        }
+        assert_eq!(made, vec![(3, 3), (4, 4), (4, 4)]);
+        // with two seconds a run lost to Git, every half still has its floor or what is left
+        for start in [22_000, 22_700, 30_000, 41_000] {
+            let mut left = seconds(start);
+            for owed in (0..OWED_ASKS).rev() {
+                for part in [Part::First, Part::Second] {
+                    let had = run_part(left, After::Asks(owed), part)
+                        .unwrap()
+                        .min(JUDGE_TIME);
+                    assert!(
+                        had >= COMMIT_FLOOR || (owed == 0 && part == Part::Second),
+                        "{start} {owed} {part:?} {had:?}"
+                    );
+                    left = left.saturating_sub(had).saturating_sub(seconds(
+                        if owed > 0 || part == Part::First {
+                            1_000
+                        } else {
+                            0
+                        },
+                    ));
+                }
+            }
+        }
+        // the trees keep what the asks need, and a tree's run is split in two halves
+        let line = |n: usize, said: &str| format!("{n:040x}:{said}");
+        assert_eq!(asks_kept(&[], true), seconds(6_000));
+        assert_eq!(asks_kept(&[line(1, "n2@4:r")], true), seconds(14_000));
+        assert_eq!(
+            asks_kept(&[line(1, "n7@4:r"), line(2, "n0@3:r")], true),
+            OWED_ASKS_NEED_TWO
+        );
+        assert_eq!(
+            run_part(
+                seconds(41_000),
+                After::Trees(OWED_ASKS_NEED_TWO),
+                Part::First
+            ),
+            Some(seconds(9_500))
+        );
+        assert_eq!(
+            run_part(
+                seconds(31_500),
+                After::Trees(OWED_ASKS_NEED_TWO),
+                Part::Second
+            ),
+            Some(seconds(9_500))
+        );
+        // a 35-second window (submodules, a linked tree) with every reserve of two runs: the
+        // stop's own change keeps 3 + 3 seconds, its staged change 3.5 + 3.5, and 22 are left for
+        // the owed asks (the implementation review of L1b, F4: the first tree took all 35)
+        let reserves = OWED_ASKS_NEED_TWO + ASK_OWED_TWO;
+        let first = run_part(seconds(35_000), After::Trees(reserves), Part::First).unwrap();
+        let second = run_part(
+            seconds(35_000).saturating_sub(first),
+            After::Trees(reserves),
+            Part::Second,
+        )
+        .unwrap();
+        assert_eq!((first, second), (seconds(3_000), seconds(3_000)));
+        let left = seconds(35_000).saturating_sub(first + second);
+        let staged = run_part(left, After::Trees(OWED_ASKS_NEED_TWO), Part::First).unwrap();
+        let again = run_part(
+            left.saturating_sub(staged),
+            After::Trees(OWED_ASKS_NEED_TWO),
+            Part::Second,
+        )
+        .unwrap();
+        assert_eq!((staged, again), (seconds(3_500), seconds(3_500)));
+        assert_eq!(left.saturating_sub(staged + again), OWED_ASKS_NEED_TWO);
+        // one policy: the rule of 0.11.0
+        for (left, after) in [
+            (13_000, After::Asks(2)),
+            (41_000, After::Trees(OWED_ASKS_NEED)),
+            (2_000, After::Asks(0)),
+        ] {
+            assert_eq!(
+                run_part(seconds(left), after, Part::Alone),
+                run_time(seconds(left), after)
+            );
+        }
+    }
+
+    /// The producer pins `agent policy-accept` shows are read from the `[producer]` table's
+    /// `sha256` list only, one line or several, and the change is said by what is removed and
+    /// what is added (display only: the judge reads the policy).
+    #[test]
+    fn the_producer_pins_are_read_from_their_table_alone() {
+        let (a, b, c) = ("a".repeat(64), "b".repeat(64), "c".repeat(64));
+        let one = format!("[other]\nsha256 = [\"{c}\"]\n\n[producer]\nsha256 = [\"{a}\"]\n");
+        let many = format!(
+            "[producer]\nsha256 = [\n  \"{a}\", # the old one\n  \"{b}\",\n]\n[next]\nx = \"{c}\"\n"
+        );
+        assert_eq!(producer_pins(&one), Some(BTreeSet::from([a.clone()])));
+        assert_eq!(
+            producer_pins(&many),
+            Some(BTreeSet::from([a.clone(), b.clone()]))
+        );
+        assert_eq!(producer_pins("[producer]\nversion = 1\n"), None);
+        assert_eq!(
+            pins_change(Some(one.as_bytes()), many.as_bytes()),
+            format!("removed: none; added: {b}")
+        );
+        assert_eq!(
+            pins_change(Some(many.as_bytes()), one.as_bytes()),
+            format!("removed: {b}; added: none")
+        );
+        assert!(pins_change(None, one.as_bytes()).ends_with("(there is no accepted policy now)"));
+        // forms the judge reads and the line reader would misread are not summarised (F7)
+        for form in [
+            format!("[producer]\nsha256 = ['{a}']\n"),
+            format!("[producer]\nsha256 = ['{b}', \"{a}\"]\n"),
+            format!("[ producer ]\nsha256 = [\"{a}\"]\n"),
+            format!("producer.sha256 = [\"{a}\"]\n"),
+            format!("producer = {{ sha256 = [\"{a}\"] }}\n"),
+        ] {
+            assert!(
+                pins_change(Some(one.as_bytes()), form.as_bytes()).starts_with("not summarised"),
+                "{form}"
+            );
+        }
+    }
+
+    /// Ruling 10: a commit the ledger records as waiting is not recorded again while it still
+    /// waits; one whose state changed (a verdict, another cause) is, and so is one never recorded.
+    #[test]
+    fn a_waiting_commit_is_recorded_once_while_it_waits() {
+        use crate::ledger::{Frontier, Name, Unit};
+        let (waits, new, decided) = ("1".repeat(40), "2".repeat(40), "3".repeat(40));
+        let frontier = Frontier {
+            waiting: BTreeSet::from([waits.clone(), decided.clone()]),
+            ..Frontier::default()
+        };
+        let unit = |id: &str, outcome: &'static str, class| Unit {
+            name: Name::Commit(id.to_owned()),
+            outcome,
+            class,
+            seals: None,
+            blocked: false,
+        };
+        let mut records = vec![
+            unit(&waits, "unjudged", ReasonClass::TimeNotAsked),
+            unit(&new, "unjudged", ReasonClass::TimeNotAsked),
+            unit(&decided, "fail", ReasonClass::FailNew),
+            unit(&waits, "unjudged", ReasonClass::ChainJudgeExit),
+        ];
+        unrecord_waiting(&mut records, &frontier);
+        let kept: Vec<(String, &str)> = records
+            .iter()
+            .map(|u| match &u.name {
+                Name::Commit(id) => (id[..1].to_owned(), u.class.as_str()),
+                _ => (String::new(), ""),
+            })
+            .collect();
+        assert_eq!(
+            kept,
+            vec![
+                ("2".to_owned(), "time.not_asked"),
+                ("3".to_owned(), "fail.new"),
+                ("1".to_owned(), "chain.judge_exit"),
+            ]
+        );
     }
 }

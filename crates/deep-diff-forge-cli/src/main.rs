@@ -72,6 +72,8 @@ mod doctor;
 mod hook;
 mod hook_run;
 mod ledger;
+mod policy_accept;
+mod policy_record;
 mod verdict_v2;
 
 /// Read all of `reader` into a `String`, but never buffer more than the patch
@@ -138,8 +140,12 @@ fn main() {
                     std::process::exit(code);
                 }
             }
+            // Both ends: a refusal's last words say what was not written (P3 of 0.11.1).
             Err(error) => {
-                eprintln!("error: {}", display_safe_bounded(&error.to_string(), 200));
+                eprintln!(
+                    "error: {}",
+                    deep_diff_forge_core::display_safe_bounded_ends(&error.to_string(), 200)
+                );
                 std::process::exit(exit::COUNCIL_REFUSED);
             }
         },
@@ -661,11 +667,13 @@ fn daemon_cmd(opts: &[String]) {
         eprintln!("       set XDG_RUNTIME_DIR, or pass an explicit --socket PATH.");
         std::process::exit(exit::USAGE);
     };
-    // Linux holds a socket path and its NUL in 108 bytes (`sun_path`), so a longer one can be
-    // neither bound nor reached: refused up front (S3.8.c). Before, `path` printed it, exit 0.
-    let length = location.path().as_os_str().len();
-    if matches!(sub, Some("path" | "start")) && length >= 108 {
-        eprintln!("error: the socket path is {length} bytes; a Unix socket path is at most 107");
+    // The system holds a socket path and its NUL in `sun_path` (108 bytes on Linux, 104 on
+    // macOS), so a longer one can be neither bound nor reached: refused up front (S3.8.c), by
+    // the rule `deploy doctor` applies too. Before, `path` printed it, exit 0.
+    if matches!(sub, Some("path" | "start"))
+        && let Some(refusal) = doctor::socket_path_refusal(location.path())
+    {
+        eprintln!("error: {refusal}");
         std::process::exit(exit::USAGE);
     }
     match sub {
@@ -2118,8 +2126,8 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ),
     (
         "agent",
-        "deep-diff-forge agent {setup --client claude|codex [--allow-repo PATH]... [--hooks [--judge PATH] [--policy NAME] [--ranker-dir DIR]] [--json] | doctor [--gate [--judge PATH] [--policy NAME] [--ranker-dir DIR]] [--json] | check [--session ID | --base REV] [--range A..B] [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--require-pass] [--json] | verify-branch BASE..HEAD [--json] | hook session-start|post-tool|stop --client claude [--judge PATH] [--policy NAME] [--ranker-dir DIR]}",
-        "Print the MCP and hook setup for Claude Code or Codex (never written), check that every agent surface agrees, judge the uncommitted change with a stop's judge and policy (check), verify a branch against the project's ledger of stops (verify-branch), or answer a Claude Code hook: advice after a tool call, a judged stop.",
+        "deep-diff-forge agent {setup --client claude|codex [--allow-repo PATH]... [--hooks [--judge PATH] [--policy NAME] [--ranker-dir DIR]] [--json] | doctor [--gate [--judge PATH] [--policy NAME] [--ranker-dir DIR]] [--json] | check [--session ID | --base REV] [--range A..B] [--judge PATH] [--policy NAME] [--ranker-dir DIR] [--require-pass] [--json] | verify-branch BASE..HEAD [--json] | policy-accept --commit C [--policy NAME] [--judge PATH] [--yes-from-pipe] | hook session-start|post-tool|stop --client claude [--judge PATH] [--policy NAME] [--ranker-dir DIR]}",
+        "Print the MCP and hook setup for Claude Code or Codex (never written), check that every agent surface agrees, judge the uncommitted change with a stop's judge and policy (check), verify a branch against the project's ledger of stops (verify-branch), record an acceptance of a policy, a local convention that any process running as this user can invoke or write the record of, not authentication: the pull request's judge is the authority (policy-accept), or answer a Claude Code hook: advice after a tool call, a judged stop.",
     ),
     (
         "mcp",

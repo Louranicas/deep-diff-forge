@@ -20,9 +20,13 @@ const NOT_WHOLE: &str = "This is not the stop's whole answer: not every unit a s
 const EQUAL: &str = "Equal to the stop in its units and inputs: every unit a stop of this session answers for (the uncommitted change, the staged change where it is another, and each commit of the session by its own patch, in bound mode where a stop's is) was judged here with the stop's patch, the policy at the base the session recorded, and the judge and rankers of the registered Stop hook. What the stop then decides can still differ: the lines \"The stop may differ\" say where.";
 
 /// What a stop of the session judges by the project's frontier (F13.b) that this check, which
-/// judges the session's own commits, does not.
-fn frontier_said(top: &std::path::Path, mine: Option<&[String]>) -> Option<String> {
-    let left = crate::hook_run::frontier_left(top, mine?);
+/// judges the session's own commits, does not. `args` name the policy as the stop is given it.
+fn frontier_said(
+    top: &std::path::Path,
+    mine: Option<&[String]>,
+    args: &[String],
+) -> Option<String> {
+    let left = crate::hook_run::frontier_left(top, mine?, args);
     (left > 0).then(|| {
         format!(
             "a stop of this session also judges {left} commits the project's ledger has no verdict for, made after it first recorded the project (a session that ended before its stop left them); this check does not"
@@ -87,6 +91,10 @@ fn refuse(why: &str) -> ! {
 
 /// The document `deep-diff-forge.agent-check.v0`: what was judged, with what, and what that
 /// says of a stop. A check that cannot judge says why in `unjudged` and has no unit.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the document in its order: the session, the inputs, the units, then each way the stop can differ"
+)]
 fn check(session: Option<&str>, base: Option<&str>, args: &[String]) -> Value {
     let mut doc = json!({
         "schema": "deep-diff-forge.agent-check.v0",
@@ -105,7 +113,7 @@ fn check(session: Option<&str>, base: Option<&str>, args: &[String]) -> Value {
         })
     } else {
         differs.push(
-            "no session: the policy is read at the base named here, not at the base a session recorded"
+            "no session: the policy is read at the base named here, not at the base a session recorded, and not at the project's accepted policy"
                 .to_owned(),
         );
         std::env::current_dir()
@@ -175,7 +183,17 @@ fn check(session: Option<&str>, base: Option<&str>, args: &[String]) -> Value {
         }
     }
     if session.is_some() {
-        differs.extend(frontier_said(&top, checked.session_commits.as_deref()));
+        differs.extend(frontier_said(
+            &top,
+            checked.session_commits.as_deref(),
+            &bench,
+        ));
+        // (release 0.11.1: a stop also judges under the project's accepted policy)
+        differs.extend(crate::hook_run::accepted_differs(
+            &top,
+            &checked.base,
+            &bench,
+        ));
     }
     if checked.linked {
         differs.push("the project has linked working trees: a stop from inside one also judges that tree's changes, which this check does not".to_owned());

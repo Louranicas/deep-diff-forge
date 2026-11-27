@@ -114,7 +114,27 @@ The local replica of the CI gate is `just ci` ([`scripts/ci_local.sh`](../script
 it runs every step of the `secrets`, `msrv`, `gate` and `supply-chain` jobs and
 prints PASS/FAIL per step (exit 0 only if all pass, 2 if `cargo` or the pinned Rust 1.99.1 with
 rustfmt and clippy is missing). Like CI, every step but the MSRV check runs on Rust 1.99.1, not the
-rustup default. Run `scripts/diff_mutation.sh` from anywhere in the checkout: it moves to the root.
+rustup default. Each step's line carries its time and what it skipped, in one form (a line
+`skipped: <why>` of its output; ignored tests are counted): `PASS test (500.2 s; skipped: 8 tests
+ignored)`, and where the corpus is absent `PASS comparison corpus manifest (… s; skipped: no corpus
+here (…))`. The contract matrix's line also carries `real rows: N run, M skipped`, the rows that
+need a forge-warden (`real rows: 39 run, 0 skipped` when the three recorded forge-wardens are
+given, as the release gate gives them). A failed step's line is followed by the last 15 lines of
+its output. At the end the gate writes a JSON receipt (the commit, whether the checkout had
+uncommitted changes, when it began, each step's name, status, seconds and skip reason, and the
+number failed) and prints its path, `receipt: <path>`: beside the gate's scratch directory, or the
+file `DDF_GATE_RECEIPT` names. `scripts/long_tmpdir.sh <base>` prints a temp directory as long and
+as indirect as macOS's (a link of 49 characters to a directory of 57); run a suite with `TMPDIR`
+set to it to meet on Linux what a long temp path meets on macOS. Run `scripts/diff_mutation.sh`
+from anywhere in the checkout: it moves to the root.
+The step `test`, in the gate and in CI's `gate` and `macos` jobs, is
+[`scripts/test_step.sh`](../scripts/test_step.sh): `cargo test --workspace --locked --no-fail-fast`
+with the tests [`crates/deep-diff-forge-cli/tests/LOAD_SENSITIVE`](../crates/deep-diff-forge-cli/tests/LOAD_SENSITIVE)
+names skipped (`--exact --skip`), then those tests alone, one at a time (`--test-threads=1`); every
+failing test binary is reported, not only the first, and the step fails unless the second pass ran
+each listed test once. The list holds tests that fail for a cause outside the code under test, with
+the cause of each (a `.git` above the hooks' state directory; two marked as not measured); a failure
+of one of them says what its hooks met under its panic.
 `just gate-release` is the smaller gate `just release-tag` runs: `fmt`, `check`,
 `clippy`, `pedantic`, `test`, `contracts` and `docs`. The checklist:
 
@@ -124,7 +144,7 @@ rustup default. Run `scripts/diff_mutation.sh` from anywhere in the checkout: it
 - [ ] `CARGO_TARGET_DIR=target cargo check --workspace --locked`
 - [ ] `CARGO_TARGET_DIR=target cargo clippy --workspace --all-targets --locked -- -D warnings`
 - [ ] `CARGO_TARGET_DIR=target cargo clippy --workspace --all-targets --locked -- -D warnings -W clippy::pedantic`
-- [ ] `CARGO_TARGET_DIR=target cargo test --workspace --locked`
+- [ ] `CARGO_TARGET_DIR=target scripts/test_step.sh`
 - [ ] `cargo check --locked --manifest-path fuzz/Cargo.toml --bins`
 - [ ] `cargo deny check` and `cargo deny --manifest-path fuzz/Cargo.toml --locked check`
 - [ ] `cargo audit --deny warnings` for both `Cargo.lock` and `fuzz/Cargo.lock`
@@ -150,7 +170,7 @@ Corpus regression snapshots and release receipts were part of the original
 checklist; neither has tooling yet.
 
 Run the local fuzz campaign before the tag: `DDF_FUZZ_CORPUS_ROOT=<a directory on disk> just
-fuzz-campaign` (`scripts/campaign_local.sh`, 300 s per target, 18 targets, about 90 minutes
+fuzz-campaign` (`scripts/campaign_local.sh`, 300 s per target, 21 targets, about 105 minutes
 plus builds). It must end `result: GREEN`, and its RECEIPT is cited in `EVIDENCE.md`.
 
 ## Tag And Push
@@ -417,13 +437,13 @@ Toolchain pinned to 1.99.1 except where noted.
 | --- | --- | --- | --- |
 | `secrets` (secret scan (gitleaks)) | ubuntu-26.04 | every trigger | gitleaks 8.30.1, SHA-256-pinned, over full history. With the pre-push hook, the control that stands in for the non-provider patterns and validity checks GitHub does not offer this user-owned repository ([SECURITY.md](../SECURITY.md#supply-chain-and-releases)). |
 | `msrv` (declared Rust 1.88 compatibility) | ubuntu-26.04 | every trigger | `cargo check --workspace --all-targets --locked` on 1.88.0. |
-| `macos` (macOS tests) | macos-26 | every trigger (each pull request since 2026-10-30) | `cargo test --workspace --locked --no-fail-fast`. |
+| `macos` (macOS tests) | macos-26 | every trigger (each pull request since 2026-10-30) | `scripts/test_step.sh`, as the `gate` job (since 0.11.1; before, `cargo test --workspace --locked --no-fail-fast` in one pass). Job limit 90 minutes. |
 | `linux-arm64` (Linux arm64 tests) | ubuntu-22.04-arm | every trigger (since 2026-10-31) | `cargo test --workspace --locked --no-fail-fast`, then `scripts/check_glibc_floor.sh` on the debug binary. Not required on pull requests; gates every release build (through `quality`). |
 | `launchd` (macOS launchd agent) | macos-26 | every trigger (since 2026-10-31) | Builds the CLI and runs `scripts/launchd_smoke.sh`: the `contrib/launchd` agent, pointed at the built binary, is bootstrapped into `gui/<uid>` (or `user/<uid>`), answers `daemon health` with launchd's pid, is restarted after SIGKILL, is not restarted after `daemon stop` (socket gone), and is unloaded by `launchctl bootout`. Not required on pull requests; skipped in release runs (`release: true`) until it has a record on hosted runners. |
-| `gate` (deploy gate-feature) | ubuntu-26.04 | every trigger | Review-policy check and selftest, exemption-oracle tests, fmt, check, clippy `-D warnings`, pedantic (workspace, patch without default features, fuzz crate), tests, rustdoc `-D warnings`, contract probes, `deploy status --json`, fuzz-harness compile, soak leak-check and bench-comparison regression tests (`scripts/security/test_daemon_soak.py`, `scripts/test_bench_compare.py`), 10 s hostile daemon soak, privacy probes, Python SDK against the built binary. |
-| `review-controller-evidence` (review controller mutation and fuzz evidence) | ubuntu-26.04 | every trigger | Scoped cargo-mutants of the review controller; 10 s instrumented fuzz smoke for every target in `fuzz/Cargo.toml` (`scripts/fuzz_target.sh --list`) (`nightly-2026-10-25`; fails if a declared target is not run); builds the council gate image and runs the rootless-Podman planted-breach suite (`council_sandbox`, 12 probes). |
+| `gate` (deploy gate-feature) | ubuntu-26.04 | every trigger | Review-policy check and selftest, exemption-oracle tests, fmt, check, clippy `-D warnings`, pedantic (workspace, patch without default features, fuzz crate), tests (`scripts/test_step.sh`: the workspace's with `--no-fail-fast`, the ones `LOAD_SENSITIVE` names apart on one thread), rustdoc `-D warnings`, contract probes, `deploy status --json`, fuzz-harness compile, soak leak-check and bench-comparison regression tests (`scripts/security/test_daemon_soak.py`, `scripts/test_bench_compare.py`), 10 s hostile daemon soak, privacy probes, Python SDK against the built binary. Job limit 60 minutes (PR #131's runs took 38.5 and 37.3). |
+| `review-controller-evidence` (review controller mutation and fuzz evidence) | ubuntu-26.04 | every trigger | Scoped cargo-mutants of the review controller's admission (`identifier`) and receipt qualification (`check_execution`), judged by the review crate's own tests (since 0.11.1: `--test-workspace false`, the tests cargo-mutants' baseline times, and `--file` for the two functions' files; before, each mutant ran the whole workspace against a timeout of 300 s and the job was cancelled at its 75 minutes); 10 s instrumented fuzz smoke for every target in `fuzz/Cargo.toml` (`scripts/fuzz_target.sh --list`) (`nightly-2026-10-25`; fails if a declared target is not run); builds the council gate image and runs the rootless-Podman planted-breach suite (`council_sandbox`, 12 probes). |
 | `bench` (bench (base vs head)) | ubuntu-26.04 | `pull_request` only | Builds the merge base and the head in release mode, runs `bench --quick --json` alternately three times, and compares the best medians with `scripts/bench_compare.py`. Required since 2026-10-31 (owner decision). |
-| `diff-mutation` (diff mutation (shard k/4)) | ubuntu-26.04 | `pull_request` only | `scripts/diff_mutation.sh origin/$BASE_REF k/4`: cargo-mutants 27.1.0 on the PR's changed Rust lines under `crates/`; a missed mutant or timeout fails. Job limit 300 minutes, since each mutant runs the whole workspace suite (a 107-mutant shard of PR #83 did not finish in 120). |
+| `diff-mutation` (diff mutation (shard k/4)) | ubuntu-26.04 | `pull_request` only | `scripts/diff_mutation.sh origin/$BASE_REF k/4`: cargo-mutants 27.1.0 on the PR's changed Rust lines under `crates/`; a missed mutant or timeout fails. Each mutant's timeout is twice the unmutated suite's time, at least 2400 s (a fixed `--timeout 300` cut the baseline itself once the suite took about 35 minutes on the runner). Job limit 300 minutes, since each mutant runs the whole workspace suite (a 107-mutant shard of PR #83 did not finish in 120): it holds the baseline and about seven mutants that run the whole suite. |
 | `supply-chain` (supply chain audit) | ubuntu-26.04 | every trigger | cargo-deny (root and fuzz), `cargo audit --deny warnings` (root and fuzz lockfiles), SPDX SBOM regenerated and compared with the committed one. |
 
 On a pull request thirteen checks run (`secrets`, `msrv`, `macos`, `linux-arm64`, `launchd`,

@@ -6,6 +6,281 @@ on [Keep a Changelog](https://keepachangelog.com/), and the project follows
 
 ## [Unreleased]
 
+- The agent hooks take a session's lock wherever they keep its state. In 0.11.0 a hook that ran
+  while the hooks' state directory did not exist yet took no lock when a directory above it held
+  a `.git` (a home directory that is a Git repository, such as a dotfiles repository; an empty
+  `.git`; the `.git` file of a linked working tree), and wrote the state there all the same: the
+  first hooks on an account unless `agent doctor --gate` ran first, the first hooks after the
+  dotfiles repository's `git clean -xfd` removed the directory, and every session of an account
+  whose home is made fresh per run (CI jobs, sandboxes, test harnesses). Two first stops of one
+  session then both judged and both wrote the state, and the stop the client makes after a block
+  blocked again (28 of 46 measured races). Those hooks now take the lock as every other does:
+  one of two first stops judges with the state and the other judges the tree without it, as
+  where no `.git` stands above. A session's state is written only by a hook that holds the
+  session's lock (or where `flock` fails for another cause than another holder, such as a file
+  system with no locks); a lock file or state directory that is not there for a moment when it
+  is opened (two first stops making it at once, as seen on macOS) is looked for again while the
+  wait lasts, and one that stays gone ends the wait with that cause, not as another hook's lock;
+  a hook whose lock file cannot be opened says that its state could not
+  be saved, and a stop then says that cause first, before the sentences it says of a session
+  with no record of its start (which name this stop as where the session's hooks first ran,
+  may call the session's own commit "not this session's", and no longer tell it to install
+  the session-start hook). The state is written through the directory the lock was taken in,
+  held open, and only with the token of that session's lock: a state directory moved away and
+  replaced while a hook holds the lock gets nothing written into the replacement, and the hook
+  says its state could not be saved (0.11.0 wrote by the directory's name, so the state went
+  into the replacement while the lock stayed in the directory moved away; a process of the
+  same user, the agent's included, could do it). The lock may be taken through a symbolic link
+  at the state directory's name, as in 0.11.0; the state is never written through one. Stated,
+  as in 0.11.0 (measured: the same probe gives the same result on the published binary): a
+  process of the same user that unlinks or replaces a held session-lock file can start a
+  second writer for that session; the lock excludes hooks that behave, not a hostile same-user
+  process; nothing it does passes a commit. A flock refusal other than another holder's (a file
+  system without locks, any other errno) lets the hook write without the lock, as in 0.11.0. A
+  state directory inside the session's project is refused as before; the hooks may now leave empty directories there, which Git does not record.
+  The five hook tests that `crates/deep-diff-forge-cli/tests/LOAD_SENSITIVE` named for this cause
+  are off it: they pass alone with a `.git` above the temporary directory.
+- Hooks: where the hooks' state directory lies inside a Git working tree (a home directory that
+  is a dotfiles repository, or another working tree of the project), a `.gitignore` in it keeps
+  the hooks' key and session files out of that repository's `git status` and `git add --all`,
+  and a stop no longer judges them as the agent's change (0.11.0 blocked on the key's random
+  bytes, or held, with no change of the agent's, and gave the key to the judge). The file holds
+  `*`; any hook that keeps a state in the directory while none is there makes it, written whole
+  under a name of its own and then linked, so that no hook finds it part-written, and it is
+  never written over or through a link; none is made where the directory is itself the top of a
+  working tree. Where it cannot be made, the state is kept as before. Files a repository already
+  tracks are still judged (untrack them). Stated:
+  a file the agent puts into the hooks' state directory there is not judged while it is not
+  staged, as under any `.gitignore` that ignores itself (a limit SECURITY.md already states);
+  staged, it is judged. Known issue: a Git directory inside one of the project's working trees
+  (`git init --separate-git-dir` into the tree) puts Git's own files, with the hooks' records
+  and scratch, into every stop's patch, and every stop blocks; keep it outside the working
+  trees.
+- `agent doctor --gate` and a session's start: the link `policy_protects_itself` is ready only
+  when a rule of the judge's verdict holds or fails the probe (a one-line edit of the policy
+  file). In 0.11.0 any verdict that did not pass made the link ready, so a policy that does not
+  protect its own file was reported as protecting it whenever the probe was held for claims the
+  judge cannot verify (every policy with `require_verified`, forge-warden's starter policy among
+  them) or failed for an expired waiver. Such a policy now reads `FAIL … does not pass, but no
+  rule holds or fails it`, the gate exits 7 for it, and a session's start names the link as
+  weak. A protected policy reads `ok … is held or fails under a rule` (the words "under a rule"
+  are new). The gate reads the policy at `HEAD`, a session's start the policy at the session's
+  base; what a stop judges by is unchanged in this entry.
+- The stop hook judges every unit under two policies where their files differ: the policy at
+  the session's base, as before, and the project's accepted policy, the policy file at the
+  commit the project's ledger first recorded; the stricter answer stands, and a unit that one
+  of the two could not judge is never a pass (UNJUDGED unless the other fails or holds it). After
+  this, where the project's ledger first recorded a commit that has the policy file, a policy edit
+  that is merely committed does not judge anything, in the session that makes it or after it: in 0.11.0 a
+  commit that a session left without its stop, deleting the rule against secrets and the
+  policy's protection of its own file, judged itself and the next fresh session's own work, and
+  a key passed and verified. A `pass` record takes a commit out of the frontier only when it is
+  sealed to the accepted policy, so commits 0.11.0 passed through that hole are judged again,
+  and so is every earlier pass of a project whose policy changed since its ledger first recorded
+  it (a branch that verified can stop verifying). Where the ledger names no accepted policy
+  the stop is 0.11.0's; where it names one that cannot be read (its commit gone, a shallow clone
+  without the history) a unit the policy at the session's base does not fail or hold is
+  UNJUDGED. The limit that remains: a deliberate act by a process of the same user (a rewritten
+  or removed ledger, a changed settings file together with a removed ledger) can still change
+  what the hooks judge by; the pull request's judge is the boundary.
+- `agent policy-accept --commit C [--policy NAME] [--judge PATH] [--yes-from-pipe]`: the one way
+  a project's accepted policy changes (with the two policies above, a project that updates its
+  ranker's pin would otherwise be held for ever). To change a policy now: commit the new policy,
+  then a person runs the command, reads the old and the new digest, the whole diff and the change
+  of the producer pins, and types the new digest at a terminal; one acceptance record is appended
+  to the project's new policy record, `.git/deep-diff-forge/policy.jsonl` beside the ledger, and
+  the hooks apply it as a compare-and-swap (its `from` is the accepted digest then, its commit an
+  ancestor of `HEAD`, its `to` the bytes there). The same file binds, on first use, the policy name
+  the hooks are given: hooks given another name pass nothing. What the convention is not: it is
+  not authentication; any process running as this user can run the command or write the file, and
+  a record written by hand that applies takes effect. The pull request's judge under the target
+  branch's policy is the authority. A stop reads the ledger and the policy record under one
+  project lock and compares them again before its append: a stop whose accepted policy changed
+  while it judged records no `pass`. The ledger's form and version are unchanged, and 0.11.0
+  ignores the new file. `agent verify-branch` now counts a pass as a stop's frontier does: after
+  an upgrade, commits that passed under a policy that was never the accepted one stop verifying
+  until a stop judges them again or the policy is accepted (the published 0.11.0 counts every
+  pass). `agent doctor --gate` has a new link, `policy_accepted`. The meaning of
+  `chain.policy_missing` is widened to an unbound policy name, a policy record or a ledger that
+  cannot be read whole, and an accepted policy that changed while the stop judged. A ledger that
+  exists and cannot be read whole (a session's own commits and stops can grow it past the 64 MiB
+  its readers read) now leaves the accepted policy unknown: no change passes until a person deals
+  with the file (0.11.0 judged under the policy at the session's base alone there); a commit
+  already recorded as waiting for its turn is no longer recorded again at every stop. Acceptances
+  of two branches that meet in a merge pass nothing until the owner accepts again.
+- Tests only: no scanner changed. The tests that hold the line scanners to linear time bounded
+  one size in absolute seconds of a debug build, so they failed on a slower runner while the
+  scan was linear (`the_import_rule_is_linear_on_long_lines` on GitHub's Linux runner for
+  0.11.0). Six of them now bound how a scan's cost grows when its input doubles (under 3 times,
+  on the thread's CPU time, at sizes that double from small to large, so that a quadratic scan
+  fails while it is still fast), and keep an absolute deadline only against a hang:
+  `one_long_word_ranks_in_under_a_second` is renamed `one_long_word_ranks_in_linear_time`, and
+  the long-line test of every trigger ranks each line at sizes up to 1 MiB instead of once at 2
+  MiB, at the same cost. The seventh named with them, `the_backstop_scales_with_source_size`, is
+  pure arithmetic on the parse deadline, reads no clock, and is unchanged. The test helper
+  `within_deadline` (six copies) now fails with the work's own panic message instead of
+  "Disconnected". `crates/deep-diff-forge-cli/tests/LOAD_SENSITIVE` names hook tests that fail
+  on a loaded host (five measured, two observed once and marked so), and a test fails when a
+  name on it is no test.
+- Tests and the gate only: no product change. The gate's step `test` (`scripts/ci_local.sh` and
+  CI's `gate` job) is `scripts/test_step.sh`: `cargo test --workspace --locked --no-fail-fast`, so
+  that one failing test binary no longer hides the binaries after it, with the tests
+  `LOAD_SENSITIVE` names skipped, then those alone on one thread; the step fails unless each
+  listed test ran once. Five of the seven names were measured to fail not under load but when a
+  `.git` stands above the hooks' state directory while a session's first hook runs: that hook
+  then takes no lock (`session_lock` makes no state directory inside a Git working tree) and
+  writes the state without one. On the machine of the gates an empty `.git` in the home directory
+  stood for 1 to 32 s at a time while another agent's sandboxed commands ran. A failing hook test
+  now says so under its panic (`note (not of the code under test): …`), and the test helper that
+  starts a session fails at a start that recorded nothing, with its words and seconds, instead of
+  later on a state that was never written.
+- Tests: the suite no longer assumes Linux or a short temp directory. A test that needs another
+  process to hold a lock takes it with `python3`'s `fcntl.flock` (one holder, in the testkit),
+  not `flock(1)`, which macOS lacks; the stand-in judge of `agent check`'s tests falls back to
+  `shasum -a 256`; names that are not UTF-8 are also put in Git's objects alone, and the case on
+  disk says it is skipped where the file system refuses it; paths are compared as messages show
+  them (cut in the middle, canonical); `scripts/campaign_local.sh` runs on bash 3.2.
+  `scripts/long_tmpdir.sh` makes a temp directory as long and as indirect as macOS's (a link of
+  49 characters to a directory of 57), so these failures can be seen on Linux. The 0.11.0 CI run
+  on macOS failed 22 tests; six of the failures that come back on Linux this way are of the
+  product (a message cut at the wrong place under a long path) and stay red until it is fixed.
+- The local gate (`scripts/ci_local.sh`) prints each step's time and what it skipped in one form
+  (`PASS test (500.2 s; skipped: 8 tests ignored)`), and writes a JSON receipt of the gate: the
+  commit, and each step's name, status, seconds and skip reason (its path is printed;
+  `DDF_GATE_RECEIPT` names another). The contract matrix prints `real rows: N run, M skipped`,
+  which the step's line carries, and one line `skipped: …` that counts the rows it skipped by
+  what was not given.
+- Tests only: the patch parser's refusal of a symlink Git cannot write is now held, against a
+  real `git apply`, for a link changed in place whose mode is on its `index` line alone (a
+  target over 4,095 bytes, a target with a NUL) and at the bound itself (4,095 bytes read,
+  4,096 refused); `release_workflow` holds `release.yml`'s triggers to the sentence of
+  `SECURITY.md` (a push of `v*` tags and `workflow_dispatch`, nothing else).
+- Tests, and one check of the gate's: no product change. Security sentences that no test held
+  now have one that turns red when their code goes: a mounted host path that is not UTF-8; a
+  learning store file or directory replaced between its check and its open, and a link that
+  appears where a new store file is created (the directory and creation cases through a real
+  race); the parser version's form and both token bounds; hostile receipt metadata at the record
+  and read doors; no network surface in the learning crate or the `learn` commands; the oversized
+  request's connection closing; and the daemon's 30 s write timeouts. The CI wrapper
+  `scripts/security/review_policy_check.py` now also fails unless `fuzz/Cargo.toml` forbids
+  `unsafe_code` (an `allow` there passed); the checker the review crate embeds is unchanged.
+- Tests only: no product change. Agent-hook sentences of `SECURITY.md` whose cited tests stayed
+  green when their code went (security mapping U1, lane T3a) now have a test that a plant of that
+  code turns red by a named assertion: each carrier of the commits a session's start records; each
+  seal of a verdict; no configuration of the system, of a parent Git or of the user's attributes
+  file shaping the judge's patch, and only an absolute ignore file of the user's; a hook's command
+  named by its own path quoted for the shell; a stop silent only for Git's own C-locale words with
+  no project known; a rule's name escaped where rules are named alone; the advice for a gone tree;
+  a tree listed again forgotten from inside it; a path Git names as another tree; a project moved
+  behind a link; and the waits `SECURITY.md` names (3 s for the session's lock, 8 s for the helper
+  that hashes the rankers).
+- Tests only: no product change. The daemon's security sentences whose cited tests did not turn
+  red when their code was mutated now have tests that do, each on a named assertion: the accept
+  loop's peer check; the documented `0700` and `0600` as numbers, an existing managed directory
+  made `0700`, another user's directory refused as such, and a runtime directory swapped after
+  its check never secured through the swap (a real race, counted); an existing `--socket` parent
+  never chmodded; shutdown removing its own socket and no other; each JSON-RPC envelope rule by
+  its own message; the 80 MiB caps with the newline counted; each line read armed with the time
+  left of one deadline that a late byte does not renew; the eight data and two control slots and
+  what each answers; one engine across connections; the session table as the one lock, held for
+  bookkeeping (read from the source); and a panic answered on a connection that keeps serving.
+  Tests that unwrapped a result before asserting it now assert it.
+- Tests only: no product change. The agent-hook sentences of `SECURITY.md` that cited no test (U1,
+  lane T3d) are each mapped to a test that a plant of the code they describe turns red by a named
+  assertion, most of them tests that were there; new or strengthened: a stop from a submodule's Git
+  directory, failures that stand giving way in a full message, a commit only a branch past 5,000
+  others names, a commit after one whose patch is refused, a link at the policy's name, keyed
+  digests, and stops that must not be silent asserted so first.
+- What an agent or a person is told keeps its meaning under a long path: where a message is bounded, the
+  paths the hook quoted give way in their middle, never the words that say what happened. Under a
+  repository path of about 100 characters or more (any macOS temp directory) the line that counts what a
+  stop does not judge cut a working tree's name at its end; under a directory of 211 characters 0.11.0
+  said `1 thing in this project is not judged: the working tree "/var/mnt/storage/ddf-tmp/w111P3/n121/LLL…LLL/old/row5_copy_repaired-kjc9f1dk/copy" (remembered a… (a failure stands there).`
+  and this build says `1 thing in this project is not judged: the working tree "/var/mnt/storage/ddf-tmp/w111P3/n121/LLLLLL…LLLLLLL/new/row5_copy_repaired-9sh8mo3p/copy" (remembered at another directory, which stands) (a failure stands there).`
+  (the runs of `L` abridged here). The same rule holds where a stop shows a reason (300 characters; 150 on
+  the line of commits with no verdict): the reason of a tree moved with `mv` says what to do again
+  (``(`git worktree repair` in a tree moved with `mv` records
+  where it is): …``); a reason whose own words do not fit is still cut at its end with "…". The paths
+  that give way are the ones the hook wrote, known as it wrote them, never read back from quotes: a
+  path ending in `\` or a quote in a judge's or Git's words moves nothing that is cut, with two
+  display-only exceptions that change no decision and never exceed the bound: a path in a judge's or
+  Git's words that is, byte for byte, a path the hook showed in the same process is cut like the
+  hook's own; and a path the hook showed that equals a stretch of the product's own words between
+  two quotes could make the cut fall inside those words (at a stop only policy file names reach
+  that, never repository content). A judge's own
+  message past 300 characters ends with "…" (it was cut there without a mark). Limits: a judge's or
+  Git's words, with any path in them, do not give way to the hook's words and are cut at the end with
+  them; a unit's name with the judge's words (240 characters) is cut at its end and can lose its count
+  "(+N more)"; reasons whose own words pass 300 at any path length lose their last words (a tree the
+  session remembers at another directory: its remedy's last words; a pair Git names that the records
+  do not make: the closing clause after the hint), and one commit's reason on the line of commits with
+  no verdict (a shallow clone without the commit's parent) passes 150. A council or
+  tuicr error longer than the 200 bytes the command line shows keeps its first and last 100 bytes, so a
+  refused import says "nothing was appended" again
+  (`deep_diff_forge_core::display_safe_bounded_ends` is new). `daemon path`, `daemon start` and `deploy
+  doctor --socket` take the longest socket path from the system (107 bytes on Linux, as before; 103 on
+  macOS, where 0.11.0 printed a path of 104 to 107 bytes that could not be bound), and the doctor's
+  `socket` check fails on a longer one. The refusal of a symlink with an empty target says what each
+  system does (`… is refused: an empty symlink target, which git apply on Linux fails to write after
+  removing files (git apply on macOS writes the link)`); the refusal itself is unchanged, and
+  `SECURITY.md`'s table of what changes `git apply`'s writes has the platform's row. The local gate's
+  test step runs under a temp directory as long and as indirect as macOS's (`scripts/long_tmpdir.sh`).
+  What is judged and decided is unchanged.
+- CI only: no product change (the first macOS runs of the 0.11.1 branch, PR #131). The `macOS
+  tests` job runs the gate's test step, `scripts/test_step.sh`, instead of one plain
+  `cargo test --workspace --locked --no-fail-fast`, and its limit is 90 minutes instead of 60 (the
+  runs took 39 and 45 minutes in one pass; the second pass, measured from the runs' logs, adds at
+  most 17). `crates/deep-diff-forge-cli/tests/LOAD_SENSITIVE` names four timing tests of the graph
+  crate that failed there only while the whole suite ran at once, each with its failing ratio and
+  run, and so names unit tests of a library by their path (`evidence::tests::…`); the test that
+  holds the list reads those paths. `scripts/diff_mutation.sh` no longer passes `--timeout 300`,
+  which also bounds cargo-mutants' unmutated baseline: the workspace's tests take about 35 minutes
+  on CI's runner, so every diff-mutation shard failed on its baseline before testing a mutant. The
+  timeout is twice the baseline, at least 2400 s. Stated limit: a shard's 300 minutes hold the
+  baseline and about seven mutants that run the whole suite, so a change of hundreds of mutants a
+  shard (PR #131: 214 to 223) still does not finish.
+- Tests only: no product change (PR #131's fourth macOS run, 45792873322). The hook test
+  `a_repository_with_more_working_trees_than_are_read_says_so` failed on the macos-26 runner also
+  alone: its first session start read the reflogs of 256 linked working trees and ran past a
+  start's 8 s (2.6 s on Linux). Its 255 trees are now Git's administrative entries with no
+  directory at that start, and then get the directories and `.git` files that `git worktree add
+  --no-checkout` makes; every start and stop of the test says what it said before, word for word,
+  and the test takes about 7 s instead of 12 on Linux. It is off `LOAD_SENSITIVE`. Stated: that a
+  start reads the history of 256 trees within its time is not tested, and on that runner it does
+  not; that the test passes there is shown only by the next macOS run.
+- CI only: no product change (PR #131's runs again). The required check `review controller
+  mutation and fuzz evidence` mutates the review crate's `identifier` and `check_execution` with
+  `--test-workspace false` and `--file` for their two files, instead of `--test-workspace true
+  --timeout 300`. cargo-mutants times its baseline on the mutated package's tests alone, so each
+  mutant ran the whole workspace (25 to 37 minutes on CI's runner since 2026-11-24) against a
+  timeout that baseline never measured: every mutant timed out and the job was cancelled at its 75
+  minutes. Its 22 mutants are now judged by the crate's own tests (all caught, 3 minutes locally).
+  Stated: the 24 struct-field mutants of `journal.rs` that cargo-mutants' `--re` let into the job
+  are no longer in it; 22 of them are not caught by the review crate's own tests. The `deploy
+  gate-feature` job's limit is 60 minutes instead of 45 (its runs took 38.5 and 37.3).
+- Tests only: no product change. More sentences of `SECURITY.md` whose tests stayed green when
+  their code went now have tests that turn red: the learning store refuses a directory or a file
+  of another user by its owner, makes a directory left `0755` into `0700`, refuses a store others
+  can read at every door and leaves it as it was, refuses a linked directory as a link, and holds
+  each of its three budgets at its own check; its identifier is FNV-1a with no key (published
+  vectors, and a guess list finds the path); the patch parser reads one million lines and 64 MiB
+  and refuses more, by the sentence's numbers, at the first line past the budget; lines Git skips
+  after a binary body's hunks are read; and stdin over the budget is refused by its own reader,
+  which stops reading one byte past it.
+- Tests only: no workflow, script or manifest changed. SECURITY.md's supply-chain sentences that no test
+  held now have one that turns red when their file changes: no advisory waiver; the tree-sitter pins and
+  the TUI's ratatui features; every workflow's grants, checkout credentials, job time limits and
+  toolchains; what Dependabot watches; both release runs' gates, the Rosetta and checksum steps; what a
+  tag run attests; the `release` environment's one job; release.yml's tag check and crates.io token
+  guard, run for real (an open gate without a token that exited 0 passed every test); the local
+  release's command, smoke and signing; the release namespace and the three remotes; the pre-push hook
+  without gitleaks; CI's full-history scan; and the SBOM's `created` (the gate ignores it).
+- Tests only: the scans measured linear from 1 KiB to 16 MiB, so the four linear-time tests that
+  failed on macOS (3.00 to 4.53 at one doubling, wall time) now bound the cost's growth between
+  sizes 16 times apart by an exponent of 1.5; a quadratic plant in each scanner still fails them,
+  and they failed 0 of 596 runs alone and under load where the old ones failed 10 (on wall time,
+  as on macOS).
+
 ## [0.11.0] - 2026-11-25
 
 **The agent-loop release.** 0.11.0 is built for an agent that works under Deep-Diff-Forge's

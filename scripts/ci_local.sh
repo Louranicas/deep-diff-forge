@@ -3,16 +3,25 @@
 # supply-chain). `just ci` runs it. Each step's label is the exact name of the CI step it
 # replicates, with ` :: <part>` where one CI step runs several commands; the test
 # crates/deep-diff-forge-cli/tests/ci_replica.rs fails when a CI step has no replica step or a
-# label names no CI step. Prints PASS/FAIL per step.
+# label names no CI step. Prints PASS/FAIL per step with its time, and what it skipped
+# (scripts/gate_steps.sh, which runs the steps), and writes a JSON receipt of the gate: the
+# commit, each step's name, status, seconds and skip reason. Its path is printed (`receipt: `);
+# DDF_GATE_RECEIPT names another; by default it is beside the gate's scratch directory.
 # Steps only this machine's gate runs (GitHub is a mirror; its workflow is not changed for them)
-# are listed in LOCAL_ONLY in ci_replica.rs. A step whose output has a line `skipped: <why>`
-# passes and says so. check_glibc_floor.sh is not a step of its own: the test step runs it on the
-# test binary (crate_edges.rs), the release-script self-test on the release binary.
-# Exit status: 0 only if every step passed, 1 if any failed, 2 if the toolchain is missing.
+# are listed in LOCAL_ONLY in ci_replica.rs. A step that skips work says so in one form, a line
+# `skipped: <why>` of its output, which its PASS line carries. check_glibc_floor.sh is not a step
+# of its own: the test step runs it on the test binary (crate_edges.rs), the release-script
+# self-test on the release binary.
+# The test step runs under a temp directory as long and as indirect as macOS's (P3 of 0.11.1), made
+# by scripts/long_tmpdir.sh in the gate's scratch directory: under /tmp the product's bounds met no
+# long path, and tests that fail on macOS passed here. The other steps keep the gate's TMPDIR.
+# Exit status: 0 only if every step passed, 1 if any failed, 2 if the toolchain is missing or the
+# long temp directory cannot be made.
 # Usage: scripts/ci_local.sh [--sbom-gate] [<checkout>]   (default: the current directory;
 #   --sbom-gate runs the SBOM step alone, for test_release_local.sh)
 sbom_only=
 if [ "${1:-}" = --sbom-gate ]; then sbom_only=1; shift; fi
+here=$(cd "$(dirname "$0")" && pwd) || exit 2
 cd "${1:-.}" || exit 2
 # The gate's own scratch directory: no step writes into the checkout.
 scratch=$(mktemp -d "${TMPDIR:-/var/tmp}/ci-local.XXXXXX") || exit 2
@@ -33,19 +42,8 @@ for tool in cargo rustfmt cargo-clippy; do
 done
 export RUSTUP_TOOLCHAIN="$toolchain"
 gitleaks=$(command -v gitleaks || echo "$HOME/.local/bin/gitleaks")
-failed=0
-step() {
-  name="$1"
-  shift
-  if out=$("$@" 2>&1); then
-    skip=$(printf '%s\n' "$out" | grep -m1 '^skipped: ' || true)
-    echo "PASS $name${skip:+ ($skip)}"
-  else
-    echo "FAIL $name"
-    failed=$((failed + 1))
-    echo "$out" | tail -15 | sed 's/^/    /'
-  fi
-}
+gate_steps="$scratch/steps.tsv"
+. "$here/gate_steps.sh" || exit 2
 # The SBOM is generated into the scratch directory (the generator's OUTPUT redirected) and compared
 # with the committed one: sbom.spdx.json in the checkout is never written, however the step ends.
 sbom_gate() {
@@ -77,7 +75,20 @@ step "lint" cargo clippy --workspace --all-targets --locked -- -D warnings
 step "pedantic" cargo clippy --workspace --all-targets --locked -- -D warnings -W clippy::pedantic
 step "pedantic (feature and fuzz coverage) :: patch" cargo clippy -p deep-diff-forge-patch --no-default-features --all-targets --locked -- -D warnings -W clippy::pedantic
 step "pedantic (feature and fuzz coverage) :: fuzz" cargo clippy --manifest-path fuzz/Cargo.toml --all-targets --locked -- -D warnings -W clippy::pedantic
-step "test" cargo test --workspace --locked
+# The test step's temp directory: a link of 49 characters to a directory of 57, as macOS's is (longer
+# by as much as the scratch directory's own path needs, when that is long already); removed with the
+# scratch directory. The gate's own TMPDIR comes back after the step.
+base=$(cd "$scratch" && pwd -P) || exit 2
+long_tmp=$(LONG_TMPDIR_LINK=$((${#base} + 3 > 49 ? ${#base} + 3 : 49)) \
+  LONG_TMPDIR_REAL=$((${#base} + 11 > 57 ? ${#base} + 11 : 57)) "$here/long_tmpdir.sh" "$scratch") || {
+  echo "ci_local.sh: no long temp directory could be made in $scratch" >&2
+  exit 2
+}
+echo "the test step's TMPDIR: $long_tmp -> $(cd "$long_tmp" && pwd -P)"
+if [ "${TMPDIR+set}" = set ]; then gate_tmpdir=$TMPDIR; else gate_tmpdir=; fi
+export TMPDIR="$long_tmp"
+step "test" scripts/test_step.sh
+if [ -n "$gate_tmpdir" ]; then export TMPDIR="$gate_tmpdir"; else unset TMPDIR; fi
 step "docs" env RUSTDOCFLAGS="-D warnings -D rustdoc::broken_intra_doc_links" cargo doc --workspace --no-deps --locked
 for c in --self-test doctor claude-code-contract chain-contract cluster-contract loom-contract; do
   step "contracts :: $c" cargo run -q --locked -p deep-diff-forge-cli -- "$c"
@@ -123,5 +134,11 @@ echo "agent doctor: diagnostics_parity true; 2 tests by name"' "$scratch"
 # scripts/contract-matrix/binaries.tsv records, and both published binaries, must be given
 # (--require-real: a missing one is red).
 step "contract matrix" bash -c 'cargo build -q --locked -p deep-diff-forge-cli && scripts/contract_matrix.sh ${FW_BIN:+--require-real} target/debug/deep-diff-forge'
+receipt="${DDF_GATE_RECEIPT:-$scratch.receipt.json}"
+if gate_receipt "$receipt" "$(git rev-parse HEAD 2>/dev/null || echo unknown)"; then
+  echo "receipt: $receipt"
+else
+  echo "receipt: not written ($receipt)"
+fi
 echo "steps failed: $failed"
 [ "$failed" -eq 0 ]

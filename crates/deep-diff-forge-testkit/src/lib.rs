@@ -10,6 +10,9 @@
 //!
 //! Before this, about 100 call sites built `temp_dir()/ddf-<name>-<pid>` by hand and many never
 //! removed it: one clean run of the daemon and core tests left 37 directories behind.
+//!
+//! A test that needs another process to hold a lock the product takes calls [`hold_lock`]: one
+//! holder for Linux and macOS, used by the hook and council tests.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -100,6 +103,60 @@ impl Drop for Scratch {
             );
         }
     }
+}
+
+/// The holder [`hold_lock`] runs: an exclusive `flock(2)` on `argv[1]` (opened for appending, so
+/// made when it is not there), then `argv[2]` made to say so, then a wait while `argv[3]` exists.
+const HOLD: &str = "import fcntl, os, sys, time
+f = open(sys.argv[1], 'a')
+fcntl.flock(f, fcntl.LOCK_EX)
+open(sys.argv[2], 'w').close()
+while os.path.exists(sys.argv[3]):
+    time.sleep(0.02)
+";
+
+/// Holds an exclusive `flock(2)` lock on `path` (made when it is not there) from another process
+/// until `go` is removed, and returns that process once the lock is held. It then exits 0; it
+/// also ends when the directory that holds `go` is removed.
+///
+/// The lock is the one the product takes (`flock(2)`, `LOCK_EX`), taken by `python3`'s
+/// `fcntl.flock`, which Linux and macOS both have. `flock(1)` is util-linux's: macOS has none,
+/// and the 0.11.0 macOS CI run failed five tests at its spawn. The holder is the one process
+/// with `path` open (its pid is the child's).
+///
+/// # Panics
+///
+/// If `go` cannot be written, `python3` cannot be started, or the holder ends or has not taken
+/// the lock within 20 s.
+#[must_use = "the holder keeps the lock until `go` is removed: wait for it after that"]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a test helper: starts the lock holder and polls, under a 20 s bound, for its lock"
+)]
+pub fn hold_lock(path: &Path, go: &Path) -> std::process::Child {
+    std::fs::write(go, "").unwrap_or_else(|e| panic!("write {}: {e}", go.display()));
+    let held = go.with_extension("held");
+    let mut child = std::process::Command::new("python3")
+        .args(["-I", "-c", HOLD])
+        .arg(path)
+        .arg(&held)
+        .arg(go)
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .unwrap_or_else(|e| panic!("start python3 to hold {}: {e}", path.display()));
+    let asked = std::time::Instant::now();
+    while !held.exists() {
+        if let Ok(Some(status)) = child.try_wait() {
+            panic!("the holder of {} ended ({status})", path.display());
+        }
+        assert!(
+            asked.elapsed() < std::time::Duration::from_secs(20),
+            "no lock on {} after 20 s",
+            path.display()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    child
 }
 
 /// The system temp dir (`$TMPDIR`, else `/tmp`): the one reviewed door to it.
@@ -266,6 +323,37 @@ mod tests {
         let scratch = Scratch::new("testkit-stale");
         assert_eq!(std::fs::read_dir(scratch.path()).unwrap().count(), 0);
         let _ = remove_tree(&stale);
+    }
+
+    /// The holder takes the lock another process's `flock(2)` meets: a try of `LOCK_EX |
+    /// LOCK_NB` from a second process is refused while `go` stands and taken once it is gone.
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test: runs a second process that tries the lock, and reaps the holder"
+    )]
+    fn a_held_lock_is_refused_to_another_process_until_go_is_removed() {
+        let scratch = Scratch::new("testkit-lock");
+        let (lock, go) = (scratch.join("x.lock"), scratch.join("go"));
+        // exit 0: taken; 3: another holds it
+        let try_lock = || {
+            std::process::Command::new("python3")
+                .args([
+                    "-I",
+                    "-c",
+                    "import fcntl, sys\nf = open(sys.argv[1], 'a')\ntry:\n    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)\nexcept BlockingIOError:\n    sys.exit(3)\n",
+                ])
+                .arg(&lock)
+                .status()
+                .unwrap()
+                .code()
+        };
+        let mut holder = hold_lock(&lock, &go);
+        assert!(lock.is_file(), "the lock file was not made");
+        assert_eq!(try_lock(), Some(3), "the holder does not hold the lock");
+        std::fs::remove_file(&go).unwrap();
+        assert!(holder.wait().unwrap().success());
+        assert_eq!(try_lock(), Some(0), "the lock outlived its holder");
     }
 
     #[test]

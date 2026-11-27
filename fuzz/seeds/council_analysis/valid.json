@@ -1,0 +1,19 @@
+{
+  "schema": "deep-diff-forge.analysis.v1",
+  "review_id": "0000000000000000000000000000000000000000000000000000000000000000",
+  "candidate_snapshot": "6179a60aed3640e6669b323a5f7e8830f05d6659fbcb41cfd81fdaf7f3509246",
+  "coverage": [
+    {
+      "path": "x.rs",
+      "coverage": "analyzed"
+    }
+  ],
+  "review": {
+    "files": [
+      {
+        "path": "x.rs",
+        "status": "modified"
+      }
+    ]
+  }
+}

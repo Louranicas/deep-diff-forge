@@ -192,7 +192,7 @@ fn agent_help_lists_each_forms_own_usage() {
                 .strip_prefix("deep-diff-forge agent ")
         })
         .collect();
-    assert_eq!(forms.len(), 5, "{usages}");
+    assert_eq!(forms.len(), 6, "{usages}");
     for form in forms {
         assert!(
             row.contains(&format!("{{{form} |"))

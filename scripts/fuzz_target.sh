@@ -77,6 +77,18 @@ case "$target" in
     cp review-policy/fuzz-seeds/council_report.json "$corpus/seed.json"
     max_len=4096
     ;;
+  learning_receipt)
+    cp fuzz/seeds/learning_receipt/* "$corpus/"
+    max_len=1048576
+    ;;
+  council_request)
+    cp fuzz/seeds/council_request/* "$corpus/"
+    max_len=131072
+    ;;
+  council_analysis)
+    cp fuzz/seeds/council_analysis/* "$corpus/"
+    max_len=524288
+    ;;
   git_raw_stream)
     # Three `git diff --raw -z --patch` streams: a change, an addition and a rename.
     z=0000000000000000000000000000000000000000

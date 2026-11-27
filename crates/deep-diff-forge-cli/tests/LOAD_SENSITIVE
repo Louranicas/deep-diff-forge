@@ -1,0 +1,82 @@
+# Tests that fail for a cause outside the code under test, each with its cause written above it
+# (the file keeps its name of 0.11.1: the first cause looked for was the host's load). A name
+# whose cause is not measured is marked so. One test a line, by the name its test binary prints
+# and `--exact` matches: a test of this directory by its function name, as it is written after
+# `fn`; a unit test of a library by its path in that library (`module::tests::name`). `#` starts a
+# comment, and blank lines are skipped.
+#
+# Who reads it: the gate's test step, scripts/test_step.sh (the step `test` of ci.yml's job `gate`
+# and of scripts/ci_local.sh, and the step `test on macOS` of the job `macos`). It runs the
+# workspace's tests with these names skipped, then these names alone, one at a time
+# (`--test-threads=1`): every name here runs in every gate. The mutation driver does not read it
+# yet (it is to pass them as `--skip` filters and to rerun alone a mutant that only they caught).
+#
+# How a name gets on it: a failure of the test that is not of the code, recorded with the run that
+# showed it (a command and its log) and its cause, while the test passes on the same tree
+# otherwise; it comes off by a measurement that the cause is gone. A name that is here because
+# the code is slow is a finding about the code, not an entry. The test
+# `the_load_sensitive_list_names_tests_that_exist` (in agent_hook.rs) fails when a name here is
+# no test function of this directory or of the library its path names, or is here twice.
+#
+# Five names (a `.git` above the hooks' state directory, lane P5b's M7) came off with package P5c of 0.11.1 by its measurement M-LS: 5 of 5 pass alone, one thread, with an empty `.git`, a repository, a linked tree's `.git` file above TMPDIR and at the default; 0 of 5 with P5c undone (lane logs ~/.cache/ddf-t/w111P5c/logs/mls-*.log, 2026-11-25).
+
+# Cause not measured. These two failed by a session start's time limit (8 s) on a host far busier
+# than a gate's, as read from their failures in 12 and 1 kept logs of that mutation campaign
+# (several mutants built and tested at once): "before" recorded no list of commits; `git
+# hash-object` and `git for-each-ref` "did not finish in the time a hook has". Not reproduced at
+# the loads above (and both pass alone, on one thread, with a `.git` above TMPDIR). Their failures
+# say so: the start helper fails at a start that recorded nothing, with its words and seconds,
+# and the second test prints the start's words.
+# The first, a_repository_with_more_working_trees_than_are_read_says_so, came off with lane C3 of
+# 0.11.1 by a measurement of its cause, which was the test's own work and not the host's load: its
+# first start read the reflogs of 256 linked trees, 2.6 s alone on Linux and past its 8 s alone
+# (one thread) on GitHub's macos-26 runner (PR #131, run 45792873322). Its 255 trees now have no
+# directory at that start, which takes 0.13 s on Linux, and every later start and stop says what
+# it said before, word for word (lane logs ~/.cache/ddf-t/w111C3/, 2026-11-26). That a start among
+# so many trees runs out of its time on that runner is a finding about the code, reported.
+session_start_states_the_contract_and_whether_a_stop_can_be_judged
+
+# Cause measured (lane Q3 of 0.11.1, 2026-11-27, logs ~/.cache/ddf-t/w111Q3/): the test, not
+# the code. The graph crate's timing tests failed when the cost of a scan grew 3 or more times as
+# the input doubled (on macOS wall time, the least of 1 to 3 rounds): on GitHub's macos-26 runner
+# in three of PR #131's five runs (three of them in each of the first two, while the whole suite
+# ran at once, not the same three; the long-line test alone in the fifth, run 45827122353, at
+# 3.00 to 4.27; all four passed alone in the third and fourth), and once here (3.10, "{"
+# repeated in x.yml). Every scan they hold measured linear from 1 KiB to
+# 16 MiB (debug build, one at a time: fitted exponents 0.99 to 1.01, the worst doubling 2.05;
+# seven long-line cases that failed, 1.99 to 2.01 up to 16 MiB). The ratios over 3 were the clock:
+# macOS has no thread CPU time, and a descheduled thread measured 52 ms of CPU in 104 ms of wall
+# time here (sixteen workers ranking at once, all three rounds); Linux's thread CPU time is read
+# as of the last scheduler tick. A bound on one doubling tolerated a slowdown of 1.5 times at
+# one size. Since lane Q3 they bound the growth between sizes 16 times apart by an exponent of
+# 1.5 (crate::scan_cost; a quadratic plant in each scanner fails them) and failed 0 of 596 runs
+# here, each test alone in its process: alone and beside 8 busy loops, on thread CPU time and on
+# wall time as on macOS, and on wall time beside 6 bursty loops pinned with it to 3 CPUs. The old
+# tests failed 10 of the same 596, all on wall time: the long-line test 5 of 5 beside the busy
+# loops and 1 of 5 alone (3.02 to 4.63), the other three 4 of 64 under the bursty loops (3.02 to
+# 3.42), none on thread CPU time. They stay listed, for
+# two reasons: whether they pass on the macos-26 runner is shown only by its next run (the
+# second pass, where listed names run alone, shows the alone case); and they are the only
+# `module::tests::name` entries here, the one positive input the existence test
+# (the_load_sensitive_list_names_tests_that_exist) gives its reader of unit-test paths, which
+# would pass a reader that finds nothing once they are gone. The failing ratio of each under the
+# old bound, by run (45670721783 is run 1, 45701563166 is run 2):
+# run 1: "Array.from(x)," 3.03 (45.9 ms at size 4480, 139.2 ms at 8960)
+evidence::tests::the_import_rule_is_linear_on_long_lines
+# run 1: "/*" repeated on one line 3.29; run 2: "'" repeated on one line 3.42
+lexical::tests::hostile_rust_lines_scan_in_linear_time
+# run 1: eight of 431 cases 3.00 to 3.24 ("test(" ending a word 3.24); run 2: fourteen, 3.01 to
+# 4.53 (">" ending a word in x.ts, 10.9 ms at size 8192, 49.4 ms at 16384)
+evidence::tests::long_lines_of_every_trigger_rank_in_bounded_time
+# run 2: one JavaScript word 3.15 (74.6 ms at size 160000, 235.0 ms at 320000)
+lexical::tests::a_long_javascript_word_scans_in_linear_time
+
+# Cause not measured alone. A stop's six-second look at the project's other working trees: the
+# test expects the sixth of six trees to be looked at with what is left of the time and so
+# "5 working trees … were not reached in that time"; on GitHub's macos-26 runner, in the third
+# macOS run (PR #131, run 45778782579, job 139768857754, agent_hook.rs:11030), while the whole
+# suite ran at once, the stop said "6 working trees of this project were not reached": the time
+# was spent before the sixth tree. Its first pass was the only failure of that run (218 of 219
+# passed), and the second pass of the listed tests alone passed (rc 0). The same test passed in
+# the two earlier macOS runs and on ubuntu-26.04 and ubuntu-22.04-arm.
+trees_not_looked_at_for_lack_of_time_are_counted_with_what_stands_in_them

@@ -14,6 +14,7 @@ deep-diff-forge-agent = { path = "../crates/deep-diff-forge-agent", version = "0
 deep-diff-forge-core = { path = "../crates/deep-diff-forge-core", version = "0.11.0" }
 deep-diff-forge-daemon = { path = "../crates/deep-diff-forge-daemon", version = "0.11.0" }
 deep-diff-forge-graph = { path = "../crates/deep-diff-forge-graph", version = "0.11.0" }
+deep-diff-forge-learning = { path = "../crates/deep-diff-forge-learning", version = "0.11.0" }
 deep-diff-forge-patch = { path = "../crates/deep-diff-forge-patch", version = "0.11.0", features = ["json"] }
 deep-diff-forge-syntax = { path = "../crates/deep-diff-forge-syntax", version = "0.11.0" }
 libfuzzer-sys = "0.4"
@@ -154,6 +155,27 @@ bench = false
 [[bin]]
 name = "git_raw_stream"
 path = "fuzz_targets/git_raw_stream.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "learning_receipt"
+path = "fuzz_targets/learning_receipt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "council_request"
+path = "fuzz_targets/council_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "council_analysis"
+path = "fuzz_targets/council_analysis.rs"
 test = false
 doc = false
 bench = false

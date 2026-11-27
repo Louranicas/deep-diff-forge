@@ -54,6 +54,28 @@ fn check(name: &'static str, state: State, detail: impl Into<String>) -> Check {
     }
 }
 
+/// The bytes this system's `sun_path` has for a Unix socket's path and its NUL: 108 on Linux,
+/// 104 on macOS, read from the type the system's socket calls take.
+const SUN_PATH: usize = std::mem::size_of::<nix::libc::sockaddr_un>()
+    - std::mem::offset_of!(nix::libc::sockaddr_un, sun_path);
+
+/// Why `path` cannot be a socket's path on this system, or `None` when it can: a path longer
+/// than `sun_path` holds with its NUL can be neither bound nor reached (S3.8.c). The one place
+/// that decides it: `daemon path` and `daemon start` refuse such a path with these words, and
+/// `deploy doctor` fails its `socket` check with them. The limit was Linux's 107 on every
+/// system: on macOS a path of 104 to 107 bytes was printed and then could not be bound, and
+/// the refusal said "at most 107" (the macOS CI run of 0.11.0, row 19 of its reading).
+pub(crate) fn socket_path_refusal(path: &std::path::Path) -> Option<String> {
+    refusal_within(path.as_os_str().len(), SUN_PATH)
+}
+
+/// [`socket_path_refusal`] where `sun_path` has `room` bytes.
+fn refusal_within(length: usize, room: usize) -> Option<String> {
+    let most = room.saturating_sub(1);
+    (length > most)
+        .then(|| format!("the socket path is {length} bytes; a Unix socket path is at most {most}"))
+}
+
 /// What the doctor looked at, gathered before any judgement so [`checks`] is pure.
 pub(crate) struct Findings {
     pub(crate) version: &'static str,
@@ -77,11 +99,14 @@ pub(crate) fn checks(findings: &Findings) -> Vec<Check> {
             format!("{why}: pass --socket PATH to every daemon command"),
         )),
         Ok((location, found)) => {
-            out.push(check(
-                "socket",
-                State::Ok,
-                location.path().display().to_string(),
-            ));
+            out.push(match socket_path_refusal(location.path()) {
+                Some(refusal) => check(
+                    "socket",
+                    State::Fail,
+                    format!("{refusal}: daemon path and daemon start refuse it"),
+                ),
+                None => check("socket", State::Ok, location.path().display().to_string()),
+            });
             out.push(dir_check(found.dir));
             out.push(daemon_check(&found.socket, findings.version));
             out.push(lock_check(found.lock));
@@ -501,5 +526,53 @@ mod tests {
         assert!(text(&all).starts_with(
             "deep-diff-forge deploy doctor\n  ok   binary     deep-diff-forge 9.9.9\n"
         ));
+    }
+    /// Package P3 of 0.11.1 (row 19 of the reading of the macOS CI run of 0.11.0): the longest
+    /// socket path is the system's, `sun_path` less its NUL, and the refusal names that number.
+    /// With 104 bytes of `sun_path` (macOS) a path of 104 bytes is refused "at most 103"; with
+    /// 108 (Linux) one of 107 is taken and one of 108 refused. Here the number is this system's:
+    /// 107 on Linux, 103 on macOS. A limit of 107 written for every system is red here on
+    /// Linux too, by the case of 104 bytes.
+    #[test]
+    fn the_longest_socket_path_is_the_system_s() {
+        assert_eq!(refusal_within(103, 104), None);
+        assert_eq!(
+            refusal_within(104, 104).as_deref(),
+            Some("the socket path is 104 bytes; a Unix socket path is at most 103")
+        );
+        assert_eq!(refusal_within(107, 108), None);
+        assert_eq!(
+            refusal_within(108, 108).as_deref(),
+            Some("the socket path is 108 bytes; a Unix socket path is at most 107")
+        );
+        let most = if cfg!(any(target_os = "linux", target_os = "android")) {
+            107
+        } else if cfg!(target_vendor = "apple") {
+            103
+        } else {
+            SUN_PATH - 1
+        };
+        assert_eq!(SUN_PATH - 1, most);
+        let path = |bytes: usize| std::path::PathBuf::from(format!("/{}", "s".repeat(bytes - 1)));
+        assert_eq!(socket_path_refusal(&path(most)), None);
+        let refusal = socket_path_refusal(&path(most + 1)).unwrap();
+        assert!(refusal.ends_with(&format!("at most {most}")), "{refusal}");
+        // the doctor fails its socket check with the same words, and exits 6
+        let mut found = at(DirState::Absent, SocketState::Absent, LockState::Absent);
+        if let Ok((location, _)) = &mut found.daemon {
+            *location = SocketLocation::at(path(most + 1));
+        }
+        let all = checks(&found);
+        assert_eq!(all[1].name, "socket");
+        assert_eq!(all[1].state, State::Fail);
+        assert_eq!(
+            all[1].detail,
+            format!("{refusal}: daemon path and daemon start refuse it")
+        );
+        assert_eq!(exit_code(&all), exit::DAEMON_OR_TERMINAL);
+        if let Ok((location, _)) = &mut found.daemon {
+            *location = SocketLocation::at(path(most));
+        }
+        assert_eq!(checks(&found)[1].state, State::Ok);
     }
 }

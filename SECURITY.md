@@ -179,6 +179,7 @@ must exist. Measured with Git 2.56 on Linux, 2026-11-23.
 | `--3way` | declared; measured by `a_setting_that_changes_the_write_is_declared` | Where plain `git apply` refuses a hunk, Git merges with the blob the `index` line names and writes the result, with conflict markers when the merge conflicts, while it exits non-zero. DDF promises only the outcomes of a plain apply. |
 | `core.fileMode` | declared; measured by `a_setting_that_changes_the_write_is_declared` | With `false`, Git does not trust the executable bit: an edit of an executable file that names no mode is written as `100644`, and the mode an `index` line names is the one written (`CONFORMANCE.md`, "A non-default configuration"). |
 | A case-insensitive file system (`core.ignorecase`) | declared; not measured (it needs a file system that folds case) | DDF compares paths byte for byte. Where the file system folds case, two paths that differ only in case name one file, so what Git writes for one can land on the other. |
+| The platform: macOS, whose `symlink(2)` takes an empty target | declared; not measured here (Linux), held on each system by `shapes_git_fails_to_write_are_refused` | A new symlink with an empty target: Git on Linux cannot write it (its `symlink(2)` refuses one) and fails after removing what the patch deletes; Git on macOS writes the link (the macOS CI run of 0.11.0). DDF refuses such a patch on every system (`GitCannotWrite`), and its message says what each system does. |
 
 ## Enforced controls
 
@@ -283,8 +284,10 @@ flowchart LR
   by the effective user with mode `0700`; its socket is mode `0600`
   (`SECURE_DIR_MODE`, `SECURE_SOCKET_MODE` in `security.rs`). There is no `/tmp`
   fallback when `$XDG_RUNTIME_DIR` is unset: the CLI exits 2.
-- A socket path of 108 bytes or more (Linux's `sun_path`, its NUL included) is refused by
-  `daemon path` and `daemon start` with exit 2 before anything is created (since 0.10.0).
+- A socket path longer than the system's `sun_path` holds with its NUL (107 bytes on Linux, 103
+  on macOS) is refused by `daemon path` and `daemon start` with exit 2 before anything is created
+  (since 0.10.0; until 0.11.1 the limit was Linux's 107 on every system), and fails `deploy
+  doctor`'s `socket` check.
 - Explicit `--socket PATH` locations require an owner-private parent. A missing
   parent is created at `0700`; an existing parent is validated and never
   chmodded, so a `0755` parent is refused. Symlinks, wrong-owner directories,
@@ -373,6 +376,9 @@ path to mount that is not UTF-8 or holds `:` or `,` is refused before the sandbo
   owner-private (`0700` directories and `0600` files).
 - Directory/file symlinks and inode replacement are rejected. New receipt files
   use exclusive creation.
+  These checks read each path's last component: a swapped parent directory is not
+  caught (a process of the same user that can replace a parent directory can replace
+  the store itself).
 - The store is capped at 64 MiB, individual JSONL records at 1 MiB, and retained
   records at 100,000.
 - File identifiers must be redacted lowercase hexadecimal values; language and
@@ -399,7 +405,8 @@ bounded form.** What it holds to:
 - **The change is attacker-controlled, and so is everything read from it.** A hook message
   never repeats the text of a changed line. A path is shown quoted, with control characters
   escaped, cut at 120 characters, and the message says that paths are data. Rule text comes
-  from the policy at the base commit and is escaped the same way.
+  from the policy a change was judged under (at the session's base, or the project's accepted
+  policy) and is escaped the same way.
 - **The session cannot move what is judged.** The project and the commit its changes are
   measured from are fixed by the session's first hook and kept in its state: the directory
   the client names (`CLAUDE_PROJECT_DIR`), else the one recorded, else the hook input's
@@ -407,7 +414,11 @@ bounded form.** What it holds to:
   the session itself moves. A `cd` into a nested repository, another repository or a
   directory that was gone let the stop pass with no output, and so did committing the work;
   a committed policy change was the policy for the rest of the session. A stop now judges
-  the project wherever the session's directory is, by the policy of the recorded commit. A
+  the project wherever the session's directory is, by the policy of the recorded commit and,
+  from 0.11.1, by the project's accepted policy too where its file differs, the stricter
+  answer standing: where the project's ledger first recorded a commit that has the policy file, a
+  policy edit that is merely committed does not judge anything, in the session that makes it or
+  after it. A
   linked working tree the session's directory is in is judged as well.
 - **The unit that is judged is a commit, by its own change.** The session's first hook
   records, with the base, the id of every commit that something names then: every ref, the
@@ -733,8 +744,11 @@ bounded form.** What it holds to:
   from every ref and from the reflogs that are read (those of each working tree's `HEAD`
   and of the stash); a commit that was in the repository when the session began;
   and work in a copy. An agent can make a stop UNJUDGED by breaking what the judge needs (an
-  unreadable file; a path marked skip-worktree): never a pass, always visible, and never a
-  block. Advice after a tool call covers the project's tree only. "No repository" is read
+  unreadable file; a path marked skip-worktree): never a pass and always visible. From
+  0.11.0 those two causes, which the hook finds in the working tree, hold the first stop of a
+  turn once ("If this session made it so, undo it; if not, tell a person") and are UNJUDGED
+  after it; the other causes (a Git that fails or is slow, a judge or policy that is missing)
+  never block. Advice after a tool call covers the project's tree only. "No repository" is read
   from Git's English message under `LC_ALL=C`; any other wording is a failure and is said.
   The cleanup of a killed hook's scratch directory needs `/proc`. The state file and the
   list of commits beside it are the agent's to edit, as below: whoever edits them can move
@@ -789,7 +803,40 @@ bounded form.** What it holds to:
   length is never read as another list: the stop is UNJUDGED with the reason and nothing is
   recorded over either. Before, a block with thousands of violations wrote a state the next
   hook would not read, and the session forgot its base. A state directory inside the
-  project's working tree is refused the same way. When the state cannot be kept, a stop
+  project's working tree is refused the same way. The state directory also holds a
+  `.gitignore` that ignores everything in it, made by any hook that keeps a state there while
+  none is there: written whole under a name of its own and then linked as `.gitignore`, so it
+  is never written over, never written through a link, and never seen part-written. Where the
+  directory lies inside a working tree of any repository (a home directory that is a dotfiles
+  repository, or another working tree of the session's own project), Git leaves the hooks'
+  files out of `git status` and `git add --all`, and a stop that judges that tree does not
+  judge them as the agent's change. None is made where the state directory is itself the top
+  of a working tree (a `.git` stands in it): there the `*` would hide every untracked file of
+  that tree. An agent that removes or replaces the file, or puts a `.git` entry in the
+  directory before the first state is kept, gets the hooks' files judged as before 0.11.1
+  (the key reaches the judge and its own stops block spuriously): it can read the key and
+  `git add -f` it, and staged files are judged, so this is no new capability. Before 0.11.1 such a stop judged the hooks' key, states and lists as the agent's
+  change (with no change of the agent's, the first stop of 0.11.0 blocked in 37 of 40
+  measured runs and held in the other 3) and gave the key to the judge, and a dotfiles
+  repository's `git add --all` staged the key for the next commit beside the states it keys.
+  Where the file cannot be made (no room, no permission), the state is kept as before and the
+  hooks' files are judged as before 0.11.1. Files a repository already tracks are not
+  ignored: untrack them (`git rm -r --cached` of the directory).
+  Every hook that writes a session's state
+  holds that session's lock, the first hook of an account too, whatever repository stands
+  above the state directory (before 0.11.1 a hook that found no state directory under a `.git`
+  took no lock while it made one). It writes through the directory it took the lock in, held
+  open: a process that moves the state directory away and puts another at its name while a
+  hook holds the lock gets nothing written into the other, and the hook says that its state
+  could not be saved. Where the lock cannot be taken in the state directory (its lock file
+  cannot be opened), no state is written and a stop says that cause first. The lock may be taken
+  through a symbolic link at the state directory's name, as in 0.11.0; the state is never
+  written through one. A process of the same user that unlinks or replaces a held session-lock
+  file can start a second writer for that session; the lock excludes hooks that behave, not a
+  hostile same-user process; nothing it does passes a commit. This is as in 0.11.0 (measured:
+  the same probe gives the same result on the published binary). A flock refusal other than
+  another holder's (a file system without locks, any other errno) lets the hook write without
+  the lock, as in 0.11.0. When the state cannot be kept, a stop
   says so every time and the advice hook once, marked by an empty file beside the scratch
   directory.
 - **Each directory of the hooks is a directory of its own.** `deep-diff-forge/` under the Git
@@ -865,7 +912,16 @@ bounded form.** What it holds to:
   submodule, whose content Git never lists (the stop is then silent), or make staging run
   out of time with a very large sparse file (UNJUDGED, with no run of the judge). These are
   stated limits, measured again on the 0.11.0 candidate, where each still holds: the working
-  tree and the merge request still show the work.
+  tree and the merge request still show the work. Since 0.11.1 the agent can also put a file
+  into the hooks' state directory where that lies inside a working tree: the hooks'
+  `.gitignore` there ignores it, and it is not judged while it is not staged (staged, it is
+  judged). Measured on the 0.11.1 candidate, it is hidden exactly as a file under a
+  self-ignoring `.gitignore` is (the cases H1 and H1c of P5d's design).
+- **A Git directory inside one of the project's working trees is not supported** (known issue
+  of 0.11.1). Where it lies there (`git init --separate-git-dir` into the tree), Git lists its
+  own files as untracked, and every stop judges them, with the hooks' records and scratch, as
+  the agent's change, and blocks at every stop. Keep the Git directory outside the working
+  trees.
 - **`agent doctor --gate` reads a registered stop hook only in the form `agent setup --hooks`
   prints.** One program and its arguments, written with plain characters and single quotes:
   no comment, second command, pipe, redirection or substitution. The program word must be
@@ -1067,11 +1123,14 @@ SBOM, and attests it before irreversible publication.
 
 ### Readers of hostile bytes and their fuzz targets
 
-Eighteen fuzz targets cover the readers of bytes a patch, a peer or a judge controls; release
+Twenty-one fuzz targets cover the readers of bytes a patch, a peer or a judge controls; release
 0.10.0 added three for readers it added or changed: `verdict_reader` (forge-warden verdict
 documents v2 and v3 as the stop hook judges them), `journal_recover` (the decision journal's
-reading and torn-record repair) and `git_raw_stream` (Git's `--raw -z --patch` stream). Two
-readers have no target of their own, on purpose:
+reading and torn-record repair) and `git_raw_stream` (Git's `--raw -z --patch` stream). Release
+0.11.1 added three missing hostile-input boundaries: `learning_receipt` (the JSON receipt parser
+used by `learn record --stdin`), `council_request` (typed council request parsing and admission)
+and `council_analysis` (the full council prepare path through analysis verification and sealing).
+Two readers have no target of their own, on purpose:
 
 - The tuicr session reader (`review tuicr import`, `open_session` in
   `crates/deep-diff-forge-review/src/tuicr.rs`): the session is a file the reviewer's own tuicr
@@ -1232,6 +1291,34 @@ says when it closed:
   stop whose session state cannot be used then judges the tree under the policy at `HEAD`,
   which a commit of the session can have loosened. Neither is a boundary; the pull request's
   judge reads the policy at the base.
+- From 0.11.1 the hooks judge every unit under the project's accepted policy too: the policy
+  file at the commit the ledger first recorded, where it differs from the one at the session's
+  base. After this, where the project's ledger first recorded a commit that has the policy file, a
+  policy edit that is merely committed does not judge anything, in the session that makes it or
+  after it. A deliberate act by a process of the same user can still
+  change what the hooks judge by: a rewritten or removed ledger, or a changed settings file
+  together with a removed ledger. The criteria of the 0.11.1 security review read as follows:
+  U2 is **not met** against its named attacker; with the ledger intact and no act on it, a
+  policy edit that is committed cannot make a stop judge less, and a required run of the judge
+  that is missing is UNJUDGED. U3 is **not met**: `agent verify-branch` reads evidence the same
+  user can write. The pull request's judge, under the target branch's policy, is the boundary.
+- From 0.11.1 the accepted policy changes only by an acceptance record of the project's policy
+  record (`deep-diff-forge/policy.jsonl` beside the ledger), which `agent policy-accept` appends
+  after a person typed the new digest, and which the hooks apply as a compare-and-swap; the same
+  file binds the policy name the hooks are given on first use. It is a local convention, not
+  authentication: any process running as this user can run the command or write the file. The
+  file joins the list of deliberate same-user acts: writing it (an acceptance record written by
+  hand that applies takes effect as one the command appended), removing it (the policy of
+  the ledger's first record is accepted again, which is never below 0.11.0, since the policy at
+  the session's base is still judged by), or truncating it inside a record (the cut line is
+  passed over and the doctor names it; the accepted policy goes back to the one before that
+  record, and an acceptance chained on it no longer applies). A ledger grown past the 64 MiB its
+  readers read (a session's own commits and stops can do it) leaves the accepted policy unknown:
+  no change passes in the project until a person deals with the file, a way to deny the hooks'
+  service but never a way to pass. A record that cannot be read whole, a binding the
+  ledger disagrees with, and a hook given another policy name than the bound one pass nothing;
+  a stop whose accepted policy changed while it judged records no `pass`. The pull request's
+  judge, under the target branch's policy, is the authority.
 
 ## Hardening provenance
 

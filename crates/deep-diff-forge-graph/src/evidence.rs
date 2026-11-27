@@ -4154,6 +4154,7 @@ pub fn signal_sides(signal: EvidenceSignal) -> Vec<Side> {
 mod tests {
     use super::*;
     use crate::lexical::{ScanState, code_view, code_views};
+    use crate::scan_cost::{Growth, ScanClock, growth};
     use crate::unplaced::unplaced;
     use deep_diff_forge_patch::parse;
     use std::fmt::Write as _;
@@ -4691,68 +4692,84 @@ mod tests {
         assert_eq!(signals(&added("src/a.rs", &[r#"let s = "\"unsafe";"#])), []);
     }
 
+    /// The import rule reads a long minified line in time linear in its length (eee2b4c: the
+    /// rule took each keyword's statement from the start of the line, about 66 s for 200,000
+    /// repeats of these units in a debug build against about 2 s for the linear one). The cost
+    /// bound is the ratio of each line's time at two numbers of repeats sixteen times apart
+    /// ([`growth`]), each line on its own so that a cheap line turned quadratic is not hidden by
+    /// a dear one; the deadline of [`within_deadline`] only guards against a hang.
     #[test]
     fn the_import_rule_is_linear_on_long_lines() {
-        within_deadline(|| {
-            let start = ScanClock::start();
-            for unit in [
+        let costs = within_deadline(|| {
+            let mut costs: Vec<(&str, Growth)> = [
                 "Array.from(x),",
                 "from ",
                 "require ",
                 "import ",
                 "require(require(",
-            ] {
-                let line = unit.repeat(200_000);
-                assert_eq!(signals(&added("a.js", &[&line])), [], "{unit}");
-            }
-            let spaced = format!(";{}from 'child_process'", " ".repeat(200_000));
-            assert_eq!(signals(&added("a.js", &[&spaced])), [S::ProcessSpawn]);
-            // Linear scans of these lines took about 2 s in a debug build; the quadratic import
-            // rule of eee2b4c^ took about 66 s.
-            let spent = start.elapsed();
-            assert!(
-                spent < std::time::Duration::from_secs(15),
-                "the long lines took {spent:?} of {}",
-                start.kind
-            );
+            ]
+            .into_iter()
+            .map(|unit| {
+                let cost = growth(72_000, |n| {
+                    let file = added("a.js", &[&unit.repeat(n)]);
+                    move || assert_eq!(signals(&file), [], "{unit}")
+                });
+                (unit, cost)
+            })
+            .collect();
+            let spaced = growth(1_024_000, |n| {
+                let file = added(
+                    "a.js",
+                    &[&format!(";{}from 'child_process'", " ".repeat(n))],
+                );
+                move || assert_eq!(signals(&file), [S::ProcessSpawn])
+            });
+            costs.push(("spaces before `from`", spaced));
+            costs
         });
+        for (unit, cost) in costs {
+            cost.assert_linear(&format!("the import rule on a line of {unit:?}"));
+        }
     }
 
-    /// A line that is one word of 200,000 bytes ranks in under a second of the thread's CPU
-    /// time, each on its own: a JavaScript and a TypeScript word (FINDING-5: the released
-    /// scanner walked back over the word at each of its bytes, 18 s in v0.8.3 and twice that
-    /// with the readings of 0.9.0), and the credential prefixes that repeat inside their own
-    /// run, which the secret rule walked to the run's end at each repeat; and lines of 200,000
-    /// bytes of `catch` heads, whose handler or binding each `catch` read to the end of the
-    /// line (the empty-handler rule until 2026-11-18). The long-line tests hold every trigger.
+    /// A line that is one long word ranks in time linear in its length, each on its own: a
+    /// JavaScript and a TypeScript word (FINDING-5: the released scanner walked back over the
+    /// word at each of its bytes, 18 s for 200,000 bytes in v0.8.3 and twice that with the
+    /// readings of 0.9.0), and the credential prefixes that repeat inside their own run, which
+    /// the secret rule walked to the run's end at each repeat; and lines of `catch` heads, whose
+    /// handler or binding each `catch` read to the end of the line (the empty-handler rule until
+    /// 2026-11-18). The cost bound is the ratio of each line's time at two sizes sixteen times
+    /// apart ([`growth`]); the deadline of [`within_deadline`] only guards against a hang. Named
+    /// "in under a second" until 0.11.0, when the bound was one second of CPU time at 200,000
+    /// bytes. The long-line tests hold every trigger.
     #[test]
-    fn one_long_word_ranks_in_under_a_second() {
-        within_deadline(|| {
-            for (path, line) in [
-                ("src/a.js", "a".repeat(200_000)),
-                ("src/a.ts", "a".repeat(200_000)),
-                ("notes.txt", format!("x{}", "AKIA".repeat(50_000))),
-                ("notes.txt", format!("x{}", "xoxb-a".repeat(33_334))),
-                ("src/a.js", "x.catch((".repeat(22_223)),
-                ("src/a.ts", "catch(".repeat(33_334)),
-                ("src/a.ts", "catch (".repeat(28_572)),
-            ] {
-                // A blank line of context on each side, as Git writes it (0.10.0: the parser refuses a
-                // hunk with no context past line 1; was `@@ -2,0 +3,1 @@`).
-                let patch = format!("--- a/{path}\n+++ b/{path}\n@@ -2,2 +2,3 @@\n \n+{line}\n \n");
-                let files = parse(&patch).unwrap();
-                let start = ScanClock::start();
-                let ranked = crate::rank(&files);
-                let spent = start.elapsed();
-                assert_eq!(ranked.len(), 1);
-                assert!(
-                    spent < std::time::Duration::from_secs(1),
-                    "{path}: a line of {} bytes ranked in {spent:?} of {}",
-                    line.len(),
-                    start.kind
-                );
-            }
+    fn one_long_word_ranks_in_linear_time() {
+        let costs = within_deadline(|| {
+            [
+                ("src/a.js", "", "a", 256_000),
+                ("src/a.ts", "", "a", 256_000),
+                ("notes.txt", "x", "AKIA", 1_280_000),
+                ("notes.txt", "x", "xoxb-a", 1_600_000),
+                ("src/a.js", "", "x.catch((", 448_000),
+                ("src/a.ts", "", "catch(", 384_000),
+                ("src/a.ts", "", "catch (", 448_000),
+            ]
+            .map(|(path, lead, unit, n)| {
+                let cost = growth(n, |bytes| {
+                    let line = format!("{lead}{}", unit.repeat(bytes / unit.len()));
+                    // A blank line of context on each side, as Git writes it (0.10.0: the parser
+                    // refuses a hunk with no context past line 1; was `@@ -2,0 +3,1 @@`).
+                    let patch =
+                        format!("--- a/{path}\n+++ b/{path}\n@@ -2,2 +2,3 @@\n \n+{line}\n \n");
+                    let files = parse(&patch).unwrap();
+                    move || assert_eq!(crate::rank(&files).len(), 1)
+                });
+                (format!("{path}: {lead}{unit:?} repeated"), cost)
+            })
         });
+        for (line, cost) in costs {
+            cost.assert_linear(&line);
+        }
     }
 
     /// The scanner with the bounded keyword test finds what the released walk found, with the
@@ -5284,16 +5301,15 @@ mod tests {
         cases.into_iter().collect()
     }
 
-    /// Rank, on as many threads as the host has, two lines of 2 MiB for each case: its trigger
-    /// repeated, and one word that ends in it. What each costs is the thread CPU time of its
-    /// ranking. Returns the lines over `bound` and the slowest line; fails when a line has no
-    /// answer within ten times `bound` of wall time.
-    fn long_lines_over(
-        cases: Vec<(&'static str, String)>,
-        bound: std::time::Duration,
-    ) -> (Vec<String>, (std::time::Duration, String)) {
+    /// Rank, on as many threads as the host has, two lines for each case at sizes that double
+    /// up to 1 MiB ([`growth`], on the worker's thread; the last pair 64 KiB and 1 MiB): its
+    /// trigger repeated, and one word that ends in it. What each costs is the thread CPU time of
+    /// its ranking. Returns the lines whose cost grew by [`crate::scan_cost::EXPONENT_BOUND`] or
+    /// more, and a summary that names the slowest line at its largest size and the line whose
+    /// cost grew most; fails when no line answers within [`LONG_LINE_HANG`] of wall time.
+    fn long_lines_over(cases: Vec<(&'static str, String)>) -> (Vec<String>, String) {
         use std::sync::{Arc, Mutex, mpsc};
-        const SIZE: usize = 2 * 1024 * 1024;
+        const SIZE: usize = 1024 * 1024;
         type Item = (&'static str, String, bool);
         let items: Vec<Item> = cases
             .into_iter()
@@ -5301,7 +5317,7 @@ mod tests {
             .collect();
         let total = items.len();
         let queue = Arc::new(Mutex::new(items));
-        let (said, heard) = mpsc::channel::<(Item, Option<std::time::Duration>)>();
+        let (said, heard) = mpsc::channel::<(Item, Option<Growth>)>();
         let workers = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
         for _ in 0..workers {
             let (queue, said) = (Arc::clone(&queue), said.clone());
@@ -5310,34 +5326,32 @@ mod tests {
                     let Some(item) = queue.lock().unwrap().pop() else {
                         return;
                     };
-                    let (name, trigger, repeated) = &item;
-                    let line = if *repeated {
-                        let mut line = trigger.repeat(SIZE / trigger.len() + 1);
-                        line.truncate(SIZE);
-                        line
-                    } else {
-                        format!("{}{trigger}", "a".repeat(SIZE - trigger.len()))
-                    };
-                    // A blank line of context on each side, as Git writes it (0.10.0; was
-                    // `@@ -2,0 +3,1 @@`).
-                    let patch =
-                        format!("--- a/{name}\n+++ b/{name}\n@@ -2,2 +2,3 @@\n \n+{line}\n \n");
                     let _ = said.send((item.clone(), None));
-                    let files = parse(&patch).unwrap();
-                    let start = ScanClock::start();
-                    let ranked = crate::rank(&files);
-                    let spent = start.elapsed();
-                    assert_eq!(ranked.len(), 1);
-                    let _ = said.send((item, Some(spent)));
+                    let (name, trigger, repeated) = &item;
+                    let cost = growth(SIZE / 2, |size| {
+                        let line = if *repeated {
+                            let mut line = trigger.repeat(size / trigger.len() + 1);
+                            line.truncate(size);
+                            line
+                        } else {
+                            format!("{}{trigger}", "a".repeat(size - trigger.len()))
+                        };
+                        // A blank line of context on each side, as Git writes it (0.10.0; was
+                        // `@@ -2,0 +3,1 @@`).
+                        let patch =
+                            format!("--- a/{name}\n+++ b/{name}\n@@ -2,2 +2,3 @@\n \n+{line}\n \n");
+                        let files = parse(&patch).unwrap();
+                        move || assert_eq!(crate::rank(&files).len(), 1)
+                    });
+                    let _ = said.send((item, Some(cost)));
                 }
             });
         }
         drop(said);
-        let (mut started, mut over, mut slowest, mut done) = (
-            Vec::new(),
-            Vec::new(),
+        let (mut started, mut over, mut done) = (Vec::new(), Vec::new(), 0);
+        let (mut slowest, mut steepest) = (
             (std::time::Duration::ZERO, String::new()),
-            0,
+            (0.0, String::new()),
         );
         let name = |(path, trigger, repeated): &Item| {
             let form = if *repeated {
@@ -5348,100 +5362,86 @@ mod tests {
             format!("{path}: {trigger:?} {form}")
         };
         while done < total {
-            match heard.recv_timeout(bound * 10) {
+            match heard.recv_timeout(LONG_LINE_HANG) {
                 Ok((item, None)) => started.push(item),
-                Ok((item, Some(spent))) => {
+                Ok((item, Some(cost))) => {
                     done += 1;
                     started.retain(|other| *other != item);
-                    if spent > slowest.0 {
-                        slowest = (spent, name(&item));
+                    let said = format!("{}: {}", name(&item), cost.times());
+                    if cost.at_high > slowest.0 {
+                        slowest = (cost.at_high, said.clone());
                     }
-                    if spent > bound {
-                        over.push(format!("{} took {spent:?}", name(&item)));
+                    if cost.exponent() > steepest.0 {
+                        steepest = (cost.exponent(), said.clone());
+                    }
+                    if cost.over() {
+                        over.push(said);
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {
                     panic!(
-                        "no answer within {:?} for {}",
-                        bound * 10,
+                        "no answer within {LONG_LINE_HANG:?} for {}",
                         started.iter().map(name).collect::<Vec<_>>().join("; ")
                     )
                 }
             }
         }
-        (over, slowest)
+        let summary = format!("slowest {}; steepest {}", slowest.1, steepest.1);
+        (over, summary)
     }
 
-    /// The bound of the long-line tests: a line of 2 MiB ranks inside it in thread CPU time
-    /// (ten seconds in a debug build, two in a release build).
-    fn long_line_bound() -> std::time::Duration {
-        std::time::Duration::from_secs(if cfg!(debug_assertions) { 10 } else { 2 })
-    }
+    /// The guard of the long-line tests against a hang, in wall time between two answers: far
+    /// above what a linear ranking of a line costs on a slow, loaded host, so only a hang or a
+    /// runaway reaches it. It bounds no cost; [`crate::scan_cost::EXPONENT_BOUND`] does.
+    const LONG_LINE_HANG: std::time::Duration = std::time::Duration::from_secs(120);
 
-    /// Every long-line case ([`long_line_cases`]: 397 triggers on 2026-11-18, 794 lines of 2
-    /// MiB) ranks inside the bound ([`long_line_bound`]). The lines are ranked on as many
-    /// threads as the host has (2026-11-18, 16 threads: 6 s for all of them in a release
-    /// build, the slowest 0.22 s; 67 s in a debug build, the slowest 3.2 s).
+    /// Every long-line case ([`long_line_cases`]: 397 triggers on 2026-11-18, two lines each)
+    /// ranks in time linear in the line's length, and so in bounded time: each line's cost grows
+    /// under 64 times while its size grows sixteen times (an exponent under
+    /// [`crate::scan_cost::EXPONENT_BOUND`]), at sizes up to 1 MiB ([`long_lines_over`]), and no
+    /// line goes without an answer for [`LONG_LINE_HANG`]. Earlier in 0.11.1 (lane P5) the bound
+    /// was 3 times at each doubling, which a linear ranking crossed on GitHub's macos-26 runner
+    /// in three of PR #131's five runs (3.00 to 4.53, wall time; once alone) and here with
+    /// sixteen workers at once (3.53, 2026-11-27: a descheduled thread); the scans measured
+    /// linear (lane Q3: `crate::scan_cost`). Until 0.11.0 the bound was 10 s of thread CPU time
+    /// per line of 2 MiB in a debug build (2 s in a release build), which a slow runner fails on
+    /// a linear scan; the sizes up to 1 MiB cost what the one size of 2 MiB cost. The lines are
+    /// ranked on as many threads as the host has (2026-11-18, 16 threads, one size of 2 MiB: 6 s
+    /// for all of them in a release build, the slowest 0.22 s; 67 s in a debug build, the slowest
+    /// 3.2 s).
     #[test]
     fn long_lines_of_every_trigger_rank_in_bounded_time() {
         let cases = long_line_cases();
         let count = cases.len();
-        let (over, slowest) = long_lines_over(cases, long_line_bound());
-        println!("{count} cases, {} lines; slowest {slowest:?}", count * 2);
-        assert!(over.is_empty(), "over the bound: {over:#?}");
-    }
-
-    /// The time a scan spends: the thread's own CPU time where Linux reports it, so a busy host
-    /// does not fail the bound (a starved run measured 1.8 s of CPU in over 10 s of wall time),
-    /// and wall time elsewhere.
-    struct ScanClock {
-        kind: &'static str,
-        cpu_ns: Option<u64>,
-        wall: std::time::Instant,
-    }
-
-    impl ScanClock {
-        fn start() -> Self {
-            let cpu_ns = thread_cpu_ns();
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "test door: the fallback clock where no CPU time is reported"
-            )]
-            let wall = std::time::Instant::now();
-            let kind = if cpu_ns.is_some() {
-                "thread CPU time"
-            } else {
-                "wall time"
-            };
-            Self { kind, cpu_ns, wall }
-        }
-
-        fn elapsed(&self) -> std::time::Duration {
-            match (self.cpu_ns, thread_cpu_ns()) {
-                (Some(then), Some(now)) => std::time::Duration::from_nanos(now - then),
-                _ => self.wall.elapsed(),
-            }
-        }
-    }
-
-    /// The calling thread's CPU time in nanoseconds: the first field of Linux's
-    /// `/proc/thread-self/schedstat`, or `None` where that file does not exist.
-    fn thread_cpu_ns() -> Option<u64> {
-        let stat = std::fs::read_to_string("/proc/thread-self/schedstat").ok()?;
-        stat.split_whitespace().next()?.parse().ok()
+        let (over, summary) = long_lines_over(cases);
+        println!("{count} cases, {} lines; {summary}", count * 2);
+        assert!(over.is_empty(), "not linear: {over:#?}");
     }
 
     /// Run `work` on its own thread and fail if it takes more than two minutes of wall time.
     /// This bound only keeps a hang from stalling the suite, so a diff-mutation run reports a
     /// looping mutant as caught rather than as a timeout; the scan's cost is bounded by
-    /// [`ScanClock`] inside the work.
+    /// [`ScanClock`] or [`growth`] inside the work. A panic of the work is raised again here,
+    /// with its own message.
     fn within_deadline<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
         let (done, wait) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
+        let worker = std::thread::spawn(move || {
             let _ = done.send(work());
         });
-        wait.recv_timeout(std::time::Duration::from_secs(120))
-            .expect("a long line was scanned within two minutes")
+        match wait.recv_timeout(std::time::Duration::from_secs(120)) {
+            // The work panicked, which dropped its sender: raise its own panic, not this one.
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                std::panic::resume_unwind(worker.join().expect_err("the work sent no answer"))
+            }
+            answer => answer.expect("a long line was scanned within two minutes"),
+        }
+    }
+
+    /// [`within_deadline`] fails with the work's own message.
+    #[test]
+    #[should_panic(expected = "the work's own message")]
+    fn within_deadline_raises_the_work_s_own_panic() {
+        within_deadline::<()>(|| panic!("the work's own message"));
     }
 
     /// The import rule's receiver, boundary, `typeof` and statement decisions, each pinned.

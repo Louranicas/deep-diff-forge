@@ -1263,6 +1263,73 @@ mod tests {
         dispatch(&req, engine)
     }
 
+    /// SECURITY.md (daemon): "Only the session table is locked, and only for bookkeeping;
+    /// parsing, ranking and Git run outside it." Read from this file's source, as no seam can
+    /// stop a request inside its parse or its ranking: the engine has one lock, the session
+    /// table's; every place it is taken is one of the six below, each a single statement whose
+    /// guard ends at its `;` or a block of table bookkeeping that names no parse, rank, Git or
+    /// review work; and `session.open` parses before it takes the table. A new place that takes
+    /// the table fails here until it is added, so it is read once. That requests run in parallel
+    /// is held by `serve::tests::a_running_request_does_not_block_another`.
+    #[test]
+    fn the_session_table_is_the_one_lock_and_is_held_for_bookkeeping_only() {
+        let source = include_str!("handler.rs");
+        let production = &source[..source
+            .find("\n#[cfg(test)]\nmod tests {")
+            .expect("the test module")];
+        assert_eq!(
+            (
+                production.matches("Mutex<").count(),
+                production.matches("RwLock").count(),
+                production.matches("sessions.lock()").count()
+            ),
+            (1, 0, 1),
+            "the engine has a lock other than the session table's"
+        );
+        let sites: Vec<&str> = production
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.contains(".sessions()"))
+            .collect();
+        assert_eq!(
+            sites,
+            [
+                "self.sessions().entries.len()",
+                "let _table = self.sessions();",
+                "let files = engine.sessions().snapshot_files(&id);",
+                "let closed = engine.sessions().close_session(&id);",
+                "let mut table = engine.sessions();",
+                "let table = engine.sessions();",
+            ],
+            "the session table is taken somewhere new, or held past one statement"
+        );
+        for site in [
+            "let mut table = engine.sessions();",
+            "let table = engine.sessions();",
+        ] {
+            let from = production.find(site).expect("a block site");
+            let block = &production[from..];
+            let block = &block[..block.find("\n    };").expect("the block's end")];
+            for work in [
+                "parse", "rank", "git", "Git", "review", "sealed", "deadline",
+            ] {
+                assert!(
+                    !block.contains(work),
+                    "the session table is held across `{work}`:\n{block}"
+                );
+            }
+        }
+        let open = &production[production.find("fn session_open(").expect("session_open")..];
+        let open = &open[..open.find("\n}\n").expect("its end")];
+        assert!(
+            matches!(
+                (open.find("parse_patch_param("), open.find("engine.sessions()")),
+                (Some(parse), Some(table)) if parse < table
+            ),
+            "session.open takes the session table before it parses:\n{open}"
+        );
+    }
+
     /// Production readiness 2026-11-04: past its deadline, `review.change` starts no acquisition
     /// after the foreign-Git-directory check, which is a Git stage of its own, so one request
     /// overruns its deadline by one stage at most. The range names no commit: an acquisition that
@@ -1304,39 +1371,93 @@ mod tests {
 
     /// S3.27.f parity (handed over by lane A of W1): a changed file whose name is not UTF-8 is
     /// refused as the change's own input, code 4 as the command line's exit 4, not 3 (retry).
+    ///
+    /// Twice: the name in Git's objects alone (two commits made through the index, read as a
+    /// range; no file system is asked about the name), and the name on disk in the working
+    /// tree. macOS's APFS refuses a name that is not UTF-8 (EILSEQ, 92): there the first case
+    /// stands and the second says it is skipped.
     #[test]
     #[expect(clippy::disallowed_methods, reason = "test: makes a Git repository")]
     fn a_non_utf8_file_name_is_a_change_input_refusal() {
         use std::os::unix::ffi::OsStrExt as _;
-        let scratch = deep_diff_forge_testkit::Scratch::new("change-latin");
-        let root = std::fs::canonicalize(scratch.path()).unwrap();
-        let git = |args: &[&str]| {
+        let name = std::ffi::OsStr::from_bytes(b"caf\xe9.rs");
+        // Git in `root`, its stdout; `name` follows the arguments when asked for.
+        let git = |root: &std::path::Path, args: &[&str], named: bool| {
             let out = std::process::Command::new("git")
                 .env("GIT_CONFIG_GLOBAL", "/dev/null")
                 .env("GIT_CONFIG_NOSYSTEM", "1")
                 .args(["-c", "user.name=t", "-c", "user.email=t@t.invalid"])
                 .args(args)
-                .current_dir(&root)
+                .args(named.then_some(name))
+                .current_dir(root)
                 .output()
                 .unwrap();
             assert!(out.status.success(), "{args:?}");
+            String::from_utf8(out.stdout).unwrap().trim().to_owned()
         };
-        let name = root.join(std::ffi::OsStr::from_bytes(b"caf\xe9.rs"));
-        git(&["init", "-q"]);
-        std::fs::write(&name, b"fn a() {}\n").unwrap();
-        git(&["add", "-A"]);
-        git(&["commit", "-q", "--no-gpg-sign", "-m", "base"]);
-        std::fs::write(&name, b"fn b() {}\n").unwrap();
+        let refused = |root: &std::path::Path, params: &serde_json::Value| {
+            let roots = [root.to_path_buf()];
+            let error = review_change(params, &roots, Wording::Released).unwrap_err();
+            assert_eq!(error.code, PATCH_PARSE_FAILED, "{}", error.message);
+            assert!(
+                error.message.contains("a file name that is not UTF-8"),
+                "{}",
+                error.message
+            );
+        };
+
+        let scratch = deep_diff_forge_testkit::Scratch::new("change-latin-index");
+        let root = std::fs::canonicalize(scratch.path()).unwrap();
+        git(&root, &["init", "-q"], false);
+        let mut parent = String::new();
+        for text in ["fn a() {}\n", "fn b() {}\n"] {
+            let source = root.join(".git/text");
+            std::fs::write(&source, text).unwrap();
+            let blob = git(
+                &root,
+                &["hash-object", "-w", source.to_str().unwrap()],
+                false,
+            );
+            git(
+                &root,
+                &["update-index", "--add", "--cacheinfo", "100644", &blob],
+                true,
+            );
+            let tree = git(&root, &["write-tree"], false);
+            let mut commit = vec!["commit-tree", tree.as_str(), "-m", "c"];
+            if !parent.is_empty() {
+                commit.extend(["-p", parent.as_str()]);
+            }
+            parent = git(&root, &commit, false);
+        }
+        git(&root, &["update-ref", "HEAD", &parent], false);
+        let range = serde_json::json!({"repo": root.to_str().unwrap(), "selection": "range", "range": "HEAD~1..HEAD"});
+        refused(&root, &range);
+
+        let scratch = deep_diff_forge_testkit::Scratch::new("change-latin");
+        let root = std::fs::canonicalize(scratch.path()).unwrap();
+        let file = root.join(name);
+        git(&root, &["init", "-q"], false);
+        if let Err(e) = std::fs::write(&file, b"fn a() {}\n") {
+            assert!(
+                cfg!(target_os = "macos") && e.raw_os_error() == Some(92),
+                "{e}"
+            );
+            println!(
+                "skipped: the name on disk: the file system refuses a name that is not UTF-8 ({e})"
+            );
+            return;
+        }
+        git(&root, &["add", "-A"], false);
+        git(
+            &root,
+            &["commit", "-q", "--no-gpg-sign", "-m", "base"],
+            false,
+        );
+        std::fs::write(&file, b"fn b() {}\n").unwrap();
         let params =
             serde_json::json!({"repo": root.to_str().unwrap(), "selection": "working_tree"});
-        let refused =
-            review_change(&params, std::slice::from_ref(&root), Wording::Released).unwrap_err();
-        assert_eq!(refused.code, PATCH_PARSE_FAILED, "{}", refused.message);
-        assert!(
-            refused.message.contains("a file name that is not UTF-8"),
-            "{}",
-            refused.message
-        );
+        refused(&root, &params);
     }
 
     /// `review.change` stops Git after 30 s and reads untracked files only when asked.

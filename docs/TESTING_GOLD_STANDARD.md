@@ -13,22 +13,28 @@ The sentence "the current implementation has only smoke behavior" (bootstrap
 era) no longer holds. How the standard is enforced today:
 
 - **Every pull request** runs the CI jobs in `.github/workflows/ci.yml`:
-  `cargo test --workspace --locked`, fmt, clippy and pedantic with
+  the workspace's tests (`scripts/test_step.sh`: `cargo test --workspace
+  --locked --no-fail-fast`, with the tests
+  `crates/deep-diff-forge-cli/tests/LOAD_SENSITIVE` names run after the
+  others, alone, on one thread), fmt, clippy and pedantic with
   `-D warnings`, rustdoc `-D warnings`, contract probes, the soak and
   bench-comparison regression tests, a 10 s hostile daemon soak, privacy probes
   and the Python SDK against the built binary (`deploy gate-feature`); the
-  workspace tests on macOS (`macos`); the declared-MSRV check on Rust 1.88.0;
-  and supply-chain checks.
+  workspace tests on macOS by the same script (`macos`); the declared-MSRV
+  check on Rust 1.88.0; and supply-chain checks.
 - **Diff-scoped mutation** is a required check: `diff-mutation`, four shards,
   runs [`scripts/diff_mutation.sh`](../scripts/diff_mutation.sh), which mutates
   only the Rust lines under `crates/` changed since the merge base
-  (`cargo mutants --no-config --in-diff`, 300 s timeout) and fails on any missed
-  mutant or timeout. `--no-config` ignores a candidate's own mutants config.
+  (`cargo mutants --no-config --in-diff`; each mutant's timeout twice the
+  unmutated suite's time, at least 2400 s, since the suite takes about 35
+  minutes on the runner) and fails on any missed mutant or timeout.
+  `--no-config` ignores a candidate's own mutants config.
 - **Fuzz smoke:** every target in `fuzz/Cargo.toml`
   (`patch_parser`, `review_json`, `daemon_protocol`, `agent_annotation`,
   `council_report`, `stdio_mcp`, `stdio_rpc`, `structural_soundness`,
   `findings_verify`, `evidence_scan`, `rust_tokens`, `rust_code_view`, `rust_hunk_places`,
-  `hook_input`, `judge_patch`, `verdict_reader`, `journal_recover`, `git_raw_stream`: eighteen;
+  `hook_input`, `judge_patch`, `verdict_reader`, `journal_recover`, `git_raw_stream`,
+  `learning_receipt`, `council_request`, `council_analysis`: twenty-one;
   `stdio_invariants.rs` is a shared module)
   runs for 10 s per pull request; CI fails if a declared target is not in the
   run list. Crash inputs become fixtures under
@@ -184,10 +190,16 @@ era) no longer holds. How the standard is enforced today:
   builds its list from the tables in the code (every rule's tokens, modules, spaced heads and
   tails and secret prefixes, the JavaScript operand keywords, the Rust token reader's words,
   the shell's list words, the empty-handler rule's head words, and every ASCII punctuation
-  byte in every language; 397 triggers on 2026-11-18), and ranks two lines of 2 MiB for
-  each, the trigger repeated and one word ending in it, inside a bound of thread CPU time
-  (10 s in a debug build, 2 s in a release build). The gate runs all of them: on 16 threads
-  67 s in a debug build, the slowest line 3.2 s; in a release build 6 s, the slowest 0.22 s.
+  byte in every language; 397 triggers on 2026-11-18), and ranks two lines for each, the
+  trigger repeated and one word ending in it, at sizes that double up to 1 MiB, and bounds
+  how each line's thread CPU time (wall time where the host reports none, as on macOS) grows
+  between two sizes 16 times apart: under 64 times, an exponent of 1.5, the middle of a linear
+  scan's 16 and a quadratic one's 256 (4 and 8 times apart at the smallest sizes, by the same
+  exponent); a deadline of 120 s of wall time between two answers
+  guards only against a hang. Up to 0.11.0 the test ranked one size of 2 MiB inside 10 s of
+  thread CPU time in a debug build (2 s in a release build), which a slow runner fails on a
+  linear scan and a fast one passes on a scan three times slower. The gate runs all of them:
+  on 16 threads 74 s in a debug build (2026-11-25, 431 triggers).
   A new token, keyword or word is in the list without a new test. Readings that changed for
   the class are compared with the reading they replaced, kept for the tests, on seeded
   generated lines (the keyword test, the secret rule and the empty-handler rule: the same
@@ -234,7 +246,7 @@ era) no longer holds. How the standard is enforced today:
 - **Local campaign, a release step (0.10.0):** `just fuzz-campaign`
   ([`scripts/campaign_local.sh`](../scripts/campaign_local.sh)) runs every target that
   `scripts/fuzz_target.sh --list` names, one after the other, for 300 s each by default
-  (90 minutes of fuzzing for 18 targets, plus their builds), from the committed seeds, on
+  (105 minutes of fuzzing for 21 targets, plus their builds), from the committed seeds, on
   corpora under `DDF_FUZZ_CORPUS_ROOT` (required: a directory on disk). It stops red at the
   first target that fails, whose input cargo fuzz keeps under `fuzz/artifacts/<target>/`,
   and writes a receipt (`RECEIPT` beside each target's log: commit, toolchain, seconds per

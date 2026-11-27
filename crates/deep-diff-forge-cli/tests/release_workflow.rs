@@ -2,7 +2,8 @@
 //! job, not per step, so a step-level `if:` cannot keep a write or OIDC token away from the build
 //! scripts, proc macros and smoke-run binary of the same job; and a release published from inside
 //! a matrix leg goes public before the other legs have passed. This reads the workflow's fixed
-//! two-space layout (it is not a YAML executor) and checks both.
+//! two-space layout (it is not a YAML executor) and checks both. It also holds the workflow's
+//! triggers to what `SECURITY.md` says of them.
 
 /// One job of a workflow: its job-level keys and every line of its body.
 #[derive(Debug, Default)]
@@ -210,6 +211,165 @@ fn the_reader_refuses_tomllib_in_a_matrix_job_without_setup_python() {
     assert_eq!(check(&format!("{single}{release}")), Vec::<String>::new());
 }
 
+/// The workflow's triggers, in the same fixed two-space layout: each two-space key of its
+/// top-level `on:` block, as written, with the lines indented under it, trimmed; comments, a
+/// line's trailing ` #` comment and blank lines left out. `None` when the workflow has no `on:`
+/// line of its own, has two, or names its triggers in another form (`on: push`, `on: [push]`,
+/// a quoted `"on":`), which this reader does not read.
+fn triggers(workflow: &str) -> Option<Vec<(String, Vec<String>)>> {
+    let mut found: Option<Vec<(String, Vec<String>)>> = None;
+    let mut inside = false;
+    for line in workflow.lines() {
+        let code = line.split(" #").next().unwrap_or_default().trim_end();
+        if code.trim_start().is_empty() || code.trim_start().starts_with('#') {
+            continue;
+        }
+        if !code.starts_with(' ') {
+            inside = false;
+            let key = code.split(':').next().unwrap_or_default();
+            if key.trim().trim_matches(['"', '\'']) == "on" {
+                if code != "on:" || found.is_some() {
+                    return None;
+                }
+                found = Some(Vec::new());
+                inside = true;
+            }
+            continue;
+        }
+        let Some(events) = found.as_mut().filter(|_| inside) else {
+            continue;
+        };
+        if let Some(event) = code.strip_prefix("  ").filter(|e| !e.starts_with(' ')) {
+            events.push((event.to_owned(), Vec::new()));
+        } else if let Some((_, under)) = events.last_mut() {
+            under.push(code.trim().to_owned());
+        }
+    }
+    found
+}
+
+/// `SECURITY.md`'s sentence on the release workflow's triggers.
+const TRIGGER_SENTENCE: &str = "`release.yml` runs on `v*` tags and on manual `workflow_dispatch`.";
+
+/// What the sentence allows, in the reader's terms: a push of tags matching `v*` (no branch, no
+/// other tag pattern), and a manual dispatch; nothing else.
+const TRIGGERS: &[(&str, &[&str])] = &[("push:", &["tags: ['v*']"]), ("workflow_dispatch:", &[])];
+
+fn trigger_problems(workflow: &str) -> Vec<String> {
+    let Some(events) = triggers(workflow) else {
+        return vec!["no `on:` block in the two-space layout this reader reads".to_owned()];
+    };
+    let mut problems = Vec::new();
+    for (event, under) in &events {
+        match TRIGGERS.iter().find(|(allowed, _)| allowed == event) {
+            None => problems.push(format!(
+                "the workflow runs on `{event}` {under:?}, which SECURITY.md does not name"
+            )),
+            Some((_, says)) if under != says => problems.push(format!(
+                "`{event}` is {under:?}, where SECURITY.md allows {says:?}"
+            )),
+            Some(_) => {}
+        }
+    }
+    for (allowed, _) in TRIGGERS {
+        let named = events.iter().filter(|(event, _)| event == allowed).count();
+        if named != 1 {
+            problems.push(format!(
+                "`{allowed}` is named {named} times, where SECURITY.md names it once"
+            ));
+        }
+    }
+    problems
+}
+
+#[test]
+fn the_release_runs_only_on_v_tags_and_manual_dispatch() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    let security = std::fs::read_to_string(format!("{root}/SECURITY.md")).unwrap();
+    let words = security.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        words.contains(TRIGGER_SENTENCE),
+        "SECURITY.md no longer says {TRIGGER_SENTENCE:?}: hold this check to what it says now"
+    );
+    let workflow =
+        std::fs::read_to_string(format!("{root}/.github/workflows/release.yml")).unwrap();
+    assert_eq!(trigger_problems(&workflow), Vec::<String>::new());
+}
+
+#[test]
+fn the_trigger_reader_reports_every_other_trigger() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../.github/workflows/release.yml"
+    );
+    let workflow = std::fs::read_to_string(path).unwrap();
+    let tags = "  push:\n    tags: ['v*']\n";
+    let dispatch = "  workflow_dispatch:\n";
+    // (what is altered, the text it replaces, its replacement, a word of the problem)
+    for (case, from, to, says) in [
+        (
+            "a branch push added",
+            tags,
+            "  push:\n    tags: ['v*']\n    branches: [main]\n",
+            "branches: [main]",
+        ),
+        ("every push, unfiltered", tags, "  push:\n", "`push:` is []"),
+        (
+            "the tag pattern widened to `*`",
+            tags,
+            "  push:\n    tags: ['*']\n",
+            "tags: ['*']",
+        ),
+        (
+            "a second tag pattern",
+            tags,
+            "  push:\n    tags: ['v*', '*']\n",
+            "tags: ['v*', '*']",
+        ),
+        (
+            "pull_request_target added",
+            dispatch,
+            "  workflow_dispatch:\n  pull_request_target:\n",
+            "pull_request_target",
+        ),
+        (
+            "pull_request added",
+            dispatch,
+            "  pull_request:\n    branches: [main]\n  workflow_dispatch:\n",
+            "`pull_request:`",
+        ),
+        (
+            "a schedule added",
+            dispatch,
+            "  workflow_dispatch:\n  schedule:\n    - cron: '0 3 * * *'\n",
+            "`schedule:`",
+        ),
+        (
+            "workflow_dispatch removed",
+            dispatch,
+            "",
+            "`workflow_dispatch:` is named 0 times",
+        ),
+        (
+            "the triggers in a form the reader does not read",
+            "\non:\n",
+            "\non: [push, workflow_dispatch]\nx:\n",
+            "no `on:` block",
+        ),
+    ] {
+        assert!(
+            workflow.contains(from),
+            "{case}: release.yml has no {from:?}"
+        );
+        let altered = workflow.replacen(from, to, 1);
+        let problems = trigger_problems(&altered);
+        assert!(
+            problems.iter().any(|p| p.contains(says)),
+            "{case}: {problems:#?}"
+        );
+    }
+}
+
 /// Every `runs-on:` label and matrix `os:` value that floats: a `-latest` label moves to a new
 /// major image when GitHub repoints it, so the same commit builds and tests on a different
 /// system without any change in this repository.
@@ -290,4 +450,276 @@ fn the_profile_reader_finds_only_the_release_setting() {
         release_codegen_units("[profile.dev]\ncodegen-units = 1\n"),
         None
     );
+}
+
+// --- what both runs do, what a tag run attests, who waits for the `release` environment
+// (SECURITY.md's paragraphs on release.yml; lane T3e of 0.11.1) ---------------------------
+
+fn release_jobs() -> Vec<Job> {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../.github/workflows/release.yml"
+    );
+    jobs(&std::fs::read_to_string(path).unwrap())
+}
+
+/// The job named `name`.
+fn job<'a>(jobs: &'a [Job], name: &str) -> &'a Job {
+    jobs.iter()
+        .find(|job| job.name == name)
+        .unwrap_or_else(|| panic!("release.yml has no job `{name}`"))
+}
+
+/// The steps of a job, each as its lines without comment lines (a step starts at `      - `).
+fn steps(job: &Job) -> Vec<Vec<&str>> {
+    let mut steps: Vec<Vec<&str>> = Vec::new();
+    for line in &job.lines {
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
+        if line.starts_with("      - ") {
+            steps.push(Vec::new());
+        }
+        if let Some(step) = steps.last_mut() {
+            step.push(line);
+        }
+    }
+    steps
+}
+
+/// The step whose `name:` is `name`.
+fn step<'a>(job: &'a Job, name: &str) -> Vec<&'a str> {
+    steps(job)
+        .into_iter()
+        .find(|lines| {
+            lines.iter().any(|line| {
+                let rest = line.trim_start();
+                rest.strip_prefix("- ").unwrap_or(rest) == format!("name: {name}")
+            })
+        })
+        .unwrap_or_else(|| panic!("job `{}` has no step `{name}`", job.name))
+}
+
+/// The values of `key` in a step: its inline value, or the lines of its `|` block.
+fn values(step: &[&str], key: &str) -> Vec<String> {
+    let head = format!("{key}:");
+    let Some(at) = step.iter().position(|line| {
+        line.trim_start() == head || line.trim_start().starts_with(&format!("{head} "))
+    }) else {
+        return Vec::new();
+    };
+    let value = step[at].trim_start()[head.len()..].trim();
+    if value != "|" {
+        return vec![value.to_owned()];
+    }
+    let indent = step[at].len() - step[at].trim_start().len();
+    step[at + 1..]
+        .iter()
+        .take_while(|line| line.len() - line.trim_start().len() > indent)
+        .map(|line| line.trim().to_owned())
+        .collect()
+}
+
+/// Whether a step carries its own `if:`.
+fn conditional(step: &[&str]) -> bool {
+    step.iter().any(|line| {
+        let rest = line.trim_start();
+        rest.strip_prefix("- ").unwrap_or(rest).starts_with("if:")
+    })
+}
+
+/// SECURITY.md: "Both runs repeat the full `ci.yml` quality workflow and a supply-chain gate,
+/// build four targets, run every binary (the `x86_64` macOS one under Rosetta 2), hold the Linux
+/// ones to the glibc floor, and verify every archive's SHA-256." The call of ci.yml, the four
+/// targets, the unconditional smoke and the glibc floor are held by `crate_edges.rs`
+/// (`a_release_runs_every_ci_job_but_the_launchd_smoke`,
+/// `release_publication_is_owner_gated_and_the_dry_run_publishes_nothing`); this holds the rest:
+/// both runs run the gates and the build, the build waits for both gates, what the supply-chain
+/// gate runs, the Rosetta row, and both checksum tools of the package step.
+#[test]
+fn both_release_runs_gate_build_run_and_check_every_target() {
+    let jobs = release_jobs();
+    for name in ["quality", "supply-chain", "build"] {
+        assert_eq!(
+            job(&jobs, name).condition,
+            None,
+            "job `{name}` has a job-level `if:`: a tag run and a dispatched run must both run it"
+        );
+    }
+    assert_eq!(
+        job(&jobs, "build").needs,
+        ["quality", "supply-chain"],
+        "the build waits for the quality workflow and the supply-chain gate"
+    );
+    let gate = job(&jobs, "supply-chain");
+    let gate_steps = steps(gate);
+    for command in [
+        "cargo deny --manifest-path fuzz/Cargo.toml --locked check",
+        "cargo audit --deny warnings",
+        "cargo audit --deny warnings --file fuzz/Cargo.lock",
+    ] {
+        assert!(
+            gate_steps
+                .iter()
+                .any(|lines| !conditional(lines) && values(lines, "run") == [command]),
+            "the supply-chain gate does not run `{command}` in every run"
+        );
+    }
+    assert!(
+        gate_steps.iter().any(|lines| !conditional(lines)
+            && lines
+                .iter()
+                .any(|l| l.contains("uses: EmbarkStudios/cargo-deny-action@"))
+            && values(lines, "command") == ["check"]),
+        "the supply-chain gate does not run cargo-deny's check on the workspace in every run"
+    );
+    let build = job(&jobs, "build");
+    let rosetta: Vec<&String> = build
+        .lines
+        .iter()
+        .filter(|line| line.contains("target: x86_64-apple-darwin,"))
+        .collect();
+    assert!(
+        rosetta.len() == 1
+            && rosetta[0].contains("{ os: macos-")
+            && rosetta[0].contains("run_under: \"arch -x86_64\""),
+        "the x86_64 macOS binary is run under Rosetta 2 on a macOS runner: {rosetta:?}"
+    );
+    let smoke = step(build, "smoke the release binary");
+    let runs: Vec<&&str> = smoke
+        .iter()
+        .filter(|line| line.contains("\"${bin}\" --"))
+        .collect();
+    assert!(
+        runs.len() >= 2
+            && runs
+                .iter()
+                .all(|line| line.contains("${RUN_UNDER} \"${bin}\" --")),
+        "every run of the binary goes through RUN_UNDER: {runs:#?}"
+    );
+    let package = step(build, "package");
+    for check in [
+        "sha256sum -c \"${dist}.tar.gz.sha256\"",
+        "shasum -a 256 -c \"${dist}.tar.gz.sha256\"",
+    ] {
+        assert!(
+            package.iter().any(|line| line.trim() == check),
+            "the package step does not verify the archive with `{check}` (Linux runners have \
+             sha256sum, macOS ones shasum)"
+        );
+    }
+}
+
+/// SECURITY.md: "Release archives, checksums, and the generated SPDX SBOM receive GitHub build
+/// provenance attestations on tag runs." (Before this, deleting both attestation steps left
+/// every test green: audit 2 of U1.)
+#[test]
+fn a_tag_run_attests_every_archive_checksum_and_the_sbom_it_publishes() {
+    let jobs = release_jobs();
+    let release = job(&jobs, "release");
+    assert!(
+        release
+            .condition
+            .as_deref()
+            .is_some_and(|c| c.contains(TAG_ONLY)),
+        "the attesting job runs on a pushed `v*` tag"
+    );
+    let mut attested = Vec::new();
+    let mut uploaded = Vec::new();
+    for lines in steps(release) {
+        if lines
+            .iter()
+            .any(|l| l.contains("uses: actions/attest-build-provenance@"))
+        {
+            assert!(
+                !conditional(&lines),
+                "an attestation step has its own `if:`: {lines:#?}"
+            );
+            attested.extend(values(&lines, "subject-path"));
+        }
+        if lines
+            .iter()
+            .any(|l| l.contains("uses: softprops/action-gh-release@"))
+        {
+            uploaded.extend(values(&lines, "files"));
+        }
+    }
+    attested.sort();
+    uploaded.sort();
+    let published = [
+        "dist/deep-diff-forge-*.tar.gz",
+        "dist/deep-diff-forge-*.tar.gz.sha256",
+        "dist/sbom.spdx.json",
+    ];
+    assert_eq!(uploaded, published, "what the GitHub Release publishes");
+    assert_eq!(
+        attested, published,
+        "every published file (archives, checksums, the SBOM) is attested, and nothing else"
+    );
+    // The SBOM is the one the build generated and handed over.
+    let build = job(&jobs, "build");
+    let generate = step(
+        build,
+        "generate SPDX SBOM (single canonical release artifact)",
+    );
+    assert_eq!(
+        values(&generate, "run"),
+        ["python3 scripts/security/generate_spdx_sbom.py"]
+    );
+    assert_eq!(
+        values(&step(build, "keep the SBOM for the release job"), "name"),
+        ["sbom"]
+    );
+    assert_eq!(values(&step(release, "fetch the SBOM"), "name"), ["sbom"]);
+}
+
+/// SECURITY.md: "Only the `publish` job uses that environment; the build, attestation and
+/// GitHub Release upload do not wait for it." That `publish` runs in it, and fails an open gate
+/// without a token, is `crate_edges.rs` and `repo_scripts.rs`
+/// (`an_open_crates_io_gate_without_a_token_fails_before_publishing`).
+#[test]
+fn only_the_publish_job_waits_for_the_release_environment() {
+    let jobs = release_jobs();
+    let in_environment: Vec<&str> = jobs
+        .iter()
+        .filter(|job| {
+            job.lines
+                .iter()
+                .any(|line| line.starts_with("    environment:"))
+        })
+        .map(|job| job.name.as_str())
+        .collect();
+    assert_eq!(
+        in_environment,
+        ["publish"],
+        "only the publish job may wait for an environment's approval"
+    );
+    for job in &jobs {
+        assert!(
+            !job.needs.iter().any(|need| need == "publish"),
+            "job `{}` waits for the publish job",
+            job.name
+        );
+    }
+    let needs_read = jobs.iter().filter(|job| !job.needs.is_empty()).count();
+    assert!(
+        needs_read >= 3,
+        "only {needs_read} `needs:` read: the reader is broken"
+    );
+}
+
+#[test]
+fn the_step_readers_read_names_values_and_conditions() {
+    let workflow = "jobs:\n  a:\n    steps:\n      # - name: commented\n      - name: one\n        if: x\n        with:\n          subject-path: |\n            p/a\n            p/b\n          name: sbom\n      - name: two\n        run: cargo x\n";
+    let jobs = jobs(workflow);
+    let one = step(&jobs[0], "one");
+    assert!(conditional(&one));
+    assert_eq!(values(&one, "subject-path"), ["p/a", "p/b"]);
+    // A step's own `- name:` is not a value of the step: `name:` under `with:` is.
+    assert_eq!(values(&one, "name"), ["sbom"]);
+    let two = step(&jobs[0], "two");
+    assert!(!conditional(&two));
+    assert_eq!(values(&two, "run"), ["cargo x"]);
+    assert_eq!(values(&two, "with"), Vec::<String>::new());
+    assert_eq!(steps(&jobs[0]).len(), 2);
 }

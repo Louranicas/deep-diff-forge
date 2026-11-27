@@ -653,6 +653,10 @@ fn every_documented_option_is_admitted() {
 }
 
 /// One admitted invocation for each option of the patch-reading commands.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one row an option, in the order of the help"
+)]
 fn patch_option_rows<'a>(
     address: &'a str,
     cursor: &'a str,
@@ -689,6 +693,11 @@ fn patch_option_rows<'a>(
         ("--base", vec!["agent", "check", "--base", "refs/no/such"]),
         ("--range", vec!["agent", "check", "--range", "HEAD..HEAD"]),
         ("--require-pass", vec!["agent", "check", "--require-pass"]),
+        ("--commit", vec!["agent", "policy-accept", "--commit", "x"]),
+        (
+            "--yes-from-pipe",
+            vec!["agent", "policy-accept", "--commit", "x", "--yes-from-pipe"],
+        ),
         (
             "--judge",
             vec![
@@ -1394,6 +1403,38 @@ fn an_unwritable_error_stream_keeps_the_exit_code() {
     }
 }
 
+/// `SECURITY.md` ("Untrusted input and output"): stdin is bounded before unbounded allocation.
+/// Its reader refuses a patch over `DEFAULT_BYTE_BUDGET` itself, by its own message (the parser's
+/// budget would refuse the same input with the same exit 4 and another message, so the exit code
+/// cannot tell the two apart), and stops reading one byte past the budget: the writer of a longer
+/// stdin finds the pipe closed. The 8 MiB past the budget is more than a pipe buffers, so a
+/// reader that read on would take it all.
+#[test]
+fn stdin_is_bounded_by_its_own_reader() {
+    let budget = deep_diff_forge_patch::DEFAULT_BYTE_BUDGET;
+    let stdin = vec![b'x'; budget + 1 + (8 << 20)];
+    let mut child = Command::new(env!("CARGO_BIN_EXE_deep-diff-forge"))
+        .arg("--stdin-patch")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let written = child.stdin.take().unwrap().write_all(&stdin);
+    let out = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(4), "{stderr}");
+    assert!(
+        stderr.contains(&format!("stdin exceeds the {budget}-byte input budget")),
+        "stdin over the budget was not refused by its reader: {stderr}"
+    );
+    assert!(
+        written.is_err(),
+        "all {} bytes of stdin were read: the reader did not stop past the budget",
+        stdin.len()
+    );
+}
+
 /// Run the binary with stdout on a pipe whose reader has already gone; its exit code and stderr.
 fn run_with_stdout_closed(args: &[&str], stdin: &[u8]) -> (Option<i32>, String) {
     let (reader, writer) = std::io::pipe().unwrap();
@@ -1835,6 +1876,11 @@ const SEVEN: [&str; 3] = ["EXIT_REFUSED", "INPUT_CONTRACT_REFUSED", "COUNCIL_HOL
 /// none of them 7 but the council's own.
 const PASS_THROUGH_EXITS: &[(&str, &str, &str)] = &[
     (
+        "deep-diff-forge-cli/src/policy_accept.rs",
+        "refused",
+        "usage, io, invalid_input or daemon_or_terminal, by the refusal (never 7)",
+    ),
+    (
         "deep-diff-forge-cli/src/main.rs",
         "main",
         "council's code (its HOLD is 7) and analysis errors",
@@ -2074,7 +2120,8 @@ fn refusal_driver(
             owned(&["agent", "doctor", "--gate"]),
             String::new(),
             here,
-            "refused: 13 checks failed (agent doctor)".into(),
+            // (14 since 0.11.1: the link policy_accepted)
+            "refused: 14 checks failed (agent doctor)".into(),
         ),
         "fail_on_label" => (
             owned(&[
@@ -2204,6 +2251,17 @@ fn run_refusal(
         .env_remove("CLAUDE_PROJECT_DIR")
         .stdin(Stdio::piped())
         .stderr(Stdio::piped());
+    // The class `chain_not_ready` counts the links of `agent doctor --gate` that fail, and the
+    // link that finds the judge on `PATH` passes on a host that has installed `forge-warden`
+    // (13 failing links instead of 14: found 2026-11-28 when ~/.local/bin/forge-warden was
+    // installed). The refusal must not depend on what the host has installed: the judge is
+    // taken off `PATH` for these runs, every other tool stays.
+    if let Some(path) = std::env::var_os("PATH") {
+        let without_judge: Vec<std::path::PathBuf> = std::env::split_paths(&path)
+            .filter(|directory| !directory.join("forge-warden").exists())
+            .collect();
+        command.env("PATH", std::env::join_paths(without_judge).unwrap());
+    }
     match out {
         Out::Piped => command.stdout(Stdio::piped()),
         Out::Closed => {

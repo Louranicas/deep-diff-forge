@@ -1,5 +1,6 @@
 //! The repository's gate scripts fail closed: the pre-push secret hook, the diff-scoped mutation
-//! gate (anchor B-01), the fuzz runner and the release-tag signer. Each is run for real against a scratch repository,
+//! gate (anchor B-01), the fuzz runner and the release-tag signer; the local gate's step runner,
+//! the gate's test step and the macOS-like temp directory are run as well. Each is run for real against a scratch repository,
 //! with a recording stand-in for the expensive tool it hands off to (gitleaks, cargo mutants,
 //! cargo fuzz), so what is checked is the script's own decision.
 #![cfg(unix)]
@@ -228,6 +229,44 @@ fn diff_mutation_tests_rust_files_whose_names_git_quotes_or_tabs() {
     // cargo mutants refuses a C-quoted `+++ "b/..."` header outright (measured, 27.1.0).
     let diff = std::fs::read_to_string(out.join("pr.diff")).unwrap();
     assert!(diff.contains("\n+++ b/crates/x/src/é.rs\n"), "{diff}");
+}
+
+/// C1 of 0.11.1: the mutants' timeout comes from the baseline, not a fixed `--timeout`, which
+/// bounds the unmutated baseline too (measured, cargo-mutants 27.1.0: "TIMEOUT Unmutated
+/// baseline", exit 4) while the whole workspace's tests take about 35 minutes on CI's runner
+/// (2,043 s and 2,106 s, the gate job of runs 45701563166 and 45670721783): `--timeout 300`
+/// failed every shard before a mutant was tested. The floor is not under that baseline.
+#[test]
+fn diff_mutation_derives_the_timeout_from_the_baseline() {
+    let s = scratch("mutation-timeout");
+    let (repo, path) = mutation_repo(&s);
+    commit(&repo, "crates/x/src/lib.rs", "fn a() -> i32 { 1 }\n");
+    diff_mutation(&repo, &path, &s.0.join("out"));
+    let log = std::fs::read_to_string(s.0.join("cargo.log")).unwrap();
+    let args: Vec<&str> = log
+        .lines()
+        .find(|line| line.starts_with("mutants --no-config --in-diff "))
+        .expect("cargo mutants was not run")
+        .split_whitespace()
+        .collect();
+    let value = |flag: &str| -> Option<f64> {
+        let at = args.iter().position(|arg| *arg == flag)?;
+        args.get(at + 1)?.parse().ok()
+    };
+    assert!(
+        !args
+            .iter()
+            .any(|arg| ["--timeout", "-t"].contains(arg) || arg.starts_with("--timeout=")),
+        "a fixed --timeout also cuts the baseline: {args:?}"
+    );
+    assert!(
+        value("--timeout-multiplier").is_some_and(|multiplier| multiplier >= 1.0),
+        "{args:?}"
+    );
+    assert!(
+        value("--minimum-test-timeout").is_some_and(|floor| floor >= 2106.0),
+        "the floor must not be under the baseline measured on CI's runner: {args:?}"
+    );
 }
 
 #[test]
@@ -502,6 +541,221 @@ fn campaign_runs_every_listed_target_and_fails_on_one_crash() {
         ),
         "the campaign is a release recipe"
     );
+}
+
+/// macOS's `/bin/bash` is 3.2: `mapfile` was "command not found" there and the target list then
+/// unbound under `set -u` (the 0.11.0 macOS CI run). A run on Linux cannot show that, so the
+/// script's code (its comments aside) is read for what bash 3.2 lacks.
+#[test]
+fn the_campaign_uses_nothing_bash_3_2_lacks() {
+    let script = std::fs::read_to_string(format!("{ROOT}/scripts/campaign_local.sh")).unwrap();
+    let code: Vec<&str> = script
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect();
+    assert!(code.len() > 40, "{}", code.len());
+    for newer in [
+        "mapfile",
+        "readarray",
+        "declare -A",
+        "declare -n",
+        "local -A",
+        "local -n",
+        ",,}",
+        "^^}",
+        "|&",
+        "&>>",
+        "coproc",
+        "globstar",
+        ";;&",
+        "EPOCHREALTIME",
+        "EPOCHSECONDS",
+        "wait -n",
+        "[-1]",
+        "@Q}",
+    ] {
+        let found: Vec<&&str> = code.iter().filter(|line| line.contains(newer)).collect();
+        assert!(
+            found.is_empty(),
+            "{newer:?}, which bash 3.2 lacks: {found:?}"
+        );
+    }
+}
+
+// --- scripts/gate_steps.sh (the step runner of scripts/ci_local.sh) -------------------------
+
+/// P7: each step's line carries its time, and what it skipped in one form; a failed step shows
+/// the end of its output; the receipt lists every step with its status, seconds and skip.
+#[test]
+fn the_gate_says_how_long_each_step_took_and_what_it_skipped() {
+    let s = scratch("gate-steps");
+    let out = run(Command::new("bash")
+        .current_dir(&s.0)
+        .args([
+            "-c",
+            r#"gate_steps="$1/steps.tsv"
+. "$2/scripts/gate_steps.sh"
+step "quick" true
+step "slow" sleep 1
+step "corpus" sh -c 'echo working; echo "skipped: no corpus here (c)"'
+step "tests" printf 'test result: ok. 3 passed; 0 failed; 2 ignored; 0 measured\ntest result: ok. 1 passed; 0 failed; 1 ignored; 0 measured\n'
+step "matrix" printf 'real rows: 0 run, 12 skipped\nskipped: 12 rows (12 no FW_BIN)\nrows red: 0\n'
+step "red" sh -c 'echo one; echo two; exit 3'
+gate_receipt "$1/receipt.json" 0123abc
+echo "failed: $failed""#,
+            "bash",
+        ])
+        .arg(&s.0)
+        .arg(ROOT));
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success(), "{out:?}");
+    // `<status> <name> (<seconds> s<; what it said>)`: the seconds and the rest
+    let line = |status: &str, name: &str| -> (f64, String) {
+        let head = format!("{status} {name} (");
+        let line = stdout
+            .lines()
+            .find(|line| line.starts_with(&head))
+            .unwrap_or_else(|| panic!("no line {head}: {stdout}"));
+        let inner = line[head.len()..].strip_suffix(')').unwrap();
+        let (seconds, rest) = inner.split_once(" s").unwrap();
+        (seconds.parse().unwrap(), rest.to_owned())
+    };
+    // (bash 3.2, macOS's, has no EPOCHREALTIME: the clock is then whole seconds, and a step
+    // that crosses a second's edge takes 1.0)
+    let (quick, said) = line("PASS", "quick");
+    let (slow, _) = line("PASS", "slow");
+    assert!((1.0..30.0).contains(&slow), "{stdout}");
+    assert!(quick <= slow && said.is_empty(), "{stdout}");
+    assert_eq!(line("PASS", "corpus").1, "; skipped: no corpus here (c)");
+    assert_eq!(line("PASS", "tests").1, "; skipped: 3 tests ignored");
+    assert_eq!(
+        line("PASS", "matrix").1,
+        "; real rows: 0 run, 12 skipped; skipped: 12 rows (12 no FW_BIN)"
+    );
+    assert_eq!(line("FAIL", "red").1, "");
+    assert!(stdout.contains("\n    one\n    two\n"), "{stdout}");
+    assert!(stdout.ends_with("failed: 1\n"), "{stdout}");
+
+    let receipt: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(s.0.join("receipt.json")).unwrap()).unwrap();
+    assert_eq!(receipt["commit"], "0123abc");
+    assert_eq!(receipt["failed"], 1);
+    assert_eq!(receipt["uncommitted_changes"], false);
+    assert!(
+        receipt["started"].as_str().unwrap().ends_with('Z'),
+        "{receipt}"
+    );
+    let steps = receipt["steps"].as_array().unwrap();
+    let names: Vec<&str> = steps.iter().map(|s| s["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["quick", "slow", "corpus", "tests", "matrix", "red"]);
+    let status: Vec<&str> = steps
+        .iter()
+        .map(|s| s["status"].as_str().unwrap())
+        .collect();
+    assert_eq!(status, ["PASS", "PASS", "PASS", "PASS", "PASS", "FAIL"]);
+    assert!(
+        steps[1]["seconds"]
+            .as_f64()
+            .is_some_and(|seconds| (seconds - slow).abs() < 1e-9),
+        "{receipt}"
+    );
+    let skipped: Vec<Option<&str>> = steps.iter().map(|s| s["skipped"].as_str()).collect();
+    assert_eq!(
+        skipped,
+        [
+            None,
+            None,
+            Some("no corpus here (c)"),
+            Some("3 tests ignored"),
+            Some("12 rows (12 no FW_BIN)"),
+            None
+        ]
+    );
+}
+
+// --- scripts/long_tmpdir.sh ---------------------------------------------------------------
+
+/// The macOS-like temp directory: a link of the length asked for to a real, private directory
+/// of the longer length, both directly under the base; 49 and 57 by default where the base
+/// leaves room (a base under `/tmp` does; one under a longer TMPDIR is refused, saying why).
+#[test]
+fn long_tmpdir_makes_a_link_as_long_as_macos_s_to_a_longer_real_directory() {
+    let s = scratch("long-tmpdir");
+    let base = std::fs::canonicalize(&s.0).unwrap();
+    let n = base.as_os_str().len();
+    let long_tmpdir = |lengths: Option<(usize, usize)>| {
+        let mut command = Command::new("bash");
+        command
+            .arg(format!("{ROOT}/scripts/long_tmpdir.sh"))
+            .arg(&s.0)
+            .env_remove("LONG_TMPDIR_LINK")
+            .env_remove("LONG_TMPDIR_REAL");
+        if let Some((link, real)) = lengths {
+            command
+                .env("LONG_TMPDIR_LINK", link.to_string())
+                .env("LONG_TMPDIR_REAL", real.to_string());
+        }
+        run(&mut command)
+    };
+    let link_made = |out: &Output, link_len: usize, real_len: usize| -> PathBuf {
+        assert!(out.status.success(), "{out:?}");
+        let link = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim_end());
+        let real = std::fs::canonicalize(&link).unwrap();
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "{link:?}"
+        );
+        assert_eq!(
+            (link.as_os_str().len(), real.as_os_str().len()),
+            (link_len, real_len),
+            "{link:?} -> {real:?}"
+        );
+        assert_eq!(
+            (link.parent(), real.parent()),
+            (Some(base.as_path()), Some(base.as_path()))
+        );
+        let mode = std::fs::metadata(&real).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "{real:?}");
+        link
+    };
+    let first = link_made(&long_tmpdir(Some((n + 16, n + 24))), n + 16, n + 24);
+    let second = link_made(&long_tmpdir(Some((n + 16, n + 24))), n + 16, n + 24);
+    assert_ne!(first, second, "a second run made the same link");
+    // the defaults, as macOS has them
+    let out = long_tmpdir(None);
+    if n + 3 <= 49 {
+        link_made(&out, 49, 57);
+    } else {
+        assert_eq!(out.status.code(), Some(2), "{out:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains(&format!(
+                "is {n} characters: too long for a link of 49 and a directory of 57"
+            )),
+            "{out:?}"
+        );
+    }
+    // no room for the names, a real path shorter than the link, a base that is no directory
+    for (lengths, base) in [
+        (Some((n + 2, n + 24)), s.0.clone()),
+        (Some((n + 24, n + 16)), s.0.clone()),
+        (None, s.0.join("absent")),
+    ] {
+        let mut command = Command::new("bash");
+        command
+            .arg(format!("{ROOT}/scripts/long_tmpdir.sh"))
+            .arg(&base);
+        if let Some((link, real)) = lengths {
+            command
+                .env("LONG_TMPDIR_LINK", link.to_string())
+                .env("LONG_TMPDIR_REAL", real.to_string());
+        }
+        let out = run(&mut command);
+        assert_eq!(out.status.code(), Some(2), "{lengths:?} {base:?}: {out:?}");
+        assert!(out.stdout.is_empty(), "{out:?}");
+    }
 }
 
 // --- scripts/sign_release_tag.sh ----------------------------------------------------------
@@ -921,4 +1175,813 @@ fn package_release_refuses_without_an_epoch() {
         .env_remove("SOURCE_DATE_EPOCH"));
     assert!(!out.status.success(), "{out:?}");
     assert!(!s.0.join("x.tar.gz").exists());
+}
+
+// --- scripts/test_step.sh (the gate's test step) -----------------------------------------
+
+/// The names `LOAD_SENSITIVE` lists, read as `the_load_sensitive_list_names_tests_that_exist`
+/// (in `agent_hook.rs`) reads them: one a line, `#` starts a comment, blank lines are skipped.
+fn listed(list: &str) -> Vec<String> {
+    list.lines()
+        .filter_map(|line| line.split('#').next().map(str::trim))
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// A stand-in `cargo` that writes each call's arguments as a line of `$CALLS`, answers a call
+/// with `--test-threads=1` with a passing line for each name after `--` (all but `$DROP`), and
+/// exits with `$PASS1` on any other call.
+const CARGO: &str = r#"printf '%s\n' "$*" >>"$CALLS"
+case " $* " in
+*" --test-threads=1 "*)
+  after=
+  for a in "$@"; do
+    if [ -n "$after" ]; then
+      case $a in --*) ;; "$DROP") ;; *) echo "test $a ... ok" ;; esac
+    fi
+    [ "$a" = -- ] && after=1
+  done
+  exit 0 ;;
+esac
+exit "${PASS1:-0}"
+"#;
+
+/// Runs `scripts/test_step.sh` in `checkout` with the stand-in `cargo`: (its output, the
+/// calls, each split into words).
+fn test_step(s: &Scratch, checkout: &Path, pass1: u8, drop: &str) -> (Output, Vec<Vec<String>>) {
+    let bin = s.0.join("bin");
+    tool(&bin.join("cargo"), CARGO);
+    let calls = s.0.join("calls");
+    let _ = std::fs::remove_file(&calls);
+    let out = run(Command::new("bash")
+        .arg(format!("{ROOT}/scripts/test_step.sh"))
+        .current_dir(checkout)
+        .env("PATH", path_with(&bin))
+        .env("CALLS", &calls)
+        .env("PASS1", pass1.to_string())
+        .env("DROP", drop));
+    let calls = std::fs::read_to_string(&calls)
+        .unwrap_or_default()
+        .lines()
+        .map(|line| line.split_whitespace().map(str::to_owned).collect())
+        .collect();
+    (out, calls)
+}
+
+/// P5b: the gate's test step runs the workspace's tests less the load-sensitive ones, then
+/// those alone on one thread: every name it skips it runs, both passes go on past a failing
+/// test binary (`--no-fail-fast`), and the second pass runs even when the first failed. The
+/// list is read from `tests/LOAD_SENSITIVE` and nowhere else.
+#[test]
+fn the_test_step_runs_every_load_sensitive_test_alone_after_the_others() {
+    let s = scratch("test-step");
+    let names = listed(
+        &std::fs::read_to_string(format!(
+            "{ROOT}/crates/deep-diff-forge-cli/tests/LOAD_SENSITIVE"
+        ))
+        .unwrap(),
+    );
+    assert!(!names.is_empty(), "LOAD_SENSITIVE names no test");
+    let (out, calls) = test_step(&s, Path::new(ROOT), 0, "");
+    let said = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    let (first, second) = (&calls[0], &calls[1]);
+    let after = |call: &[String]| -> Vec<String> {
+        call.iter()
+            .skip_while(|word| *word != "--")
+            .skip(1)
+            .cloned()
+            .collect()
+    };
+    let before = |call: &[String]| -> Vec<String> {
+        call.iter()
+            .take_while(|word| *word != "--")
+            .cloned()
+            .collect()
+    };
+    assert_eq!(
+        before(first),
+        ["test", "--workspace", "--locked", "--no-fail-fast"],
+        "{first:?}"
+    );
+    let rest = after(first);
+    assert_eq!(rest[0], "--exact", "{first:?}");
+    assert!(
+        rest[1..]
+            .chunks(2)
+            .all(|pair| pair.len() == 2 && pair[0] == "--skip"),
+        "{first:?}"
+    );
+    let skipped: Vec<String> = rest[1..].chunks(2).map(|pair| pair[1].clone()).collect();
+    assert_eq!(skipped, names, "pass 1 must skip exactly the listed names");
+    assert_eq!(
+        before(second),
+        [
+            "test",
+            "--workspace",
+            "--locked",
+            "--no-fail-fast",
+            "--tests"
+        ],
+        "{second:?}"
+    );
+    let alone = after(second);
+    assert_eq!(alone[..2], ["--exact", "--test-threads=1"], "{second:?}");
+    assert_eq!(
+        alone[2..],
+        names[..],
+        "every listed name that pass 1 skips must run alone in pass 2"
+    );
+    assert!(said.contains("pass 1 rc=0, pass 2 rc=0"), "{said}");
+
+    // a failing first pass: the second still runs, and the step fails
+    let (out, calls) = test_step(&s, Path::new(ROOT), 101, "");
+    assert!(
+        !out.status.success() && calls.len() == 2,
+        "{out:?} {calls:?}"
+    );
+    // a listed test the second pass did not run: named, and the step fails
+    let (out, _) = test_step(&s, Path::new(ROOT), 0, &names[0]);
+    let said = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        !out.status.success()
+            && said.contains(&format!(
+                "pass 2 did not run each listed test once: {} (0 runs)",
+                names[0]
+            )),
+        "{said}"
+    );
+
+    // the list as the test of agent_hook.rs reads it; a name twice is refused before any run
+    let checkout = s.0.join("checkout");
+    let list = checkout.join("crates/deep-diff-forge-cli/tests/LOAD_SENSITIVE");
+    std::fs::create_dir_all(list.parent().unwrap()).unwrap();
+    std::fs::write(&list, "# a comment\n\n  one_test  # why\ntwo_test\n").unwrap();
+    let (out, calls) = test_step(&s, &checkout, 0, "");
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(after(&calls[1])[2..], ["one_test", "two_test"]);
+    std::fs::write(&list, "one_test\ntwo_test\none_test\n").unwrap();
+    let (out, calls) = test_step(&s, &checkout, 0, "");
+    let said = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        !out.status.success() && calls.is_empty() && said.contains("names one_test twice"),
+        "{said}"
+    );
+    std::fs::write(&list, "# none\n").unwrap();
+    let (out, calls) = test_step(&s, &checkout, 0, "");
+    assert!(!out.status.success() && calls.is_empty(), "{out:?}");
+}
+
+// --- release.yml's own checks, run for real (lane T3e of 0.11.1) ----------------------------
+
+fn read(path: &str) -> String {
+    std::fs::read_to_string(format!("{ROOT}/{path}")).unwrap_or_else(|e| panic!("{path}: {e}"))
+}
+
+/// The lines of job `job` of a workflow (fixed two-space layout), without comment lines.
+fn workflow_job(workflow: &str, job: &str) -> Vec<String> {
+    let mut inside = false;
+    let mut lines = Vec::new();
+    for line in workflow.lines().skip_while(|line| *line != "jobs:").skip(1) {
+        if let Some(key) = line
+            .strip_prefix("  ")
+            .and_then(|rest| rest.strip_suffix(':'))
+            .filter(|key| !key.starts_with(' ') && !key.contains(' '))
+        {
+            inside = key == job;
+            continue;
+        }
+        if inside && !line.trim_start().starts_with('#') {
+            lines.push(line.to_owned());
+        }
+    }
+    assert!(!lines.is_empty(), "the workflow has no job `{job}`");
+    lines
+}
+
+/// The steps of a job's lines, each as its lines (a step starts at `      - `; a job-level key
+/// ends the step before it).
+fn workflow_steps(job: &[String]) -> Vec<Vec<String>> {
+    let mut steps: Vec<Vec<String>> = Vec::new();
+    let mut open = false;
+    for line in job {
+        if line.starts_with("      - ") {
+            steps.push(Vec::new());
+            open = true;
+        } else if line.starts_with("    ") && !line.starts_with("     ") {
+            open = false;
+        }
+        if open && let Some(step) = steps.last_mut() {
+            step.push(line.clone());
+        }
+    }
+    steps
+}
+
+/// The step named `name` of job `job`.
+fn workflow_step(workflow: &str, job: &str, name: &str) -> Vec<String> {
+    workflow_steps(&workflow_job(workflow, job))
+        .into_iter()
+        .find(|step| step[0].trim_start() == format!("- name: {name}"))
+        .unwrap_or_else(|| panic!("job `{job}` has no step `{name}`"))
+}
+
+/// A step's `run:`: its one line, or its `|` block without the block's indentation.
+fn run_of(step: &[String]) -> String {
+    let at = step
+        .iter()
+        .position(|line| {
+            let rest = line.trim_start();
+            rest.strip_prefix("- ").unwrap_or(rest).starts_with("run:")
+        })
+        .unwrap_or_else(|| panic!("the step has no run: {step:#?}"));
+    let column = step[at].find("run:").unwrap();
+    let value = step[at][column + "run:".len()..].trim();
+    if value != "|" {
+        return format!("{value}\n");
+    }
+    let indent = column + 2;
+    let mut script = String::new();
+    for line in step[at + 1..]
+        .iter()
+        .take_while(|line| line.trim().is_empty() || line.len() - line.trim_start().len() >= indent)
+    {
+        script.push_str(line.get(indent..).unwrap_or_default());
+        script.push('\n');
+    }
+    script
+}
+
+#[test]
+fn the_workflow_step_reader_reads_jobs_steps_and_runs() {
+    let workflow = "on:\njobs:\n  a:\n    steps:\n      - name: one\n        run: echo one\n      - run: |\n          two\n  b:\n    name: bee\n    steps:\n      # - name: one\n      - name: one\n        env:\n          X: y\n        run: |\n          set -e\n\n            indented\n      - uses: x\n    timeout-minutes: 3\n";
+    assert_eq!(run_of(&workflow_step(workflow, "a", "one")), "echo one\n");
+    let a = workflow_steps(&workflow_job(workflow, "a"));
+    assert_eq!(run_of(&a[1]), "two\n");
+    assert_eq!(
+        run_of(&workflow_step(workflow, "b", "one")),
+        "set -e\n\n  indented\n"
+    );
+    let b = workflow_job(workflow, "b");
+    assert_eq!(b[0], "    name: bee");
+    let steps = workflow_steps(&b);
+    assert_eq!(steps.len(), 2);
+    assert_eq!(steps[1], ["      - uses: x"]);
+}
+
+/// A scratch directory with release.yml's step `step` of job `job` as `step.sh` and a copy of
+/// the workspace manifest, which the step reads its version from.
+fn release_step(s: &Scratch, job: &str, step: &str) -> (Vec<String>, String) {
+    let workflow = read(".github/workflows/release.yml");
+    let lines = workflow_step(&workflow, job, step);
+    let script = run_of(&lines);
+    assert!(
+        !script.contains("${{"),
+        "the step's script must read only its environment: {script}"
+    );
+    std::fs::write(s.0.join("step.sh"), &script).unwrap();
+    std::fs::copy(format!("{ROOT}/Cargo.toml"), s.0.join("Cargo.toml")).unwrap();
+    let manifest = read("Cargo.toml");
+    let version = manifest
+        .split("[workspace.package]")
+        .nth(1)
+        .and_then(|rest| {
+            rest.lines()
+                .find_map(|line| line.strip_prefix("version = \""))
+        })
+        .and_then(|rest| rest.strip_suffix('"'))
+        .expect("the workspace version")
+        .to_owned();
+    (lines, version)
+}
+
+/// SECURITY.md: "A tag must exactly match the workspace version." release.yml's supply-chain
+/// job checks it on every tag run, and the build (so the release and publication after it)
+/// waits for that job (`release_workflow.rs`,
+/// `both_release_runs_gate_build_run_and_check_every_target`). The check's own script is run
+/// here, as the runner runs it (`bash -e`), with the pushed tag's name in `RELEASE_TAG`.
+#[test]
+fn a_release_tag_that_is_not_the_workspace_version_stops_the_release() {
+    let s = scratch("release-tag-version");
+    let (lines, version) = release_step(
+        &s,
+        "supply-chain",
+        "verify release tag matches workspace version",
+    );
+    let has = |want: &str| lines.iter().any(|line| line.trim() == want);
+    assert!(
+        has("if: startsWith(github.ref, 'refs/tags/v')"),
+        "the check runs on every run of a `v*` tag: {lines:#?}"
+    );
+    assert!(
+        has("RELEASE_TAG: ${{ github.ref_name }}"),
+        "the check reads the pushed tag's name: {lines:#?}"
+    );
+    let check = |tag: &str| {
+        run(Command::new("bash")
+            .args(["-e", "step.sh"])
+            .current_dir(&s.0)
+            .env("RELEASE_TAG", tag))
+    };
+    let good = check(&format!("v{version}"));
+    assert!(
+        good.status.success(),
+        "the tag of the workspace version must pass: {good:?}"
+    );
+    for tag in [
+        format!("v{version}.1"),
+        format!("v{version}-rc.1"),
+        version.clone(),
+        format!("V{version}"),
+        "v0.0.1".to_owned(),
+    ] {
+        let out = check(&tag);
+        assert!(
+            !out.status.success(),
+            "the tag {tag} of a {version} workspace passed the check: {out:?}"
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains(&format!(
+                "::error::release tag {tag} does not match workspace version v{version}"
+            )),
+            "the refusal names the tag and the version: {out:?}"
+        );
+    }
+}
+
+/// SECURITY.md: "… an open gate without a token fails the job instead of passing without
+/// publishing." The publish job's script runs here as the runner runs it, with stand-ins for
+/// `curl` (crates.io's answer), `cargo` (publication) and `sleep`, each recording its call.
+/// That the job runs only on a tag with `DDF_CRATES_IO` open, in the `release` environment, is
+/// `crate_edges.rs` (`release_publication_is_owner_gated_and_the_dry_run_publishes_nothing`).
+#[test]
+fn an_open_crates_io_gate_without_a_token_fails_before_publishing() {
+    let s = scratch("publish-gate");
+    let (lines, version) = release_step(&s, "publish", "publish crates in dependency order");
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.trim() == "CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}"),
+        "the step takes the token from the environment's secret: {lines:#?}"
+    );
+    let bin = s.0.join("bin");
+    tool(
+        &bin.join("curl"),
+        "printf 'curl %s\\n' \"$*\" >>\"$CALLS\"\nexit \"$CURL_EXIT\"\n",
+    );
+    tool(
+        &bin.join("cargo"),
+        "printf 'cargo %s\\n' \"$*\" >>\"$CALLS\"\n",
+    );
+    tool(&bin.join("sleep"), "exit 0\n");
+    let path = path_with(&bin);
+    let calls = s.0.join("calls");
+    let publish = |token: Option<&str>, curl_exit: &str| {
+        std::fs::write(&calls, "").unwrap();
+        let mut cmd = Command::new("bash");
+        cmd.args(["-e", "step.sh"])
+            .current_dir(&s.0)
+            .env("PATH", &path)
+            .env("CALLS", &calls)
+            .env("CURL_EXIT", curl_exit)
+            .env("GITHUB_REF_NAME", format!("v{version}"));
+        match token {
+            Some(token) => cmd.env("CARGO_REGISTRY_TOKEN", token),
+            None => cmd.env_remove("CARGO_REGISTRY_TOKEN"),
+        };
+        let out = run(&mut cmd);
+        (out, std::fs::read_to_string(&calls).unwrap())
+    };
+    // No token (a secret that is not set expands to nothing), while crates.io has none of the
+    // crates yet: the job fails at once, and crates.io is not even asked.
+    for token in [None, Some("")] {
+        let (out, called) = publish(token, "22");
+        assert!(
+            !out.status.success(),
+            "an open gate without a token passed (token {token:?}): {out:?}"
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains(
+                "::error::DDF_CRATES_IO is open but CARGO_REGISTRY_TOKEN is not set in the release environment"
+            ),
+            "the failure says why (token {token:?}): {out:?}"
+        );
+        assert_eq!(
+            called, "",
+            "crates.io was asked or published to without a token ({token:?})"
+        );
+    }
+    // Control: with a token, and every crate already published, the script runs to its end and
+    // publishes nothing.
+    let (out, called) = publish(Some("token"), "0");
+    assert!(out.status.success(), "{out:?}");
+    assert!(
+        called.lines().count() >= 10 && called.lines().all(|line| line.starts_with("curl ")),
+        "{called}"
+    );
+}
+
+// --- scripts/release_local.sh: built and smoked as release.yml, signed by the owner only
+// (lane T3e of 0.11.1) --------------------------------------------------------------------
+
+/// The lines of the shell function `name` of a script, from `name() {` to the line `}`, without
+/// comment lines and without the bodies of its quoted here-documents (`<<'EOF'`): the
+/// receipt's Python names the checks the build ran, which is not running them.
+fn shell_function<'a>(script: &'a str, name: &str) -> Vec<&'a str> {
+    let head = format!("{name}() {{");
+    let mut lines = Vec::new();
+    let mut heredoc: Option<&str> = None;
+    for line in script.lines().skip_while(|line| *line != head).skip(1) {
+        if let Some(end) = heredoc {
+            if line.trim() == end {
+                heredoc = None;
+            }
+            continue;
+        }
+        if line == "}" {
+            break;
+        }
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
+        if let Some((_, rest)) = line.split_once("<<'") {
+            heredoc = rest.split('\'').next();
+        }
+        lines.push(line);
+    }
+    assert!(!lines.is_empty(), "no shell function {name}");
+    lines
+}
+
+/// The words of a `cargo build` command, up to and including `--target`.
+fn build_command(line: &str) -> Vec<&str> {
+    let words: Vec<&str> = line[line.find("cargo build").expect("a cargo build")..]
+        .split_whitespace()
+        .collect();
+    let end = words
+        .iter()
+        .position(|word| *word == "--target")
+        .map_or(words.len(), |at| at + 1);
+    words[..end].to_vec()
+}
+
+/// SECURITY.md: "`scripts/release_local.sh build` … builds the commit twice from fresh exports
+/// with `release.yml`'s cargo command and stops unless both binaries have one SHA-256, then runs
+/// the same smoke and glibc check, writes the SBOM, archive, receipt and `SHA256SUMS`, and signs
+/// nothing." The two builds and the one SHA-256, and what is written, are held by the gate's
+/// "release-script self-test" (`scripts/test_release_local.sh`, cases 6 and 1); this holds the
+/// command, the smoke and the signing. That `release.yml` is not used, and where the owner
+/// builds, are the owner's practice, not the repository's.
+#[test]
+fn the_local_release_builds_and_smokes_as_release_yml_and_signs_nothing() {
+    let workflow = read(".github/workflows/release.yml");
+    let script = read("scripts/release_local.sh");
+    let ci = run_of(&workflow_step(&workflow, "build", "build release binary"));
+    let local = shell_function(&script, "build_at");
+    let local = local
+        .iter()
+        .find(|line| line.contains("cargo build"))
+        .expect("build_at runs cargo build");
+    assert_eq!(
+        build_command(local),
+        build_command(&ci),
+        "scripts/release_local.sh builds with another command than release.yml's"
+    );
+    let smoke = run_of(&workflow_step(
+        &workflow,
+        "build",
+        "smoke the release binary",
+    ));
+    let build = shell_function(&script, "do_build");
+    for part in [
+        "--version",
+        "--stdin-patch --json --require-files",
+        "fixtures/patch/basic.patch",
+        "grep -q '\"schema\": \"deep-diff-forge.review.v0\"'",
+        "scripts/check_glibc_floor.sh",
+    ] {
+        assert!(
+            smoke.contains(part),
+            "release.yml's smoke no longer runs {part:?}: hold this check to what it runs now"
+        );
+        assert!(
+            build.iter().any(|line| line.contains(part)),
+            "scripts/release_local.sh's build does not run release.yml's smoke part {part:?}"
+        );
+    }
+    let signing: Vec<&str> = script
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .filter(|line| {
+            [
+                "-Y sign", "git tag", "gpg ", "minisign", "cosign", "signify",
+            ]
+            .iter()
+            .any(|command| line.contains(command))
+        })
+        .filter(|line| {
+            let rest = line.trim_start();
+            !(rest.starts_with("printf ") || rest.starts_with("echo "))
+        })
+        .collect();
+    assert!(
+        signing.is_empty(),
+        "scripts/release_local.sh signs (it only prints the owner's commands): {signing:#?}"
+    );
+}
+
+#[test]
+fn the_release_script_readers_read_functions_and_commands() {
+    let script = "a() {\n  # cargo build x\n  one\n  python3 - <<'EOF'\nchecks = [\"scripts/check_glibc_floor.sh\"]\n}\nEOF\n  two\n}\nb() {\n  cargo_env cargo build --release -p x --target \"$t\") \\\n}\n";
+    assert_eq!(
+        shell_function(script, "a"),
+        ["  one", "  python3 - <<'EOF'", "  two"]
+    );
+    let b = shell_function(script, "b");
+    assert_eq!(
+        build_command(b[0]),
+        ["cargo", "build", "--release", "-p", "x", "--target"]
+    );
+    assert_eq!(
+        build_command("run: cargo build --locked"),
+        ["cargo", "build", "--locked"]
+    );
+}
+
+/// SECURITY.md: "The owner signs `SHA256SUMS` with the release key in the namespace
+/// `deep-diff-forge-release-sha256sums` and publishes the signed tag and the files on GitLab,
+/// Gitea and Forgejo." The signing and the release pages are the owner's acts. What the
+/// repository holds of them: the namespace is the one `scripts/release_local.sh verify` checks
+/// (the self-test's case 1b fails under another) and one every release key may sign in, and
+/// `just release-tag` pushes the signed tag to those three remotes and no other.
+#[test]
+fn the_release_namespace_and_remotes_are_the_ones_security_md_names() {
+    const NAMESPACE: &str = "deep-diff-forge-release-sha256sums";
+    let words = read("SECURITY.md")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let sentence = format!(
+        "The owner signs `SHA256SUMS` with the release key in the namespace `{NAMESPACE}` and publishes the signed tag and the files on GitLab, Gitea and Forgejo."
+    );
+    assert!(
+        words.contains(&sentence),
+        "SECURITY.md no longer says {sentence:?}: hold this check to what it says now"
+    );
+    let script = read("scripts/release_local.sh");
+    assert!(
+        script.lines().any(|line| line == format!("ns={NAMESPACE}")),
+        "scripts/release_local.sh checks SHA256SUMS.sig in another namespace than {NAMESPACE}"
+    );
+    let signers = read(".github/release_allowed_signers");
+    let keys: Vec<&str> = signers
+        .lines()
+        .filter(|line| !line.trim().is_empty() && !line.starts_with('#'))
+        .collect();
+    assert!(!keys.is_empty(), "no release key");
+    for key in keys {
+        let namespaces = key
+            .split_whitespace()
+            .nth(1)
+            .and_then(|field| field.strip_prefix("namespaces=\""))
+            .and_then(|field| field.strip_suffix('"'))
+            .unwrap_or_default();
+        assert!(
+            namespaces
+                .split(',')
+                .any(|namespace| namespace == NAMESPACE),
+            "a release key may not sign in {NAMESPACE}: namespaces {namespaces:?}"
+        );
+    }
+    let justfile = read("justfile");
+    let recipe = justfile
+        .split("\nrelease-tag version:\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n\n").next())
+        .expect("the release-tag recipe");
+    let lines: Vec<&str> = recipe.lines().map(str::trim).collect();
+    let loops: Vec<&&str> = lines
+        .iter()
+        .filter(|line| line.starts_with("for remote in "))
+        .collect();
+    assert_eq!(
+        loops, [&"for remote in gitlab gitea forgejo; do"; 2],
+        "the recipe checks and pushes to GitLab, Gitea and Forgejo, and to no other remote"
+    );
+    let pushes: Vec<&&str> = lines
+        .iter()
+        .filter(|line| line.contains("git push"))
+        .collect();
+    assert_eq!(
+        pushes,
+        [&"git push \"${remote}\" \"v${want}\""],
+        "the signed tag is pushed only inside the loop over the three remotes"
+    );
+}
+
+// --- gitleaks: the hook without its scanner, and CI's full-history scan (lane T3e of 0.11.1) --
+
+/// `PATH` without any directory that holds an executable `name`. Should that leave no `git` or
+/// `bash` (the hook's interpreter, found through `env`), they are linked into `keep`, first.
+fn path_without(name: &str, keep: &Path) -> String {
+    let path = std::env::var("PATH").unwrap_or_default();
+    let holds = |dir: &str, tool: &str| {
+        Path::new(dir)
+            .join(tool)
+            .metadata()
+            .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+    };
+    let dirs: Vec<&str> = path
+        .split(':')
+        .filter(|dir| !dir.is_empty() && !holds(dir, name))
+        .collect();
+    std::fs::create_dir_all(keep).unwrap();
+    for tool in ["git", "bash"] {
+        if !dirs.iter().any(|dir| holds(dir, tool)) {
+            let found = path
+                .split(':')
+                .find(|dir| holds(dir, tool))
+                .unwrap_or_else(|| panic!("no {tool} on PATH"));
+            std::os::unix::fs::symlink(Path::new(found).join(tool), keep.join(tool)).unwrap();
+        }
+    }
+    format!("{}:{}", keep.display(), dirs.join(":"))
+}
+
+/// SECURITY.md: the pre-push hook "refuses a push when gitleaks finds a secret or is missing".
+/// A find is `the_pre_push_hook_scans_a_force_push_over_a_remote_tip_never_fetched`, the clean
+/// push its control; this is the missing scanner: neither on `PATH` nor in `~/.local/bin`.
+#[test]
+fn the_pre_push_hook_refuses_a_push_when_gitleaks_is_missing() {
+    let s = scratch("prepush-missing");
+    let (a, _) = diverged_remote(&s);
+    commit(&a, "clean.txt", "nothing secret\n");
+    let path = path_without("gitleaks", &s.0.join("keep"));
+    let home = s.0.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    // Positive control: the hook's two places hold no gitleaks.
+    let found = run(Command::new("bash")
+        .args([
+            "-c",
+            "command -v gitleaks || test -e \"$HOME/.local/bin/gitleaks\"",
+        ])
+        .env("PATH", &path)
+        .env("HOME", &home));
+    assert!(
+        !found.status.success(),
+        "gitleaks is still found: {}",
+        String::from_utf8_lossy(&found.stdout)
+    );
+    let pushed = run(Command::new("git")
+        .current_dir(&a)
+        .env("PATH", &path)
+        .env("HOME", &home)
+        .args(["push", "origin", "HEAD:refs/heads/unscanned"]));
+    let stderr = String::from_utf8_lossy(&pushed.stderr);
+    assert!(
+        !pushed.status.success(),
+        "a push without gitleaks was accepted: {stderr}"
+    );
+    assert!(
+        stderr.contains("pre-push: gitleaks not found; refusing push"),
+        "the refusal says the scanner is missing: {stderr}"
+    );
+    assert_eq!(
+        git(&s.0.join("remote.git"), &["branch", "--list", "unscanned"]),
+        "",
+        "the unscanned commits reached the remote"
+    );
+}
+
+/// SECURITY.md: "the required `secrets` CI job (`secret scan (gitleaks)`, full history) and the
+/// versioned pre-push hook `scripts/hooks/pre-push` (`just install-hooks`)". That the job is
+/// required is a ruleset of the GitHub repository, not a file of this one.
+#[test]
+fn ci_scans_the_whole_history_for_secrets_and_installs_the_versioned_hook() {
+    let workflow = read(".github/workflows/ci.yml");
+    let job = workflow_job(&workflow, "secrets");
+    assert_eq!(job[0], "    name: secret scan (gitleaks)");
+    let steps = workflow_steps(&job);
+    let checkout = steps
+        .iter()
+        .find(|step| step[0].contains("uses: actions/checkout@"))
+        .expect("the secret scan checks out");
+    assert!(
+        checkout.iter().any(|line| line.trim() == "fetch-depth: 0"),
+        "the secret scan's checkout is shallow, so it scans only part of the history: {checkout:#?}"
+    );
+    let scan = run_of(&workflow_step(
+        &workflow,
+        "secrets",
+        "gitleaks (pinned release, checksum-verified)",
+    ));
+    let command = scan
+        .lines()
+        .find(|line| line.contains("gitleaks git "))
+        .expect("the job runs gitleaks over the repository");
+    assert!(
+        command.contains("--exit-code 1") && !command.contains("--log-opts"),
+        "the scan must fail on a find and cover every commit: {command}"
+    );
+    assert!(
+        read("justfile").contains(
+            "\ninstall-hooks:\n    install -m 0755 scripts/hooks/pre-push \"$(git rev-parse --git-common-dir)/hooks/pre-push\"\n"
+        ),
+        "`just install-hooks` installs the versioned hook"
+    );
+}
+
+// --- scripts/security/generate_spdx_sbom.py: reproducible (lane T3e of 0.11.1) -------------
+
+/// Runs the generator three times on a stand-in graph (cargo is not run: `_run_metadata` and
+/// `_lock_checksums` are replaced), the second the same as the first, the third with one version
+/// changed; prints, per run, the file, its `created`, its namespace and the SHA-256 of what the
+/// namespace is to address (its packages and relationships, as the generator serialises them).
+const SBOM_DRIVER: &str = r#"import contextlib, hashlib, importlib.util, io, json, sys
+spec = importlib.util.spec_from_file_location("gen", sys.argv[1])
+gen = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gen)
+def graph(version):
+    return {"packages": [
+                {"id": "app", "name": "app", "version": "1.0.0", "source": None, "license": "MIT"},
+                {"id": "dep", "name": "dep", "version": version,
+                 "source": "registry+https://example.invalid/index", "license": "MIT"}],
+            "workspace_members": ["app"],
+            "resolve": {"nodes": [{"id": "app", "deps": [{"pkg": "dep"}]}]}}
+gen._lock_checksums = lambda: {}
+runs = []
+for version in ["2.0.0", "2.0.0", "2.0.1"]:
+    gen._run_metadata = lambda version=version: graph(version)
+    with contextlib.redirect_stdout(io.StringIO()):
+        gen.main()
+    text = gen.OUTPUT.read_text()
+    doc = json.loads(text)
+    content = json.dumps({"packages": doc["packages"], "relationships": doc["relationships"]}, sort_keys=True)
+    runs.append({"text": text, "created": doc["creationInfo"]["created"],
+                 "namespace": doc["documentNamespace"],
+                 "content": hashlib.sha256(content.encode()).hexdigest()})
+print(json.dumps(runs))
+"#;
+
+/// SECURITY.md: "The committed SBOM is reproducible: its namespace is content-addressed and
+/// `created` comes from the last `Cargo.lock` commit." The gate's SBOM step compares a
+/// regenerated SBOM with the committed one but ignores `created`; this runs the generator in a
+/// scratch repository whose last commit is not the last commit to `Cargo.lock`.
+#[test]
+fn the_sbom_namespace_is_its_content_s_hash_and_created_the_last_cargo_lock_commit() {
+    let s = scratch("sbom-created");
+    let repo = s.0.join("repo");
+    let generator = repo.join("scripts/security/generate_spdx_sbom.py");
+    std::fs::create_dir_all(generator.parent().unwrap()).unwrap();
+    std::fs::copy(
+        format!("{ROOT}/scripts/security/generate_spdx_sbom.py"),
+        &generator,
+    )
+    .unwrap();
+    git(&repo, &["init", "-q"]);
+    for (file, epoch) in [("Cargo.lock", "1700000000"), ("other.txt", "1800000000")] {
+        std::fs::write(repo.join(file), format!("{file}\n")).unwrap();
+        git(&repo, &["add", file]);
+        let date = format!("@{epoch} +0000");
+        let done = run(Command::new("git")
+            .current_dir(&repo)
+            .args(["-c", "commit.gpgSign=false", "commit", "-qm", file])
+            .env("GIT_AUTHOR_DATE", &date)
+            .env("GIT_COMMITTER_DATE", &date));
+        assert!(done.status.success(), "{done:?}");
+    }
+    let out = run(Command::new("python3")
+        .arg("-I")
+        .arg("-c")
+        .arg(SBOM_DRIVER)
+        .arg(&generator)
+        .env_remove("SOURCE_DATE_EPOCH"));
+    assert!(out.status.success(), "{out:?}");
+    let runs: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    let field = |at: usize, key: &str| runs[at][key].as_str().unwrap().to_owned();
+    assert_eq!(
+        field(0, "created"),
+        "2023-11-14T22:13:20Z",
+        "`created` is the time of the last commit to Cargo.lock (1700000000), not of HEAD's or the clock's"
+    );
+    assert_eq!(
+        field(0, "text"),
+        field(1, "text"),
+        "the same graph gives the same SBOM, byte for byte"
+    );
+    for at in 0..3 {
+        let content = field(at, "content");
+        assert!(
+            field(at, "namespace").ends_with(&format!("/sbom/{}", &content[..32])),
+            "the namespace is not addressed by the SBOM's content: {} for {content}",
+            field(at, "namespace")
+        );
+    }
+    assert_ne!(
+        field(0, "namespace"),
+        field(2, "namespace"),
+        "another graph has another namespace"
+    );
 }

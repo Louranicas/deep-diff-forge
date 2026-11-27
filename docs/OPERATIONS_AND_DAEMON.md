@@ -67,7 +67,7 @@ The daemon exists for top-tail latency and coordination:
 | --- | --- |
 | Unix with `$XDG_RUNTIME_DIR` | `$XDG_RUNTIME_DIR/deep-diff-forge/deep-diff-forge.sock` |
 | Unix without `$XDG_RUNTIME_DIR` | Fails closed — pass `--socket PATH`; there is no `/tmp` fallback |
-| A path of 108 bytes or more | Refused by `daemon path` and `daemon start`, exit 2 (since 0.10.0): Linux holds a socket path and its NUL in 108 bytes (`sun_path`) |
+| A path longer than the system's `sun_path` holds with its NUL (107 bytes on Linux, 103 on macOS) | Refused by `daemon path` and `daemon start`, exit 2 (since 0.10.0; until 0.11.1 the limit was Linux's 107 on every system), with the system's number; `deploy doctor` fails its `socket` check with the same words |
 | Windows | Daemon unsupported; no named-pipe implementation |
 
 ## Daemon Lifecycle (implemented)
@@ -135,8 +135,8 @@ stateDiagram-v2
 
 The implemented daemon refuses startup unless:
 
-- a secure runtime base is available or an explicit socket path is supplied, and the path is
-  shorter than 108 bytes;
+- a secure runtime base is available or an explicit socket path is supplied, and the path fits
+  the system's `sun_path` with its NUL (at most 107 bytes on Linux, 103 on macOS);
 - the socket parent exists as, or can be created as, an effective-user-owned
   non-symlink directory with mode `0700`;
 - an existing socket path is either absent or verifiably a socket rather than a
@@ -324,7 +324,7 @@ concurrent start fail.
 | Check | ok | warn | fail |
 | --- | --- | --- | --- |
 | `binary` | always; names the version | | |
-| `socket` | the socket path resolved | `$XDG_RUNTIME_DIR` unset and no `--socket` (the next three are skipped) | |
+| `socket` | the socket path resolved | `$XDG_RUNTIME_DIR` unset and no `--socket` (the next three are skipped) | a path longer than the system's `sun_path` holds (107 bytes on Linux, 103 on macOS), in the words `daemon path` and `daemon start` refuse it with |
 | `socket_dir` | absent (a start creates it `0700`), or owner-private | | a symlink, not a directory, another owner, or group/other access |
 | `daemon` | not running, or a daemon of this version answered `daemon.health` | a stale socket (the next start replaces it), or a daemon of another version | a daemon this user may not use, a non-socket file at the path, or no usable answer |
 | `start_lock` | absent, or a regular file owned by this user | | a symlink, not a regular file, or another owner |

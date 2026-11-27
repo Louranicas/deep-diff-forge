@@ -234,7 +234,7 @@ impl ReasonClass {
                 "chain.policy_missing",
                 "UNJUDGED",
                 "never",
-                "the base commit has no policy file",
+                "a policy the stop judges by cannot be had: the base commit has no policy file, the hooks are given another policy name than the project's policy record binds, that record cannot be read whole, or the accepted policy changed while the stop judged",
             ),
             Self::ChainInputUnwritable => (
                 "chain.input_unwritable",
@@ -432,7 +432,7 @@ impl ReasonClass {
                 "place.base_gone",
                 "UNJUDGED",
                 "never",
-                "the commit a change is measured from can no longer be read",
+                "the commit a change is measured from, or the one the project's ledger first recorded, can no longer be read",
             ),
             Self::PlaceUnmerged => (
                 "place.unmerged",
@@ -444,7 +444,7 @@ impl ReasonClass {
                 "place.shallow_parent",
                 "UNJUDGED",
                 "never",
-                "a shallow clone does not have a commit's parent",
+                "a shallow clone does not have a commit's parent, or the history back to the project's first record",
             ),
             Self::PlaceScratch => (
                 "place.scratch",
