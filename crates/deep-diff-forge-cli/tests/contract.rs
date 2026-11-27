@@ -2251,6 +2251,17 @@ fn run_refusal(
         .env_remove("CLAUDE_PROJECT_DIR")
         .stdin(Stdio::piped())
         .stderr(Stdio::piped());
+    // The class `chain_not_ready` counts the links of `agent doctor --gate` that fail, and the
+    // link that finds the judge on `PATH` passes on a host that has installed `forge-warden`
+    // (13 failing links instead of 14: found 2026-11-28 when ~/.local/bin/forge-warden was
+    // installed). The refusal must not depend on what the host has installed: the judge is
+    // taken off `PATH` for these runs, every other tool stays.
+    if let Some(path) = std::env::var_os("PATH") {
+        let without_judge: Vec<std::path::PathBuf> = std::env::split_paths(&path)
+            .filter(|directory| !directory.join("forge-warden").exists())
+            .collect();
+        command.env("PATH", std::env::join_paths(without_judge).unwrap());
+    }
     match out {
         Out::Piped => command.stdout(Stdio::piped()),
         Out::Closed => {
