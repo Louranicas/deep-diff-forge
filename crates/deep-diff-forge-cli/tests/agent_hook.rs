@@ -1614,9 +1614,14 @@ const START_NOT_RECORDED_AGAIN: &str = "deep-diff-forge: 1 thing in this project
 
 fn hook_on_path(event: &str, path: &[&Path], input: &Value) -> (i32, String, String) {
     let mut dirs: Vec<PathBuf> = path.iter().map(|dir| dir.to_path_buf()).collect();
-    dirs.extend(std::env::split_paths(
-        &std::env::var_os("PATH").unwrap_or_default(),
-    ));
+    // The host's own PATH follows, less any directory that holds a `forge-warden`: a test of the
+    // judge's discovery must not find the judge the host has installed (2026-11-28: once
+    // ~/.local/bin/forge-warden was installed, `a_judge_inside_the_repository_it_would_judge_is_not_run`
+    // found it where the test expects no judge).
+    dirs.extend(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+            .filter(|dir| !dir.join("forge-warden").exists()),
+    );
     hook_in(event, &[], input, |command| {
         command.env("PATH", std::env::join_paths(dirs).unwrap());
     })
