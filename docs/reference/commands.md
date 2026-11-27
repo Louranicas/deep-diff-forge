@@ -6,7 +6,7 @@
 
 ```bash
 deep-diff-forge --stdin-patch [MODE] [--require-files] [--require-hunks] [--allow-empty]
-deep-diff-forge {--git-working-tree [--include-untracked] | --git-staged | --git-range A..B} [--repo PATH] [MODE | --acquisition-json]
+deep-diff-forge {--git-working-tree [--include-untracked] | --git-staged | --git-range A..B} [--repo PATH] [MODE | --acquisition-json] [--require-files] [--require-hunks]
 deep-diff-forge [--] <old> <new> [MODE] [--require-files] [--require-hunks]
 # MODE: --json | --jsonl | --rank [--fail-on LIST] | --diagnostics [--fail-on LIST]
 #       | --cluster [--parallel serial|auto|N] | --layout inline|side-by-side
@@ -16,7 +16,8 @@ deep-diff-forge [--] <old> <new> [MODE] [--require-files] [--require-hunks]
 Choose one MODE: a second is refused with exit 2 before any input is read. `--json` also
 selects the JSON form of `--rank`, `--diagnostics` and `--cluster` (and is accepted, redundantly, with
 `--outline` and `--hunks`, which always print JSON). An option that takes one value is
-refused when given twice; only `--address` and `--path` repeat.
+refused when given twice; here only `--address` and `--path` repeat (and `--allow-repo` and
+`--workload` repeat on their own commands).
 
 | Mode | Output |
 | --- | --- |
@@ -128,6 +129,7 @@ A gate should **always pass both guards**. When both fail, the files guard repor
 ```bash
 git diff | deep-diff-forge review                    # interactive (needs a terminal)
 git diff | deep-diff-forge review --side             # start side by side
+git diff | deep-diff-forge review --findings found.jsonl   # load verified agent findings as notes
 git diff | deep-diff-forge review --probe            # one headless frame for CI and agents
 git diff | deep-diff-forge review --probe --cols 120 --rows 40 --cmd rank
 ```
@@ -184,6 +186,9 @@ deep-diff-forge daemon {path|start [--foreground] [--allow-repo PATH]... [--log-
 ## Learning, analysis, deployment and diagnostics
 
 ```bash
+deep-diff-forge findings verify --findings FILE [--require-all] [--require-findings] [--require-files] [--require-hunks]  # verified-agent-findings.md
+deep-diff-forge bench [--quick] [--workload NAME]... [--json]   # evaluation.md (deep-diff-forge.bench.v0)
+deep-diff-forge eval [--corpus DIR] [--json]                    # evaluation.md (deep-diff-forge.eval.v0; exit 7 on failure)
 deep-diff-forge learn status [--json]                 # local receipts, scores, trust verdict
 echo '<receipt>' | deep-diff-forge learn record --stdin
 deep-diff-forge analyze <patch-file> <base-dir> <candidate-dir>   # deep-diff-forge.analysis.v1

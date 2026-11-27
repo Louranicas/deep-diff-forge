@@ -1,19 +1,20 @@
 # Storage And 10TB Corpus Policy
 
-> **Status 2026-11-01.** Shipped: none of this in the engine; the safety rules are current
-> operator policy. Planned, unowned: the `[storage]` configuration, the large cache and corpus
-> mirror. Nothing is withdrawn or on hold.
+> **Status 2026-11-25 (`v0.11.0`).** Shipped: none of the `[storage]` configuration, large cache,
+> or 10TB corpus mirror is built in the engine; the safety rules ("Corpus Ingestion Rules",
+> "Destructive Boundary") remain current operator policy. Planned, unowned: the `[storage]`
+> configuration, large cache, and corpus mirror. Nothing is withdrawn or on hold.
 
-## Status 2026-10-28 (0.3.0)
+## Status 2026-11-25 (v0.11.0)
 
-**Kind:** policy for the operator workstation's optional storage disk. The safety rules ("Corpus Ingestion Rules", "Destructive Boundary") are current. The paths, the config keys and the large cache are not built.
+**Kind:** operator policy for the workstation's optional storage disk. The safety rules ("Corpus Ingestion Rules", "Destructive Boundary") are current. The paths, config keys, and large cache below are not built.
 
-**At 0.3.0** (checked in code and with the binary):
+**At `v0.11.0`** (verified in code and with the binary):
 
 - The engine reads no `[storage]` configuration. `large_cache_dir` and `large_corpus_dir` appear in no crate. The engine writes nothing to this disk, and it has no corpus mirror or benchmark archive.
-- The engine writes no cache. `deep-diff-forge doctor` prints `cache_dir`, `state_dir` (the learning store's own resolved base, so a relative `XDG_STATE_HOME` is not reported) and the daemon socket path. The only persistent store is the local-only learning store under the state directory (`learn record`).
-- Test fixtures live in the repository under `fixtures/` (`fixtures/patch/`, `fixtures/council/`).
-- On the current operator workstation the `STORAGE-10TB` disk is mounted at `/var/mnt/storage`, not `/mnt/storage-10tb` (measured with `findmnt`). Every absolute path in this document is an operator-workstation path and is not in the repository.
+- The engine writes no diff or AST cache (`daemon.health` reports `cache_entries: 0`). `deep-diff-forge doctor` prints `cache_dir`, `state_dir` (the learning store's resolved base; a relative `XDG_STATE_HOME` is ignored), and the daemon socket path. Persistent local state at `v0.11.0` consists only of the local-only learning store (`$XDG_STATE_HOME/deep-diff-forge/learning/`, `learn record`), agent hook session state (`deep-diff-forge.hook-state.v13`), and the per-repository project frontier ledger under `.git/deep-diff-forge/`.
+- Repository test fixtures live under `fixtures/` (`corpus/`, `council/`, `diagnostics/`, `eval/`, `eval-refused-by-parser/`, `patch/`, `protocol/`). An optional external comparison corpus (`DDF_COMPARE_CORPUS`) is checked only if present on disk during `scripts/ci_local.sh`.
+- On the operator workstation the `STORAGE-10TB` disk is mounted at `/var/mnt/storage`, not `/mnt/storage-10tb` (measured with `findmnt` on 2026-10-28). Every absolute path in this document is an operator-workstation path and is not referenced by the repository code.
 
 Current docs: [operations and daemon](OPERATIONS_AND_DAEMON.md), [learning loop](LEARNING_LOOP.md).
 

@@ -3,13 +3,13 @@
 **Kind:** plan, append-only after acceptance. Versions are dated sections. A later revision is a new
 section; earlier ones are kept. Evidence labels: **measured**, **inferred**, **unmeasured**.
 
-> **Status 2026-11-01.** Shipped in 0.5.0: Feature A, code evidence (`graph::evidence`,
-> `graph::lexical`); Feature B, verified findings (`agent::findings`, `findings verify`,
-> `findings.verify`, MCP `verify_findings`); System M, `daemon.metrics`, `bench`, `eval`
-> (`cli/src/bench.rs`, `cli/src/eval.rs`). Shipped in 0.6.0: Prometheus text
-> output (`daemon::exposition`, `cli/src/textfile.rs`) and the 34-case corpus. Planned, unowned:
-> a persistent findings store, signed receipts. Withdrawn: `chain`, `cluster`, `loom` (row
-> "Deferred" in 1.0). See [1.3](#13--2026-11-01-later-changes).
+> **Status (`v0.11.0`, 2026-11-27).** All three pillars of this plan (Feature A code evidence, Feature B verified findings, and System M monitoring/eval/bench) are **shipped and substantially expanded** in `v0.11.0`:
+> - **Feature A (expanded in `v0.9.0`–`v0.11.0`):** Now **27 signals** (13 path/shape `RiskSignal` + 14 `EvidenceSignal`, adding `test_skipped`, `trivial_assert`, `stub_added`, `error_swallowed`, `panic_path_added`, and `diff_suppressed`), backed by the dual-reader engine (`graph/src/{rust_tokens,lexical,lexical/legacy_rust,evidence}.rs`), linear-time lexical/secret guards (DDF-2026-003), quoted CI privilege parsing (DDF-2026-005), stray-byte binary re-read (DDF-2026-006), GitLab & fine-grained GitHub tokens (DDF-2026-007), canonical `rank.v0` with `tool.scorer_sha256`, and `deep-diff-forge.diagnostics.v0` (`--diagnostics`, `--fail-on`, daemon protocol 3 `diff.diagnostics`, MCP `diagnose_patch`).
+> - **Feature B (shipped since `v0.5.0`, current in `v0.11.0`):** `agent::findings`, `findings verify [--require-all] [--require-findings]`, daemon `findings.verify`, MCP `verify_findings`, Rust/Python SDKs, and TUI `review --findings`.
+> - **System M (expanded through `v0.11.0`):** Lock-free `daemon.metrics` + Prometheus textfile exposition (`daemon::exposition`, `cli/src/textfile.rs`); `bench` with **9 deterministic workloads** + required PR base-vs-head CI gate; `eval` corpus expanded to **73 cases** (`14` ranking, `56` evidence, `3` findings) + **155 declared limits** (including **46 non-Rust integrity forms** declared in `v0.11.0`).
+> - **Still planned, unowned:** Persistent findings store, signed receipts for findings, and wiring `eval.v0` / `bench.v0` into `learn record`. **Withdrawn:** `chain`, `cluster`, `loom` subcommands (exit `2`).
+>
+> See [1.4 — 2026-11-27 (`v0.11.0` shipped state)](#14--2026-11-27-v0110-shipped-state), [Algorithms, Heuristics, and Execution Invariants](ALGORITHMS_AND_HEURISTICS.md), and the [Reference Docs](reference/README.md).
 
 Related: [production readiness](PRODUCTION_READINESS.md) · [roadmap](ROADMAP.md) ·
 [API and IPC](API_AND_IPC.md) · [operations](OPERATIONS_AND_DAEMON.md) ·
@@ -264,3 +264,22 @@ Corrections by new note; 1.0 to 1.2 are kept as written.
   the Prometheus text format 0.0.4 (not OpenMetrics) for node_exporter's textfile collector.
 - **The PR `bench` job is required** since 2026-10-31 (owner decision); 1.2 called it
   informational.
+
+## 1.4 — 2026-11-27 (`v0.11.0` shipped state)
+
+Appended status delta from `v0.6.0` (section 1.3) to `v0.11.0` (`main`); sections 1.0 to 1.3 remain as recorded.
+
+- **Feature A (Code Evidence & Diagnostics, shipped & expanded):**
+  - Expanded from 9 to **14 `EvidenceSignal`s** (`test_skipped`, `trivial_assert`, `stub_added`, `error_swallowed`, `panic_path_added`) and from 12 to **13 path/shape `RiskSignal`s** (`diff_suppressed`), totaling **27 signals**. See [Risk Ranking](reference/risk-ranking.md) and [Algorithms, Heuristics, and Execution Invariants](ALGORITHMS_AND_HEURISTICS.md#2-dual-reader-token--lexical-code-view-engine).
+  - Replaced tree-sitter in the evidence path with a single-pass Rust token reader (`graph/src/rust_tokens.rs`) paired with a compiler-matching Rust lexer (`graph/src/lexical.rs`), multi-start whole-side views, multi-section same-path merging (`CarriedShares`, `256 KiB` / `512 B` line cap), and a frozen `v0.8.3`/`v0.8.4` monotonicity floor (`graph/src/lexical/legacy_rust.rs`).
+  - Added linear-time JS keyword and secret-prefix DoS guards (DDF-2026-003), quoted YAML CI privilege scanning (DDF-2026-005), binary `--text` & stray-byte source re-reads (`diff_suppressed`, DDF-2026-006), GitLab & fine-grained GitHub tokens (DDF-2026-007, 18 prefixes), and Cargo TOML lint/build-hook rules.
+  - Added **`deep-diff-forge.diagnostics.v0`** (`graph/src/diagnostics.rs`, 42 pinned codes in `fixtures/diagnostics/codes.v0.txt`, case-filtered repairs), `--diagnostics [--fail-on LIST]`, `--rank --fail-on LIST`, daemon **protocol 3** (`diff.diagnostics` byte-exact paging in `daemon/src/pages.rs`), MCP `diagnose_patch` + `review_change(view="diagnostics")`, and `tool.scorer_sha256` on canonical `rank.v0`.
+  - Added the **agent hook loop (`v13`)** (`agent setup`, `agent doctor --gate`, `agent check`, `agent verify-branch`, `agent hook`) consuming `diagnostics.v0` + `guard_paths` for `PostToolUse` advice, RFC 2104 HMAC-SHA-256 keyed history, single-parent commit bound-mode judging, and the `.git/deep-diff-forge/ledger.jsonl` frontier ledger. See [Agent Hooks](reference/agent-hooks.md).
+- **Feature B (Verified Agent Findings, current in `v0.11.0`):**
+  - Shipped on CLI (`findings verify --findings FILE [--require-all] [--require-findings]`), daemon (`findings.verify`), MCP (`verify_findings`), Rust/Python SDKs, and TUI (`review --findings`). See [Verified Agent Findings](reference/verified-agent-findings.md).
+  - Still unbuilt / unowned: persistent findings store and signed finding receipts.
+- **System M (Monitoring, Benchmarking, and Evaluation, expanded in `v0.11.0`):**
+  - **M1:** Lock-free `AtomicU64` `daemon.metrics` + Prometheus textfile exporter (`daemon metrics --format prometheus`) live on protocol 3 alongside 17 daemon JSON-RPC methods and 9 read-only MCP tools.
+  - **M2 (`bench`):** Expanded from 7 to **9 deterministic workloads** (adding `rank_long_line` and `rank_many_fragments`). Release builds pin `codegen-units = 1` and dev builds pin `deep-diff-forge-core` `opt-level = 3`.
+  - **M3 (`eval`):** Expanded from 34 cases to **73 cases** (`14` ranking, `56` evidence, `3` findings) and **155 declared limits** (`127` evidence `known_miss`, `25` evidence `known_false_positive`, `3` ranking `known_miss` — including **46 non-Rust integrity forms** declared in `v0.11.0`), with measured floors in `cli/tests/eval.rs`: ranking `12/15` (80.0%), precision `233/258` (90.3%), recall `233/360` (64.7%), `EVIDENCE_FOUND_FLOOR = 233`, findings `33/33` (100%). Parser-refused sections live under `fixtures/eval-refused-by-parser/`. See [Evaluation Reference](reference/evaluation.md).
+  - **Learning loop wiring:** `learn record` still accepts only `StrategyReceipt` JSONL; ingesting `eval.v0` or `bench.v0` receipts into `deep-diff-forge-learning` remains planned and unowned. See [Learning Loop](LEARNING_LOOP.md).

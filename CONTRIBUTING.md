@@ -63,12 +63,16 @@ merge request must pass:
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings -W clippy::pedantic
 cargo test --workspace --locked
+RUSTDOCFLAGS="-D warnings -D rustdoc::broken_intra_doc_links" cargo doc --workspace --no-deps --locked
 ```
 
-`just gate-feature` runs those plus the contract probes. `scripts/ci_local.sh` (or `just ci`)
-replicates the `secrets`, `msrv`, `gate` and `supply-chain` CI jobs on your machine, including
-the supply-chain checks and the SBOM; it does not replay the Podman sandbox, diff-mutation or
-bench jobs. `just install-hooks` installs the versioned gitleaks pre-push hook
+`just gate-feature` runs formatting, compilation, clippy, pedantic clippy, workspace tests and
+the contract probes; `just docs` runs the rustdoc check above, and `just gate-release` runs both.
+`scripts/ci_local.sh` (or `just ci`) runs all 36 steps of the local gate (replicating the
+`secrets`, `msrv`, `gate` and `supply-chain` CI jobs on pinned Rust 1.99.1 plus Rust 1.88.0 for
+MSRV, along with the four local-only steps including the diagnostics contract and the
+forge-warden contract matrix); it does not replay the Podman sandbox, diff-mutation or bench
+jobs. `just install-hooks` installs the versioned gitleaks pre-push hook
 (`scripts/hooks/pre-push`), which refuses a push that adds a secret.
 
 What the gates enforce, and what we ask in review:
@@ -84,12 +88,17 @@ What the gates enforce, and what we ask in review:
 - **Mutation-tested diffs.** `scripts/diff_mutation.sh origin/main` runs `cargo-mutants` on the
   lines your change touches, and a surviving mutant fails it; run it before asking for review
   (the GitHub mirror's CI runs it in four shards on its pull requests).
-- **Fuzzed parsers.** A parser change must survive the fuzz targets in [`fuzz/`](fuzz/). The
-  GitHub mirror's CI fuzzes each target briefly; run longer locally
-  (`cargo +nightly fuzz run patch_parser`).
-- **Docs move with code.** Several tests read the reference documents in
-  [`docs/reference/`](docs/reference/) (exit codes, caps, daemon methods). If your change alters
-  a documented contract, update the doc in the same merge request.
+- **Fuzzed parsers.** A parser, scanner, hook, journal or stdio-protocol change must survive the
+  18 fuzz targets in [`fuzz/`](fuzz/) (`scripts/fuzz_target.sh --list`). The GitHub mirror's CI
+  fuzzes each target briefly; run longer locally with `DDF_FUZZ_CORPUS_ROOT=<dir> scripts/fuzz_target.sh patch_parser 60`
+  (or `just fuzz-campaign` across all 18 targets).
+- **Docs move with code.** Contract tests read `README.md` (strictly under 400 lines, links and
+  platform table), `docs/SCHEMATICS.md` (`crate-edges` block), `SECURITY.md`,
+  `crates/deep-diff-forge-patch/CONFORMANCE.md` and [`docs/reference/`](docs/reference/) (exit
+  codes, exit-7 refusal reasons, signal tables, diagnostics codes, hook reason classes,
+  evaluation figures, MCP/daemon caps and methods). If your change alters a documented contract
+  or algorithm, update the reference docs (and [`docs/ALGORITHMS_AND_HEURISTICS.md`](docs/ALGORITHMS_AND_HEURISTICS.md))
+  in the same merge request.
 - **A new dependency is a reviewed decision.** `cargo deny` and `cargo audit` gate licences,
   sources and advisories, and the committed SBOM must be regenerated
   (`python3 scripts/security/generate_spdx_sbom.py`).

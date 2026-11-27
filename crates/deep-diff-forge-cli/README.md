@@ -34,6 +34,7 @@ single-user tool for Linux and macOS
 git diff | deep-diff-forge --stdin-patch                 # human review summary
 git diff | deep-diff-forge --stdin-patch --json          # deep-diff-forge.review.v0
 git diff | deep-diff-forge --stdin-patch --rank --json   # deep-diff-forge.rank.v0: what to look at first
+git diff | deep-diff-forge --stdin-patch --diagnostics --json  # deep-diff-forge.diagnostics.v0: located labels & repairs
 git diff | deep-diff-forge --stdin-patch --layout side-by-side
 git diff | deep-diff-forge review                        # interactive review cockpit (needs a terminal)
 git diff | deep-diff-forge review --probe                # one cockpit frame, headless
@@ -55,23 +56,24 @@ deep-diff-forge --git-range main..HEAD --repo ../other --json  # commit range
 deep-diff-forge --git-working-tree --acquisition-json          # deep-diff-forge.git-acquisition.v0
 ```
 
-For a CI or agent gate, refuse an empty or hunkless change instead of passing it:
+For a CI or agent gate, refuse an empty, hunkless, or high-risk change instead of passing it:
 
 ```bash
 deep-diff-forge --git-range main..HEAD --rank --json --require-files --require-hunks   # exit 7 on refusal
+deep-diff-forge --git-range main..HEAD --diagnostics --fail-on security,integrity      # exit 7 on selected labels
 ```
 
 ## Surfaces
 
 | Surface | Command | What it is |
 | --- | --- | --- |
-| CLI | `deep-diff-forge …` | Review, rank, cluster, Git selections, file pairs, `semantic`, `structural`, `highlight`, `analyze`, `findings verify`, `bench`, `eval`, `learn`, `council`, `agent setup\|doctor`. |
-| Machine contract | `envelope -- <command…>`, `schema [result\|exit-codes\|signals]`, `explain <code>`, `explain signal <label>` | Any command's result as one `ddf.result.v1` object; the exit-code registry; the signal vocabulary and, for one signal, why it matters and what answers it. |
+| CLI | `deep-diff-forge …` | Review, rank, diagnostics (`--diagnostics`), gates (`--fail-on`), views (`--outline`, `--hunks`), cluster, Git selections, file pairs, `semantic`, `structural`, `highlight`, `analyze`, `findings verify`, `bench`, `eval`, `learn`, `council`, `agent {setup\|doctor\|check\|verify-branch\|hook}`. |
+| Machine contract | `envelope -- <command…>`, `schema [result\|exit-codes\|signals\|diagnostics]`, `explain <code>`, `explain signal <label> [--audience agent\|person]` | Any command's result as one `ddf.result.v1` object; the exit-code registry; the signal vocabulary, `diagnostics.v0` JSON Schema, and per-signal repairs/substitutes. |
 | MCP server | `deep-diff-forge mcp [--allow-repo PATH]...` | Nine read-only MCP tools over stdio: `review_outline`, `review_hunks`, `diagnose_patch`, `review_change`, `review_patch`, `rank_patch`, `verify_findings`, `explain_exit_code`, `exit_code_registry`. |
-| JSON-RPC over stdio | `deep-diff-forge rpc` | The daemon's protocol (JSON-RPC 2.0, protocol 3) with no daemon. |
+| JSON-RPC over stdio | `deep-diff-forge rpc [--allow-repo PATH]...` | The daemon's protocol (JSON-RPC 2.0, protocol 3) with no daemon. |
 | Optional daemon | `deep-diff-forge daemon {path\|start\|health\|status\|metrics\|stop}` | The same protocol on an owner-private Unix socket; `metrics --format prometheus` writes a node_exporter textfile (since 0.6.0). |
-| Rust SDK | crate `deep-diff-forge-sdk` | `review`, `rank`, the exit registry, and a Unix-socket `Client`. |
-| Python SDK | `sdk/python` in the repository (`python3 -m pip install ./sdk/python`; not on PyPI) | Standard library only; `StdioClient` (over `rpc`) and `SocketClient`. |
+| Rust SDK | crate `deep-diff-forge-sdk` | `review`, `rank`, `diagnostics`, the exit registry, and a Unix-socket `Client`. |
+| Python SDK | `sdk/python` in the repository (`python3 -m pip install ./sdk/python`; not on PyPI) | Standard library only; `StdioClient` (over `rpc`) and `SocketClient`, speaking protocol 3 (including `diagnostics_patch`). |
 
 Every surface that emits a `review.v0` document (`--json`, the daemon's
 `diff.compute`, `rpc`, MCP `review_patch`, the SDK's `review`) uses the same
@@ -88,20 +90,22 @@ subcommands were withdrawn; each is refused with exit 2 and names its replacemen
 | 0 | Success. |
 | 2 | Usage or argument error. |
 | 3 | I/O or encoding failure. |
-| 4 | Invalid input (for example a patch that does not parse, input over the 64 MiB budget, or a refused Git acquisition or file pair). |
+| 4 | Invalid input (for example a patch that does not parse, `--stdin-patch` input with no patch unless `--allow-empty`, input over the 64 MiB budget, or a refused Git acquisition or file pair). |
 | 6 | Daemon or interactive-terminal failure. |
-| 7 | Input contract refused (`--require-files`, `--require-hunks`). |
+| 7 | Input contract refused (11 registered reason classes: `--require-files`, `--require-hunks`, `--fail-on`, `--require-findings`, `--require-all`, `eval`, `agent doctor`, `agent check --require-pass`, `agent verify-branch`; stderr names `refused: <text> (<tag>)`). |
 | 101 | Internal error (a panic). |
 
-`council` subcommands use their own family (0, 4, 7). `deep-diff-forge schema exit-codes`
-prints the full registry.
+`council` subcommands use their own family (0, 3, 4, 7; exit 3 is `recorded_incomplete`).
+`deep-diff-forge schema exit-codes` prints the full registry, including all exit-7 refusal classes.
 
 ## More
 
 - [Reference documents](https://gitlab.com/lukeomahoney/deep-diff-forge/-/tree/main/docs/reference): command
-  reference, output schemas, MCP server, SDKs and the daemon.
+  reference, output schemas, diagnostics, agent hooks, MCP server, SDKs and the daemon.
 - [API and IPC](https://github.com/Louranicas/deep-diff-forge/blob/main/docs/API_AND_IPC.md):
   JSON-RPC methods, MCP tools and socket rules.
+- [Algorithms and heuristics](https://github.com/Louranicas/deep-diff-forge/blob/main/docs/ALGORITHMS_AND_HEURISTICS.md):
+  parser conformance, dual-reader risk scoring, diagnostics paging, hooks and learning.
 - [Security](https://github.com/Louranicas/deep-diff-forge/blob/main/SECURITY.md):
   threat model and residual risks.
 

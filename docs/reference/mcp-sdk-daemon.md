@@ -9,7 +9,7 @@ tools over stdio, one JSON-RPC message per line.
 | Tool | What it returns |
 | --- | --- |
 | `review_patch` | The `deep-diff-forge.review.v0` document for `patch`: the same JSON value `--stdin-patch --json` prints, up to 256 KiB (see *Large reviews*). `require_files` / `require_hunks` refuse as the CLI flags do; `paths` limits the document to chosen files |
-| `rank_patch` | The sealed `deep-diff-forge.rank.v0` document `--stdin-patch --rank --json` prints: files by review risk, with their signals. `require_files` / `require_hunks` refuse as the CLI flags do Its text is the bytes `--rank --json` prints, each hidden character written as a `\u` escape (see *Text*), and `structuredContent` their value; the 256 KiB cap counts the bytes `--rank --json` prints. The daemon's `diff.rank` carries the same bytes in `canonical_json`. |
+| `rank_patch` | The sealed `deep-diff-forge.rank.v0` document `--stdin-patch --rank --json` prints: files by review risk, with their signals. `require_files` / `require_hunks` refuse as the CLI flags do. Its text is the bytes `--rank --json` prints, each hidden character written as a `\u` escape (see *Text*), and `structuredContent` their value; the 256 KiB cap counts the bytes `--rank --json` prints. The daemon's `diff.rank` carries the same bytes in `canonical_json`. |
 | `review_outline` | **Start here.** `deep-diff-forge.review-outline.v0` for `patch`: files in review-risk order with their hunks' addresses, ranges, `@@` headings and counts, no line text. Fits `max_bytes`; `cursor` continues |
 | `review_hunks` | `deep-diff-forge.review-hunks.v0`: chosen hunks verbatim, by `addresses` or `paths` (or all). Fits `max_bytes`; `cursor` continues |
 | `diagnose_patch` | One page of the [`deep-diff-forge.diagnostics.v0`](diagnostics.md) document `--stdin-patch --diagnostics --json` prints for `patch`: every label of the ranking, located, with the ids of its repairs. `max_bytes` (12,364 to 33,554,432, default 32,768) counts the tool result as the server writes it on the line, both copies; for a modern client the line adds 144 bytes, the server's version, the id as written and a line feed (the JSON-RPC envelope, `_meta` and `resultType`), for a legacy client fewer; 12,364 is three pages at the pager's floor of 4,096 (escaping at most doubles the text copy) and the 76 bytes around them. `cursor` continues; `page.document_sha256` is the SHA-256 of the whole document's bytes ([In MCP and the SDKs](diagnostics.md#in-mcp-and-the-sdks)) |
@@ -65,7 +65,7 @@ not parse, the daemon's words without the patch's text.
 
 **Python:** `sdk/python/deep_diff_forge.py` uses only the standard library, and installs as the
 package `deep-diff-forge` (`python3 -m pip install ./sdk/python`, or from GitHub with
-`"deep-diff-forge @ git+https://github.com/Louranicas/deep-diff-forge@v0.8.3#subdirectory=sdk/python"`;
+`"deep-diff-forge @ git+https://github.com/Louranicas/deep-diff-forge@v0.11.0#subdirectory=sdk/python"`;
 not on PyPI; the package metadata arrived in 0.6.0, so `@v0.5.0` and older tags have no `pyproject.toml` to install). It drives the `deep-diff-forge` binary, which it does not ship. It speaks the
 daemon protocol over two transports with the same calls:
 
@@ -116,7 +116,7 @@ server on an owner-private Unix domain socket.
   parent is validated and never re-permissioned. A path is replaced only if it is already a
   socket that nothing answers on. A live daemon is never displaced, and a regular file,
   directory or symlink is never deleted.
-- **Bounded sessions.** Sessions are capped by an LRU count and 128 MiB of total payload.
+- **Bounded sessions.** Sessions are capped at 64 sessions (LRU) and 128 MiB of total payload.
 - **Bounded connections and work.** At most eight connections are admitted, and their
   requests run in parallel. The request bytes in flight are capped at 128 MiB, first come,
   first served, so a heavy request waits rather than multiplying peak memory, and a waiting

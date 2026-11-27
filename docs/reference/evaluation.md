@@ -248,12 +248,15 @@ deep-diff-forge eval                          # score the labelled corpus in fix
   differ from what the run measures.
 
   `crates/deep-diff-forge-cli/tests/eval.rs` holds these floors (the measured values) and fails
-  on any undeclared miss. The corpus is written by the rules' author and is small: it is a
-  regression gate and an honest list of known limits, not a measure of review quality on
-  real-world code. The declared misses are a removed authorization check, a GitHub Actions
-  script injection and a lockfile registry swap (ranking), and aliased imports, `window.fetch`,
-  a fullwidth `ｅval`, a triple-quoted f-string, bash `/dev/tcp`, an assembled call and a
-  JavaScript placeholder that exists only as a message string (evidence), plus one false
-  positive (a heredoc read as code).
+  on any undeclared miss. The corpus (73 cases: 14 ranking, 56 evidence, 3 findings) is written
+  by the rules' author and is small: it is a regression gate and an honest list of known limits,
+  not a measure of review quality on real-world code. Across the 73 cases there are 155 declared
+  items in total: 130 `known_miss` (3 ranking pairs—a removed authorization check, a GitHub
+  Actions script injection and a lockfile registry swap—and 127 evidence items, including the
+  46 non-Rust integrity forms declared on 2026-11-24 alongside earlier limits such as aliased
+  imports, `window.fetch`, a fullwidth `ｅval`, a triple-quoted f-string, bash `/dev/tcp`, an
+  assembled call and a JavaScript message-string placeholder) and 25 evidence
+  `known_false_positive` items (starting from a heredoc read as code and including the declared
+  Rust/multi-language false items noted above).
 
 See also: [`PERFORMANCE_AND_NOVELTY`](../PERFORMANCE_AND_NOVELTY.md) · [`PLAN_AGENT_EVIDENCE_AND_OBSERVABILITY`](../PLAN_AGENT_EVIDENCE_AND_OBSERVABILITY.md).

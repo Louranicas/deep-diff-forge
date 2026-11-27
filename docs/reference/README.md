@@ -18,3 +18,9 @@ moved from that page. The [README](../../README.md#reference) says what each hol
 - [Quality gates](quality-gates.md#quality-gates)
 - [Review council and evidence gates](quality-gates.md#review-council-and-evidence-gates)
 - [Supported platforms: measurements](supported-platforms.md)
+
+## Deep dives
+
+- [Architecture](../ARCHITECTURE.md) — system layers, invariants and crate responsibilities.
+- [Schematics](../SCHEMATICS.md) — as-built crate DAG (checked against `docs/crate-edges.txt`) and pipeline diagrams.
+- [Algorithms and heuristics](../ALGORITHMS_AND_HEURISTICS.md) — parser conformance, dual-reader risk scoring, diagnostics paging, agent hooks and learning.
