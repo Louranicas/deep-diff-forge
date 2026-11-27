@@ -7,29 +7,60 @@ tests prove real behavior, failure modes, invariants, and integration contracts.
 This standard is intentionally strict. Production modules must meet it before
 they can be marked deployable.
 
-## Status 2026-10-31 (0.5.0 and later)
+## Status 2026-11-25 (v0.11.0)
 
 The sentence "the current implementation has only smoke behavior" (bootstrap
-era) no longer holds. How the standard is enforced today:
+era) no longer holds. How the standard is enforced at `v0.11.0`:
 
-- **Every pull request** runs the CI jobs in `.github/workflows/ci.yml`:
-  `cargo test --workspace --locked`, fmt, clippy and pedantic with
-  `-D warnings`, rustdoc `-D warnings`, contract probes, the soak and
-  bench-comparison regression tests, a 10 s hostile daemon soak, privacy probes
-  and the Python SDK against the built binary (`deploy gate-feature`); the
-  workspace tests on macOS (`macos`); the declared-MSRV check on Rust 1.88.0;
-  and supply-chain checks.
+- **Unit, integration, and doc-contract suites (`cargo test --workspace --locked`):**
+  Every crate in the 15-crate workspace (14 published crates + dev-only
+  `deep-diff-forge-testkit`, which provides self-removing `Scratch` directories
+  enforced by `clippy.toml`) carries unit and boundary integration tests.
+  Automated doc-contract and conformance suites fail the build on any drift
+  between code and documentation:
+  - `crates/deep-diff-forge-cli/tests/contract.rs`: holds `README.md` under 400
+    lines, verifies every relative link and anchor fragment across front-door,
+    changelog, reference, and release-note docs, forbids private-vault URI links
+    anywhere in tracked files, enforces post-tag status wording, and pins the
+    signal, exit-code, exit-7 refusal, diagnostics (`fixtures/diagnostics/codes.v0.txt`),
+    and hook tables to the code.
+  - `crates/deep-diff-forge-cli/tests/crate_edges.rs`: verifies `docs/crate-edges.txt`
+    and the generated `<!-- crate-edges:begin -->`..`<!-- crate-edges:end -->`
+    block in `docs/SCHEMATICS.md` against `cargo metadata`, and holds the
+    supported-platforms table and glibc 2.34 floor (`scripts/check_glibc_floor.sh`).
+  - `crates/deep-diff-forge-cli/tests/release_notes_commands.rs`: executes every
+    backticked `deep-diff-forge …` command in `docs/release-notes/0.11.0.md`
+    against the binary and fails if any exits 2.
+  - `crates/deep-diff-forge-cli/tests/agent_check.rs`: tests `agent check`,
+    `agent verify-branch`, and `docs/reference/output-and-exit-codes.md` pins.
+  - `crates/deep-diff-forge-cli/tests/ci_replica.rs`: keeps `scripts/ci_local.sh`
+    in 1:1 sync with `.github/workflows/ci.yml` plus its declared `LOCAL_ONLY`
+    steps.
+  - `crates/deep-diff-forge-patch/tests/conformance.rs`: runs all 29 conformance
+    rows and the 42 accepted Git header shapes in
+    `crates/deep-diff-forge-patch/CONFORMANCE.md` against real `git apply`, and
+    verifies `SECURITY.md` pins.
+- **Every pull request** runs the CI jobs in `.github/workflows/ci.yml` (plus
+  `codeql.yml`): `cargo test --workspace --locked`, fmt, clippy and pedantic with
+  `-D warnings`, rustdoc (`RUSTDOCFLAGS="-D warnings -D rustdoc::broken_intra_doc_links" cargo doc --workspace --no-deps --locked`),
+  contract probes, the soak and bench-comparison regression tests, a 10 s hostile
+  daemon soak, privacy probes and the Python SDK against the built binary
+  (`deploy gate-feature`); the workspace tests on macOS (`macos`); the
+  declared-MSRV check on Rust 1.88.0; and supply-chain checks (`cargo-deny`,
+  `cargo-audit`, SPDX SBOM comparison).
 - **Diff-scoped mutation** is a required check: `diff-mutation`, four shards,
   runs [`scripts/diff_mutation.sh`](../scripts/diff_mutation.sh), which mutates
   only the Rust lines under `crates/` changed since the merge base
   (`cargo mutants --no-config --in-diff`, 300 s timeout) and fails on any missed
   mutant or timeout. `--no-config` ignores a candidate's own mutants config.
-- **Fuzz smoke:** every target in `fuzz/Cargo.toml`
+- **Fuzz smoke:** all **18** libFuzzer binary targets declared in `fuzz/Cargo.toml`
+  and listed by `scripts/fuzz_target.sh --list`
   (`patch_parser`, `review_json`, `daemon_protocol`, `agent_annotation`,
   `council_report`, `stdio_mcp`, `stdio_rpc`, `structural_soundness`,
   `findings_verify`, `evidence_scan`, `rust_tokens`, `rust_code_view`, `rust_hunk_places`,
-  `hook_input`, `judge_patch`, `verdict_reader`, `journal_recover`, `git_raw_stream`: eighteen;
-  `stdio_invariants.rs` is a shared module)
+  `hook_input`, `judge_patch`, `verdict_reader`, `journal_recover`, `git_raw_stream`;
+  `stdio_invariants.rs` is a shared helper module, giving 19 `.rs` files under
+  `fuzz/fuzz_targets/`)
   runs for 10 s per pull request; CI fails if a declared target is not in the
   run list. Crash inputs become fixtures under
   `fixtures/patch/regressions/`. `rust_code_view` has an oracle: the compiler's own lexer
@@ -195,9 +226,29 @@ era) no longer holds. How the standard is enforced today:
 - **Sandbox refusal controls:** the rootless-Podman planted-breach suite
   (`crates/deep-diff-forge-cli/tests/council_sandbox.rs`, 12 probes) runs on
   every pull request.
-- **Locally:** `just ci` ([`scripts/ci_local.sh`](../scripts/ci_local.sh))
-  replays the `secrets`, `msrv`, `gate` and `supply-chain` jobs step for step,
-  on the toolchains CI pins (1.99.1, and 1.88.0 for the MSRV step).
+- **Locally (`just` & `scripts/ci_local.sh`):** `just ci`
+  ([`scripts/ci_local.sh`](../scripts/ci_local.sh)) replays the `secrets`, `msrv`,
+  `gate` and `supply-chain` jobs step for step across 36 steps on the pinned
+  toolchains (1.99.1, and 1.88.0 for the MSRV step), without modifying the
+  checkout (the SBOM check regenerates into a scratch directory). Four steps are
+  `LOCAL_ONLY` (enforced by `cli/tests/ci_replica.rs`): `release-script self-test`,
+  `comparison corpus manifest`, `diagnostics contract` (`agent doctor --json`
+  `diagnostics_parity` plus two named tests), and `contract matrix`. Faster local
+  recipes in `justfile` include `just gate-feature` (`fmt`, `check`, `clippy`,
+  `pedantic`, `test`, `contracts`), `just docs`
+  (`RUSTDOCFLAGS="-D warnings -D rustdoc::broken_intra_doc_links" cargo doc --workspace --no-deps --locked`),
+  `just gate-release` (`gate-feature` + `docs`), `just fuzz-campaign`, and
+  `just security-s9-local`.
+- **Contract matrix (`scripts/contract_matrix.sh`):** tests the end-to-end
+  compatibility contract between `deep-diff-forge`'s agent stop hook and
+  `forge-warden` (`scripts/contract_matrix.sh [--require-real] <binary>`,
+  documented in [`reference/quality-gates.md`](reference/quality-gates.md)). It
+  runs stand-in rows (`scripts/contract-matrix/judge.py` for v2/v3 verdicts,
+  hangs, exit 4, `verify-branch`, stateless stops, diagnostics paging, stray-byte
+  Git reading), v10-to-v13 state carryover/refusal rows against published `0.9.0`
+  and `0.10.0` binaries, and real `forge-warden` rows (`FW_BIN`, `FW_BIN_OLDER`)
+  pinned by SHA-256 in `scripts/contract-matrix/binaries.tsv` (`--require-real`
+  fails on any missing recorded binary).
 - **Gate scripts fail closed** (`cli/tests/repo_scripts.rs`): the pre-push
   secret hook refuses a push whose commits it cannot resolve;
   `diff_mutation.sh` finds changed Rust files by NUL-separated name (not by
@@ -208,14 +259,15 @@ era) no longer holds. How the standard is enforced today:
   `campaign_local.sh` runs every listed target in turn and stops red, naming it, at the
   first that fails (`campaign_runs_every_listed_target_and_fails_on_one_crash`).
 - **Evaluation gate** (`cli/tests/eval.rs`, every PR): the labelled corpus in
-  `fixtures/eval` (73 cases, measured 2026-11-24 on the 0.11.0 branch) must score at least its floors
+  `fixtures/eval` (73 cases, 14 ranking, 56 evidence, 3 findings, measured 2026-11-24 on the 0.11.0 branch) must score at least its floors
   (the table of `docs/reference/evaluation.md`); it measures ranking pairs 12/15, evidence precision 233/258,
   evidence recall 233/360, findings 33/33 (sections the parser refuses are in
   `fixtures/eval-refused-by-parser/`, held refused by a test). A test holds these figures, and the table in
   `docs/reference/evaluation.md`, to what the run measures; the receipt also gives precision and
   recall by signal and by language, and lists a case the parser refuses as `refused` without
   stopping the run. Any undeclared miss fails. The 155
-  declared misses (`known_miss`, `known_false_positive`) count as wrong in their
+  declared items (130 `known_miss` [127 evidence + 3 ranking] and 25 `known_false_positive`,
+  including 46 non-Rust misses declared on 2026-11-24) count as wrong in their
   metric rather than being excluded, and each fails once the engine gets it
   right. Planted controls prove a wrong label fails with exit 7, a changed file,
   an orphan file, a repeated id, a missing origin or a misspelt field with exit 4,
@@ -383,7 +435,8 @@ What the 0.10.0 run reported needs reading too (S3.34.c, 2026-11-24):
 | `deep-diff-forge-review` | council admission, receipt qualification, sandbox argv, tuicr import/export, sealed evidence. |
 | `deep-diff-forge-sdk` | client framing, error mapping, parity with the daemon and `rpc`. |
 | `deep-diff-forge-daemon` | socket path validation, ownership, stale versus live socket, payload caps, read deadline, connection cap, session lifecycle, health RPC. |
-| `deep-diff-forge-cli` | argument parsing, exit codes, stdout/stderr, contract commands, no-TTY behavior. |
+| `deep-diff-forge-cli` | argument parsing, exit codes, stdout/stderr, contract commands, agent hooks/ledger, no-TTY behavior. |
+| `deep-diff-forge-testkit` (dev-only, unpublished) | self-removing `Scratch` directories (required by `clippy.toml`) and shared test helpers; never a normal dependency. |
 
 ## Integration Tests
 

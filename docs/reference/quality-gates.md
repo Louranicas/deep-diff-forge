@@ -121,17 +121,23 @@ The engine is hardened against:
 - hidden-content patches;
 - attacks on the daemon's transport and filesystem.
 
-Fifteen fuzz targets cover the parser, review JSON, daemon protocol, agent annotations, council
-reports, the MCP and `rpc` stdio servers, the soundness of the structural diff's
-"formatting only" verdict, agent-findings verification, the code-evidence scanner, the
-reader of a Rust hunk's tokens (every item on a line the change made, and the same signals
-however a construct is spread over lines), where a Rust hunk stands and how it starts (the
-same change written in other ways Git accepts loses no item), the Rust code views against
-the compiler's own lexer (no byte of a token that is code is blank), the JSON a client gives
-the agent hooks (`hook_input`: an input the hook cannot read is refused with the hooks' own
-"did not run" message, UNJUDGED for a stop, never a pass), and the patch the hooks make of a
-working tree (`judge_patch`, with real Git: the parser reads exactly the paths the edits
-changed, or refuses the patch). See
+Eighteen fuzz targets (`scripts/fuzz_target.sh --list`, in `fuzz/Cargo.toml`) cover the parser
+(`patch_parser`), review JSON (`review_json`), daemon protocol (`daemon_protocol`), agent
+annotations (`agent_annotation`), council reports (`council_report`), the MCP and `rpc` stdio
+servers (`stdio_mcp`, `stdio_rpc`, sharing `stdio_invariants.rs`), the soundness of the
+structural diff's "formatting only" verdict (`structural_soundness`), agent-findings
+verification (`findings_verify`), the code-evidence scanner (`evidence_scan`), the reader of a
+Rust hunk's tokens (`rust_tokens`: every item on a line the change made, and the same signals
+however a construct is spread over lines), where a Rust hunk stands and how it starts
+(`rust_hunk_places`: the same change written in other ways Git accepts loses no item), the Rust
+code views against the compiler's own lexer (`rust_code_view`: no byte of a token that is code
+is blank), the JSON a client gives the agent hooks (`hook_input`: an input the hook cannot read
+is refused with the hooks' own "did not run" message, UNJUDGED for a stop, never a pass), the
+patch the hooks make of a working tree (`judge_patch`, with real Git: the parser reads exactly
+the paths the edits changed, or refuses the patch), forge-warden v2 and v3 verdict documents as
+the stop hook reads them (`verdict_reader`: exit 7 is never taken as a pass or hold), the
+council decision journal and checkpoint recovery under `import-tuicr` (`journal_recover`), and
+`git diff --raw -z --patch` streams and `append_stream` (`git_raw_stream`). See
 [`SECURITY.md`](../../SECURITY.md) for the threat model.
 
 # Review council and evidence gates
@@ -143,8 +149,9 @@ per-round history. This section is a map, not a copy.
   slots over a sealed snapshot, split between Claude Code and Codex. The slots are correctness,
   security, architecture, falsifier, performance and subtractor. They review once
   independently, then in a challenge round. A report is admitted only if its citations resolve
-  to real bytes in the snapshot. Missing evidence is `HOLD` with exit 7, never an empty pass.
-  Nothing is approved automatically.
+  to real bytes in the snapshot. Missing evidence is `HOLD` with exit 7, never an empty pass
+  (and an I/O failure after a decision is journaled by `import-tuicr --execute` exits 3,
+  `recorded_incomplete`). Nothing is approved automatically.
 - **Eight evidence gates** run only inside a [rootless Podman sandbox](../REVIEW_COUNCIL.md#gate-sandbox):
   format, check, clippy, pedantic, tests, antipatterns, fuzz and mutation. The sandbox:
   - uses the operator-admitted image, by ID;

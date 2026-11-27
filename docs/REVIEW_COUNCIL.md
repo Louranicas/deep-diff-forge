@@ -1,24 +1,36 @@
 # Review roster, adversarial council and verification controller
 
-> **Status 2026-11-01.** Shipped: the council, its eight gates and the rootless Podman sandbox
-> (`crates/deep-diff-forge-review`, `deep-diff-forge council …`). Planned, unowned: a controlled
-> trial of review quality, and the TUI and daemon as council clients. Nothing is withdrawn or on
-> hold. The rounds below are dated history.
+> **Status 2026-11-25 (`v0.11.0`).** Shipped: the adversarial council (6 default reviewer slots,
+> 2 rounds), its 8 rootless Podman evidence gates, in-process `mutation_scope.rs` + exemption
+> oracle, `tuicr` export/import (`tuicr.rs`), and the hash-chained decision journal (`journal.rs`)
+> with exit code 3 (`recorded_incomplete`) and [DDF-2026-004](advisories/DDF-2026-004.md) fault
+> recovery (`crates/deep-diff-forge-review`, `deep-diff-forge council …`). Planned, unowned: a
+> controlled trial of review quality, and the TUI and daemon as council clients. Nothing is
+> withdrawn or on hold. The rounds r4–r22 below are dated historical records and are kept as
+> written.
 
-## Status 2026-10-28 (0.3.0)
+## Status 2026-11-25 (v0.11.0)
 
 **Kind:** current reference for the review council, plus per-round history. The rounds r4–r22 below are dated records and are kept as written.
 
-**Current at 0.3.0** (checked against the code and the binary):
+**Current at `v0.11.0`** (verified against `crates/deep-diff-forge-review/src/*.rs` and the binary):
 
-- The council is a CLI subcommand of the main binary: `deep-diff-forge council <example|prepare|review|gate|status|import|export-tuicr|import-tuicr>` (`deep-diff-forge --help`). Its exit codes are their own family: 0 completed, 3 recorded but incomplete (`import-tuicr --execute` only), 4 refused, 7 hold (`deep-diff-forge schema exit-codes`).
-- The eight gates are `format`, `check`, `clippy`, `pedantic`, `tests`, `antipatterns`, `fuzz` and `mutation` (`crates/deep-diff-forge-review/src/model.rs`).
-- Gates run only in the rootless Podman sandbox described in [Gate sandbox](#gate-sandbox). CI builds the gate image and runs the 12-probe planted-breach suite on `ubuntu-26.04` (`.github/workflows/ci.yml`).
+- **CLI & schemas:** `deep-diff-forge council <example|prepare|review|gate|status|import|export-tuicr|import-tuicr>` (`crates/deep-diff-forge-review/src/cli.rs`). Since `0.8.1`, every council JSON result names its schema: `review`, `gate`, `status`, and `import` emit `deep-diff-forge.council-<command>.v1`; `prepare` emits `deep-diff-forge.council.v1`; `export-tuicr` emits `deep-diff-forge.tuicr-export.v1`; `import-tuicr` emits `deep-diff-forge.tuicr-import.v1`. (`example` prints a `Request` input template with no `schema` field, as `Request` denies unknown fields.)
+- **Exit-code family (`deep-diff-forge schema exit-codes`):**
+  - `0`: completed (`status` exit 0 means `ready_for_human_review`, never automatic approval);
+  - `3` (`recorded_incomplete`, added in `0.10.0`): I/O failure after `import-tuicr --execute` committed events to `decisions.jsonl` (re-running the same import reconciles and completes it);
+  - `4`: malformed input, stale admission, existing artifact, or protocol/I/O refusal;
+  - `7`: `HOLD` (missing, failed, or inconclusive evidence) or an import conflict on a council note.
+- **Roster & rounds:** 6 default slots across two configured adapter families (`correctness-codex`, `security-claude`, `architecture-claude`, `falsifier-codex`, `performance-claude`, `subtractor-codex`) running 2 rounds (`independent` blind round, then `challenge` round), with typed citation admission (`policy.rs`, fuzzed by `council_report`).
+- **Eight evidence gates & sandbox:** `format`, `check`, `clippy`, `pedantic`, `tests`, `antipatterns`, `fuzz`, and `mutation` (`model.rs`) run exclusively inside the rootless Podman sandbox ([Gate sandbox](#gate-sandbox)), as the operator's effective `uid:gid` (`geteuid`/`getegid` in `sandbox.rs`). CI builds the gate image and runs the 12-probe planted-breach suite (`cli/tests/council_sandbox.rs`) on `ubuntu-26.04`.
+- **Mutation scope & exemption oracle (`mutation_scope.rs`):** builds the zero-context unified diff in-process from re-hashed raw base Git objects against the verified sealed snapshot (`MUTATION_DIFF_CAP = 16 << 20` [16 MiB], `LINE_CELL_BUDGET = 16 << 20`, `TOTAL_CELL_BUDGET = 64 << 20`, `LINE_CAP = 1 << 20`, `FILE_CAP = 64 << 20` [64 MiB]), never trusting working-tree `git diff` or candidate `.gitattributes`, gated first by `exemption_oracle.py` (`#[cfg(test)]` only).
+- **tuicr interop & decision journal recovery (`tuicr.rs`, `journal.rs`, `0.10.0`–`0.11.0`):** `export-tuicr` files admitted findings into a local `tuicr` 0.27.0 session via an idempotent create-new ledger (`exports/tuicr/<session-id>/`) with strict snapshot-byte anchoring (`--allow-review-level` optional downgrade). `import-tuicr` appends human dispositions to hash-chained `<run>/decisions.jsonl` under an advisory `flock` (`decisions.lock`) with `O_NOFOLLOW`; its `reconcile` pass ([DDF-2026-004](advisories/DDF-2026-004.md), fuzzed by `journal_recover`) heals missing or zero-length checkpoints, preserves torn trailing records in `decisions.torn-<seq>-<digest>`, removes dead-PID temporary files, uses atomic create-new writes, and reports each step in `repairs`.
 
-**What changed since the rounds below:**
+**What changed since the r4–r22 rounds below:**
 
-- **Gate uid:gid.** Gate containers run as the controller's effective uid and gid, taken from the kernel with `geteuid`/`getegid` (`operator()` in `crates/deep-diff-forge-review/src/sandbox.rs`). Before PR #21 (`7a2f5ae`), the controller read `/proc/self` and fell back to `0:0`. On a host without `/proc`, such as macOS, every gate container therefore ran as root. The first macOS test run found it (CI run 40618280385). The test now takes the expected `--user` from POSIX `id`, which is independent of the code under test (`crates/deep-diff-forge-cli/tests/council.rs`). The [Podman invocation](#podman-invocation) table is updated to match.
-- **Releases and evidence.** Release dry runs and fuzz numbers for 2026-10-28 are in [`EVIDENCE.md`](../EVIDENCE.md#release-dry-runs-and-fuzzing-2026-10-28).
+- **Gate uid:gid (0.3.0 / PR #21).** Gate containers run as the controller's effective uid and gid, taken from the kernel with `geteuid`/`getegid` (`operator()` in `crates/deep-diff-forge-review/src/sandbox.rs`). Before PR #21 (`7a2f5ae`), the controller read `/proc/self` and fell back to `0:0`. On a host without `/proc`, such as macOS, every gate container therefore ran as root. The first macOS test run found it (CI run 40618280385). The test now takes the expected `--user` from POSIX `id`, which is independent of the code under test (`crates/deep-diff-forge-cli/tests/council.rs`). The [Podman invocation](#podman-invocation) table is updated to match.
+- **Journal recovery & exit code 3 (0.10.0 / DDF-2026-004).** Added `flock` locking (`decisions.lock`), `O_NOFOLLOW`, create-new atomic artefact writes, `reconcile` recovery (`repairs`), council exit code `3` (`recorded_incomplete`), and the `journal_recover` libFuzzer target.
+- **Releases and evidence.** Release dry runs and fuzz numbers are tracked in [`EVIDENCE.md`](../EVIDENCE.md).
 - **Paths in examples.** `ddf-integration-20261025` and `ddf-council-20261025` are helpers on the operator workstation. Anyone else runs `deep-diff-forge council …` from a build of `deep-diff-forge-cli`.
 
 Related current docs: [release and publication](RELEASE_AND_PUBLICATION.md), [operations and daemon](OPERATIONS_AND_DAEMON.md), [testing standard](TESTING_GOLD_STANDARD.md).

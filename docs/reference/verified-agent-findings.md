@@ -9,7 +9,8 @@ finding is one JSON object per line (`deep-diff-forge.finding.v0`):
 
 ```bash
 deep-diff-forge findings verify --findings found.jsonl < change.patch     # the sealed verdict
-deep-diff-forge findings verify --findings found.jsonl --require-all < change.patch   # exit 7 if any is refused: refused: N of M findings were refused or over the limit (--require-all)
+deep-diff-forge findings verify --findings found.jsonl --require-findings < change.patch  # exit 7 if 0 findings: refused: 0 findings in the findings file (--require-findings)
+deep-diff-forge findings verify --findings found.jsonl --require-all < change.patch       # exit 7 if any is refused: refused: N of M findings were refused or over the limit (--require-all)
 deep-diff-forge review --findings found.jsonl < change.patch              # the accepted ones as notes
 ```
 

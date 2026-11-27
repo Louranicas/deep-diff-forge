@@ -16,50 +16,91 @@ The result should not be one large engine crate. It should be a set of Rust
 crates that can be tested, benchmarked, fuzzed, and released with stable
 contracts.
 
-> **Status 2026-11-01.** Shipped: the 14 crates listed next. Planned, unowned: the `git`,
-> `planner` and `fixtures` crates. Withdrawn 2026-10-31: the `loom` crate and loom-driven
-> development (`loom-contract`); the loom rules and rows below are design history. Nothing is
-> on hold.
+> **Status `v0.11.0`.** Shipped: **15 workspace crates** (**14 published** plus the dev-only,
+> unpublished `testkit`) listed in [What exists today (`v0.11.0`)](#what-exists-today-v0110) below.
+> Planned, unowned: the `git`, `planner`, `ui-model`, and `fixtures` crates. Withdrawn 2026-10-31:
+> the `loom` crate and loom-driven development (`loom-contract`); the loom rules and rows below
+> are design history. Nothing is on hold.
 
-## What exists today (0.3.0)
+<a id="what-exists-today-030"></a>
+## What exists today (`v0.11.0`)
 
-The rest of this document is the original plan. What the code has, from `Cargo.toml`,
-[`docs/crate-edges.txt`](crate-edges.txt) and the crates' `src/` trees:
+Everything from [Design Rules](#design-rules) onward is the original pre-0.3.0 target plan. What
+actually ships on `main` at **`v0.11.0`** (verified from `Cargo.toml`,
+[`docs/crate-edges.txt`](crate-edges.txt), and every crate's `src/` tree):
 
-- **14 crates:** `core`, `patch`, `projection`, `pipeline`, `syntax`, `graph`, `agent`, `tui`,
-  `cluster`, `learning`, `daemon`, `review`, `sdk`, `cli`. The as-built graph is drawn in
-  [ARCHITECTURE.md](ARCHITECTURE.md#crates-as-built-030). `learning`, `review` and `sdk` are
-  not in this plan; `git`, `planner`, `loom` and `fixtures` are in the plan and do not exist.
-- **Module trees are flatter than planned.** For example `patch/src` has `decode.rs`,
-  `git_acquire.rs`, `git_raw.rs`, `guards.rs`, `json.rs`, `parser.rs`, `paths.rs`, `render.rs`
-  and `sealed.rs`; the daemon has `admission.rs`, `exposition.rs`, `handler.rs`, `inspect.rs`,
-  `log.rs`, `metrics.rs`, `protocol.rs`, `security.rs`, `serve.rs` and `views.rs`.
-  The trees in [Crate Charters](#crate-charters) are targets.
-- **Dependencies differ from the target graph.** Built: `graph`, `agent` and `projection`
-  depend on `core` only (the plan adds `patch`, `syntax` or `graph`; `patch` is a dev-only edge
-  for three of them); `cluster` depends on `core` and `graph` (plan: `pipeline`, `planner`);
-  `daemon` on `core`, `graph` and `patch` (plan: `pipeline`, `cluster`); `pipeline` on `core`,
-  `graph`, `patch`, `projection` and `syntax`. `cli` depends on `daemon` at build time; one-shot
-  commands do not need a running daemon.
-- **No feature flags** except `deep-diff-forge-patch`'s default `json` feature. There is no
-  `gix`, `tokio` or `rayon` dependency: Git input runs the `git` program, the daemon uses
-  `std::os::unix::net` with worker threads, and `cluster` uses `std::thread::scope`.
-- **Unix only for the daemon** (decision D-05): it refuses to compile elsewhere, so the
-  named-pipe transport below will not be built.
-- **No `benches/` directory.** Fuzz targets are in `fuzz/fuzz_targets/`: `patch_parser`,
-  `review_json`, `daemon_protocol`, `agent_annotation`, `council_report`, `stdio_mcp`,
-  `stdio_rpc`, `structural_soundness`.
+- **15 workspace crates** (Rust 2024 edition, MSRV 1.88, `#![forbid(unsafe_code)]`, release
+  `codegen-units = 1`, dev `opt-level = 3` on `core` for SHA-256/HMAC-SHA-256): **14 published**
+  (`core`, `patch`, `projection`, `pipeline`, `syntax`, `graph`, `agent`, `tui`, `cluster`,
+  `learning`, `daemon`, `review`, `sdk`, `cli`) plus **1 dev-only, unpublished** crate
+  (`testkit`). The as-built DAG is drawn in
+  [ARCHITECTURE.md](ARCHITECTURE.md#crates-as-built-v0110) and
+  [SCHEMATICS.md](SCHEMATICS.md#1-workspace-crate-dag-v0110). `learning`, `review`, `sdk`, and
+  `testkit` are not in the original plan below; `git`, `planner`, `loom`, and `fixtures` are in
+  the plan and do not exist.
+- **Actual `src/` module inventory across all 15 crates (`v0.11.0`):**
 
-| Milestone | State at 0.3.0 |
+| Crate | Actual `src/` modules |
 | --- | --- |
-| 1. Patch spine | Done. |
-| 2. Projection spine | Inline and side-by-side done; stacked and compact not built. |
-| 3. Pipeline spine | Ingest and render stages done; plan/rank/annotate stages and chain manifests not built. |
-| 4. Git and planner | Git selections done inside `patch` (no `git` crate); planner, file-pair, directory-pair and external-diff input not built. |
-| 5. Syntax and graph | Rust-only syntax, token-level structural diff and file-level ranking done; graph explanations beyond signal names not built. |
-| 6. Agent and TUI | Done in part: TUI with sidebar, mouse, toggles and engine notes; no external annotation input. |
-| 7. Cluster and loom | Cluster done for patch and risk lanes; loom not built. |
-| 8. Daemon and release | UDS daemon with sessions and release automation done; shared cache and subscriptions not built. |
+| `deep-diff-forge-core` | `lib.rs`, `deploy.rs`, `exit.rs`, `git.rs`, `process.rs`, `release.rs`, `seal.rs`, `snapshot.rs`, `util.rs` |
+| `deep-diff-forge-patch` | `lib.rs`, `decode.rs`, `git_acquire.rs`, `git_raw.rs`, `guards.rs`, `json.rs`, `judge_patch.rs`, `parser.rs`, `paths.rs`, `render.rs`, `sealed.rs` |
+| `deep-diff-forge-projection` | `lib.rs`, `inline.rs`, `notes.rs`, `side_by_side.rs`, `width.rs` |
+| `deep-diff-forge-pipeline` | `lib.rs`, `jsonl.rs`, `review.rs`, `stages.rs` |
+| `deep-diff-forge-syntax` | `lib.rs`, `analyze.rs`, `highlight.rs`, `language.rs`, `structural.rs` |
+| `deep-diff-forge-graph` | `lib.rs`, `diagnostics.rs`, `evidence.rs`, `guard_paths.rs`, `lexical.rs`, `lexical/legacy_rust.rs`, `rank.rs`, `risk.rs`, `rust_tokens.rs`, `unplaced.rs` (`#[cfg(test)]`), `vocabulary.rs` |
+| `deep-diff-forge-agent` | `lib.rs`, `anchor.rs`, `evidence.rs`, `findings.rs`, `store.rs` |
+| `deep-diff-forge-cluster` | `lib.rs`, `cluster.rs`, `scheduler.rs` |
+| `deep-diff-forge-learning` | `lib.rs`, `annotation.rs`, `error.rs`, `planner.rs`, `promote.rs`, `ranking.rs`, `receipt.rs`, `score.rs`, `store.rs`, `util.rs` |
+| `deep-diff-forge-daemon` | `lib.rs`, `admission.rs`, `deadline.rs`, `exposition.rs`, `handler.rs`, `inspect.rs`, `log.rs`, `metrics.rs`, `pages.rs`, `protocol.rs`, `security.rs`, `serve.rs`, `views.rs` |
+| `deep-diff-forge-tui` | `lib.rs`, `chrome.rs`, `command.rs`, `diffview.rs`, `input.rs`, `notes.rs`, `paint.rs`, `run.rs`, `state.rs`, `theme.rs`, `tree.rs`, `ui.rs` |
+| `deep-diff-forge-review` | `lib.rs`, `cli.rs`, `execution.rs`, `journal.rs`, `model.rs`, `mutation_scope.rs`, `policy.rs`, `sandbox.rs`, `storage.rs`, `tuicr.rs` |
+| `deep-diff-forge-sdk` | `lib.rs`, `diagnostics.rs` |
+| `deep-diff-forge-cli` | `main.rs`, `agent.rs`, `agent_check.rs`, `analysis.rs`, `args.rs`, `bench.rs`, `contract.rs`, `diagnostics_text.rs`, `doctor.rs`, `eval.rs`, `fail_on.rs`, `file_pair.rs`, `git_input.rs`, `hook.rs`, `hook_run.rs`, `ledger.rs`, `mcp.rs`, `reason.rs`, `refusal.rs`, `regular.rs`, `rpc.rs`, `textfile.rs`, `verdict_v2.rs` |
+| `deep-diff-forge-testkit` | `lib.rs` (dev-only, unpublished; owns `Scratch` owner-private temp directories) |
+
+- **Key dependency deltas vs. the target graph:**
+  - `graph`, `agent`, `projection`, `patch`, `review`, and `syntax` each depend on **`core` only**
+    in normal dependencies (`patch` is a `dev`-only edge for `agent`, `cluster`, `graph`, and
+    `projection`; `graph` does **not** depend on `syntax`).
+  - `learning` has no normal workspace dependencies (`testkit [dev]` only).
+  - `cluster` depends on `core` and `graph` (plan: `pipeline`, `planner`).
+  - `daemon` depends on `agent`, `core`, `graph`, and `patch` (plan: `pipeline`, `cluster`).
+  - `pipeline` depends on `core`, `graph`, `patch`, `projection`, and `syntax`.
+  - `sdk` depends on `core`, `graph`, `patch`, and `daemon` under `cfg(unix)`.
+  - `cli` and `tui` depend on `daemon` at build time, while one-shot CLI commands never require a
+    running daemon.
+- **No external runtime dependencies or feature-flag sprawl:** only `deep-diff-forge-patch` has a
+  default `json` feature. There is no `gix`, `tokio`, or `rayon` dependency: Git input runs the
+  `git` program (`git_acquire.rs`, `diff_files`, `judge_patch.rs`), the daemon uses
+  `std::os::unix::net` with bounded worker threads (`MAX_CONNECTIONS = 8` data +
+  `CONTROL_CONNECTIONS = 2` control slots, `MAX_READ_BYTES = 160 MiB`,
+  `MAX_IN_FLIGHT_BYTES = 128 MiB`), and `cluster` uses `std::thread::scope`.
+- **Unix only for the daemon** (decision D-05): `deep-diff-forge-daemon` refuses to compile on
+  non-Unix targets, so the named-pipe transport described below will not be built.
+- **Companion SDK, fixtures, benchmarking, and fuzzing:**
+  - Python stdlib client lives in `sdk/python/deep_diff_forge.py` (`StdioClient` + `SocketClient`,
+    Protocol 3).
+  - No `benches/` directory: deterministic benchmarks run via `deep-diff-forge bench`
+    (`cli/src/bench.rs`, `bench.v0` receipts) and `scripts/bench_compare.py`.
+  - Fixtures live under `fixtures/{corpus,council,diagnostics,eval,eval-refused-by-parser,patch,protocol}`,
+    including **73 labelled cases** in `fixtures/eval/MANIFEST.json` scored by `deep-diff-forge eval`.
+  - **18 libFuzzer targets** are defined in `fuzz/Cargo.toml` (`agent_annotation`,
+    `council_report`, `daemon_protocol`, `evidence_scan`, `findings_verify`, `git_raw_stream`,
+    `hook_input`, `journal_recover`, `judge_patch`, `patch_parser`, `review_json`,
+    `rust_code_view`, `rust_hunk_places`, `rust_tokens`, `stdio_mcp`, `stdio_rpc`,
+    `structural_soundness`, `verdict_reader`; `fuzz/fuzz_targets/stdio_invariants.rs` is a shared
+    helper module, making 19 `.rs` files in `fuzz/fuzz_targets/`).
+
+| Milestone | State at `v0.11.0` |
+| --- | --- |
+| 1. Patch spine | Done + hardened: 42-shape Git conformance (`CONFORMANCE.md`), `SealedReview`, `InputGuards`, `no_patch_in_input` (exit 4 unless `--allow-empty`), `judge_patch`, stray-byte binary source re-read (`diff_suppressed`). |
+| 2. Projection spine | Inline and side-by-side done with `\` note rows and grapheme cell widths; stacked and compact not built. |
+| 3. Pipeline spine | `IngestStage`, `RenderStage` (`--jsonl`), and shared source-pair `analyze` done; plan/rank/annotate stages and chain manifests not built (`chain` subcommand withdrawn -> exit 2). |
+| 4. Git and planner | Structured Git selections (`--git-*`), `<old> <new>` (`diff_files`), and `judge_patch` live in `patch` (no standalone `git` crate); dynamic `planner` and directory-pair input not built. |
+| 5. Syntax and graph | Rust tree-sitter (`syntax`) with byte/node/wall-clock caps and token `structural_diff` done; `graph` ships dual-reader (`rust_tokens` + `lexical`) 27-signal ranking (`rank.v0` + `scorer_sha256`), `diagnostics.v0`, and `--fail-on` exit-7 gating without depending on `syntax`. |
+| 6. Agent and TUI | Done: `agent` annotation/findings verification (`findings.v0`), TUI cockpit (`review`, `--probe`, `--findings`), dual-era 9-tool MCP server, and Claude Code agent hooks (`hook-state.v13`, HMAC-SHA-256 keyed history, `.git/deep-diff-forge/ledger.jsonl`, `agent {setup,doctor,check,verify-branch,hook}`). |
+| 7. Cluster and loom | `--cluster` done for `patch` and `risk` lanes with deterministic `ranked-review-order` join; `loom` and top-level `cluster` subcommand withdrawn 2026-10-31 (-> exit 2). |
+| 8. Daemon and release | Unix-socket daemon Protocol 3 (17 methods, byte-exact paging, 128 MiB FIFO admission, 64 LRU sessions, `cache_entries: 0`, JSON/Prometheus metrics), Rust & Python SDKs, adversarial review council with rootless Podman gates and `decisions.jsonl` recovery (exit 3), and signed release manifests done; shared cache and subscriptions not built. |
 
 ## Design Rules
 
@@ -94,7 +135,7 @@ The rest of this document is the original plan. What the code has, from `Cargo.t
 
 ## Workspace Layout
 
-Target layout; see [What exists today](#what-exists-today-030) for the real tree.
+Target layout; see [What exists today (`v0.11.0`)](#what-exists-today-v0110) for the real tree.
 
 ```text
 deep-diff-forge/
@@ -138,7 +179,7 @@ deep-diff-forge/
 ## Dependency Graph
 
 Target graph, not the built one. The built graph is in
-[ARCHITECTURE.md](ARCHITECTURE.md#crates-as-built-030), drawn from
+[ARCHITECTURE.md](ARCHITECTURE.md#crates-as-built-v0110), drawn from
 [`docs/crate-edges.txt`](crate-edges.txt).
 
 ```mermaid

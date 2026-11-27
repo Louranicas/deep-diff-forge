@@ -3,21 +3,24 @@
 This document converts the three above-baseline features into implementation-ready specs.
 
 > **Target design, not a description of the code.** None of the commands in the `CLI` blocks
-> below exist at 0.3.0; each is refused as an unknown command (exit 2). The next section lists
-> what does exist.
+> below exist at `v0.11.0`; each is refused as an unknown command (exit 2). The `rank`
+> subcommand was withdrawn on 2026-10-31 (`--rank` serves it). The next section lists what
+> ships at `v0.11.0`.
 >
-> **Status 2026-11-01.** Shipped: the semantic twin through `analyze` (`pipeline::review`),
-> Rust only; file-level ranking with code evidence (`graph::risk`, `graph::evidence`). Planned,
-> unowned: hunk, symbol, test and owner nodes; the adaptive diff planner and its budget
-> profiles. Nothing here is withdrawn or on hold.
+> **Status 2026-11-25 (`v0.11.0`).** Shipped: the semantic twin through `analyze` (`pipeline::review`),
+> Rust only; file-level 27-signal risk ranking with dual-reader code evidence (`graph::{risk,evidence,rust_tokens,lexical}`)
+> and structured `diagnostics.v0` (`graph::diagnostics`). Planned, unowned: hunk, symbol, test
+> and owner nodes; the adaptive diff planner and its budget profiles (`PlannerLearner` exists in
+> `deep-diff-forge-learning` as an unwired library type only). Withdrawn: the `rank` subcommand
+> (2026-10-31; use `--rank`). Nothing here is on hold.
 
-## What exists today (0.3.0, updated to 0.5.0)
+## What exists today (v0.11.0)
 
-| Feature | Built | Commands that exist |
+| Feature | Built | Commands & surfaces that exist |
 | --- | --- | --- |
-| Semantic patch twin | `core::ReviewFile` carries a `PatchTwin` and an optional `SemanticTwin`. The parser never fills the semantic twin; only `analyze` does, after checking the patch against base and candidate directories (`crates/deep-diff-forge-pipeline/src/review.rs`). Rust is the only grammar. | `semantic <path> [--json]`, `structural <old> <new> [--json]`, `analyze <patch> <base-dir> <candidate-dir>` |
-| Review intelligence graph | File-level ranking: a deterministic additive score from patch facts (`public_api_surface`, `new_file`, `deleted_file`, `binary_change`, `large_change`, `many_hunks`, `config_or_lockfile`, `test_only`, `generated_or_vendored`, `hazardous_text`, `symlink_change`, `executable_bit`); since 0.5.0, nine lexical code-evidence signals (`unsafe_added`, `process_spawn`, `network_fetch`, `dynamic_eval`, `ci_privilege`, `build_hook`, `secret_like`, `check_suppressed`, `test_removed`), each listed item (at most 32 per file) pointed at by hunk address and line (`crates/deep-diff-forge-graph/src/{risk,evidence,lexical}.rs`). No hunk, symbol, test or owner nodes. | `--stdin-patch --rank [--json]`, the same on a Git selection, daemon `diff.plan` and `diff.rank`, MCP `rank_patch` |
-| Adaptive diff planner | Not built. The parser sets `DiffStrategy::Binary` for binary files and `DiffStrategy::Line` for everything else (`crates/deep-diff-forge-patch/src/parser.rs`). No budget profiles. | none |
+| Semantic patch twin | `core::ReviewFile` carries a `PatchTwin` and an optional `SemanticTwin`. The parser never fills the semantic twin; only `analyze` does, after checking the patch against base and candidate directories (`crates/deep-diff-forge-pipeline/src/review.rs`). Rust is the only tree-sitter grammar (`DEFAULT_BYTE_BUDGET = 2 MiB`, `DEFAULT_NODE_BUDGET = 200_000`). | `semantic <path> [--json]`, `structural <old> <new> [--json]`, `analyze <patch> <base-dir> <candidate-dir>` |
+| Review intelligence graph | File-level deterministic additive scoring over **27 signals** (`crates/deep-diff-forge-graph/src/{risk,evidence,rust_tokens,lexical,vocabulary,diagnostics}.rs`): 13 `RiskSignal` path/shape facts (`public_api_surface`, `new_file`, `deleted_file`, `binary_change`, `diff_suppressed`, `large_change`, `many_hunks`, `config_or_lockfile`, `test_only`, `generated_or_vendored`, `hazardous_text`, `symlink_change`, `executable_bit`) plus 14 `EvidenceSignal` code-evidence signals (`unsafe_added`, `process_spawn`, `network_fetch`, `dynamic_eval`, `ci_privilege`, `build_hook`, `secret_like`, `check_suppressed`, `test_removed`, and the 5 integrity signals `test_skipped`, `trivial_assert`, `stub_added`, `error_swallowed`, `panic_path_added`), each evidence item (up to 32 per file) anchored to a hunk address and line; canonical `rank.v0` with `tool.scorer_sha256`; and `deep-diff-forge.diagnostics.v0` (`<label>@line` / `<label>@file` with repair ids). No hunk, symbol, test or owner graph nodes. | `--rank [--json] [--fail-on LIST]`, `--diagnostics [--json] [--fail-on LIST]` (on `--stdin-patch`, `--git-*`, `<old> <new>`), `schema signals\|diagnostics`, `explain signal`, daemon `diff.plan`/`diff.rank`/`diff.diagnostics` (protocol 3), MCP `rank_patch`/`diagnose_patch`/`review_change`, Rust & Python SDKs |
+| Adaptive diff planner | Not built in the diff engine. The parser sets `DiffStrategy::Binary` for binary files and `DiffStrategy::Line` for everything else (`crates/deep-diff-forge-patch/src/parser.rs`). No budget profiles on CLI/daemon (`PlannerLearner` exists in `deep-diff-forge-learning` as library-only code, unwired). | none (`diff.plan` returns the ranked file list) |
 
 ## 1. Semantic Patch Twin
 

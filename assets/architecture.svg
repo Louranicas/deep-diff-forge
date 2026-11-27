@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="700" viewBox="0 0 1280 700" role="img" aria-labelledby="title desc">
-<title id="title">How Deep-Diff-Forge turns a change into a review</title>
-<desc id="desc">Inputs (a piped patch, a Git selection, or source files) pass through one parse, guard and seal path in the patch crate, producing the review model. Enrichment layers (projection, risk graph, cluster, syntax, agent notes, learning) read that model and never write it. Seven surfaces serve the result: the CLI, the TUI cockpit, the Unix-socket daemon, rpc over stdio, the MCP server, the envelope, and the Rust and Python SDKs. The review council runs separately over a sealed snapshot with sandboxed evidence gates.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-labelledby="title desc">
+<title id="title">How Deep-Diff-Forge v0.11.0 turns a change into a review</title>
+<desc id="desc">Inputs (a piped patch, a Git selection, a file pair, judge_patch, or source files) pass through one parse, 42-shape conformance, guard and seal path in the patch crate, producing the immutable review model. Empty stdin without --allow-empty exits 4; explicit --require-files or --require-hunks refusals exit 7. Enrichment layers (27-signal dual-reader risk and diagnostics.v0, projection, cluster, syntax, agent findings, learning) read that model and never write it. Seven surfaces serve the result: CLI, agent hooks and project ledger (state v13, HMAC-SHA-256), Unix-socket daemon (Protocol 3, 17 RPC methods), stdio rpc and 9-tool MCP server, TUI cockpit, Rust and Python SDKs, and eval/bench. The review council runs separately over a sealed snapshot with 8 rootless Podman evidence gates and a hash-chained tuicr decision journal.</desc>
 <style>
   :root { --bg:#ffffff; --panel:#f6f8fa; --line:#d0d7de; --ink:#1f2328; --soft:#57606a; --faint:#8c959f; --accent:#bc4c00; --accent-bg:#fff1e5; --ok:#1a7f37; }
   @media (prefers-color-scheme: dark) {
@@ -9,11 +9,11 @@
   .bg { fill: var(--bg); }
   .panel { fill: var(--panel); stroke: var(--line); stroke-width: 1; }
   .truth { fill: var(--accent-bg); stroke: var(--accent); stroke-width: 1.5; }
-  .head { font: 600 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 2.4px; fill: var(--faint); }
-  .name { font: 600 15px ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: var(--ink); }
+  .head { font: 600 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 2.2px; fill: var(--faint); }
+  .name { font: 600 14.5px ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: var(--ink); }
   .crate { font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: var(--accent); }
-  .note { font: 13px ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: var(--soft); }
-  .tiny { font: 12px ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: var(--faint); }
+  .note { font: 12.5px ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: var(--soft); }
+  .tiny { font: 11.5px ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fill: var(--faint); }
   .flow { stroke: var(--soft); stroke-width: 1.5; fill: none; marker-end: url(#arrow); }
   .read { stroke: var(--faint); stroke-width: 1.2; stroke-dasharray: 4 4; fill: none; }
   .accent { fill: var(--accent); }
@@ -24,109 +24,138 @@
     <path d="M0 0 L10 5 L0 10 z" fill="#8c959f"/>
   </marker>
 </defs>
-<rect class="bg" width="1280" height="700" rx="14"/>
+<rect class="bg" width="1280" height="760" rx="14"/>
 
 <!-- column heads -->
 <text class="head" x="40" y="48">INPUT</text>
-<text class="head" x="300" y="48">PATCH TRUTH</text>
-<text class="head" x="620" y="48">ENRICHMENT · NEVER WRITES THE PATCH</text>
-<text class="head" x="960" y="48">SURFACES</text>
+<text class="head" x="312" y="48">PATCH TRUTH</text>
+<text class="head" x="622" y="48">ENRICHMENT · NEVER WRITES THE PATCH</text>
+<text class="head" x="962" y="48">SURFACES · v0.11.0</text>
 
 <!-- inputs -->
-<rect class="panel" x="40" y="68" width="220" height="92" rx="10"/>
-<text class="name" x="58" y="96">A piped patch</text>
-<text class="note" x="58" y="118">git diff | deep-diff-forge</text>
-<text class="tiny" x="58" y="140">--stdin-patch</text>
+<rect class="panel" x="40" y="68" width="240" height="88" rx="10"/>
+<text class="name" x="58" y="94">A piped patch</text>
+<text class="note" x="58" y="116">git diff | deep-diff-forge</text>
+<text class="tiny" x="58" y="138">--stdin-patch [--allow-empty]</text>
 
-<rect class="panel" x="40" y="176" width="220" height="112" rx="10"/>
-<text class="name" x="58" y="204">A Git selection</text>
-<text class="note" x="58" y="226">--git-working-tree</text>
-<text class="note" x="58" y="246">--git-staged · --git-range A..B</text>
-<text class="tiny" x="58" y="268">fixed argv · NUL-delimited records</text>
+<rect class="panel" x="40" y="168" width="240" height="136" rx="10"/>
+<text class="name" x="58" y="194">Git, file pair &amp; judge_patch</text>
+<text class="note" x="58" y="216">--git-working-tree · --git-staged</text>
+<text class="note" x="58" y="236">--git-range A..B · &lt;old&gt; &lt;new&gt;</text>
+<text class="note" x="58" y="256">judge_patch (scratch Git dir)</text>
+<text class="tiny" x="58" y="282">fixed argv · --raw -z · diff_suppressed</text>
 
-<rect class="panel" x="40" y="304" width="220" height="92" rx="10"/>
-<text class="name" x="58" y="332">Source files</text>
-<text class="note" x="58" y="354">semantic · highlight</text>
-<text class="tiny" x="58" y="376">structural · read by the syntax layer</text>
+<rect class="panel" x="40" y="316" width="240" height="92" rx="10"/>
+<text class="name" x="58" y="344">Source files</text>
+<text class="note" x="58" y="366">semantic · highlight · structural</text>
+<text class="tiny" x="58" y="388">analyze · budgeted tree-sitter Rust</text>
 
 <!-- patch truth -->
-<rect class="truth" x="300" y="68" width="280" height="220" rx="12"/>
-<text class="name" x="320" y="98">Parse → guard → seal</text>
-<text class="crate" x="320" y="118">patch · SealedReview</text>
-<circle class="accent" cx="326" cy="146" r="3"/>
-<text class="note" x="338" y="150">incoherent hunks are refused</text>
-<circle class="accent" cx="326" cy="172" r="3"/>
-<text class="note" x="338" y="176">0 files or 0 hunks → exit 7</text>
-<circle class="accent" cx="326" cy="198" r="3"/>
-<text class="note" x="338" y="202">input_sha256 of the exact bytes</text>
-<circle class="accent" cx="326" cy="224" r="3"/>
-<text class="note" x="338" y="228">64 MiB budget, linear parse</text>
-<text class="tiny" x="320" y="266">the apply-able patch is never rewritten</text>
+<rect class="truth" x="312" y="68" width="278" height="236" rx="12"/>
+<text class="name" x="330" y="96">Parse → guard → seal</text>
+<text class="crate" x="330" y="116">patch · SealedReview</text>
+<circle class="accent" cx="336" cy="140" r="3"/>
+<text class="note" x="348" y="144">42-shape Git conformance; -U0 refused</text>
+<circle class="accent" cx="336" cy="166" r="3"/>
+<text class="note" x="348" y="170">empty stdin → exit 4 (--allow-empty)</text>
+<circle class="accent" cx="336" cy="192" r="3"/>
+<text class="note" x="348" y="196">--require-files / --require-hunks → 7</text>
+<circle class="accent" cx="336" cy="218" r="3"/>
+<text class="note" x="348" y="222">input_sha256 · 64 MiB / 1M-line cap</text>
+<circle class="accent" cx="336" cy="244" r="3"/>
+<text class="note" x="348" y="248">stray-byte re-read → diff_suppressed</text>
+<text class="tiny" x="330" y="284">the apply-able patch is never rewritten</text>
 
-<rect class="panel" x="300" y="304" width="280" height="92" rx="10"/>
-<text class="name" x="320" y="332">The review model</text>
-<text class="crate" x="320" y="352">core</text>
-<text class="tiny" x="320" y="376">files · hunks · line anchors · seal · tool</text>
+<rect class="panel" x="312" y="316" width="278" height="92" rx="10"/>
+<text class="name" x="330" y="344">The review model</text>
+<text class="crate" x="330" y="364">core · InputSeal (SHA-256 + HMAC)</text>
+<text class="tiny" x="330" y="388">files · hunks · anchors · exit registry</text>
 
-<path class="flow" d="M260 114 H296"/>
-<path class="flow" d="M260 232 C280 232 280 200 296 200"/>
-<path class="flow" d="M440 288 V300"/>
+<path class="flow" d="M280 112 H308"/>
+<path class="flow" d="M280 236 H308"/>
+<path class="flow" d="M451 304 V312"/>
 
 <!-- enrichment -->
 <g>
-  <rect class="panel" x="620" y="68" width="300" height="46" rx="9"/>
-  <text class="name" x="638" y="96">Projection</text><text class="tiny" x="760" y="96">inline · side-by-side</text>
-  <rect class="panel" x="620" y="122" width="300" height="46" rx="9"/>
-  <text class="name" x="638" y="150">Risk graph</text><text class="tiny" x="760" y="150">deterministic, explained rank</text>
-  <rect class="panel" x="620" y="176" width="300" height="46" rx="9"/>
-  <text class="name" x="638" y="204">Cluster</text><text class="tiny" x="760" y="204">parallel lanes, same answer</text>
-  <rect class="panel" x="620" y="230" width="300" height="46" rx="9"/>
-  <text class="name" x="638" y="258">Syntax</text><text class="tiny" x="760" y="258">tree-sitter, budgeted</text>
-  <rect class="panel" x="620" y="284" width="300" height="46" rx="9"/>
-  <text class="name" x="638" y="312">Agent notes</text><text class="tiny" x="760" y="312">grounded, sanitised</text>
-  <rect class="panel" x="620" y="338" width="300" height="46" rx="9"/>
-  <text class="name" x="638" y="366">Learning</text><text class="tiny" x="760" y="366">local receipts only</text>
+  <rect class="panel" x="622" y="68" width="308" height="48" rx="9"/>
+  <text class="name" x="638" y="89">Risk &amp; diagnostics (graph)</text>
+  <text class="tiny" x="638" y="106">27 signals · dual-reader · rank.v0 · diagnostics.v0</text>
+
+  <rect class="panel" x="622" y="126" width="308" height="48" rx="9"/>
+  <text class="name" x="638" y="147">Projection</text>
+  <text class="tiny" x="638" y="164">inline · side-by-side · \ note rows · grapheme widths</text>
+
+  <rect class="panel" x="622" y="184" width="308" height="48" rx="9"/>
+  <text class="name" x="638" y="205">Cluster</text>
+  <text class="tiny" x="638" y="222">bounded patch + risk lanes · deterministic join</text>
+
+  <rect class="panel" x="622" y="242" width="308" height="48" rx="9"/>
+  <text class="name" x="638" y="263">Syntax</text>
+  <text class="tiny" x="638" y="280">tree-sitter Rust · byte, node &amp; wall-clock caps</text>
+
+  <rect class="panel" x="622" y="300" width="308" height="48" rx="9"/>
+  <text class="name" x="638" y="321">Agent notes</text>
+  <text class="tiny" x="638" y="338">findings.v0 · anchored, sanitised, ungrounded</text>
+
+  <rect class="panel" x="622" y="358" width="308" height="48" rx="9"/>
+  <text class="name" x="638" y="379">Learning</text>
+  <text class="tiny" x="638" y="396">local redacted JSONL receipts · TrustPolicy</text>
 </g>
-<path class="read" d="M580 350 H600 V91 H620 M600 145 H620 M600 199 H620 M600 253 H620 M600 307 H620 M600 361 H620"/>
+<path class="read" d="M590 362 H606 V92 H622 M606 150 H622 M606 208 H622 M606 266 H622 M606 324 H622 M606 382 H622"/>
 
 <!-- surfaces -->
 <g>
-  <rect class="panel" x="960" y="68" width="280" height="46" rx="9"/>
-  <text class="name" x="978" y="96">CLI</text><text class="tiny" x="1040" y="96">human · --json · --jsonl</text>
-  <rect class="panel" x="960" y="122" width="280" height="46" rx="9"/>
-  <text class="name" x="978" y="150">TUI cockpit</text><text class="tiny" x="1080" y="150">review · --probe</text>
-  <rect class="panel" x="960" y="176" width="280" height="46" rx="9"/>
-  <text class="name" x="978" y="204">Daemon</text><text class="tiny" x="1056" y="204">Unix socket JSON-RPC</text>
-  <rect class="panel" x="960" y="230" width="280" height="46" rx="9"/>
-  <text class="name" x="978" y="258">rpc</text><text class="tiny" x="1040" y="258">the same JSON-RPC, stdio</text>
-  <rect class="panel" x="960" y="284" width="280" height="46" rx="9"/>
-  <text class="name" x="978" y="312">MCP server</text><text class="tiny" x="1076" y="312">stdio, read-only tools</text>
-  <rect class="panel" x="960" y="338" width="280" height="46" rx="9"/>
-  <text class="name" x="978" y="366">SDKs</text><text class="tiny" x="1040" y="366">Rust crate · Python stdlib</text>
+  <rect class="panel" x="962" y="68" width="278" height="44" rx="9"/>
+  <text class="name" x="978" y="87">CLI</text>
+  <text class="tiny" x="978" y="103">--json · --rank · --diagnostics · --fail-on</text>
+
+  <rect class="panel" x="962" y="119" width="278" height="44" rx="9"/>
+  <text class="name" x="978" y="138">Agent hooks &amp; ledger</text>
+  <text class="tiny" x="978" y="154">state v13 · HMAC · .git/deep-diff-forge/</text>
+
+  <rect class="panel" x="962" y="170" width="278" height="44" rx="9"/>
+  <text class="name" x="978" y="189">Daemon (Protocol 3)</text>
+  <text class="tiny" x="978" y="205">Unix socket · 17 RPC · 128 MiB · 0 cache</text>
+
+  <rect class="panel" x="962" y="221" width="278" height="44" rx="9"/>
+  <text class="name" x="978" y="240">rpc &amp; MCP server</text>
+  <text class="tiny" x="978" y="256">stdio · 9 read-only tools · dual-era</text>
+
+  <rect class="panel" x="962" y="272" width="278" height="44" rx="9"/>
+  <text class="name" x="978" y="291">TUI cockpit</text>
+  <text class="tiny" x="978" y="307">review · --probe · --findings</text>
+
+  <rect class="panel" x="962" y="323" width="278" height="44" rx="9"/>
+  <text class="name" x="978" y="342">Rust &amp; Python SDKs</text>
+  <text class="tiny" x="978" y="358">typed diagnostics.v0 · ProtocolTooOld</text>
+
+  <rect class="panel" x="962" y="374" width="278" height="44" rx="9"/>
+  <text class="name" x="978" y="393">eval &amp; bench</text>
+  <text class="tiny" x="978" y="409">73-case corpus · deterministic receipts</text>
 </g>
-<path class="flow" d="M920 226 H956"/>
-<text class="tiny" x="960" y="408">every exit code has a name and a next action</text>
-<text class="tiny" x="960" y="426">envelope: any command as one ddf.result.v1</text>
+<path class="flow" d="M930 237 H958"/>
+<text class="tiny" x="962" y="440">envelope: ddf.result.v1 · 11 exit-7 reason classes</text>
+<text class="tiny" x="962" y="458">explain &amp; schema: machine-readable contracts</text>
 
 <!-- parity band -->
-<rect class="panel" x="300" y="440" width="940" height="64" rx="10"/>
-<circle class="ok" cx="322" cy="472" r="5"/>
-<text class="note" x="338" y="468">Same bytes in, same document out: --stdin-patch --json, the daemon's diff.compute, rpc, MCP review_patch</text>
-<text class="note" x="338" y="488">and the SDK's review share one sealed path and are tested for byte parity.</text>
+<rect class="panel" x="40" y="484" width="1200" height="62" rx="10"/>
+<circle class="ok" cx="62" cy="515" r="5"/>
+<text class="note" x="78" y="510">Same bytes in, same document out: CLI --json / --rank / --diagnostics, daemon Protocol 3 (17 methods), rpc, MCP (9 tools)</text>
+<text class="note" x="78" y="530">and the Rust &amp; Python SDKs share one sealed path, canonical bytes (tool.scorer_sha256) and byte-parity tests.</text>
 
 <!-- council -->
-<text class="head" x="40" y="548">REVIEW COUNCIL · deep-diff-forge-review</text>
-<rect class="panel" x="40" y="562" width="1200" height="100" rx="10"/>
-<text class="name" x="62" y="594">prepare</text>
-<text class="tiny" x="62" y="614">sealed snapshot</text>
-<path class="flow" d="M150 598 H196"/>
-<text class="name" x="206" y="594">review</text>
-<text class="tiny" x="206" y="614">six reviewer slots, two rounds</text>
-<path class="flow" d="M400 598 H446"/>
-<text class="name" x="456" y="594">gate</text>
-<text class="tiny" x="456" y="614">8 evidence gates in rootless Podman, no network</text>
-<path class="flow" d="M770 598 H816"/>
-<text class="name" x="826" y="594">status</text>
-<text class="tiny" x="826" y="614">cited bytes only · missing evidence is HOLD, exit 7</text>
-<text class="tiny" x="62" y="644">Nothing is approved automatically: the council prepares evidence for a human decision.</text>
+<text class="head" x="40" y="586">REVIEW COUNCIL · deep-diff-forge-review</text>
+<rect class="panel" x="40" y="600" width="1200" height="122" rx="10"/>
+<text class="name" x="62" y="634">prepare</text>
+<text class="tiny" x="62" y="654">sealed snapshot + manifest</text>
+<path class="flow" d="M238 638 H280"/>
+<text class="name" x="290" y="634">review</text>
+<text class="tiny" x="290" y="654">6 slots · 2 rounds · typed citations</text>
+<path class="flow" d="M498 638 H540"/>
+<text class="name" x="550" y="634">gate</text>
+<text class="tiny" x="550" y="654">8 gates · rootless Podman · no network</text>
+<path class="flow" d="M788 638 H830"/>
+<text class="name" x="840" y="634">status &amp; journal</text>
+<text class="tiny" x="840" y="654">HOLD exit 7 · decisions.jsonl · exit 3 recovery</text>
+<text class="tiny" x="62" y="696">Nothing is approved automatically: the council prepares sandboxed evidence and hash-chained tuicr dispositions for human decision.</text>
 </svg>

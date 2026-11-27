@@ -172,8 +172,8 @@ refuses each whole.
    `deep_diff_forge_patch::SealedReview`, whether the patch was piped in or acquired from Git.
    It decodes the bytes, parses them within a 64 MiB budget in linear time, applies the input
    contracts, and seals them with SHA-256. This covers the CLI's `--json`, `--rank`,
-   `--cluster` and layouts, the daemon's `diff.compute` and `diff.rank`, MCP's `review_patch`
-   and `rank_patch`, and the SDKs.
+   `--diagnostics`, `--cluster` and layouts, the daemon's `diff.compute`, `diff.rank` and
+   `diff.diagnostics`, MCP's `review_patch`, `rank_patch` and `diagnose_patch`, and the SDKs.
    - `--jsonl` streams through the pipeline crate under the same parser and contracts, but
      unsealed.
    - The cockpit, `diff.plan` and `session.open` use the same strict parser without a seal.
@@ -261,6 +261,7 @@ git config --global alias.review '!git diff | deep-diff-forge review'
 ```bash
 git diff | deep-diff-forge review                       # the interactive cockpit
 git diff | deep-diff-forge --stdin-patch --rank         # what to look at first, and why
+git diff | deep-diff-forge --stdin-patch --diagnostics  # located labels and repairs (diagnostics.v0)
 deep-diff-forge --git-staged --rank                     # the same, without the pipe
 deep-diff-forge --git-range main..HEAD --json           # a sealed review document
 git diff | deep-diff-forge --stdin-patch --layout side-by-side
@@ -285,7 +286,7 @@ deep-diff-forge agent doctor            # proves MCP, the daemon and the CLI agr
    returns the **outline**: every file in review-risk order with its score, signals and hunks.
    Each hunk carries its address, line ranges, `@@` heading and counts, and no line text yet.
 2. **`review_change`** with `view: "hunks"` and the `addresses` it cares about returns those
-   hunks verbatim.
+   hunks verbatim (or `view: "diagnostics"` for paged `diagnostics.v0` findings).
 3. Every answer is sealed (`input_sha256`) and fits `max_bytes`, 32 KiB by default, both copies
    counted, as printed (escapes included). A `next_cursor` continues, and it belongs to that
    patch and that selection only: a cursor from another patch or selection, or one whose
@@ -333,7 +334,7 @@ moved from this page. The release archive ships this README alone: read them in 
 | [Verified agent findings](docs/reference/verified-agent-findings.md#verified-agent-findings) | Agent findings, one JSON object per line, checked against patch truth before anyone reads them. |
 | [Benchmarks and evaluation](docs/reference/evaluation.md#benchmarks-and-evaluation) | `bench`, which times the hot paths on generated inputs, and `eval`, which scores the engine against the labelled corpus in `fixtures/eval`. |
 | [Risk ranking](docs/reference/risk-ranking.md#risk-ranking) | The one deterministic, additive score per file that `--rank`, `--cluster`, the cockpit and `rank_patch` share, with its signal tables. |
-| [Architecture](docs/reference/architecture-overview.md#architecture) | The 14 narrow crates with one-way dependencies; `core` is pure vocabulary. |
+| [Architecture](docs/reference/architecture-overview.md#architecture) | The 14 published crates (plus test-only `testkit`) with one-way dependencies; `core` is pure vocabulary. |
 | [Quality gates](docs/reference/quality-gates.md#quality-gates) · [Review council and evidence gates](docs/reference/quality-gates.md#review-council-and-evidence-gates) | The required checks up to 0.8.3 and the local gate a release commit passes from 0.8.4; a map of the review council (`docs/REVIEW_COUNCIL.md` has the full design). |
 
 ---
@@ -376,7 +377,7 @@ through a confidential issue on GitLab ([SECURITY.md](SECURITY.md#reporting-a-vu
 | --- | --- |
 | Use the engine from scripts, CI or an agent | [`BASH_API_CONTRACTS`](docs/BASH_API_CONTRACTS.md) · [`CLAUDE_CODE_BASH_CLI`](docs/CLAUDE_CODE_BASH_CLI.md) · [`API_AND_IPC`](docs/API_AND_IPC.md) · [`MAKING_SKILLS`](docs/MAKING_SKILLS.md) |
 | Run the daemon or ship a release | [`OPERATIONS_AND_DAEMON`](docs/OPERATIONS_AND_DAEMON.md) · [`RELEASE_AND_PUBLICATION`](docs/RELEASE_AND_PUBLICATION.md) · [`END_TO_END_DEPLOYMENT`](docs/END_TO_END_DEPLOYMENT.md) |
-| Understand the design | [`ARCHITECTURE`](docs/ARCHITECTURE.md) · [`SCHEMATICS`](docs/SCHEMATICS.md) · [`VISION`](docs/VISION.md) · [`PIONEER_FEATURE_SPECS`](docs/PIONEER_FEATURE_SPECS.md) · [`ROADMAP`](docs/ROADMAP.md) |
+| Understand the design | [`ARCHITECTURE`](docs/ARCHITECTURE.md) · [`SCHEMATICS`](docs/SCHEMATICS.md) · [`ALGORITHMS_AND_HEURISTICS`](docs/ALGORITHMS_AND_HEURISTICS.md) · [`VISION`](docs/VISION.md) · [`PIONEER_FEATURE_SPECS`](docs/PIONEER_FEATURE_SPECS.md) · [`ROADMAP`](docs/ROADMAP.md) |
 | Hold the quality bar | [`TESTING_GOLD_STANDARD`](docs/TESTING_GOLD_STANDARD.md) · [`DEPLOYMENT_FRAMEWORK`](docs/DEPLOYMENT_FRAMEWORK.md) · [`REVIEW_COUNCIL`](docs/REVIEW_COUNCIL.md) · [`SECURITY`](SECURITY.md) |
 | See the record | [`CHANGELOG`](CHANGELOG.md) · [`EVIDENCE`](EVIDENCE.md) · [`NOTES`](NOTES.md) · [`DEPLOYMENT_GAP_ANALYSIS`](docs/DEPLOYMENT_GAP_ANALYSIS.md) · [`PRODUCTION_READINESS`](docs/PRODUCTION_READINESS.md) · [`RECOMMENDATION_INTEGRATION`](docs/RECOMMENDATION_INTEGRATION.md) |
 | Read the reference sections and every release's notes | [`docs/reference`](docs/reference/README.md) · [`docs/release-notes`](docs/release-notes/README.md) |

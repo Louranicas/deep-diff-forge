@@ -1,120 +1,89 @@
 # Chaining And Clustered Execution
 
-Deep-Diff-Forge commands must be useful as Unix filters before they become
-interactive applications. Every non-interactive command is designed to compose
-with Bash, Claude Code, CI, and other command runners.
+Deep-Diff-Forge commands are designed as composable Unix filters first and interactive applications second. Every non-interactive machine command composes cleanly with Bash (`set -euo pipefail`), Claude Code, CI runners, and other orchestrators.
 
-## Status 2026-10-31
+> **Status (`v0.11.0`, 2026-11-27).**
+> - **Shipped & wired:** Shell composition of single commands honoring `chain-contract` (`--stdin-patch`, `--git-*`, `<old> <new>`, `--json`, `--jsonl`, `--rank`, `--diagnostics`, `--fail-on`, `--outline`, `--hunks`, `findings verify`, `envelope`, `learn record --stdin`), backed internally by `crates/deep-diff-forge-pipeline` (`IngestStage` → `RenderStage`). In-process parallel risk scoring ships via `--cluster [--parallel serial|auto|N]` (`crates/deep-diff-forge-cluster`) over the **`patch` and `risk`** dimensions with pre-computed `CarriedShares` and deterministic `ranked-review-order` join.
+> - **Withdrawn (refused with exit `2` naming replacement):** Top-level `chain`, `cluster`, and `loom` subcommands (`WITHDRAWN` in `crates/deep-diff-forge-cli/src/main.rs`), plus the `rank`, `annotate`, and `render` subcommands, chain manifests, and the `semantic`, `agent`, `runtime`, `storage`, `history`, and `presentation` cluster lanes (`chain-contract`, `cluster-contract`).
+> - **Not built, unowned:** `ingest` and `plan` as standalone subcommands. Nothing is on hold.
 
-The `chain` and `cluster` subcommands are **withdrawn** and refused with exit 2 and their
-replacement. Chaining is shell composition of single commands that each honour
-`chain-contract`; clustering is the `--cluster` mode of `--stdin-patch`, the Git selections and
-`<old> <new>`. `chain-contract` and `cluster-contract` now list only shipped modes, and a test
-runs each one (`cli/tests/file_pair.rs`). The manifest and the extra dimensions below are kept
-as design history, not as plans anyone owns.
+For the exact sharding math, worker cap, and cross-section `CarriedShares` invariant, see [Algorithms, Heuristics, and Execution Invariants — Section 7 (Bounded Parallel Cluster Sharding)](ALGORITHMS_AND_HEURISTICS.md#7-bounded-parallel-cluster-sharding).
 
-**Shipped:** shell chaining under `chain-contract`, `--cluster` over the patch and risk
-dimensions (`crates/deep-diff-forge-cluster`, `cli/src/main.rs`). **Withdrawn:** the `chain`,
-`cluster`, `rank`, `annotate` and `render` subcommands, chain manifests and the semantic, agent,
-runtime, storage, history and presentation lanes (`chain-contract`, `cluster-contract`).
-**Not built, unowned:** `ingest` and `plan` as subcommands. Nothing is on hold.
-
-## Status 2026-10-28 (0.3.0)
-
-Most of this page is a target design. What ships today:
-
-- **Chaining:** single commands that read stdin explicitly (`--stdin-patch`,
-  `learn record --stdin`) and write one JSON document (`--json`) or one event
-  per line (`--jsonl`). Internally `--jsonl` runs a two-stage pipeline
-  (`IngestStage` → `RenderStage::jsonl()`, `crates/deep-diff-forge-pipeline`).
-- **Clustering:** `--cluster [--parallel serial|auto|N]` on `--stdin-patch` and
-  on the Git selections. It runs the patch and risk dimensions over the files
-  with bounded threads, joins in ranked review order, and prints a receipt
-  (`deep-diff-forge.cluster.v0` with `--json`).
-- **Not implemented** (exit 2 today): the `ingest`, `plan`, `rank`, `annotate`,
-  `render`, `chain` and `cluster` subcommands, chain manifests, corpus runs,
-  `--dimensions`, `--budget`, `--receipt` and `--ranked`.
+---
 
 ## Goals
 
-- Make every machine command pipe-safe.
-- Support single-process pipelines without the daemon.
-- Support optional clustered execution for large repos and corpora.
-- Preserve deterministic output under parallel execution.
-- Keep patch truth canonical across every chain stage.
+- Make every machine command pipe-safe and deterministic.
+- Support single-process pipelines without requiring the daemon.
+- Support bounded in-process parallel execution for large diffs.
+- Preserve bit-identical output across any worker count (`serial`, `auto`, `fixed:N`).
+- Keep patch truth canonical and immutable across every stage and lane.
 
-## Command Families
+## Command Families (`v0.11.0`)
 
-| Family | Command | Status | Today |
+| Family | Historical Name | Status | `v0.11.0` Shipped Equivalent |
 | --- | --- | --- | --- |
-| Ingest | `deep-diff-forge ingest` | planned | `--stdin-patch` or `--git-working-tree` / `--git-staged` / `--git-range` |
-| Plan | `deep-diff-forge plan` | planned | the per-file `strategy` field of `review.v0` |
-| Rank | `deep-diff-forge rank` | withdrawn | `--rank` (`rank.v0`) |
-| Annotate | `deep-diff-forge annotate` | withdrawn | `findings verify` checks agent findings |
-| Render | `deep-diff-forge render` | withdrawn | `--layout inline\|side-by-side`, `review --probe` |
-| Chain | `deep-diff-forge chain` | withdrawn | the shell joins single commands |
-| Cluster | `deep-diff-forge cluster` | withdrawn | `--cluster [--parallel N]` |
+| Ingest | `deep-diff-forge ingest` | not built (unowned) | `--stdin-patch`, `--git-working-tree`, `--git-staged`, `--git-range A..B`, `<old> <new>` |
+| Plan | `deep-diff-forge plan` | not built (unowned) | Per-file `strategy` field in `review.v0`; daemon `diff.plan` |
+| Rank | `deep-diff-forge rank` | **withdrawn** | `--rank [--fail-on LIST] [--json]` (`rank.v0`) |
+| Diagnostics | — | **shipped (`v0.11.0`)** | `--diagnostics [--fail-on LIST] [--json]` (`diagnostics.v0`) |
+| Annotate | `deep-diff-forge annotate` | **withdrawn** | `findings verify --findings FILE [--require-all] [--require-findings]` (`findings.v0`) |
+| Render | `deep-diff-forge render` | **withdrawn** | `--layout inline\|side-by-side`, `--outline`, `--hunks`, `review --probe` |
+| Chain | `deep-diff-forge chain` | **withdrawn (exit 2)** | Shell pipes joining single commands (`deep-diff-forge chain-contract`) |
+| Cluster | `deep-diff-forge cluster` | **withdrawn (exit 2)** | `--cluster [--parallel serial\|auto\|N] [--json]` (`deep-diff-forge cluster-contract`) |
 
-## Pipe Contracts
+## Pipe Contracts (`chain-contract v0`)
 
 ```text
-stdin   = input only for --stdin-patch, learn record --stdin, findings verify and review (the patch), and rpc and mcp (their protocol)
-stdout  = primary output only
-stderr  = diagnostics and warnings
-status  = an exit code from the registry (deep-diff-forge schema exit-codes)
-format  = a schema name in every JSON document
+stdin   = read ONLY by --stdin-patch, learn record --stdin, findings verify, review (patch), rpc, and mcp
+stdout  = primary machine or human output only
+stderr  = diagnostics, warnings, and exit-7 refusal reason lines
+status  = exit code from the registry (`deep-diff-forge schema exit-codes`)
+format  = explicit `schema` in every JSON document; explicit `event` in every JSONL record
 ```
 
-Rules:
+Verified guarantees (`cli/src/main.rs::chain_contract`, `cli/src/refusal.rs`):
 
-- `--json` emits one complete JSON document and is never mixed with events.
-- `--jsonl` emits one event per line (`{"event":"diff.file",…}`). Today the
-  events carry no `schema` field, and the whole output is written when the run
-  ends.
-- A closed stdout (`| head`) ends the command cleanly with exit 0; the reader
-  keeps what it read. Any other write failure, including one in output that does
-  not end in a newline, exits 3 (io).
-- Stdin is never consumed by accident: only the commands above read it.
-- Target: default human output uses ANSI only when stdout is a TTY (today only
-  `highlight` colours); large outputs flush by file, hunk or event boundary.
+- `--json` emits one complete JSON document and is never mixed with JSONL events.
+- `--jsonl` runs the two-stage pipeline (`IngestStage` → `RenderStage::jsonl()` in `deep-diff-forge-pipeline`) and emits one `{"event":"diff.file",…}` record per line once the run completes.
+- **Closed-stdout semantics:** A closed stdout pipe (`| head`) exits `0` on normal commands while preserving what the reader read; **verdict refusals (`--fail-on`, `eval`, `agent check`, `agent verify-branch`) preserve exit `7`** even if stdout closes early (closing DDF-2026-010/011). Any other write failure exits `3` (`io`).
+- **Empty stdin:** `--stdin-patch` with zero file sections (empty or prose) exits `4` (`no_patch_in_input`) unless `--allow-empty` is passed; Git selections and `<old> <new>` return zero files cleanly.
+- Stdin is never consumed accidentally by commands outside the explicit list above.
+
+---
 
 ## Chain Examples
 
-### Shipped
+### Shipped (`v0.11.0`)
 
 ```bash
-# Machine-readable workspace review.
+# Machine-readable workspace review (sealed review.v0).
 deep-diff-forge --git-working-tree --include-untracked --json
 
-# One stage per command, joined by the shell.
+# Stream per-file events into jq.
 git diff | deep-diff-forge --stdin-patch --jsonl | jq -c 'select(.hunks > 3)'
 
-# CI gate that fails on a broken contract or an empty change.
+# CI gate: verify contracts, fail on security/integrity signals or truncated evidence.
 set -euo pipefail
 deep-diff-forge chain-contract
 deep-diff-forge --git-range "origin/main..HEAD" --json --require-files --require-hunks > review.json
-deep-diff-forge --git-range "origin/main..HEAD" --rank --json > rank.json
+deep-diff-forge --git-range "origin/main..HEAD" --rank --fail-on security,integrity --json > rank.json
+deep-diff-forge --git-range "origin/main..HEAD" --diagnostics --json > diagnostics.json
 ```
 
-### Not built (design history; `rank`, `annotate` and `render` withdrawn)
+### Historical Target Design (Withdrawn — Not Built)
+
+> Kept for design history only; `chain`, `rank`, `annotate`, and `render` subcommands are withdrawn.
 
 ```bash
 deep-diff-forge ingest --git --jsonl \
   | deep-diff-forge plan --stdin --jsonl \
   | deep-diff-forge rank --stdin --json \
   | deep-diff-forge render --stdin --plain
-
-deep-diff-forge ingest --git --jsonl \
-  | deep-diff-forge annotate --stdin --agent claude-code --jsonl \
-  | deep-diff-forge render --stdin --compact
 ```
 
-## Chain Manifest (withdrawn 2026-10-31; design history)
-
-`deep-diff-forge chain` would accept an explicit manifest when pipelines need to
-be reproducible.
-
 ```toml
+# Withdrawn 2026-10-31 (design history): chain manifest schema
 schema = "deep-diff-forge.chain.v0"
 name = "claude-fast-review"
 
@@ -125,13 +94,6 @@ input = "git"
 output = "jsonl"
 
 [[stage]]
-id = "plan"
-command = "plan"
-input = "jsonl"
-output = "jsonl"
-budget = "fast"
-
-[[stage]]
 id = "rank"
 command = "rank"
 input = "jsonl"
@@ -139,70 +101,33 @@ output = "json"
 join = "ranked-review-order"
 ```
 
+---
+
 ## Cluster Model
 
-Cluster execution is a scheduler, not a different engine. It splits work into
-lanes, runs lanes in parallel, and rejoins records deterministically.
+Cluster execution is an in-process scheduler (`deep-diff-forge-cluster`), not a separate engine and not daemon-dependent.
 
-### Shipped: `--cluster`
+### Shipped: `--cluster` (`v0.11.0`)
 
-Measured from `crates/deep-diff-forge-cluster/src/{cluster.rs,scheduler.rs}`
-(`run_risk_cluster`, `run_lane`, `apply_join`, `resolve_workers`):
+Verified from `crates/deep-diff-forge-cluster/src/{cluster.rs,scheduler.rs}` (`run_risk_cluster`, `run_lane`, `contiguous_chunks`, `resolve_workers`, `apply_join`):
 
 ```mermaid
 flowchart LR
-    Files["parsed, sealed review files"]
-    Workers["resolve_workers:<br/>serial = 1, auto = CPU count,<br/>N capped at 4 x CPU count,<br/>never more than the file count"]
-    Chunks["contiguous_chunks:<br/>one contiguous chunk per worker"]
-    Lane["scoped thread per chunk:<br/>graph::score_file (patch + risk)"]
-    Concat["concatenate chunks in input order"]
-    Join["apply_join RankedReviewOrder:<br/>score descending, then path"]
-    Out["cluster.v0: receipt + ranked"]
+    Files["Parsed, sealed ReviewFile slice"]
+    Shares["CarriedShares::of(files) (pre-computed once across full patch)"]
+    Workers["resolve_workers: serial=1, auto=CPUs, fixed:N capped at 4x CPUs & file_count"]
+    Chunks["contiguous_chunks: balanced ranges (n/w + 1, n/w)"]
+    Lane["std::thread::scope per chunk: RankedFile::scored_in_patch (patch + risk)"]
+    Concat["Concatenate chunks in input order (panic unwinds, never truncates)"]
+    Join["apply_join RankedReviewOrder: score desc, then path asc"]
+    Out["cluster.v0: input_sha256 + receipt + ranked"]
 
-    Files --> Workers --> Chunks --> Lane --> Concat --> Join --> Out
+    Files --> Shares --> Workers --> Chunks --> Lane --> Concat --> Join --> Out
 ```
 
-The receipt records `dimensions` (`patch`, `risk`), `parallelism` (`serial`,
-`auto` or `fixed:N`), `workers`, `join_policy` and `file_count`. The output is
-the same for any worker count; a panicking lane aborts the run rather than
-returning a short result. `--parallel` takes `serial`, `auto` or a
-worker count from 1; anything else is a usage error, exit 2 (`parse_parallelism`
-in `main.rs`).
-
-### Target: dimensional lanes (withdrawn 2026-10-31; design history)
-
-The core model already names eight dimensions (`ExecutionDimension`: patch,
-semantic, risk, agent, runtime, storage, history, presentation) and three join
-policies (`JoinPolicy`: deterministic input order, ranked review order, as-ready
-with stable ids). Only patch and risk lanes run today.
-
-```mermaid
-flowchart TB
-    Input[workspace or corpus input]
-    Shard[deterministic sharder]
-    Patch[patch lanes]
-    Semantic[semantic lanes]
-    Risk[risk lanes]
-    Agent[agent lanes]
-    Join[stable join]
-    Render[projection]
-
-    Input --> Shard
-    Shard --> Patch
-    Shard --> Semantic
-    Patch --> Risk
-    Semantic --> Risk
-    Risk --> Agent
-    Patch --> Join
-    Semantic --> Join
-    Risk --> Join
-    Agent --> Join
-    Join --> Render
-```
-
-## Cluster Commands
-
-### Shipped
+- **Cross-section determinism:** Pre-computing `CarriedShares::of(files)` before spawning threads guarantees that multi-hunk created files and multi-section same-path merges receive identical carried-reading shares regardless of shard boundaries or worker count.
+- **Receipt (`deep-diff-forge.cluster.v0`):** Records `input_sha256`, `tool`, `receipt` (`dimensions: ["patch", "risk"]`, `parallelism`, `workers`, `join_policy: "ranked-review-order"`, `file_count`), and `ranked` (using `graph::entry_json(rf, false)`).
+- **Flag validation:** `--parallel` accepts `serial`, `auto`, or an integer `>= 1`; any other value exits `2` (`usage`). Available on `--stdin-patch`, `--git-working-tree`, `--git-staged`, `--git-range`, and `<old> <new>`.
 
 ```bash
 # Auto parallelism on the current machine.
@@ -210,54 +135,62 @@ git diff | deep-diff-forge --stdin-patch --cluster --json
 
 # Bounded parallelism for CI runners.
 deep-diff-forge --git-range "origin/main..HEAD" --cluster --parallel 4 --json
+
+# Direct file pair in clustered mode.
+deep-diff-forge old.rs new.rs --cluster --parallel 2 --json
 ```
 
-### Withdrawn (design history)
+### Historical Target Design: Multi-Dimensional Lanes (Withdrawn 2026-10-31)
 
-```bash
-deep-diff-forge cluster --git --dimensions patch,semantic,risk --parallel auto --jsonl
-deep-diff-forge cluster --git --parallel 4 --budget balanced --json
-deep-diff-forge cluster \
-  --corpus <corpus-dir>/manifest.toml \
-  --dimensions patch,semantic,history \
-  --parallel auto \
-  --receipt ./receipts/corpus-run.json
+`deep-diff-forge-core` retains the eight-variant `ExecutionDimension` enum (`patch`, `semantic`, `risk`, `agent`, `runtime`, `storage`, `history`, `presentation`) and three-variant `JoinPolicy` enum (`deterministic-input-order`, `ranked-review-order`, `as-ready-with-stable-ids`), but only `patch` and `risk` lanes ship; the remaining six lanes and top-level `cluster` subcommand are withdrawn.
+
+```mermaid
+flowchart TB
+    Input["Workspace or corpus input (historical design)"]
+    Shard["Deterministic sharder"]
+    Patch["Patch lanes (shipped)"]
+    Risk["Risk lanes (shipped)"]
+    Other["Semantic / Agent / History lanes (withdrawn)"]
+    Join["Stable join"]
+    Render["Projection"]
+
+    Input --> Shard
+    Shard --> Patch
+    Shard --> Other
+    Patch --> Risk
+    Other --> Risk
+    Patch --> Join
+    Risk --> Join
+    Other --> Join
+    Join --> Render
 ```
 
-## Determinism Rules
+---
 
-| Rule | Requirement | Status |
+## Determinism Rules (`v0.11.0`)
+
+| Rule | Requirement | `v0.11.0` Status |
 | --- | --- | --- |
-| Stable IDs | File, hunk, span, annotation and lane IDs are content-derived or manifest-derived. | partial: files are keyed by path, hunks by a per-file index; spans, annotations and lanes have no CLI ids yet |
-| Stable joins | Default join order is deterministic input order. | the join policy exists; `--cluster` always uses ranked review order |
-| Explicit ranking | Ranked order is requested with a flag or a rank stage. | `--rank` and `--cluster` rank; `--ranked` is planned |
-| Bounded memory | Lanes stream by file and never require the whole repo in memory. | planned; input is read whole up to the 64 MiB patch budget |
-| Receipt first | Cluster runs emit a receipt with dimensions, budgets, versions and skipped lanes. | partial: dimensions, parallelism, workers, join policy and file count; no budgets or skipped lanes |
+| Stable IDs | Content- or patch-derived IDs | **Shipped for files, hunks & diagnostics:** files keyed by path, hunks by `HunkId` + SHA-256 `PatchHunk::address`, diagnostics by SHA-256 `Diagnostic::key`; no lane IDs |
+| Stable joins | Deterministic order independent of thread scheduling | **Shipped:** `run_lane` concatenates chunks in input order; `--cluster` always joins with `ranked-review-order` (score desc, path asc) |
+| Explicit ranking | Ranked order requested via flag | **Shipped:** `--rank` and `--cluster` rank; `--diagnostics` emits in rank order |
+| Bounded memory | Prevent OOM on huge inputs | **Shipped via budgets:** whole patch capped at `64 MiB` / `1,000,000` lines; carried reading capped at `256 KiB` / `512` B line (not streaming) |
+| Receipt first | Cluster runs emit a structured receipt | **Shipped:** `receipt` carries `dimensions`, `parallelism`, `workers`, `join_policy`, `file_count` |
 
-## Rust Execution Strategy
+## Rust Execution Strategy (`v0.11.0`)
 
-Shipped: the cluster scheduler uses `std::thread::scope`, and the daemon is a
-std `UnixListener` server with one thread per connection. The workspace depends
-on neither `rayon` nor `tokio`. CLI one-shot mode stays synchronous until async
-has a measured benefit.
-
-The shipped stage trait (`crates/deep-diff-forge-pipeline/src/lib.rs`) is
-small:
-
-```rust
-pub trait ChainStage {
-    fn name(&self) -> &'static str;
-    fn run(&self, input: PipelineData) -> Result<PipelineData, PipelineError>;
-}
-```
-
-`PipelineData` is `Patch(String)`, `Review(Vec<ReviewFile>)` or
-`Rendered(String)`. A lane trait is planned; today a lane is a closure passed to
-`run_lane`.
-
-Remote distributed execution is out of scope until local receipts, replay and
-failure semantics are boring and testable.
+- **Zero async runtime / thread-pool bloat:** `deep-diff-forge-cluster` uses `std::thread::scope`, and `deep-diff-forge-daemon` uses `std::os::unix::net::UnixListener` with one thread per connection under a `128 MiB` FCFS admission gate (`MAX_CONNECTIONS = 8`, `CONTROL_CONNECTIONS = 2`). Neither `rayon` nor `tokio` is a dependency anywhere in the 15-crate workspace.
+- **Pipeline crate (`crates/deep-diff-forge-pipeline/src/{lib,stages,jsonl,review}.rs`):**
+  ```rust
+  pub trait ChainStage {
+      fn name(&self) -> &'static str;
+      fn run(&self, input: PipelineData) -> Result<PipelineData, PipelineError>;
+  }
+  ```
+  `PipelineData` has three variants: `Patch(String)`, `Review(Vec<ReviewFile>)`, and `Rendered(String)`. `IngestStage` parses patches; `RenderStage` renders `Json`, `Jsonl`, `Inline`, or `SideBySide`; `pipeline::review` drives source-pair `analyze`.
+- Remote distributed execution remains explicitly out of scope.
 
 ## Deployment Link
 
 - Framework: [Codebase Deployment Framework](DEPLOYMENT_FRAMEWORK.md)
+- Dimensional Model: [Dimensional Execution Model](DIMENSIONAL_EXECUTION_MODEL.md)

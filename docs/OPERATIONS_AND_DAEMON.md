@@ -1,47 +1,60 @@
 # Operations And Daemon Specification
 
-## Status 2026-10-28 (0.3.0)
+## Status (v0.11.0)
 
-What exists today, checked against `crates/deep-diff-forge-daemon/src/` and the
-0.3.0 debug binary:
+Verified against `crates/deep-diff-forge-daemon/src/`,
+`crates/deep-diff-forge-cli/src/{main,doctor,textfile}.rs`, and `contrib/` at
+`v0.11.0`:
 
 - `deep-diff-forge daemon {path|start [--foreground] [--allow-repo PATH]... [--log-format text|json]|health|status|metrics [--format json|prometheus] [--out PATH]|stop} [--socket PATH]`.
   `start` always serves in the foreground; a supervisor owns the process.
   `--foreground` is accepted only with `start` (elsewhere: exit 2).
-- One Unix socket, JSON-RPC 2.0, protocol 2 (0 and 1 still negotiate). Methods
-  (`engine.methods`): `engine.initialize`, `engine.methods`, `daemon.health`,
-  `daemon.status`, `daemon.shutdown`, `diff.plan`, `diff.compute`, `diff.rank`,
-  `review.outline`, `review.hunks`, `review.change`, `session.open`,
-  `session.snapshot`, `session.close` and, since protocol 2, `daemon.metrics` and
-  `findings.verify`. `deep-diff-forge rpc` speaks the same protocol over stdio without a daemon.
-- At most eight connections, their requests run in parallel under a 128 MiB
-  cap on the request bytes in flight ([concurrency](#concurrency)). Line cap 80 MiB each way; a response over it
-  becomes `RESOURCE_EXHAUSTED` (8). 30-second absolute read deadline per line.
-- A second `start` at a live socket is refused (`AddrInUse`, exit 6); a stale
-  socket (connect refused) is replaced; a non-socket file is never deleted.
-- A stop drains (since 2026-10-31): the requests in progress are answered first, for up to 30 s,
-  and `daemon stop` returns once the daemon has exited ([lifecycle](#daemon-lifecycle-implemented)).
-  With nothing in progress it returns within a second, also when idle clients hold every data
-  and control slot (since 0.10.0; before, it got no answer until a control slot freed).
-  A systemd user unit and a launchd agent ship in `contrib/` ([running as a
-  service](#running-as-a-service)).
-- Not implemented: any cache (`cache_entries` is always 0), the `cache`
-  command, subscriptions, log levels other than `warn` and `info`, TCP and
-  Windows named pipes. Metrics (`daemon.metrics`)
-  and JSON log lines (`--log-format json`) ship ([observability](#observability)), and since
-  2026-10-31 the metrics also render as Prometheus text for node_exporter's textfile collector,
-  with no new listener ([exporting metrics](#exporting-metrics-to-prometheus)).
+- One Unix domain socket, JSON-RPC 2.0, **engine protocol 3**
+  (`PROTOCOL_VERSION = 3`; protocols 0, 1 and 2 still negotiate). All **17
+  methods** (`engine.methods`): `engine.initialize`, `engine.methods`,
+  `daemon.health`, `daemon.status`, `daemon.shutdown`, `diff.plan`,
+  `diff.compute`, `diff.rank`, `review.outline`, `review.hunks`, `review.change`,
+  `session.open`, `session.snapshot`, `session.close`, `daemon.metrics`
+  (protocol 2), `findings.verify` (protocol 2) and `diff.diagnostics` (protocol
+  3). `deep-diff-forge rpc` speaks the same protocol over stdio without a daemon.
+- At most 8 concurrent data connections (`MAX_CONNECTIONS = 8`) plus 2 control
+  slots (`CONTROL_CONNECTIONS = 2`), running requests in parallel under a
+  128 MiB in-flight work cap (`MAX_IN_FLIGHT_BYTES`) and a 160 MiB shared
+  request-line read budget (`MAX_READ_BYTES`; see [Concurrency](#concurrency)).
+  Line cap 80 MiB (`MAX_REQUEST_BYTES` / `MAX_RESPONSE_BYTES`, newline counted)
+  each way; a response over it becomes `RESOURCE_EXHAUSTED` (8). 30-second
+  absolute read deadline per line, 30-second cooperative execution deadline, and
+  30-second non-blocking response write deadline.
+- A second `start` at a live socket is refused (`AddrInUse`, exit 6) under an
+  exclusive `flock` on `<socket>.lock`; a stale socket (connect refused) is
+  replaced; a non-socket file or symlink is never deleted.
+- A stop drains cleanly (`daemon stop`, `SIGTERM` or `SIGINT`): in-progress
+  requests are answered first for up to 30 s (`DRAIN_WAIT`), and `daemon stop`
+  waits up to 35 s (`STOP_WAIT`) until the daemon exits
+  ([lifecycle](#daemon-lifecycle-implemented)). With nothing in progress it
+  returns within a second, even when idle clients hold every data and control
+  slot. A second signal during the drain exits immediately with `128 + signal`
+  (143 for SIGTERM, 130 for SIGINT). Per-user systemd units and a macOS launchd
+  agent ship in `contrib/` ([running as a service](#running-as-a-service)).
+- Not implemented: any response cache (`cache_entries` is always `0`), the
+  `cache` command, server-push subscriptions, log levels other than `warn` and
+  `info`, TCP and Windows named pipes. Runtime metrics (`daemon.metrics`),
+  structured JSON log lines (`--log-format json`), and Prometheus textfile
+  export (`daemon metrics --format prometheus --out PATH`) all ship
+  ([observability](#observability),
+  [exporting metrics](#exporting-metrics-to-prometheus)).
 
-Sections below that describe those are target design and say so. The security
-boundary is authoritative in [`SECURITY.md`](../SECURITY.md#local-daemon).
+Sections below that describe unbuilt capabilities are target design and say so.
+The security boundary is authoritative in [`SECURITY.md`](../SECURITY.md#local-daemon).
 
-The daemon is optional. Deep-Diff-Forge must remain useful as a CLI and library without it.
+The daemon is optional. Deep-Diff-Forge remains useful as a CLI and library
+without it.
 
 This document includes planned operational surface area. The implemented
 security boundary is authoritative in [`SECURITY.md`](../SECURITY.md); items
 described as future or planned are not current guarantees.
 
-The daemon exists for top-tail latency and coordination:
+Target design goals for future daemon expansion:
 
 - shared AST cache
 - shared line-index cache
@@ -56,18 +69,20 @@ The daemon exists for top-tail latency and coordination:
 | Service id | `deep-diff-forge` |
 | Binary | `deep-diff-forge` |
 | Daemon subcommand | `deep-diff-forge daemon` |
+| Engine protocol | `3` (protocols `0..=3` negotiate) |
 | Default transport | Unix domain socket |
 | TCP transport | Not implemented |
 | Health method | `daemon.health` |
 | Status method | `daemon.status` |
+| Metrics method | `daemon.metrics` |
 
 ## Socket Locations
 
 | Platform | Path or status |
 | --- | --- |
 | Unix with `$XDG_RUNTIME_DIR` | `$XDG_RUNTIME_DIR/deep-diff-forge/deep-diff-forge.sock` |
-| Unix without `$XDG_RUNTIME_DIR` | Fails closed — pass `--socket PATH`; there is no `/tmp` fallback |
-| A path of 108 bytes or more | Refused by `daemon path` and `daemon start`, exit 2 (since 0.10.0): Linux holds a socket path and its NUL in 108 bytes (`sun_path`) |
+| Unix without `$XDG_RUNTIME_DIR` (unset, empty or relative) | Fails closed with exit 2 — pass `--socket PATH`; there is no `/tmp` fallback |
+| A path of 108 bytes or more | Refused by `daemon path` and `daemon start` with exit 2: Linux holds a socket path and its NUL in 108 bytes (`sun_path`) |
 | Windows | Daemon unsupported; no named-pipe implementation |
 
 ## Daemon Lifecycle (implemented)
@@ -75,47 +90,48 @@ The daemon exists for top-tail latency and coordination:
 ```mermaid
 stateDiagram-v2
     [*] --> Resolve
-    Resolve --> Refused: no --socket and no XDG_RUNTIME_DIR (exit 2)
+    Resolve --> Refused: no --socket and no XDG_RUNTIME_DIR, or path >= 108 B (exit 2)
     Resolve --> Bind
-    Bind --> Refused: insecure dir, non-socket file, live daemon, bind error (exit 6)
-    Bind --> Serving: socket bound, chmod 0600
-    Serving --> Serving: accept, at most 8 workers, requests in parallel within 128 MiB in flight
-    Serving --> Draining: daemon.shutdown
-    Draining --> Draining: requests in progress answered; a request read now is refused (8)
-    Draining --> [*]: all answered or 30 s passed, start lock released, exit 0
+    Bind --> Refused: insecure dir, non-socket file, live daemon, lock held, bind error (exit 6)
+    Bind --> Serving: start lock held, socket bound, chmod 0600
+    Serving --> Serving: accept, 8 data + 2 control slots, parallel within 128 MiB in flight
+    Serving --> Draining: daemon.shutdown / SIGTERM / SIGINT
+    Draining --> Draining: requests in progress answered; new request refused (8); 2nd signal -> 128+sig
+    Draining --> [*]: all answered or 30 s passed, owned socket unlinked, start lock released, exit 0
     Refused --> [*]
 ```
 
-`run_server` in `serve.rs`: after `daemon.shutdown` the worker opens a wakeup
-connection so the blocked `accept` returns, the loop exits, and
-`cleanup_owned_socket` removes the socket only if its device and inode still
-match the one bound, and the listener is closed, so no new connection can arrive and the ones
-still queued are refused at once. Then the drain: the server waits, up to 30 s (a client's own
-read deadline), for every request in progress. A request counts from its first byte until its
-response is flushed, so neither a request still being sent nor an answer being written is cut
-off. An idle connection is not waited for. A request read after the stop is refused with
-`RESOURCE_EXHAUSTED` (8), "the daemon is shutting down". The log records
-`shutdown_drained` (`info`, when requests were in progress) or `shutdown_drain_timeout` (`warn`).
-The start lock is released last.
+`run_server` in `serve.rs`: after `daemon.shutdown` (or `SIGTERM`/`SIGINT`) the
+server wakes the blocked `accept` loop (stopping even if its socket file was
+removed externally), `cleanup_owned_socket` removes the socket only if its
+device and inode still match the one bound, and the listener is closed so no new
+connection can arrive and queued ones are refused at once. Then the drain runs:
+the server waits up to 30 s (`DRAIN_WAIT`, matching a client's read deadline)
+for every request in progress (`Answering`). A request counts from its first
+byte until its response is flushed, so neither a request still being sent nor an
+answer being written is cut off. An idle connection is not waited for. A request
+read after shutdown starts is refused with `RESOURCE_EXHAUSTED` (8), "the daemon
+is shutting down". The log records `shutdown_drained` (`info`, when requests were
+in progress) or `shutdown_drain_timeout` (`warn`). The start lock is released
+last.
 
-`daemon stop` opens the start lock (`SocketLocation::stop_waiter`, resolving a symlinked socket
-path while it still exists), sends `daemon.shutdown`, then waits up to 35 s for the lock to be
-free: it returns once the daemon has exited, so a `daemon start`
-right after it does not find the old daemon in the way. If the daemon has not exited by then,
-`stop` exits 6.
+`daemon stop` opens the start lock (`SocketLocation::stop_waiter`, resolving a
+symlinked socket path while it still exists), sends `daemon.shutdown`, then
+waits up to 35 s (`STOP_WAIT`) for the lock to be free: it returns once the
+daemon has exited, so a `daemon start` right after it does not find the old
+daemon in the way. If the daemon has not exited by then, `stop` exits 6.
 
-Before 2026-10-31 there was no drain: the process exited when the loop returned, cutting off
-the answers in progress, and `daemon stop` returned before the daemon had exited. Measured
-2026-10-31 under systemd (`contrib/systemd/deep-diff-forge.service`, user manager): a
-`diff.compute` of a 300,000-line patch (10.4 MB request, 27.7 MB answer) in progress when
-`systemctl --user stop` ran was answered in full; the stop returned 0 after 1.43 s; the
-journal recorded `shutdown_drained` at `info`. A client that stops reading holds the drain to
-its 30 s limit (`shutdown_drain_timeout`), after which the answer is cut off.
+Measured under systemd (`contrib/systemd/deep-diff-forge.service`, user
+manager): a `diff.compute` of a 300,000-line patch (10.4 MB request, 27.7 MB
+answer) in progress when `systemctl --user stop` ran was answered in full; the
+stop returned 0 after 1.43 s; the journal recorded `shutdown_drained` at `info`.
+A client that stops reading holds the drain to its 30 s limit
+(`shutdown_drain_timeout`), after which the answer is cut off.
 
 ## Daemon State Machine (target design)
 
-Not implemented: there is no cache. (A drain on stop exists since 2026-10-31; see the
-lifecycle above.)
+Not implemented: there is no response cache. (Graceful drain on stop is
+implemented; see [Daemon Lifecycle (implemented)](#daemon-lifecycle-implemented).)
 
 ```mermaid
 stateDiagram-v2
@@ -135,78 +151,90 @@ stateDiagram-v2
 
 The implemented daemon refuses startup unless:
 
-- a secure runtime base is available or an explicit socket path is supplied, and the path is
-  shorter than 108 bytes;
+- a secure runtime base (`$XDG_RUNTIME_DIR`, absolute) is available or an
+  explicit `--socket PATH` is supplied, and the resolved path is shorter than
+  108 bytes;
 - the socket parent exists as, or can be created as, an effective-user-owned
-  non-symlink directory with mode `0700`;
+  non-symlink directory with mode `0700` (`SECURE_DIR_MODE`; an existing parent
+  of an explicit `--socket` is validated with `validate_private_dir` and never
+  re-permissioned);
 - an existing socket path is either absent or verifiably a socket rather than a
   symlink, regular file, or directory; and
-- the newly bound socket can be restricted to mode `0600`.
+- the newly bound socket can be restricted to mode `0600` (`SECURE_SOCKET_MODE`).
 
 An existing socket is probed before it is replaced (`remove_stale_socket` in
-`serve.rs`): if a daemon accepts the connection, the start fails with
-`AddrInUse` (exit 6) and the running daemon is untouched; only a socket whose
-connect is refused is removed. Measured 2026-10-28: second start exit 6;
-restart over a socket left by `kill -9` succeeds.
+`serve.rs`): if a daemon accepts the connection, startup fails with `AddrInUse`
+(exit 6) and the running daemon is untouched; only a socket whose connect is
+refused is removed.
 
-The probe, the removal and the bind run under the start lock: a non-blocking
-exclusive `flock` on `<socket>.lock` beside the socket, held until the daemon
-has exited and removed its socket. A start that finds the lock held exits 6
-(`AddrInUse`, "another daemon is running or starting on this socket"), so two
-racing starts can no longer orphan a daemon. The kernel releases the lock of a
-daemon that crashed, and the lock file is never deleted. Measured 2026-10-30:
-eight starts racing over a stale socket gave one daemon and seven exits 6.
+The probe, removal and bind run under the start lock: a non-blocking exclusive
+`flock` on `<socket>.lock` beside the socket (`BoundListener`), held until the
+daemon has exited and removed its socket. A start that finds the lock held exits
+6 (`AddrInUse`, "another daemon is running or starting on this socket"), so
+racing starts cannot orphan a daemon. The kernel releases the lock of a crashed
+daemon, and the lock file itself is never deleted.
 
-Every accepted connection is checked for its peer's effective uid
-(`SO_PEERCRED` on Linux, `getpeereid` on macOS) and dropped unless it is the
-daemon's own user; the daemon logs `refused a connection: the peer runs as uid
-N, not uid M`. The CLI (`daemon health|status|stop`) and the SDK clients check
-the daemon's uid the same way and refuse a daemon of another user with
-`cannot use the daemon at PATH` (exit 6).
+Every accepted connection is checked for its peer's effective UID (`SO_PEERCRED`
+on Linux/Android, `getpeereid` on macOS/BSDs; other platforms fail closed with
+`Unsupported`) and dropped unless it matches the daemon's own user; the daemon
+logs `refused a connection: the peer runs as uid N, not uid M`. The CLI
+(`daemon health|status|metrics|stop`), the Rust SDK `Client`, and the Python SDK
+`SocketClient` check the daemon's UID the same way and refuse a daemon of
+another user before sending anything (CLI exit 6: `cannot use the daemon at PATH`).
 
 ## Concurrency
 
-Changed in 0.4.0. Before, every connection shared one `Mutex<Engine>`, so one slow
-request delayed every other client.
-
-- **Requests run in parallel.** Each of the eight connection workers serves its own requests
-  through one shared `Engine` (`&Engine`; a compile-time check fails the build if a field is not
-  `Send + Sync`).
-- **Only the session table is locked, and only for bookkeeping** (`handler.rs` `Sessions`):
-  opening, touching and closing a session. A patch is parsed and its retained size estimated
-  before the lock is taken, and a snapshot is ranked after the lock is released, from a shared
-  copy of the session's parsed patch. `diff.*`, `review.*` and `engine.*` do not lock it at all.
-- **Admission caps the work in flight** (`admission.rs`). Each request is weighed before it
-  runs: by its line length, or by the 64 MiB patch budget for `review.change`, whose Git output
-  can exceed its line (`MethodSpec::work`). The requests running together stay within
-  `MAX_IN_FLIGHT_BYTES` (128 MiB). Admission is first come, first served, so a waiting heavy
-  request is never overtaken by lighter ones, and a request heavier than the cap runs alone
-  rather than being refused. A permit is returned when its request finishes, panics included.
-- **No request waits forever.** One whose turn has not come within 30 s (`ADMISSION_WAIT`, the
-  client's read deadline) is answered `RESOURCE_EXHAUSTED` (8), "the daemon is busy", and gives
-  up its place, so the requests behind it move on.
-- **The lines being read share one byte budget** (since 2026-11-03, expert circle C3;
-  `admission.rs` `ReadBudget`). Every data connection reserves each chunk of its request line
-  before it buffers it, and holds the reservation until its answer is written. The total across
-  connections stays within `MAX_READ_BYTES` (160 MiB, room for two maximum-size lines, so one
-  always fits). A line the budget has no room for is answered `RESOURCE_EXHAUSTED`, "its budget
-  for request bytes being read is full", and its connection is closed, since the rest of the line
-  is unread. Control connections (at most 4 KiB) are not counted, so they get in when the budget
-  is full.
-- **Work stops at the client's deadline** (since 2026-11-03, C9; `deadline.rs`). A socket client
-  stops reading 30 s after it sent its request, so the daemon runs each request under that
-  deadline. Before starting, and after each heavy stage (the parse, a Git acquisition, a session
-  snapshot), the handler checks it. Past it, the request ends `RESOURCE_EXHAUSTED`, "ran past its
-  client's 30 s read deadline", and its worker and admission weight are released. A stage
-  already running finishes first, bounded by its own input budget. `rpc` and MCP over stdio have
-  no client deadline and are not cut.
-- **The session table's loops are bounded:** at most one eviction per session held, and at most
-  `MAX_SESSIONS + 1` candidate ids, so a fault in either cannot spin.
-- **Panics.** A panic while the session table was held empties the table and clears its poison
-  on the next use; the pid, start time and session-id counter are kept, so no id is reused. A
-  panic anywhere else leaves every session in place.
-- `deep-diff-forge rpc` (stdio) and `deep-diff-forge mcp` serve one request at a time by
-  design: they read one stream.
+- **Requests run in parallel.** Each of the 8 data connection workers serves its
+  own requests through one shared `Engine` (`&Engine`; a compile-time `Send + Sync`
+  assertion in `handler.rs` enforces thread safety).
+- **Only the session table is locked, and only for bookkeeping** (`handler.rs`
+  `Sessions`): opening, touching and closing a session. A patch is parsed and
+  its retained size estimated (`estimated_session_bytes`) before the lock is
+  taken, and a snapshot is ranked after the lock is released from a shared
+  `Arc<Vec<ReviewFile>>`. `diff.*`, `review.*`, `findings.verify` and `engine.*`
+  never lock the session table.
+- **Admission caps the work in flight** (`admission.rs`). Each request is
+  weighed before it runs: by its line length (`Work::Request`), or by
+  `max(line_bytes, 64 MiB)` for `review.change` (`Work::GitAcquisition`), whose
+  Git output can exceed its request line. Running requests stay within
+  `MAX_IN_FLIGHT_BYTES` (128 MiB). Admission is first come, first served, so a
+  waiting heavy request is never overtaken by lighter ones, and a request
+  heavier than the cap runs alone rather than being refused. A `Permit` is
+  returned on drop, panics included.
+- **No request waits forever.** One whose turn has not come within 30 s
+  (`ADMISSION_WAIT`, matching the client read deadline) is answered
+  `RESOURCE_EXHAUSTED` (8), "the daemon is busy", and abandons its ticket so
+  requests behind it proceed.
+- **Lines being read share one byte budget** (`admission.rs` `ReadBudget`).
+  Every data connection reserves each chunk of its request line before buffering
+  it and releases the reservation once the response is written. The aggregate
+  across connections stays within `MAX_READ_BYTES` (160 MiB — room for two
+  maximum-size 80 MiB lines). A line that exceeds the budget is answered
+  `RESOURCE_EXHAUSTED` (8) and its connection is closed. Control connections
+  (at most 4 KiB) are exempt from `ReadBudget`.
+- **Cooperative execution deadline** (`deadline.rs`). A socket client stops
+  reading 30 s after sending its request (`READ_TIMEOUT`), so the daemon runs
+  each socket request within that deadline and calls `deadline::check()` before
+  dispatch and after each heavy stage (parse, Git acquisition, foreign-Git-dir
+  check, session snapshot). Past the deadline, the request ends with
+  `RESOURCE_EXHAUSTED` (8), "the request ran past its client's 30 s read
+  deadline and was stopped", releasing its worker and admission permit. A stage
+  already running finishes first, bounded by its own input/time budget. Stdio
+  `rpc` and `mcp` have no socket client deadline and are not cut.
+- **Non-blocking response write deadline** (`serve.rs` `write_line_within`).
+  Each response line has `RESPONSE_WRITE_LIMIT` (30 s) from first byte to
+  completion using non-blocking writes and `poll` bounded by remaining time, so
+  a slow-reading client cannot extend the deadline by reading a trickle.
+- **Bounded session table loops:** at most one LRU eviction per held session
+  (cap `MAX_SESSIONS = 64`, `MAX_RETAINED_SESSION_BYTES = 128 MiB`) and at most
+  `MAX_SESSIONS + 1` candidate IDs, preventing spin faults.
+- **Panics.** A dispatch panic is caught per request (`catch_unwind`), counted
+  in `daemon.metrics`, and answered `INTERNAL_ERROR` (-32603). Only a panic
+  while the session table lock was held empties the table and clears its poison
+  on next use (keeping PID, start time and session-ID counter so no ID is
+  reused); a panic anywhere else leaves all sessions intact.
+- `deep-diff-forge rpc` (stdio) and `deep-diff-forge mcp` serve one request at a
+  time on one stream by design.
 
 ## Health RPC
 
@@ -224,76 +252,77 @@ Response:
   "id": 1,
   "result": {
     "status": "ok",
-    "version": "0.3.0",
+    "version": "0.11.0",
     "pid": 12345,
     "sessions": 0,
     "retained_bytes": 0,
     "cache_entries": 0,
-    "protocol": 2
+    "protocol": 3
   }
 }
 ```
 
-`cache_entries` is reserved: the daemon keeps no response cache, so it is always `0`, a true
-count of an empty cache rather than a measurement. It stays in the result so protocol-1
-clients that read it keep working; a cache, if one is ever added, reports its real size here
-(decision D-03, 2026-10-27).
+`cache_entries` is reserved: the daemon keeps no response cache, so it is always
+`0`, a true count of an empty cache rather than a measurement. It stays in the
+result so older clients that read it keep working; a cache, if ever added, would
+report its real size here (decision D-03).
 
 ## Status RPC
 
 Implemented: `daemon.status` returns `{running, uptime_secs, sessions, version,
-protocol}`, for example
-`{"protocol":1,"running":true,"sessions":0,"uptime_secs":0,"version":"0.3.0"}`
-(measured 2026-10-28, protocol 1 then; protocol 2 since 2026-10-30).
+protocol}`, for example:
 
-Target design, not implemented: status reports should also include:
+```json
+{"running":true,"uptime_secs":42,"sessions":0,"version":"0.11.0","protocol":3}
+```
 
-- protocol versions
-- uptime
-- active sessions
-- cache generations
-- cache hit/miss counters
+Target design, not implemented: status reports could also include:
+
+- supported protocol versions
+- cache generations and hit/miss counters
 - fallback counters by reason
 - last recoverable error
 - feature flags
 
 ## Running as a service
 
-Two per-user units ship in `contrib/`. `cli/tests/service_units.rs` keeps them starting the
-daemon as the CLI does and gives a stop longer than `daemon stop` waits (`STOP_WAIT`, 35 s).
+Per-user service definitions ship in `contrib/`. `crates/deep-diff-forge-cli/tests/service_units.rs`
+keeps them aligned with the CLI flags and verifies that their stop timeout
+exceeds `daemon stop`'s `STOP_WAIT` (35 s).
 
-- **systemd** (`contrib/systemd/deep-diff-forge.service`): `Type=simple`, `ExecStart=… daemon
-  start --log-format json`, `ExecStop=-… daemon stop` (which drains and returns after the exit;
-  the `-` because systemd also runs it after a daemon stopped from a shell, when it exits 6),
-  `TimeoutStopSec=40`, `Restart=on-failure`, and the sandbox options that work in a user manager
-  (`NoNewPrivileges`, `LockPersonality`, `MemoryDenyWriteExecute`, `RestrictRealtime`,
+- **systemd** (`contrib/systemd/deep-diff-forge.service`): `Type=simple`,
+  `ExecStart=%h/.local/bin/deep-diff-forge daemon start --log-format json`,
+  `ExecStop=-%h/.local/bin/deep-diff-forge daemon stop` (the leading `-` prevents
+  a manual shell `daemon stop` from marking the unit failed when systemd runs
+  `ExecStop` and sees exit 6), `TimeoutStopSec=40`, `Restart=on-failure`,
+  `RestartSec=2`, and user-manager sandboxing (`NoNewPrivileges=yes`,
+  `LockPersonality=yes`, `MemoryDenyWriteExecute=yes`, `RestrictRealtime=yes`,
   `SystemCallArchitectures=native`). Install:
 
   ```bash
   cp contrib/systemd/deep-diff-forge.service ~/.config/systemd/user/
   systemctl --user daemon-reload && systemctl --user enable --now deep-diff-forge
-  journalctl --user -u deep-diff-forge    # the JSON log lines
+  journalctl --user -u deep-diff-forge    # structured JSON log lines
   ```
 
-  Measured 2026-10-31 on Fedora (systemd user manager): start, `daemon health` and `systemctl
-  --user stop` with a request in progress (see the lifecycle above).
-- **launchd** (`contrib/launchd/dev.deep-diff-forge.daemon.plist`): `RunAtLoad`, restarted only
-  after a failure (`KeepAlive` → `SuccessfulExit` false), `ExitTimeOut` 40. macOS sets no
-  `XDG_RUNTIME_DIR`, so the agent sets one (`~/.local/run`, created `0700`), and shells that use
-  the daemon export the same value. Replace `/Users/YOU` and `launchctl bootstrap gui/$(id -u)
-  <plist>`. Stop it with `deep-diff-forge
-  daemon stop` or `launchctl bootout`. Since DDF-HUNT-DAEMON-7 (2026-11-03) the daemon handles
-  SIGTERM and SIGINT as `daemon stop`: it stops accepting, removes its socket, drains the
-  answers in progress and exits 0. Before, SIGTERM killed it without a drain and left the
-  socket file behind. Since 2026-11-07 a signal stops it even when its socket path is gone, and
-  a second signal during the drain (a second Ctrl-C) exits at once with 128 plus the signal's
-  number (143 for SIGTERM, 130 for SIGINT); before, the drain ran its course. Since
-  2026-10-31 the `macOS launchd agent` job of `ci.yml` runs `scripts/launchd_smoke.sh` on a
-  hosted Mac (on every CI event except a release run, which skips it until it has a record):
-  bootstrap into `gui/<uid>` (falling back to `user/<uid>`), `daemon health` with
-  launchd's pid, a restart after SIGKILL, no restart after `daemon stop` (socket gone), and
-  `launchctl bootout` with no process left. Its first run on a real launchd was pending CI when
-  it was added; the flow was exercised only against a fake `launchctl` on Linux (inferred).
+- **launchd** (`contrib/launchd/dev.deep-diff-forge.daemon.plist`): `RunAtLoad`,
+  restarted only on failure (`KeepAlive` → `SuccessfulExit: false`),
+  `ThrottleInterval` 2, `ExitTimeOut` 40, `StandardErrorPath` at
+  `~/Library/Logs/deep-diff-forge.log`. macOS sets no `XDG_RUNTIME_DIR`, so the
+  agent exports `~/.local/run` (created `0700`), and shells talking to the daemon
+  export the same `XDG_RUNTIME_DIR`. Replace `/Users/YOU` and load with:
+
+  ```bash
+  mkdir -m 700 -p ~/.local/run
+  cp contrib/launchd/dev.deep-diff-forge.daemon.plist ~/Library/LaunchAgents/
+  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.deep-diff-forge.daemon.plist
+  ```
+
+  Stop with `deep-diff-forge daemon stop` or `launchctl bootout` (which sends
+  `SIGTERM`, handled identically to `daemon stop`: stops accepting, removes the
+  owned socket, drains in-progress answers up to 30 s, and exits 0; a second
+  signal exits immediately with `128 + signal`). `scripts/launchd_smoke.sh`
+  exercises the launchd lifecycle in macOS CI.
 
 ## Operational Commands
 
@@ -306,35 +335,35 @@ deep-diff-forge daemon start --foreground
 deep-diff-forge daemon start --allow-repo PATH --log-format json
 deep-diff-forge daemon status
 deep-diff-forge daemon health
-deep-diff-forge daemon metrics          # daemon.metrics, protocol 2
+deep-diff-forge daemon metrics          # daemon.metrics (protocol 2+, JSON)
 deep-diff-forge daemon metrics --format prometheus [--out PATH.prom]
-deep-diff-forge daemon stop             # daemon.shutdown, then waits for the exit (at most 35 s)
+deep-diff-forge daemon stop             # daemon.shutdown, then waits for exit (up to 35 s)
 ```
 
 `health`, `status`, `metrics` and `stop` exit 6 when no daemon answers.
 
 ## Deploy Doctor
 
-Added in 0.4.0 (2026-10-30). `deep-diff-forge deploy doctor [--json] [--socket PATH]` checks that this
+`deep-diff-forge deploy doctor [--json] [--socket PATH]` checks that this
 machine can run the daemon and Git inputs, and changes nothing. The daemon checks
-(`deep_diff_forge_daemon::inspect`) apply the daemon's own start rules, so a failure here is a
-`daemon start` or client that would fail too; it never takes the start lock, which would make a
-concurrent start fail.
+(`deep_diff_forge_daemon::inspect`) apply the daemon's own start rules, so a
+failure here is a `daemon start` or client that would fail too; it never takes
+the start lock, which would cause a concurrent start to fail.
 
-| Check | ok | warn | fail |
+| Check | `ok` | `warn` | `fail` |
 | --- | --- | --- | --- |
 | `binary` | always; names the version | | |
-| `socket` | the socket path resolved | `$XDG_RUNTIME_DIR` unset and no `--socket` (the next three are skipped) | |
+| `socket` | the socket path resolved | `$XDG_RUNTIME_DIR` unset/relative and no `--socket` (the next three checks are skipped) | |
 | `socket_dir` | absent (a start creates it `0700`), or owner-private | | a symlink, not a directory, another owner, or group/other access |
-| `daemon` | not running, or a daemon of this version answered `daemon.health` | a stale socket (the next start replaces it), or a daemon of another version | a daemon this user may not use, a non-socket file at the path, or no usable answer |
+| `daemon` | not running, or a daemon of this version answered `daemon.health` with zero trouble counters | a stale socket (next start replaces it), a daemon of another version, or nonzero panics/busy/session_resets in `daemon.metrics` | a daemon this user may not use (`Foreign`), a non-socket file at the path, or no usable answer |
 | `start_lock` | absent, or a regular file owned by this user | | a symlink, not a regular file, or another owner |
-| `git` | `git version` answered within 10 s, run the way an acquisition runs Git | Git missing, failing or stalled: the `--git-*` inputs and `review.change` cannot work | |
+| `git` | `git version` answered within 10 s (`GIT_LIMIT`), run as an acquisition runs Git | Git missing, failing or stalled: `--git-*` inputs and `review.change` cannot work | |
 
-Exit 0 when no check fails, warnings included; 6 (`DAEMON_OR_TERMINAL`) when one does. `--json`
-prints `deep-diff-forge.deploy-doctor.v0`: `{schema, version, healthy, checks: [{name, state,
-detail}]}`.
+Exit `0` when no check fails (warnings included); `6` (`DAEMON_OR_TERMINAL`)
+when any check fails. `--json` prints `deep-diff-forge.deploy-doctor.v0`:
+`{schema, version, healthy, checks: [{name, state, detail}]}`.
 
-Target design, not implemented (`cache` is refused today, exit 2):
+Target design, not implemented (`cache` is refused with exit 2):
 
 ```bash
 deep-diff-forge cache status
@@ -344,92 +373,82 @@ deep-diff-forge cache prune --max-size 20GiB
 
 ## Failure Handling
 
-| Failure | Required behavior | Today |
+| Failure | Required behavior | Implemented in v0.11.0 |
 | --- | --- | --- |
-| Existing socket | In an owner-private parent, replace only a stale socket; never a live one or a non-socket file. | Implemented: live socket refused with `AddrInUse`, non-socket refused, stale socket removed. |
+| Existing socket | In an owner-private parent, replace only a stale socket; never a live one or a non-socket file. | Live socket refused with `AddrInUse` (under `<socket>.lock`), non-socket and symlink refused, stale socket removed. |
 | Cache decode failure | Ignore entry, record fallback, continue. | No cache exists. |
-| Parser panic | Catch at worker boundary, mark semantic fallback. | A dispatch panic is caught per request, counted in `daemon.metrics` and answered `INTERNAL_ERROR`; only a panic while the session table was held empties the table and clears its poison, otherwise sessions are kept. |
-| Oversized payload | Reject with structured error. | Request over 80 MiB: `INVALID_REQUEST`, then the connection closes. Response over 80 MiB, an error included, measured as written: `RESOURCE_EXHAUSTED` (8). An error message is cut at 4 KiB (`MAX_ERROR_MESSAGE_BYTES`), on the socket and in the MCP server's tool and protocol errors. |
-| Client disconnect | Cancel session subscription, keep shared cache. | No subscriptions or cache; the worker ends and frees its slot. |
-| Out of budget | Preserve patch twin and record semantic fallback. | Patch input over its byte or line budget is refused (exit 4 on the CLI). |
-| Ninth connection | Apply backpressure. | Since DDF-HUNT-DAEMON-7 (2026-11-03) two control slots sit beyond the eight data slots. A connection on one gets one request of at most 4 KiB, read within 5 s. `daemon.health`, `daemon.status`, `daemon.metrics` and `daemon.shutdown` are answered; any other method is refused `RESOURCE_EXHAUSTED` (8) with "connection limit"; then the connection closes. So `daemon health` and `daemon stop` work while eight clients hold every data slot. With the control slots taken as well, a connection has 250 ms to send `daemon.shutdown`, which the accept loop answers itself, so `daemon stop` still works (since 0.10.0); anything else is closed with no response, and the CLI reports `no answer from the daemon at PATH (it may be at its connection limit; retry)`, exit 6, not `no daemon at`. SIGTERM or SIGINT always stops the daemon cleanly. |
+| Handler panic | Catch at worker boundary, isolate impact. | Dispatch panic caught per request, counted in `daemon.metrics` (`engine.panics`) and answered `INTERNAL_ERROR` (-32603); only a panic while the session lock was held empties the table (`engine.session_resets`) and clears poison, otherwise sessions stay intact. |
+| Oversized payload | Reject with structured error. | Request over 80 MiB (`MAX_REQUEST_BYTES`, newline counted): `INVALID_REQUEST` (-32600), connection closes. Response over 80 MiB (errors included, measured after `json_line_safe` + newline): `RESOURCE_EXHAUSTED` (8). Error messages are cut at 4 KiB (`MAX_ERROR_MESSAGE_BYTES = 4,096`) on both daemon and MCP. |
+| Client disconnect / slow reader | Cancel work, release slot. | Worker ends on disconnect and frees its slot and read reservation; slow readers hit the 30 s non-blocking `RESPONSE_WRITE_LIMIT` and are closed. |
+| Out of budget | Preserve patch truth / fail closed. | Patch input over 64 MiB byte budget or parser line budget is refused (`PATCH_PARSE_FAILED` 4 on daemon, exit 4 on CLI). |
+| Connection saturation (9th+ connection) | Apply backpressure without blocking operators. | Beyond the 8 data slots (`MAX_CONNECTIONS`), 2 control slots (`CONTROL_CONNECTIONS`) accept one request of at most 4 KiB (`CONTROL_REQUEST_BYTES`) within 5 s (`CONTROL_READ_TIMEOUT`). `daemon.health`, `daemon.status`, `daemon.metrics` and `daemon.shutdown` are answered; any other method is refused `RESOURCE_EXHAUSTED` (8) with "connection limit", then the connection closes. If both control slots are also held, an incoming connection gets 250 ms (`FULL_READ_TIMEOUT`) to send `daemon.shutdown` (answered in the accept loop itself); anything else is closed unanswered and the CLI reports `no answer from the daemon at PATH (it may be at its connection limit; retry)` (exit 6). `SIGTERM` / `SIGINT` always stop the daemon cleanly. |
 
 ## Observability
 
-Implemented (2026-10-30):
+Implemented:
 
-- **`daemon.metrics`** (protocol 2; `deep-diff-forge daemon metrics`) returns
-  `deep-diff-forge.daemon-metrics.v0`, counted since the daemon started (`metrics.rs`).
-  - **Per method that was called:** `requests`, `errors` by RPC code (`parse_error`,
-    `invalid_params`, `resource_exhausted`, …, `other`) and `latency_us`. The latency is a
-    histogram of 24 log₂ buckets (bucket *i* holds requests that took under 2^*i* µs), plus
-    `p50_at_most`, `p95_at_most` and `p99_at_most`: the upper bounds of the buckets holding those
-    quantiles. These are bounds, not measurements, and `null` means over 2^22 µs. A request for a
-    method the daemon does not have, or an unparsable line, counts under `(unknown)`, as do the
-    lines a connection refuses before parsing them (not UTF-8, over 80 MiB, or sent during a
-    stop; counted since 2026-11-01).
-  - **`admission`:** `admitted`, `waited` (admitted after blocking), `wait_us`, `busy` (refused
-    after the 30 s admission wait), `peak_in_flight_bytes` and `peak_running`.
-  - **`connections`:** `accepted`, `refused_at_limit`, `refused_peer` (another user), and `errors`
-    (a read deadline, a reset, or a client gone before its answer).
-  - **`engine`:** `panics` (contained), `session_resets`, `sessions_opened`, `sessions_closed`,
-    `sessions_evicted` and `peak_retained_bytes`.
-  - **Recording cost.** Every counter is an `AtomicU64` written with relaxed adds, so recording
-    takes no lock on the parallel request path. Counters live as long as the process; history is
-    the weekly campaign's receipts: the soak records `daemon metrics` at its start and at its end
-    in the receipt's `metrics` (since 2026-11-03; before that the receipts held no counters).
-- **`deploy doctor`** reads `daemon.metrics` from a live daemon and warns (exit 0) on contained
-  panics, busy refusals or session-table resets, with their counts. A daemon without
-  `daemon.metrics` (protocol 1) is reported without them.
-- **`daemon start --log-format json`** writes each log line as one JSON object (`ts_ms`, `level`,
-  `event`, `message`). The events are `connection_refused`, `connection_error`,
-  `worker_spawn_failed` and `shutdown_drain_timeout` (level `warn`), and `shutdown_drained`
-  (level `info`, `log::INFO_EVENTS`). The default (`text`) is the line the daemon always wrote:
-  `deep-diff-forge daemon: <message>`. Both come from `log.rs`, so they cannot drift.
+- **`daemon.metrics`** (protocol 2+; `deep-diff-forge daemon metrics`) returns
+  `deep-diff-forge.daemon-metrics.v0`, counted since the daemon started
+  (`metrics.rs`).
+  - **Per method that was called:** `requests`, `errors` by RPC code
+    (`parse_error`, `invalid_request`, `method_not_found`, `invalid_params`,
+    `internal_error`, `protocol_unsupported`, `patch_parse_failed`,
+    `session_not_found`, `input_contract_refused`, `resource_exhausted`,
+    `git_failed`, `other`) and `latency_us`. Latency is a histogram of 24 log₂
+    buckets (`LATENCY_BUCKETS = 24`; bucket *i* for `0..=22` holds requests
+    taking under `2^i` µs, and the open last bucket `i = 23` holds requests of
+    ≥ 2²² µs / ~4.19 s), plus `p50_at_most`, `p95_at_most` and `p99_at_most`
+    (bucket upper bounds; `null` means ≥ 2²² µs / ~4.19 s). Unknown methods, unparsable lines, and pre-parse refusals
+    (non-UTF-8, > 80 MiB, or sent during shutdown) count under `(unknown)`.
+  - **`admission`:** `admitted`, `waited`, `wait_us`, `busy` (refused after
+    the 30 s admission wait), `peak_in_flight_bytes` and `peak_running`.
+  - **`connections`:** `accepted`, `refused_at_limit`, `refused_peer` (another
+    user), and `errors` (read deadline, reset, or client disconnect before
+    answer).
+  - **`engine`:** `panics` (contained), `session_resets`, `sessions_opened`,
+    `sessions_closed`, `sessions_evicted` and `peak_retained_bytes`.
+  - **Recording cost:** every counter is an `AtomicU64` updated with relaxed
+    operations — zero locks on the parallel request path. Counters live for the
+    process lifetime.
+- **`deploy doctor`** reads `daemon.metrics` from a live daemon and warns (exit
+  0) on contained panics, busy refusals or session-table resets with their
+  counts. A protocol-1 daemon without `daemon.metrics` is reported without them.
+- **`daemon start --log-format json`** writes each stderr log line as one JSON
+  object (`{"ts_ms", "level", "event", "message"}`). Events:
+  `connection_refused`, `connection_error`, `worker_spawn_failed` and
+  `shutdown_drain_timeout` (`warn`), and `shutdown_drained` (`info`,
+  `log::INFO_EVENTS`). The default (`text`) writes
+  `deep-diff-forge daemon: <message>`. Both render through `log.rs`.
 
-Not implemented: levels other than `warn` and `info`, `info` events for session open and close, and a
-metrics endpoint other than `daemon.metrics` (no TCP, no HTTP scrape listener; the plan rules both
-out). The same metrics can be written as a Prometheus text file instead
-([exporting metrics](#exporting-metrics-to-prometheus)).
+Not implemented: log levels other than `warn` and `info`, `info` events for
+session open/close, and any TCP/HTTP scrape listener (metrics export uses the
+Prometheus textfile collector instead).
 
-Original target design, kept as written:
+Original target design (not implemented):
 
-Log levels:
-
-- `error`: data loss, daemon crash, failed startup
-- `warn`: fallback, cache corruption, rejected socket
-- `info`: session open/close, cache generation, release version
-- `debug`: planner decisions
-- `trace`: parser details
-
-Metrics:
-
-- `ddf_sessions_open`
-- `ddf_files_planned_total`
-- `ddf_semantic_fallback_total{reason}`
-- `ddf_cache_hit_total{kind}`
-- `ddf_cache_miss_total{kind}`
-- `ddf_projection_latency_ms{mode}`
-- `ddf_review_rank_latency_ms`
+- Log levels: `error`, `warn`, `info`, `debug`, `trace`
+- Additional cache/planner metrics: `ddf_sessions_open`,
+  `ddf_files_planned_total`, `ddf_semantic_fallback_total{reason}`,
+  `ddf_cache_hit_total{kind}`, `ddf_cache_miss_total{kind}`,
+  `ddf_projection_latency_ms{mode}`, `ddf_review_rank_latency_ms`
 
 ## Exporting metrics to Prometheus
 
-Added 2026-10-31. `deep-diff-forge daemon metrics --format prometheus` prints the `daemon.metrics`
-answer in the [Prometheus text exposition format](https://prometheus.io/docs/instrumenting/exposition_formats/)
-(version 0.0.4), and `--out PATH` writes it to a file instead, for
+`deep-diff-forge daemon metrics --format prometheus` prints the `daemon.metrics`
+answer in [Prometheus text exposition format](https://prometheus.io/docs/instrumenting/exposition_formats/)
+(version 0.0.4), and `--out PATH` writes it atomically for
 [node_exporter's textfile collector](https://github.com/prometheus/node_exporter#textfile-collector).
-The daemon gains no listener and the plan's rule stands: the CLI asks the daemon over its socket,
-as `daemon metrics` always has, and renders the answer (`exposition.rs`). The JSON answer
-(`--format json`, the default) is unchanged, and both come from the same document, so they
-cannot disagree.
+The daemon adds no network listener: the CLI queries the Unix socket and renders
+the JSON response (`exposition.rs`), so JSON (`--format json`, default) and
+Prometheus outputs cannot disagree.
 
 | Family | Type | From `daemon-metrics.v0` |
 | --- | --- | --- |
-| `ddf_daemon_build_info{version}` | gauge, always 1 | `version` |
+| `ddf_daemon_build_info{version}` | gauge, always `1` | `version` |
 | `ddf_daemon_uptime_seconds` | gauge | `uptime_secs` |
 | `ddf_daemon_requests_total{method}` | counter | `methods.*.requests` |
 | `ddf_daemon_request_errors_total{method,error}` | counter | `methods.*.errors` |
-| `ddf_daemon_request_duration_seconds{method}` | histogram | `methods.*.latency_us.buckets` |
+| `ddf_daemon_request_duration_seconds{method}` | histogram (`_bucket`, `_count`) | `methods.*.latency_us.buckets` |
 | `ddf_daemon_admitted_total`, `ddf_daemon_admission_waits_total`, `ddf_daemon_admission_wait_seconds_total`, `ddf_daemon_busy_refusals_total` | counter | `admission.admitted`, `waited`, `wait_us`, `busy` |
 | `ddf_daemon_peak_in_flight_bytes`, `ddf_daemon_peak_running_requests` | gauge | `admission.peak_in_flight_bytes`, `peak_running` |
 | `ddf_daemon_connections_accepted_total`, `ddf_daemon_connection_errors_total` | counter | `connections.accepted`, `errors` |
@@ -437,114 +456,86 @@ cannot disagree.
 | `ddf_daemon_panics_total`, `ddf_daemon_session_resets_total`, `ddf_daemon_sessions_{opened,closed,evicted}_total` | counter | `engine.*` |
 | `ddf_daemon_peak_retained_bytes` | gauge | `engine.peak_retained_bytes` |
 
-What the text holds, and why:
+Key properties:
 
-- **Format 0.0.4, not OpenMetrics.** The textfile collector parses the Prometheus text format;
-  OpenMetrics names a counter family without `_total` in its `TYPE` line, which that parser
-  reads as an untyped family. So there is no `# EOF` line, and no sample has a timestamp (the
-  collector skips a file that has one).
-- **Units in the names.** Latency and admission wait are in seconds, as exact decimals of the
-  microseconds the daemon counts (`0.000008`, `1.5`); the histogram's `le` bounds are the
-  daemon's log₂ buckets, 1 µs to 4.194304 s, then `+Inf`, cumulative.
-- **No `_sum`.** The daemon keeps bucket counts, not total time, so the histogram has
-  `_bucket` and `_count` only: use `histogram_quantile`, not `_sum / _count`. node_exporter
-  re-exports a missing sum as 0 (inferred from its `collector/textfile.go`, which reads
-  `GetSampleSum()`; not run here).
-- **Counters count since the daemon started**, as in the JSON; a restart resets them, which
-  `rate()` handles. A method never called has no series, as it has no JSON entry, and a family
-  with no samples (no errors yet) is left out.
-- **Refuse, don't guess.** A document missing a field, or a daemon that answers an RPC error
-  (protocol 1 has no `daemon.metrics`), exits 6 with the reason and writes nothing. Label values
-  (method names, the version) are escaped.
-- **The file is replaced whole:** written to `.NAME.PID.N.tmp` in the same directory (not a
-  `.prom` name, so the collector never reads it half written), synced, then renamed over PATH.
-  A symlink or a non-regular file at PATH is refused (exit 3) and left alone, and the temporary
-  is created exclusively, so nothing is written through a link planted there. A run killed
-  between create and rename leaves its temporary behind; a later run with the same PID takes
-  the next `N` (up to 8 names, then exit 3), and neither reuses nor removes it. Stale
-  `.*.tmp` files in the directory can be deleted. The mode is `0644`, set exactly whatever the
-  umask (tested under umask 077): node_exporter runs as its own user and must read it, and the
-  metrics hold counts, the version and method names. No daemon (exit 6) leaves the previous
-  file in place, so alert on its age.
+- **Format 0.0.4, not OpenMetrics:** no `# EOF` line and no sample timestamps
+  (required by node_exporter's textfile collector).
+- **Seconds in units:** latency buckets and admission wait convert microseconds
+  to exact decimals of seconds (`le` bounds from `0.000001` to `4.194304`, then
+  `+Inf`, cumulative).
+- **No `_sum`:** only `_bucket` and `_count` are emitted (use
+  `histogram_quantile`, not `_sum / _count`).
+- **Counters reset on daemon restart** (`rate()` handles resets). Uncalled
+  methods and empty error families are omitted.
+- **Fail closed:** missing fields or an RPC error (e.g. a protocol-1 daemon)
+  exit `6` without writing `--out`. Label values are escaped (`\\`, `\"`, `\n`).
+- **Atomic replacement (`textfile.rs`):** written to an exclusively created
+  `.NAME.PID.N.tmp` in the target directory (never `.prom`), fsynced, chmodded
+  to `0644` regardless of umask, and renamed over `PATH`. Existing symlinks or
+  non-regular files at `PATH` are refused (exit `3`) and left untouched. If no
+  daemon answers (exit `6`), the prior `.prom` file stays intact so staleness
+  alerts fire on its mtime.
 
-Recipe (the units ship in `contrib/systemd/`; `systemd-analyze --user verify` accepts them
-apart from the binary path on the machine that checked them, 2026-10-31; not run against a real
-node_exporter, so the end-to-end path is unmeasured):
+Systemd timer recipe (`contrib/systemd/deep-diff-forge-metrics.{service,timer}`,
+firing every 15 s with `AccuracySec=1s` and `After=deep-diff-forge.service`):
 
 ```bash
 # node_exporter reads this directory: --collector.textfile.directory=/var/lib/node_exporter/textfile_collector
 sudo install -d -o "$USER" -m 0755 /var/lib/node_exporter/textfile_collector
 cp contrib/systemd/deep-diff-forge-metrics.{service,timer} ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now deep-diff-forge-metrics.timer   # every 15 s
+systemctl --user enable --now deep-diff-forge-metrics.timer
 ```
 
-Or from cron: `* * * * * deep-diff-forge daemon metrics --format prometheus --out
-/var/lib/node_exporter/textfile_collector/deep-diff-forge.prom` (cron sets no `XDG_RUNTIME_DIR`,
-so add `--socket` with the path `deep-diff-forge daemon path` prints). One user's daemon per
-directory: two users writing the same families would collide in node_exporter.
+Or from cron (pass `--socket` from `deep-diff-forge daemon path`, since cron
+sets no `XDG_RUNTIME_DIR`):
 
-Example queries:
+```cron
+* * * * * deep-diff-forge daemon metrics --socket /run/user/1000/deep-diff-forge/deep-diff-forge.sock --format prometheus --out /var/lib/node_exporter/textfile_collector/deep-diff-forge.prom
+```
+
+Example PromQL queries:
 
 ```promql
 histogram_quantile(0.99, sum by (le, method) (rate(ddf_daemon_request_duration_seconds_bucket[5m])))
 increase(ddf_daemon_panics_total[1h]) > 0
-time() - node_textfile_mtime_seconds{file=~".*deep-diff-forge.prom"} > 180   # the file went stale
+time() - node_textfile_mtime_seconds{file=~".*deep-diff-forge.prom"} > 180
 ```
-
-The staleness threshold must sit well above the write interval plus scrape and evaluation lag:
-at `> 60`, the once-a-minute cron variant would fire on a healthy setup whenever one run starts
-a little later than the one before. 180 s covers both the 15 s timer and cron (inferred from the
-intervals; not run against Prometheus).
 
 ## Habitat Deployment Cut
 
-If adopted as a local service citizen, Deep-Diff-Forge should be UDS-only at first.
-
-Service row:
+If adopted as a local service citizen, Deep-Diff-Forge is UDS-only:
 
 | Service | ID | Port | Health | Notes |
 | --- | --- | --- | --- | --- |
-| Deep-Diff-Forge | `deep-diff-forge` | UDS | `daemon.health` | Review daemon, AST cache, agent annotations, no TCP by default. |
+| Deep-Diff-Forge | `deep-diff-forge` | UDS | `daemon.health` | Review daemon, protocol 3, 17 JSON-RPC methods, no TCP. |
 
 ## Resource Requirements
 
-Measured 2026-10-27 on a 16-core Fedora Kinoite host (release build of `db65391`); single runs,
-not distributions, so they are sizing guides, not limits. The caps themselves are enforced in code
-and listed in the Capacity Map (owner's local vault).
+Measured baseline on a 16-core Linux host (release build; sizing guide, not a
+hard guarantee — hard caps are enforced in code):
 
 | Request | Input | Peak RSS | Time |
 | --- | --- | --- | --- |
 | CLI review JSON | 930k-line, 30 MB patch | 217 MB | 0.63 s |
 | CLI `--rank --json` | same | 120 MB | 0.36 s |
 | `rpc` `diff.compute` | same | 1.07 GB | — |
-| MCP `review_patch` | same | 1.77 GB (before the A-07 output cap) | — |
-| MCP `review_patch` | 64 MiB, the inbound cap | about 1 GB | — |
+| MCP `review_patch` | 64 MiB (inbound patch budget) | ~1 GB | — |
 
-Deployment needs that follow:
+Deployment sizing notes:
 
-- **Memory:** plan for about 1.1 GB per maximum-size `rpc` or MCP request, and about 250 MB for
-  the CLI. The daemon serves at most eight connections and runs their requests in parallel
-  ([Concurrency](#concurrency)): admission lets requests run together while their weights stay
-  within 128 MiB, so two at the 64 MiB patch budget run at once (one heavier than the cap runs
-  alone). Its peak is therefore about two maximum-size requests (about 2.2 GB by the figure
-  above), plus the lines of the connections waiting for admission, plus at most 128 MiB of
-  retained sessions. Since 2026-11-03 the request lines held across connections are capped at
-  160 MiB in total (`MAX_READ_BYTES`), about 320 MiB with their parsed copies. Before, each of
-  the eight connections could hold an 80 MiB line and its parsed copy, about 1.25 GiB. These are inferred from the caps, not measured
-  (before 2026-11-01 this said the daemon ran one request at a time, as it did before 0.4.0);
-  size the host or keep patches well under the cap. A `review.hunks` selection adds memory for
-  its requested names only, not per hunk: since 2026-11-01 an address selection keeps only the
-  requested addresses, so one address over 300,000 hunks peaks with a path selection (130 MB,
-  measured) rather than 65 MB above it.
-- **`/tmp` inodes:** parallel council and mutation runs create many small files. The host's `/tmp`
-  tmpfs has a 1,048,576-inode limit, which an 8-way stress run reached on 2026-10-26. Point
-  `TMPDIR` at a disk-backed directory for heavy parallel work.
-- **Output:** MCP answers stay bounded by `REVIEW_FULL_CAP` (256 KiB per value) for both
-  `review_patch` and `rank_patch`. `rpc` and socket `diff.compute` answers grow with the patch
-  (about 2.7× its size, measured 2026-10-27) up to the 80 MiB line cap; a larger answer is
-  replaced by a `RESOURCE_EXHAUSTED` (8) error since 2026-10-28. Use `diff.plan` or a smaller
-  patch.
+- **Memory:** plan for ~1.1 GB per maximum-size `rpc` or MCP request and ~250 MB
+  for CLI runs. Under the 128 MiB in-flight cap (`MAX_IN_FLIGHT_BYTES`), up to
+  two 64 MiB requests run concurrently (~2.2 GB), plus up to 160 MiB of buffered
+  request lines (`MAX_READ_BYTES`) and up to 128 MiB of retained sessions
+  (`MAX_RETAINED_SESSION_BYTES`).
+- **`/tmp` inodes:** heavy parallel council or mutation runs create many small
+  files; set `TMPDIR` to a disk-backed directory if `/tmp` tmpfs inode limits
+  are tight.
+- **Output bounds:** MCP `review_patch` and `rank_patch` cap full responses at
+  `REVIEW_FULL_CAP` (256 KiB), switching to summaries above it; `review_outline`,
+  `review_hunks`, `diagnose_patch` and `review_change` page within `max_bytes`.
+  Daemon and `rpc` response lines cap at 80 MiB (`RESOURCE_EXHAUSTED` 8 above).
 
 ## Deployment Link
 
